@@ -1442,3 +1442,14 @@ Två buggar hittade och fixade under verifieringen:
 2. **Delete kräver fokus**: Delete-kommandot agerar på fokuserad area — med enbart AXSelected misslyckades 3 av 4 raderingar tyst ("region still in the arrangement map"). Regionerna har skrivbart AXFocused; selectRegion ger nu regionen tangentbordsfokus efter valet. Därefter 3/3 raderingar.
 
 Skarp användning direkt: användarens skräpregioner på Bas i Testlåt (test-tagningar "Bas" @ 44, 48, 62, 63) raderade och verifierade; spåret återställt till originalinnehållet (Inst 31 @ 9, 23, 35). Regionen @73 som synts tidigare fanns inte längre i kartan (redan borttagen).
+
+### Automationsinspelning (2026-08-26, v0.37.0) — kronjuvelen
+
+**`logic_record_automation`** skriver volymautomationskurvor helt i dataplanet — funktionen ingen Logic-MCP-konkurrent har:
+
+1. **Kalibrering**: varje mål-dB konvergeras (LCD-verifierat via setVolume) och den absoluta 14-bit-positionen läses ur **Logics eget motorfader-eko** (`faders_14bit` i bryggspegeln) — dB→fader-mappningen kommer alltså från Logic själv, inte från antaganden om fader-tapern. Ursprungsvolymen återställs efter kalibreringen.
+2. **Lägesbyte via MCU:s automationsknappar** (standard Mackie: Read 0x4A, Write 0x4B, Trim 0x4C, Touch 0x4D, Latch 0x4E — verkar på valt spår), verifierat genom stripens AX-etikett ("Latch, automation enabled").
+3. **Inspelning**: playhead parkeras en takt före, playback rullar, timecode-synk vid taktkorsningen, och absoluta fader-kommandon (pitch bend + touch, som en riktig hand) placeras vid varje punkts musikaliska ögonblick. `ramp` (default) interpolerar mjuka övergångar med 2 delpunkter/slag.
+4. **Verifiering med Logic som vittne**: intervallet SPELAS OM i Read-läge och motorfader-ekot samplas vid varje punkt. Första skarpa testet: 0 dB@takt2 → −15 dB@takt4, **exakt återläsning på båda punkterna (12483/12483, 6479/6479 av 16384 — noll avvikelse)**, 20,2 s totalt inklusive kalibrering och verifieringsreplay.
+
+Felvägar återställer alltid: stop + Read-läge + ursprungsfader. v1 = volym; pan/sends/pluginparametrar via vpot-läget är nästa utbyggnad (relativa vpots kräver eko-konvergens under uppspelning).

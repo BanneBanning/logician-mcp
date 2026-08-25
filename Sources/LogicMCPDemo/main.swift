@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.36.0"
+private let serverVersion = "0.37.0"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -1006,6 +1006,19 @@ private final class LogicAccessibility {
         result["track"] = row.track
         result["exclusive"] = exclusive
         return result
+    }
+
+    /// The channel strip's automation-mode label, e.g. "Latch" from
+    /// "Latch, automation enabled". nil when the strip is not visible.
+    func automationModeLabel(trackName: String) -> String? {
+        guard let strip = try? inspectorStrip(named: trackName) else { return nil }
+        for child in children(of: strip) {
+            let description = stringAttribute(child, kAXDescriptionAttribute as String)
+            if description.contains("automation") {
+                return description.split(separator: ",").first.map(String.init)
+            }
+        }
+        return nil
     }
 
     // MARK: - Region editing (exclusive selection + learned key commands)
@@ -5719,6 +5732,222 @@ extension MCUController {
         ]
     }
 
+    // MARK: Automation recording (Latch mode + timed absolute fader writes)
+
+    /// Standard Mackie automation-mode buttons; they act on the selected track.
+    static func automationModeNote(_ mode: String) -> Int? {
+        switch mode.lowercased() {
+        case "read": return 0x4A
+        case "write": return 0x4B
+        case "trim": return 0x4C
+        case "touch": return 0x4D
+        case "latch": return 0x4E
+        default: return nil
+        }
+    }
+
+    /// Sets the selected track's automation mode via the MCU button and
+    /// verifies through the channel strip's mode label ("Latch, automation
+    /// enabled") — surface write, Accessibility readback.
+    static func setAutomationMode(
+        _ mode: String, logic: LogicAccessibility, trackName: String
+    ) throws {
+        guard let note = automationModeNote(mode) else {
+            throw DemoError.invalidArguments("mode must be read/touch/latch/write/trim")
+        }
+        let response = try MCUBridge.send(["cmd": "press", "note": note])
+        guard response["ok"] as? Bool == true else {
+            throw DemoError.writeFailed("automation mode press failed")
+        }
+        for _ in 0..<10 {
+            Thread.sleep(forTimeInterval: 0.25)
+            if let label = logic.automationModeLabel(trackName: trackName),
+               label.lowercased().hasPrefix(mode.lowercased()) {
+                return
+            }
+        }
+        throw DemoError.verificationFailed(
+            requested: "automation mode '\(mode)' on '\(trackName)'",
+            actual: "the strip still shows '\(logic.automationModeLabel(trackName: trackName) ?? "?")'",
+            restored: false
+        )
+    }
+
+    private static func currentFader14(_ channel: Int) -> Int? {
+        guard let faders = freshStatus()?["faders_14bit"] as? [Int],
+              faders.indices.contains(channel), faders[channel] >= 0 else { return nil }
+        return faders[channel]
+    }
+
+    /// Records a volume automation curve: calibrate each target dB to an
+    /// absolute 14-bit fader position (via LCD-converged writes + Logic's own
+    /// motorized-fader echo), switch the track to Latch, roll playback and
+    /// place the fader at each point's moment, then return to Read and
+    /// verify by REPLAYING the range while sampling the fader echo.
+    static func recordVolumeAutomation(
+        logic: LogicAccessibility,
+        trackName: String,
+        points: [(bar: Int, beat: Double, db: Double)],
+        ramp: Bool,
+        verify: Bool
+    ) throws -> [String: Any] {
+        let transport = try logic.getTransport()
+        guard let tempo = transport["tempo"] as? Double else {
+            throw DemoError.trackNotExposed(
+                requested: "tempo from the control bar", exposed: "not readable"
+            )
+        }
+        let beatsPerBar = Double((transport["time_signature"] as? String)?
+            .split(separator: "/").first.flatMap { Int($0) } ?? 4)
+        let sorted = points.sorted {
+            ($0.bar, $0.beat) < ($1.bar, $1.beat)
+        }
+        guard let first = sorted.first, first.bar >= 2 else {
+            throw DemoError.invalidArguments("points need bar >= 2 (one bar of pre-roll)")
+        }
+        guard let channel = try findChannel(trackName: trackName) else {
+            throw DemoError.trackNotExposed(
+                requested: "MCU channel for '\(trackName)'",
+                exposed: "not found in the bank view"
+            )
+        }
+        guard try selectFoundChannel(channel) else {
+            throw DemoError.writeFailed("MCU select failed")
+        }
+        guard let originalFader = currentFader14(channel) else {
+            throw DemoError.trackNotExposed(
+                requested: "the track's fader echo",
+                exposed: "Logic has not reported fader positions for this bank yet"
+            )
+        }
+
+        // Calibrate: unique dB targets -> absolute fader values, then restore.
+        var calibration: [Double: Int] = [:]
+        for db in Set(sorted.map(\.db)) {
+            guard try setVolume(trackName: trackName, targetDb: db, toleranceDb: 0.15) != nil,
+                  let position = currentFader14(channel) else {
+                _ = try? MCUBridge.send(["cmd": "fader", "channel": channel, "value": originalFader])
+                throw DemoError.verificationFailed(
+                    requested: "calibration of \(db) dB",
+                    actual: "volume converge or fader echo failed; original volume restored",
+                    restored: true
+                )
+            }
+            calibration[db] = position
+        }
+        _ = try? MCUBridge.send(["cmd": "fader", "channel": channel, "value": originalFader])
+        Thread.sleep(forTimeInterval: 0.3)
+
+        // Timed schedule relative to the crossing into the first point's bar.
+        let msPerBeat = 60000.0 / tempo
+        func offsetMs(_ bar: Int, _ beat: Double) -> Double {
+            (Double(bar - first.bar) * beatsPerBar + (beat - 1)) * msPerBeat
+        }
+        var schedule: [(ms: Double, value: Int)] = sorted.map {
+            (offsetMs($0.bar, $0.beat), calibration[$0.db] ?? originalFader)
+        }
+        if ramp && sorted.count > 1 {
+            var expanded: [(Double, Int)] = []
+            for index in 0..<(sorted.count - 1) {
+                let a = schedule[index], b = schedule[index + 1]
+                expanded.append(a)
+                let steps = max(Int((b.ms - a.ms) / (msPerBeat / 2)), 1)
+                if steps > 1 {
+                    for s in 1..<steps {
+                        let t = Double(s) / Double(steps)
+                        expanded.append((a.ms + (b.ms - a.ms) * t,
+                                         Int(Double(a.value) + Double(b.value - a.value) * t)))
+                    }
+                }
+            }
+            expanded.append(schedule[schedule.count - 1])
+            schedule = expanded
+        }
+
+        try setAutomationMode("latch", logic: logic, trackName: trackName)
+        var report: [String: Any] = [:]
+        do {
+            _ = try logic.setPlayhead(barNumber: first.bar - 1, beat: 1)
+            Thread.sleep(forTimeInterval: 0.5)
+            guard (try? setPlaying(true)) != nil else {
+                throw DemoError.writeFailed("play failed")
+            }
+            // Sync: the timecode crossing into the first bar.
+            let syncDeadline = Date().addingTimeInterval(20)
+            var anchor: Date?
+            while Date() < syncDeadline {
+                if let bar = timecodeBar(), bar >= first.bar { anchor = Date(); break }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            guard let start = anchor else {
+                throw DemoError.verificationFailed(
+                    requested: "playback reaching bar \(first.bar)",
+                    actual: "the timecode never got there", restored: false
+                )
+            }
+            for entry in schedule {
+                let wait = entry.ms / 1000 - Date().timeIntervalSince(start)
+                if wait > 0 { Thread.sleep(forTimeInterval: wait) }
+                _ = try MCUBridge.send(["cmd": "fader", "channel": channel, "value": entry.value])
+            }
+            Thread.sleep(forTimeInterval: 0.5)
+            _ = try? setPlaying(false)
+            try setAutomationMode("read", logic: logic, trackName: trackName)
+            _ = try? MCUBridge.send(["cmd": "fader", "channel": channel, "value": originalFader])
+        } catch {
+            _ = try? setPlaying(false)
+            _ = try? setAutomationMode("read", logic: logic, trackName: trackName)
+            _ = try? MCUBridge.send(["cmd": "fader", "channel": channel, "value": originalFader])
+            throw error
+        }
+
+        report["success"] = true
+        report["state"] = "recorded"
+        report["points"] = sorted.map { ["bar": $0.bar, "beat": $0.beat, "db": $0.db] }
+        report["ramp"] = ramp
+        report["write_route"] = "mcu_fader_latch"
+
+        if verify {
+            // Replay in Read and sample Logic's own fader echo at each point.
+            _ = try logic.setPlayhead(barNumber: first.bar - 1, beat: 1)
+            Thread.sleep(forTimeInterval: 0.4)
+            _ = try? setPlaying(true)
+            var samples: [[String: Any]] = []
+            let syncDeadline = Date().addingTimeInterval(20)
+            var anchor: Date?
+            while Date() < syncDeadline {
+                if let bar = timecodeBar(), bar >= first.bar { anchor = Date(); break }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            if let start = anchor {
+                for point in sorted {
+                    let sampleAt = offsetMs(point.bar, point.beat) / 1000 + 0.25
+                    let wait = sampleAt - Date().timeIntervalSince(start)
+                    if wait > 0 { Thread.sleep(forTimeInterval: wait) }
+                    let observed = currentFader14(channel) ?? -1
+                    let expected = calibration[point.db] ?? -1
+                    samples.append([
+                        "bar": point.bar, "beat": point.beat, "db": point.db,
+                        "expected_fader": expected,
+                        "observed_fader": observed,
+                        "pass": observed >= 0 && abs(observed - expected) <= 500
+                    ])
+                }
+            }
+            _ = try? setPlaying(false)
+            _ = try? MCUBridge.send(["cmd": "fader", "channel": channel, "value": originalFader])
+            let allPass = !samples.isEmpty && samples.allSatisfy { $0["pass"] as? Bool == true }
+            report["verified"] = allPass
+            report["verification"] = [
+                "samples": samples,
+                "note": "The range was replayed in Read mode and Logic's own motorized-fader echo sampled at each point (14-bit positions; tolerance 500 ≈ 1.5 dB near unity)."
+            ]
+        } else {
+            report["verified"] = false
+        }
+        return report
+    }
+
     // MARK: MIDI recording (composition via the "Logic MCP MIDI In" port)
 
     /// Current bar from the MCU timecode display (BBB bb dd ttt layout).
@@ -6957,6 +7186,32 @@ private final class MCPServer {
                 sendResult["track"] = try requiredString("track_name", in: arguments)
                 payload = sendResult
 
+            case "logic_record_automation":
+                guard let rawPoints = arguments["points"] as? [[String: Any]], rawPoints.count >= 1 else {
+                    throw DemoError.invalidArguments("points required: [{bar, beat?, db}, ...]")
+                }
+                let parameter = (arguments["parameter"] as? String) ?? "volume"
+                guard parameter == "volume" else {
+                    throw DemoError.invalidArguments("v1 records volume automation only; pan/plugin parameters are future work")
+                }
+                let automationPoints: [(bar: Int, beat: Double, db: Double)] = try rawPoints.map { raw in
+                    guard let bar = raw["bar"] as? Int,
+                          let db = (raw["db"] as? Double) ?? (raw["db"] as? Int).map(Double.init) else {
+                        throw DemoError.invalidArguments("each point needs bar (int) and db (number)")
+                    }
+                    let beat = (raw["beat"] as? Double) ?? (raw["beat"] as? Int).map(Double.init) ?? 1.0
+                    return (bar, beat, db)
+                }
+                var automationResult = try MCUController.recordVolumeAutomation(
+                    logic: logic,
+                    trackName: requiredString("track_name", in: arguments),
+                    points: automationPoints,
+                    ramp: arguments["ramp"] as? Bool ?? true,
+                    verify: arguments["verify"] as? Bool ?? true
+                )
+                automationResult["track"] = try requiredString("track_name", in: arguments)
+                payload = automationResult
+
             case "logic_record_midi":
                 let trackName = try requiredString("track_name", in: arguments)
                 guard let rawNotes = arguments["notes"] as? [[String: Any]], !rawNotes.isEmpty else {
@@ -7809,6 +8064,33 @@ private final class MCPServer {
                         "expected_project_path": ["type": "string"]
                     ],
                     "required": ["track_name", "send", "level_db"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "logic_record_automation",
+                "description": "Write a VOLUME automation curve on a track — no mouse, no automation-lane clicking: each target dB is calibrated to an absolute fader position via Logic's own motorized-fader echo, the track is switched to Latch over the control surface, playback rolls while the fader is placed at each point's musical moment, then the track returns to Read and the range is REPLAYED with the fader echo sampled at every point as verification. ramp (default true) interpolates smooth transitions between points; false gives stepped jumps. Points need bar >= 2 (one pre-roll bar). Takes real time (about the length of the automated range, twice with verify).",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "track_name": ["type": "string"],
+                        "parameter": ["type": "string", "description": "v1: 'volume' only."],
+                        "points": [
+                            "type": "array",
+                            "items": [
+                                "type": "object",
+                                "properties": [
+                                    "bar": ["type": "integer"],
+                                    "beat": ["type": "number", "description": "1-based, fractions allowed. Default 1."],
+                                    "db": ["type": "number", "description": "Target volume in dB, e.g. -12.0."]
+                                ],
+                                "required": ["bar", "db"]
+                            ]
+                        ],
+                        "ramp": ["type": "boolean", "description": "Default true: smooth linear ramps between points."],
+                        "verify": ["type": "boolean", "description": "Default true: replay the range in Read and sample the fader echo per point."]
+                    ],
+                    "required": ["track_name", "points"],
                     "additionalProperties": false
                 ]
             ],
