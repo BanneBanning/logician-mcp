@@ -1,0 +1,7405 @@
+[
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 4,
+    "bypassed": true,
+    "classification": "read_write_candidate",
+    "insert_index": 1,
+    "parameters": [
+     {
+      "name": "_NS:231",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "13",
+      "writable": true
+     },
+     {
+      "name": "_NS:225",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "_NS:62",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "13",
+      "writable": true
+     },
+     {
+      "name": "_NS:216",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "50",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "AutoFilter"
+   },
+   {
+    "accessible_parameters": 26,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 2,
+    "parameters": [
+     {
+      "name": "Low Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "271",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "155",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "38",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "250",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "20",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "335",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "42",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "610",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "238",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "20",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "477",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "336",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "58",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "1050",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "222",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "44",
+      "writable": true
+     },
+     {
+      "name": "High Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "994",
+      "writable": true
+     },
+     {
+      "name": "High Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "High Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "47",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "259",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "259",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Channel EQ"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 2,
+  "track": "Lofi Pad",
+  "_track_number": 1,
+  "_track_name": "Lofi Pad"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 11,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 1,
+    "parameters": [
+     {
+      "name": "Mix",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Distortion",
+      "raw_max": "3",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Limiter Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "96",
+      "writable": true
+     },
+     {
+      "name": "Output Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "54",
+      "writable": true
+     },
+     {
+      "name": "Knee",
+      "raw_max": "10",
+      "raw_min": "0",
+      "raw_value": "8",
+      "writable": true
+     },
+     {
+      "name": "Release",
+      "raw_max": "119",
+      "raw_min": "0",
+      "raw_value": "70",
+      "writable": true
+     },
+     {
+      "name": "Input Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Attack",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "53",
+      "writable": true
+     },
+     {
+      "name": "Make Up",
+      "raw_max": "110",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "Ratio",
+      "raw_max": "85",
+      "raw_min": "0",
+      "raw_value": "26",
+      "writable": true
+     },
+     {
+      "name": "Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "77",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Compressor"
+   },
+   {
+    "accessible_parameters": 26,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 2,
+    "parameters": [
+     {
+      "name": "Low Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "1",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "250",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "33",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "375",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "20",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "604",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "26",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "725",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "13",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "900",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "High Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "1050",
+      "writable": true
+     },
+     {
+      "name": "High Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "High Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Channel EQ"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": true,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 7,
+     "AXCheckBox": 3,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 2,
+     "AXSlider": 5
+    },
+    "insert_index": 3,
+    "parameters": [],
+    "plugin_display_name": "PShft"
+   },
+   {
+    "accessible_parameters": 26,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 4,
+    "parameters": [
+     {
+      "name": "Low Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "204",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "25",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "178",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "110",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "41",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "252",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "239",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "54",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "500",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "208",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "266",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "61",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "712",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "316",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "41",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "950",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "235",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "34",
+      "writable": true
+     },
+     {
+      "name": "High Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "1020",
+      "writable": true
+     },
+     {
+      "name": "High Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "1",
+      "writable": true
+     },
+     {
+      "name": "High Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Channel EQ"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": false,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 2,
+     "AXCheckBox": 2,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 1
+    },
+    "insert_index": 5,
+    "parameters": [],
+    "plugin_display_name": "Trilian"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 5,
+  "track": "Bas",
+  "_track_number": 2,
+  "_track_name": "Bas"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 0,
+    "bypassed": false,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 2,
+     "AXCheckBox": 2,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 1
+    },
+    "insert_index": 1,
+    "parameters": [],
+    "plugin_display_name": "Decapitato"
+   },
+   {
+    "accessible_parameters": 26,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 2,
+    "parameters": [
+     {
+      "name": "Low Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "95",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "1",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "43",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "254",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "285",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "52",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "250",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "33",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "478",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "195",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "20",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "522",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "222",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "20",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "725",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "13",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "838",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "180",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "High Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "1050",
+      "writable": true
+     },
+     {
+      "name": "High Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "High Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "245",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "245",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Channel EQ"
+   },
+   {
+    "accessible_parameters": 11,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 3,
+    "parameters": [
+     {
+      "name": "Mix",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Distortion",
+      "raw_max": "3",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Limiter Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Output Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Knee",
+      "raw_max": "10",
+      "raw_min": "0",
+      "raw_value": "7",
+      "writable": true
+     },
+     {
+      "name": "Release",
+      "raw_max": "119",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "Input Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Attack",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "30",
+      "writable": true
+     },
+     {
+      "name": "Make Up",
+      "raw_max": "110",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "Ratio",
+      "raw_max": "85",
+      "raw_min": "0",
+      "raw_value": "18",
+      "writable": true
+     },
+     {
+      "name": "Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Compressor"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": false,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 8,
+     "AXCheckBox": 3,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 1
+    },
+    "insert_index": 4,
+    "parameters": [],
+    "plugin_display_name": "Q-Sampler"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 4,
+  "track": "808",
+  "_track_number": 3,
+  "_track_name": "808"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 26,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 1,
+    "parameters": [
+     {
+      "name": "Low Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "368",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "1",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "13",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "250",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "33",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "375",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "20",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "604",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "26",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "725",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "13",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "687",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "315",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "High Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "1050",
+      "writable": true
+     },
+     {
+      "name": "High Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "High Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "230",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "230",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Channel EQ"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 1,
+  "track": "Inst 2",
+  "_track_number": 4,
+  "_track_name": "Inst 2"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [],
+  "success": true,
+  "surveyed_inserts": 0,
+  "track": "Drums 'n' shit",
+  "_track_number": 5,
+  "_track_name": "Drums 'n' shit"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 11,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 1,
+    "parameters": [
+     {
+      "name": "Mix",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Distortion",
+      "raw_max": "3",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Limiter Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Output Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Knee",
+      "raw_max": "10",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Release",
+      "raw_max": "119",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Input Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Attack",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "50",
+      "writable": true
+     },
+     {
+      "name": "Make Up",
+      "raw_max": "110",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "Ratio",
+      "raw_max": "85",
+      "raw_min": "0",
+      "raw_value": "46",
+      "writable": true
+     },
+     {
+      "name": "Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "71",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Compressor"
+   },
+   {
+    "accessible_parameters": 13,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 2,
+    "parameters": [
+     {
+      "name": "IR Offset",
+      "raw_max": "990",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Init Level",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Attack Time",
+      "raw_max": "1000",
+      "raw_min": "0",
+      "raw_value": "59",
+      "writable": true
+     },
+     {
+      "name": "Decay Time",
+      "raw_max": "999",
+      "raw_min": "0",
+      "raw_value": "999",
+      "writable": true
+     },
+     {
+      "name": "End Level",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "30",
+      "writable": true
+     },
+     {
+      "name": "Predelay",
+      "raw_max": "999",
+      "raw_min": "0",
+      "raw_value": "8",
+      "writable": true
+     },
+     {
+      "name": "Length",
+      "raw_max": "194",
+      "raw_min": "0",
+      "raw_value": "165",
+      "writable": true
+     },
+     {
+      "name": "Size",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Stereo Spread Low",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "38",
+      "writable": true
+     },
+     {
+      "name": "Stereo Spread High",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "X-Over Freq",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "Dry",
+      "raw_max": "103",
+      "raw_min": "0",
+      "raw_value": "103",
+      "writable": true
+     },
+     {
+      "name": "Wet",
+      "raw_max": "103",
+      "raw_min": "0",
+      "raw_value": "48",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Space D"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 2,
+  "track": "Fill",
+  "_track_number": 6,
+  "_track_name": "Fill"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 0,
+    "bypassed": true,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 26,
+     "AXCheckBox": 6,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 2,
+     "AXSlider": 14
+    },
+    "insert_index": 1,
+    "parameters": [],
+    "plugin_display_name": "Tape Delay"
+   },
+   {
+    "accessible_parameters": 19,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 2,
+    "parameters": [
+     {
+      "name": "Level",
+      "raw_max": "60",
+      "raw_min": "0",
+      "raw_value": "34",
+      "writable": true
+     },
+     {
+      "name": "Sustain",
+      "raw_max": "60",
+      "raw_min": "0",
+      "raw_value": "20",
+      "writable": true
+     },
+     {
+      "name": "Level",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "32",
+      "writable": true
+     },
+     {
+      "name": "Pan A/B",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Pan A/B",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Mix fader",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Mix",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Order",
+      "raw_max": "8",
+      "raw_min": "0",
+      "raw_value": "4",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Tone",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "134",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Feedback",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "42",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Tone",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "159",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Order",
+      "raw_max": "8",
+      "raw_min": "0",
+      "raw_value": "4",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Feedback",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "33",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Floor/Ceiling",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "72",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Rate",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "120",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Floor/Ceiling",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "30",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Floor/Ceiling",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "101",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Rate",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "48",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Floor/Ceiling",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "72",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Pedalboard"
+   },
+   {
+    "accessible_parameters": 8,
+    "bypassed": true,
+    "classification": "read_write_candidate",
+    "insert_index": 3,
+    "parameters": [
+     {
+      "name": "Mix",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Distortion",
+      "raw_max": "3",
+      "raw_min": "0",
+      "raw_value": "2",
+      "writable": true
+     },
+     {
+      "name": "Limiter Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Output Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "54",
+      "writable": true
+     },
+     {
+      "name": "Input Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Make Up",
+      "raw_max": "110",
+      "raw_min": "0",
+      "raw_value": "38",
+      "writable": true
+     },
+     {
+      "name": "Ratio",
+      "raw_max": "85",
+      "raw_min": "0",
+      "raw_value": "26",
+      "writable": true
+     },
+     {
+      "name": "Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "70",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Compressor"
+   },
+   {
+    "accessible_parameters": 26,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 4,
+    "parameters": [
+     {
+      "name": "Low Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "443",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "30",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "308",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "41",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "350",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "42",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "530",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "12",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "828",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "280",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "39",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "958",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "135",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "48",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "954",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "285",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "34",
+      "writable": true
+     },
+     {
+      "name": "High Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "1020",
+      "writable": true
+     },
+     {
+      "name": "High Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "1",
+      "writable": true
+     },
+     {
+      "name": "High Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Channel EQ"
+   },
+   {
+    "accessible_parameters": 6,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 5,
+    "parameters": [
+     {
+      "name": "_NS:62",
+      "raw_max": "2000",
+      "raw_min": "0",
+      "raw_value": "2000",
+      "writable": true
+     },
+     {
+      "name": "_NS:62",
+      "raw_max": "2000",
+      "raw_min": "0",
+      "raw_value": "1000",
+      "writable": true
+     },
+     {
+      "name": "_NS:67",
+      "raw_max": "2000",
+      "raw_min": "0",
+      "raw_value": "1343",
+      "writable": true
+     },
+     {
+      "name": "_NS:62",
+      "raw_max": "2000",
+      "raw_min": "0",
+      "raw_value": "1000",
+      "writable": true
+     },
+     {
+      "name": "_NS:62",
+      "raw_max": "2000",
+      "raw_min": "0",
+      "raw_value": "1000",
+      "writable": true
+     },
+     {
+      "name": "_NS:62",
+      "raw_max": "2000",
+      "raw_min": "0",
+      "raw_value": "1000",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Sampler"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 5,
+  "track": "Acke Slagverk",
+  "_track_number": 7,
+  "_track_name": "Acke Slagverk"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 0,
+    "bypassed": true,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 26,
+     "AXCheckBox": 6,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 2,
+     "AXSlider": 14
+    },
+    "insert_index": 1,
+    "parameters": [],
+    "plugin_display_name": "Tape Delay"
+   },
+   {
+    "accessible_parameters": 19,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 2,
+    "parameters": [
+     {
+      "name": "Level",
+      "raw_max": "60",
+      "raw_min": "0",
+      "raw_value": "34",
+      "writable": true
+     },
+     {
+      "name": "Sustain",
+      "raw_max": "60",
+      "raw_min": "0",
+      "raw_value": "20",
+      "writable": true
+     },
+     {
+      "name": "Level",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "32",
+      "writable": true
+     },
+     {
+      "name": "Pan A/B",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Pan A/B",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Mix fader",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Mix",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Order",
+      "raw_max": "8",
+      "raw_min": "0",
+      "raw_value": "4",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Tone",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "134",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Feedback",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "42",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Tone",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "159",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Order",
+      "raw_max": "8",
+      "raw_min": "0",
+      "raw_value": "4",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Feedback",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "33",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Floor/Ceiling",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "72",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Rate",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "120",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Floor/Ceiling",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "30",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Floor/Ceiling",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "101",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Rate",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "48",
+      "writable": true
+     },
+     {
+      "name": "LFO 1/2 Floor/Ceiling",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "72",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Pedalboard"
+   },
+   {
+    "accessible_parameters": 8,
+    "bypassed": true,
+    "classification": "read_write_candidate",
+    "insert_index": 3,
+    "parameters": [
+     {
+      "name": "Mix",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Distortion",
+      "raw_max": "3",
+      "raw_min": "0",
+      "raw_value": "2",
+      "writable": true
+     },
+     {
+      "name": "Limiter Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Output Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "54",
+      "writable": true
+     },
+     {
+      "name": "Input Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Make Up",
+      "raw_max": "110",
+      "raw_min": "0",
+      "raw_value": "38",
+      "writable": true
+     },
+     {
+      "name": "Ratio",
+      "raw_max": "85",
+      "raw_min": "0",
+      "raw_value": "26",
+      "writable": true
+     },
+     {
+      "name": "Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "70",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Compressor"
+   },
+   {
+    "accessible_parameters": 26,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 4,
+    "parameters": [
+     {
+      "name": "Low Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "250",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "33",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "538",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "20",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "556",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "20",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "680",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "13",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "864",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "High Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "1050",
+      "writable": true
+     },
+     {
+      "name": "High Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "High Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Channel EQ"
+   },
+   {
+    "accessible_parameters": 6,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 5,
+    "parameters": [
+     {
+      "name": "_NS:62",
+      "raw_max": "2000",
+      "raw_min": "0",
+      "raw_value": "2000",
+      "writable": true
+     },
+     {
+      "name": "_NS:62",
+      "raw_max": "2000",
+      "raw_min": "0",
+      "raw_value": "1000",
+      "writable": true
+     },
+     {
+      "name": "_NS:67",
+      "raw_max": "2000",
+      "raw_min": "0",
+      "raw_value": "1343",
+      "writable": true
+     },
+     {
+      "name": "_NS:62",
+      "raw_max": "2000",
+      "raw_min": "0",
+      "raw_value": "1000",
+      "writable": true
+     },
+     {
+      "name": "_NS:62",
+      "raw_max": "2000",
+      "raw_min": "0",
+      "raw_value": "1000",
+      "writable": true
+     },
+     {
+      "name": "_NS:62",
+      "raw_max": "2000",
+      "raw_min": "0",
+      "raw_value": "1000",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Sampler"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 5,
+  "track": "Ivan Slagverk",
+  "_track_number": 8,
+  "_track_name": "Ivan Slagverk"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 26,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 1,
+    "parameters": [
+     {
+      "name": "Low Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "33",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "375",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "35",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "550",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "20",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "725",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "246",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "13",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "900",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "High Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "1050",
+      "writable": true
+     },
+     {
+      "name": "High Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "High Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Channel EQ"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": true,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 6,
+     "AXCheckBox": 3,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 1
+    },
+    "insert_index": 2,
+    "parameters": [],
+    "plugin_display_name": "PtVerb"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": true,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 36,
+     "AXCheckBox": 13,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 6,
+     "AXSlider": 14
+    },
+    "insert_index": 3,
+    "parameters": [],
+    "plugin_display_name": "St-Delay"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": true,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 4,
+     "AXCheckBox": 3,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 1
+    },
+    "insert_index": 4,
+    "parameters": [],
+    "plugin_display_name": "Enveloper"
+   },
+   {
+    "accessible_parameters": 15,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 5,
+    "parameters": [
+     {
+      "name": "Intensity",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Rate",
+      "raw_max": "103",
+      "raw_min": "0",
+      "raw_value": "34",
+      "writable": true
+     },
+     {
+      "name": "Pan A/B",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Pan A/B",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Mix fader",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "High",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Low",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "30",
+      "writable": true
+     },
+     {
+      "name": "Manual",
+      "raw_max": "300",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Curve",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "117",
+      "writable": true
+     },
+     {
+      "name": "Symmetry",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "81",
+      "writable": true
+     },
+     {
+      "name": "Mix",
+      "raw_max": "300",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Reso",
+      "raw_max": "115",
+      "raw_min": "0",
+      "raw_value": "17",
+      "writable": true
+     },
+     {
+      "name": "Depth",
+      "raw_max": "280",
+      "raw_min": "0",
+      "raw_value": "143",
+      "writable": true
+     },
+     {
+      "name": "Rate",
+      "raw_max": "102",
+      "raw_min": "0",
+      "raw_value": "44",
+      "writable": true
+     },
+     {
+      "name": "Wave",
+      "raw_max": "3",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Pedalboard"
+   },
+   {
+    "accessible_parameters": 1,
+    "bypassed": true,
+    "classification": "read_write_candidate",
+    "insert_index": 6,
+    "parameters": [
+     {
+      "name": "_NS:40",
+      "raw_max": "50",
+      "raw_min": "0",
+      "raw_value": "50",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Bitcrusher"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": true,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 7,
+     "AXCheckBox": 3,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 1,
+     "AXSlider": 3
+    },
+    "insert_index": 7,
+    "parameters": [],
+    "plugin_display_name": "Overdrive"
+   },
+   {
+    "accessible_parameters": 10,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 8,
+    "parameters": [
+     {
+      "name": "Mix",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "150",
+      "writable": true
+     },
+     {
+      "name": "Distortion",
+      "raw_max": "3",
+      "raw_min": "0",
+      "raw_value": "1",
+      "writable": true
+     },
+     {
+      "name": "Limiter Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "50",
+      "writable": true
+     },
+     {
+      "name": "Output Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Release",
+      "raw_max": "119",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "Input Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Attack",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "45",
+      "writable": true
+     },
+     {
+      "name": "Make Up",
+      "raw_max": "110",
+      "raw_min": "0",
+      "raw_value": "34",
+      "writable": true
+     },
+     {
+      "name": "Ratio",
+      "raw_max": "85",
+      "raw_min": "0",
+      "raw_value": "17",
+      "writable": true
+     },
+     {
+      "name": "Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "90",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Compressor"
+   },
+   {
+    "bypassed": false,
+    "classification": "survey_failed",
+    "error": "Could not verify that the plugin window state changed as requested: A window titled '' appeared, expected 'Drum Synth Kit'. It was closed again.",
+    "insert_index": 9,
+    "plugin_display_name": "Drum Machine Designer"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 9,
+  "track": "Drum Synth Kit",
+  "_track_number": 9,
+  "_track_name": "Drum Synth Kit"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 11,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 1,
+    "parameters": [
+     {
+      "name": "Mix",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Distortion",
+      "raw_max": "3",
+      "raw_min": "0",
+      "raw_value": "1",
+      "writable": true
+     },
+     {
+      "name": "Limiter Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Output Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Knee",
+      "raw_max": "10",
+      "raw_min": "0",
+      "raw_value": "7",
+      "writable": true
+     },
+     {
+      "name": "Release",
+      "raw_max": "119",
+      "raw_min": "0",
+      "raw_value": "52",
+      "writable": true
+     },
+     {
+      "name": "Input Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Attack",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "59",
+      "writable": true
+     },
+     {
+      "name": "Make Up",
+      "raw_max": "110",
+      "raw_min": "0",
+      "raw_value": "48",
+      "writable": true
+     },
+     {
+      "name": "Ratio",
+      "raw_max": "85",
+      "raw_min": "0",
+      "raw_value": "35",
+      "writable": true
+     },
+     {
+      "name": "Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "39",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Compressor"
+   },
+   {
+    "accessible_parameters": 26,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 2,
+    "parameters": [
+     {
+      "name": "Low Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "542",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "435",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "253",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "41",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "350",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "42",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "492",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "239",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "19",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "620",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "851",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "950",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "34",
+      "writable": true
+     },
+     {
+      "name": "High Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "624",
+      "writable": true
+     },
+     {
+      "name": "High Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "1",
+      "writable": true
+     },
+     {
+      "name": "High Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "41",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Channel EQ"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": false,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 8,
+     "AXCheckBox": 3,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 1
+    },
+    "insert_index": 3,
+    "parameters": [],
+    "plugin_display_name": "Q-Sampler"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 3,
+  "track": "Kick Tight",
+  "_track_number": 10,
+  "_track_name": "Kick Tight"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 26,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 1,
+    "parameters": [
+     {
+      "name": "Low Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "501",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "1",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "250",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "33",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "365",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "125",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "20",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "604",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "26",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "725",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "13",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "900",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "High Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "624",
+      "writable": true
+     },
+     {
+      "name": "High Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "High Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Channel EQ"
+   },
+   {
+    "accessible_parameters": 11,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 2,
+    "parameters": [
+     {
+      "name": "Mix",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Distortion",
+      "raw_max": "3",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Limiter Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Output Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Knee",
+      "raw_max": "10",
+      "raw_min": "0",
+      "raw_value": "7",
+      "writable": true
+     },
+     {
+      "name": "Release",
+      "raw_max": "119",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "Input Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Attack",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "30",
+      "writable": true
+     },
+     {
+      "name": "Make Up",
+      "raw_max": "110",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "Ratio",
+      "raw_max": "85",
+      "raw_min": "0",
+      "raw_value": "18",
+      "writable": true
+     },
+     {
+      "name": "Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Compressor"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": false,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 8,
+     "AXCheckBox": 3,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 1
+    },
+    "insert_index": 3,
+    "parameters": [],
+    "plugin_display_name": "Q-Sampler"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 3,
+  "track": "Kick Top 2",
+  "_track_number": 11,
+  "_track_name": "Kick Top 2"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 26,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 1,
+    "parameters": [
+     {
+      "name": "Low Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "121",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "39",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "529",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "325",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "41",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "254",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "275",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "75",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "547",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "66",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "55",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "494",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "156",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "62",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "794",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "261",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "56",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "731",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "306",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "52",
+      "writable": true
+     },
+     {
+      "name": "High Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "1020",
+      "writable": true
+     },
+     {
+      "name": "High Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "1",
+      "writable": true
+     },
+     {
+      "name": "High Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "230",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "230",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Channel EQ"
+   },
+   {
+    "accessible_parameters": 10,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 2,
+    "parameters": [
+     {
+      "name": "Mix",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Distortion",
+      "raw_max": "3",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Limiter Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Output Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Release",
+      "raw_max": "119",
+      "raw_min": "0",
+      "raw_value": "69",
+      "writable": true
+     },
+     {
+      "name": "Input Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Attack",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "35",
+      "writable": true
+     },
+     {
+      "name": "Make Up",
+      "raw_max": "110",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "Ratio",
+      "raw_max": "85",
+      "raw_min": "0",
+      "raw_value": "38",
+      "writable": true
+     },
+     {
+      "name": "Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "75",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Compressor"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": false,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 8,
+     "AXCheckBox": 3,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 1
+    },
+    "insert_index": 3,
+    "parameters": [],
+    "plugin_display_name": "Q-Sampler"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 3,
+  "track": "Kick Punch",
+  "_track_number": 12,
+  "_track_name": "Kick Punch"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 0,
+    "bypassed": false,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 8,
+     "AXCheckBox": 3,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 1
+    },
+    "insert_index": 1,
+    "parameters": [],
+    "plugin_display_name": "Q-Sampler"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 1,
+  "track": "Clap Lofi",
+  "_track_number": 13,
+  "_track_name": "Clap Lofi"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 0,
+    "bypassed": false,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 8,
+     "AXCheckBox": 3,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 1
+    },
+    "insert_index": 1,
+    "parameters": [],
+    "plugin_display_name": "Q-Sampler"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 1,
+  "track": "Clap Kött",
+  "_track_number": 14,
+  "_track_name": "Clap Kött"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 26,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 1,
+    "parameters": [
+     {
+      "name": "Low Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "50",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "210",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "41",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "350",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "42",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "500",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "620",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "775",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "964",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "315",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "14",
+      "writable": true
+     },
+     {
+      "name": "High Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "1020",
+      "writable": true
+     },
+     {
+      "name": "High Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "1",
+      "writable": true
+     },
+     {
+      "name": "High Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Channel EQ"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": true,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 4,
+     "AXCheckBox": 4,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 1,
+     "AXSlider": 2
+    },
+    "insert_index": 2,
+    "parameters": [],
+    "plugin_display_name": "SmpleDly"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": false,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 8,
+     "AXCheckBox": 3,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 3
+    },
+    "insert_index": 3,
+    "parameters": [],
+    "plugin_display_name": "Drum Synth"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 3,
+  "track": "Hi-Hat Click",
+  "_track_number": 15,
+  "_track_name": "Hi-Hat Click"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 26,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 1,
+    "parameters": [
+     {
+      "name": "Low Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "443",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "30",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "308",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "41",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "350",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "42",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "530",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "12",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "828",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "280",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "39",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "958",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "135",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "48",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "954",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "285",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "34",
+      "writable": true
+     },
+     {
+      "name": "High Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "1020",
+      "writable": true
+     },
+     {
+      "name": "High Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "1",
+      "writable": true
+     },
+     {
+      "name": "High Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Channel EQ"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": true,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 4,
+     "AXCheckBox": 4,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 1,
+     "AXSlider": 2
+    },
+    "insert_index": 2,
+    "parameters": [],
+    "plugin_display_name": "SmpleDly"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": false,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 8,
+     "AXCheckBox": 3,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 3
+    },
+    "insert_index": 3,
+    "parameters": [],
+    "plugin_display_name": "Drum Synth"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 3,
+  "track": "Hi-Hat Mid",
+  "_track_number": 16,
+  "_track_name": "Hi-Hat Mid"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 26,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 1,
+    "parameters": [
+     {
+      "name": "Low Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "205",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "250",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "33",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "376",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "335",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "550",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "20",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "725",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "13",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "900",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "301",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "High Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "1050",
+      "writable": true
+     },
+     {
+      "name": "High Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "High Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "215",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "215",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Channel EQ"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": true,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 4,
+     "AXCheckBox": 4,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 1,
+     "AXSlider": 2
+    },
+    "insert_index": 2,
+    "parameters": [],
+    "plugin_display_name": "SmpleDly"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": false,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 8,
+     "AXCheckBox": 3,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 3
+    },
+    "insert_index": 3,
+    "parameters": [],
+    "plugin_display_name": "Drum Synth"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 3,
+  "track": "Hi-Hat Open",
+  "_track_number": 17,
+  "_track_name": "Hi-Hat Open"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 13,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 1,
+    "parameters": [
+     {
+      "name": "IR Offset",
+      "raw_max": "990",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Init Level",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Attack Time",
+      "raw_max": "1000",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Decay Time",
+      "raw_max": "999",
+      "raw_min": "0",
+      "raw_value": "999",
+      "writable": true
+     },
+     {
+      "name": "End Level",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Predelay",
+      "raw_max": "999",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Length",
+      "raw_max": "194",
+      "raw_min": "0",
+      "raw_value": "194",
+      "writable": true
+     },
+     {
+      "name": "Size",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Stereo Spread Low",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Stereo Spread High",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "X-Over Freq",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "29",
+      "writable": true
+     },
+     {
+      "name": "Dry",
+      "raw_max": "103",
+      "raw_min": "0",
+      "raw_value": "103",
+      "writable": true
+     },
+     {
+      "name": "Wet",
+      "raw_max": "103",
+      "raw_min": "0",
+      "raw_value": "53",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Space D"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": false,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 7,
+     "AXCheckBox": 3,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 2,
+     "AXSlider": 5
+    },
+    "insert_index": 2,
+    "parameters": [],
+    "plugin_display_name": "PShft"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": false,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 8,
+     "AXCheckBox": 3,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 1
+    },
+    "insert_index": 3,
+    "parameters": [],
+    "plugin_display_name": "Q-Sampler"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 3,
+  "track": "KRANE_snap_better_snare",
+  "_track_number": 18,
+  "_track_name": "KRANE_snap_better_snare"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 0,
+    "bypassed": false,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 8,
+     "AXCheckBox": 3,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 1
+    },
+    "insert_index": 1,
+    "parameters": [],
+    "plugin_display_name": "Q-Sampler"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 1,
+  "track": "KSHMR_Snare_Enhancer_33_Vinyl",
+  "_track_number": 19,
+  "_track_name": "KSHMR_Snare_Enhancer_33_Vinyl"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [],
+  "success": true,
+  "surveyed_inserts": 0,
+  "track": "Vocals",
+  "_track_number": 20,
+  "_track_name": "Vocals"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 13,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 1,
+    "parameters": [
+     {
+      "name": "IR Offset",
+      "raw_max": "990",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Init Level",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Attack Time",
+      "raw_max": "1000",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Decay Time",
+      "raw_max": "999",
+      "raw_min": "0",
+      "raw_value": "999",
+      "writable": true
+     },
+     {
+      "name": "End Level",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Predelay",
+      "raw_max": "999",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Length",
+      "raw_max": "194",
+      "raw_min": "0",
+      "raw_value": "152",
+      "writable": true
+     },
+     {
+      "name": "Size",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Stereo Spread Low",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Stereo Spread High",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "X-Over Freq",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "29",
+      "writable": true
+     },
+     {
+      "name": "Dry",
+      "raw_max": "103",
+      "raw_min": "0",
+      "raw_value": "103",
+      "writable": true
+     },
+     {
+      "name": "Wet",
+      "raw_max": "103",
+      "raw_min": "0",
+      "raw_value": "14",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Space D"
+   },
+   {
+    "accessible_parameters": 26,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 2,
+    "parameters": [
+     {
+      "name": "Low Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "180",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "1",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "238",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "228",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "33",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "374",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "244",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "20",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "596",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "234",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "26",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "876",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "273",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "13",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "1038",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "196",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "High Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "1050",
+      "writable": true
+     },
+     {
+      "name": "High Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "High Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Channel EQ"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": false,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 26,
+     "AXCheckBox": 6,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 2,
+     "AXSlider": 14
+    },
+    "insert_index": 3,
+    "parameters": [],
+    "plugin_display_name": "Tape Delay"
+   },
+   {
+    "accessible_parameters": 10,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 4,
+    "parameters": [
+     {
+      "name": "Mix",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Distortion",
+      "raw_max": "3",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Limiter Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Output Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Release",
+      "raw_max": "119",
+      "raw_min": "0",
+      "raw_value": "31",
+      "writable": true
+     },
+     {
+      "name": "Input Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Attack",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "64",
+      "writable": true
+     },
+     {
+      "name": "Make Up",
+      "raw_max": "110",
+      "raw_min": "0",
+      "raw_value": "43",
+      "writable": true
+     },
+     {
+      "name": "Ratio",
+      "raw_max": "85",
+      "raw_min": "0",
+      "raw_value": "20",
+      "writable": true
+     },
+     {
+      "name": "Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "30",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Compressor"
+   },
+   {
+    "accessible_parameters": 11,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 5,
+    "parameters": [
+     {
+      "name": "Mix",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Distortion",
+      "raw_max": "3",
+      "raw_min": "0",
+      "raw_value": "2",
+      "writable": true
+     },
+     {
+      "name": "Limiter Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Output Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Knee",
+      "raw_max": "10",
+      "raw_min": "0",
+      "raw_value": "7",
+      "writable": true
+     },
+     {
+      "name": "Release",
+      "raw_max": "119",
+      "raw_min": "0",
+      "raw_value": "37",
+      "writable": true
+     },
+     {
+      "name": "Input Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Attack",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "39",
+      "writable": true
+     },
+     {
+      "name": "Make Up",
+      "raw_max": "110",
+      "raw_min": "0",
+      "raw_value": "44",
+      "writable": true
+     },
+     {
+      "name": "Ratio",
+      "raw_max": "85",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Compressor"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": false,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 7,
+     "AXCheckBox": 3,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 2,
+     "AXSlider": 3
+    },
+    "insert_index": 6,
+    "parameters": [],
+    "plugin_display_name": "DeEsser 2"
+   },
+   {
+    "accessible_parameters": 26,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 7,
+    "parameters": [
+     {
+      "name": "Low Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "252",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "13",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "367",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "256",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "500",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "217",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "52",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "583",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "241",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "51",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "728",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "241",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "23",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "893",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "268",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "31",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "1041",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "199",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "34",
+      "writable": true
+     },
+     {
+      "name": "High Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "1020",
+      "writable": true
+     },
+     {
+      "name": "High Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "1",
+      "writable": true
+     },
+     {
+      "name": "High Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Channel EQ"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 7,
+  "track": "Ivan Vocals",
+  "_track_number": 21,
+  "_track_name": "Ivan Vocals"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 13,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 1,
+    "parameters": [
+     {
+      "name": "IR Offset",
+      "raw_max": "990",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Init Level",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Attack Time",
+      "raw_max": "1000",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Decay Time",
+      "raw_max": "999",
+      "raw_min": "0",
+      "raw_value": "999",
+      "writable": true
+     },
+     {
+      "name": "End Level",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Predelay",
+      "raw_max": "999",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Length",
+      "raw_max": "194",
+      "raw_min": "0",
+      "raw_value": "194",
+      "writable": true
+     },
+     {
+      "name": "Size",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Stereo Spread Low",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Stereo Spread High",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "X-Over Freq",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "29",
+      "writable": true
+     },
+     {
+      "name": "Dry",
+      "raw_max": "103",
+      "raw_min": "0",
+      "raw_value": "103",
+      "writable": true
+     },
+     {
+      "name": "Wet",
+      "raw_max": "103",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Space D"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": false,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 7,
+     "AXCheckBox": 3,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 2,
+     "AXSlider": 3
+    },
+    "insert_index": 2,
+    "parameters": [],
+    "plugin_display_name": "DeEsser 2"
+   },
+   {
+    "accessible_parameters": 11,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 3,
+    "parameters": [
+     {
+      "name": "Mix",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Distortion",
+      "raw_max": "3",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Limiter Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "77",
+      "writable": true
+     },
+     {
+      "name": "Output Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "49",
+      "writable": true
+     },
+     {
+      "name": "Knee",
+      "raw_max": "10",
+      "raw_min": "0",
+      "raw_value": "7",
+      "writable": true
+     },
+     {
+      "name": "Release",
+      "raw_max": "119",
+      "raw_min": "0",
+      "raw_value": "29",
+      "writable": true
+     },
+     {
+      "name": "Input Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Attack",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "58",
+      "writable": true
+     },
+     {
+      "name": "Make Up",
+      "raw_max": "110",
+      "raw_min": "0",
+      "raw_value": "44",
+      "writable": true
+     },
+     {
+      "name": "Ratio",
+      "raw_max": "85",
+      "raw_min": "0",
+      "raw_value": "34",
+      "writable": true
+     },
+     {
+      "name": "Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "49",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Compressor"
+   },
+   {
+    "accessible_parameters": 26,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 4,
+    "parameters": [
+     {
+      "name": "Low Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "150",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "363",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "220",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "580",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "270",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "48",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "718",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "270",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "51",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "892",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "280",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "23",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "898",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "31",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "950",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "34",
+      "writable": true
+     },
+     {
+      "name": "High Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "1020",
+      "writable": true
+     },
+     {
+      "name": "High Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "1",
+      "writable": true
+     },
+     {
+      "name": "High Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Channel EQ"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 4,
+  "track": "Ivan Vocals",
+  "_track_number": 22,
+  "_track_name": "Ivan Vocals"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 0,
+    "bypassed": false,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 9,
+     "AXCheckBox": 3,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 3,
+     "AXSlider": 6
+    },
+    "insert_index": 1,
+    "parameters": [],
+    "plugin_display_name": "Expander"
+   },
+   {
+    "accessible_parameters": 8,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 2,
+    "parameters": [
+     {
+      "name": "Mix",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Distortion",
+      "raw_max": "3",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "Limiter Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Output Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "41",
+      "writable": true
+     },
+     {
+      "name": "Input Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Make Up",
+      "raw_max": "110",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "Ratio",
+      "raw_max": "85",
+      "raw_min": "0",
+      "raw_value": "85",
+      "writable": true
+     },
+     {
+      "name": "Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "80",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Compressor"
+   },
+   {
+    "accessible_parameters": 3,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 3,
+    "parameters": [
+     {
+      "name": "_NS:38",
+      "raw_max": "119",
+      "raw_min": "0",
+      "raw_value": "62",
+      "writable": true
+     },
+     {
+      "name": "_NS:29",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "50",
+      "writable": true
+     },
+     {
+      "name": "_NS:8",
+      "raw_max": "119",
+      "raw_min": "0",
+      "raw_value": "79",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "ClipDist"
+   },
+   {
+    "accessible_parameters": 13,
+    "bypassed": true,
+    "classification": "read_write_candidate",
+    "insert_index": 4,
+    "parameters": [
+     {
+      "name": "IR Offset",
+      "raw_max": "990",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Init Level",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Attack Time",
+      "raw_max": "1000",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Decay Time",
+      "raw_max": "999",
+      "raw_min": "0",
+      "raw_value": "999",
+      "writable": true
+     },
+     {
+      "name": "End Level",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Predelay",
+      "raw_max": "999",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Length",
+      "raw_max": "194",
+      "raw_min": "0",
+      "raw_value": "194",
+      "writable": true
+     },
+     {
+      "name": "Size",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Stereo Spread Low",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Stereo Spread High",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "X-Over Freq",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "29",
+      "writable": true
+     },
+     {
+      "name": "Dry",
+      "raw_max": "103",
+      "raw_min": "0",
+      "raw_value": "88",
+      "writable": true
+     },
+     {
+      "name": "Wet",
+      "raw_max": "103",
+      "raw_min": "0",
+      "raw_value": "32",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Space D"
+   },
+   {
+    "accessible_parameters": 26,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 5,
+    "parameters": [
+     {
+      "name": "Low Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "170",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "375",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "300",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "350",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "33",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "375",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "20",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "648",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "215",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "20",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "725",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "13",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "850",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "260",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "High Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "1050",
+      "writable": true
+     },
+     {
+      "name": "High Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "High Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Channel EQ"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 5,
+  "track": "Ivan Effect",
+  "_track_number": 23,
+  "_track_name": "Ivan Effect"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 13,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 1,
+    "parameters": [
+     {
+      "name": "IR Offset",
+      "raw_max": "990",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Init Level",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Attack Time",
+      "raw_max": "1000",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Decay Time",
+      "raw_max": "999",
+      "raw_min": "0",
+      "raw_value": "999",
+      "writable": true
+     },
+     {
+      "name": "End Level",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Predelay",
+      "raw_max": "999",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Length",
+      "raw_max": "194",
+      "raw_min": "0",
+      "raw_value": "152",
+      "writable": true
+     },
+     {
+      "name": "Size",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Stereo Spread Low",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Stereo Spread High",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "X-Over Freq",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "29",
+      "writable": true
+     },
+     {
+      "name": "Dry",
+      "raw_max": "103",
+      "raw_min": "0",
+      "raw_value": "103",
+      "writable": true
+     },
+     {
+      "name": "Wet",
+      "raw_max": "103",
+      "raw_min": "0",
+      "raw_value": "14",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Space D"
+   },
+   {
+    "accessible_parameters": 26,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 2,
+    "parameters": [
+     {
+      "name": "Low Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "180",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "1",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "238",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "228",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "33",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "374",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "244",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "20",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "596",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "234",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "26",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "876",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "273",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "13",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "1038",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "196",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "High Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "1050",
+      "writable": true
+     },
+     {
+      "name": "High Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "High Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Channel EQ"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": false,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 26,
+     "AXCheckBox": 6,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 2,
+     "AXSlider": 14
+    },
+    "insert_index": 3,
+    "parameters": [],
+    "plugin_display_name": "Tape Delay"
+   },
+   {
+    "accessible_parameters": 10,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 4,
+    "parameters": [
+     {
+      "name": "Mix",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Distortion",
+      "raw_max": "3",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Limiter Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Output Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Release",
+      "raw_max": "119",
+      "raw_min": "0",
+      "raw_value": "31",
+      "writable": true
+     },
+     {
+      "name": "Input Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Attack",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "64",
+      "writable": true
+     },
+     {
+      "name": "Make Up",
+      "raw_max": "110",
+      "raw_min": "0",
+      "raw_value": "43",
+      "writable": true
+     },
+     {
+      "name": "Ratio",
+      "raw_max": "85",
+      "raw_min": "0",
+      "raw_value": "20",
+      "writable": true
+     },
+     {
+      "name": "Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "30",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Compressor"
+   },
+   {
+    "accessible_parameters": 11,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 5,
+    "parameters": [
+     {
+      "name": "Mix",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Distortion",
+      "raw_max": "3",
+      "raw_min": "0",
+      "raw_value": "2",
+      "writable": true
+     },
+     {
+      "name": "Limiter Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     },
+     {
+      "name": "Output Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Knee",
+      "raw_max": "10",
+      "raw_min": "0",
+      "raw_value": "7",
+      "writable": true
+     },
+     {
+      "name": "Release",
+      "raw_max": "119",
+      "raw_min": "0",
+      "raw_value": "37",
+      "writable": true
+     },
+     {
+      "name": "Input Gain",
+      "raw_max": "120",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Attack",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "39",
+      "writable": true
+     },
+     {
+      "name": "Make Up",
+      "raw_max": "110",
+      "raw_min": "0",
+      "raw_value": "44",
+      "writable": true
+     },
+     {
+      "name": "Ratio",
+      "raw_max": "85",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Threshold",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Compressor"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": false,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 7,
+     "AXCheckBox": 3,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 2,
+     "AXSlider": 3
+    },
+    "insert_index": 6,
+    "parameters": [],
+    "plugin_display_name": "DeEsser 2"
+   },
+   {
+    "accessible_parameters": 26,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 7,
+    "parameters": [
+     {
+      "name": "Low Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "252",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "13",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "367",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "256",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "500",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "217",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "52",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "583",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "241",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "51",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "728",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "241",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "23",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "893",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "268",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "31",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "1041",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "199",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "34",
+      "writable": true
+     },
+     {
+      "name": "High Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "1020",
+      "writable": true
+     },
+     {
+      "name": "High Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "1",
+      "writable": true
+     },
+     {
+      "name": "High Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Channel EQ"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 7,
+  "track": "Acke Vocals",
+  "_track_number": 24,
+  "_track_name": "Acke Vocals"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [],
+  "success": true,
+  "surveyed_inserts": 0,
+  "track": "Sweeps",
+  "_track_number": 25,
+  "_track_name": "Sweeps"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 0,
+    "bypassed": false,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 8,
+     "AXCheckBox": 3,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 1
+    },
+    "insert_index": 1,
+    "parameters": [],
+    "plugin_display_name": "Q-Sampler"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 1,
+  "track": "Crash bullshit",
+  "_track_number": 26,
+  "_track_name": "Crash bullshit"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [],
+  "success": true,
+  "surveyed_inserts": 0,
+  "track": "Vinyl Shit",
+  "_track_number": 27,
+  "_track_name": "Vinyl Shit"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 3,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 1,
+    "parameters": [
+     {
+      "name": "Tone",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "62",
+      "writable": true
+     },
+     {
+      "name": "Level",
+      "raw_max": "91",
+      "raw_min": "0",
+      "raw_value": "31",
+      "writable": true
+     },
+     {
+      "name": "Drive",
+      "raw_max": "200",
+      "raw_min": "0",
+      "raw_value": "100",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Pedalboard"
+   },
+   {
+    "accessible_parameters": 16,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 2,
+    "parameters": [
+     {
+      "name": "Frequency sliders",
+      "raw_max": "240",
+      "raw_min": "0",
+      "raw_value": "182",
+      "writable": true
+     },
+     {
+      "name": "Frequency sliders",
+      "raw_max": "240",
+      "raw_min": "0",
+      "raw_value": "176",
+      "writable": true
+     },
+     {
+      "name": "Frequency sliders",
+      "raw_max": "240",
+      "raw_min": "0",
+      "raw_value": "172",
+      "writable": true
+     },
+     {
+      "name": "Frequency sliders",
+      "raw_max": "240",
+      "raw_min": "0",
+      "raw_value": "150",
+      "writable": true
+     },
+     {
+      "name": "Frequency sliders",
+      "raw_max": "240",
+      "raw_min": "0",
+      "raw_value": "124",
+      "writable": true
+     },
+     {
+      "name": "Frequency sliders",
+      "raw_max": "240",
+      "raw_min": "0",
+      "raw_value": "156",
+      "writable": true
+     },
+     {
+      "name": "Frequency sliders",
+      "raw_max": "240",
+      "raw_min": "0",
+      "raw_value": "176",
+      "writable": true
+     },
+     {
+      "name": "Master",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "45",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "54",
+      "writable": true
+     },
+     {
+      "name": "Comp(ression)",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "Bass, Mids, and Treble",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "67",
+      "writable": true
+     },
+     {
+      "name": "Bass, Mids, and Treble",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "67",
+      "writable": true
+     },
+     {
+      "name": "Bass, Mids, and Treble",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "34",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "32",
+      "writable": true
+     },
+     {
+      "name": "Output slider",
+      "raw_max": "101",
+      "raw_min": "0",
+      "raw_value": "60",
+      "writable": true
+     },
+     {
+      "name": "Blend slider",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "0.5392156862745098",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Bass Amp"
+   },
+   {
+    "accessible_parameters": 10,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 3,
+    "parameters": [
+     {
+      "name": "Output slider or field",
+      "raw_max": "101",
+      "raw_min": "0",
+      "raw_value": "37",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "45",
+      "writable": true
+     },
+     {
+      "name": "Bass, Mids, and Treble",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "67",
+      "writable": true
+     },
+     {
+      "name": "Bass, Mids, and Treble",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "31",
+      "writable": true
+     },
+     {
+      "name": "Bass, Mids, and Treble",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "74",
+      "writable": true
+     },
+     {
+      "name": "Level",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "22",
+      "writable": true
+     },
+     {
+      "name": "Depth",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "77",
+      "writable": true
+     },
+     {
+      "name": "Speed",
+      "raw_max": "99",
+      "raw_min": "0",
+      "raw_value": "26",
+      "writable": true
+     },
+     {
+      "name": "Presence",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "83",
+      "writable": true
+     },
+     {
+      "name": "Master",
+      "raw_max": "100",
+      "raw_min": "0",
+      "raw_value": "94",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Amp"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 3,
+  "track": "Audio 8",
+  "_track_number": 28,
+  "_track_name": "Audio 8"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [],
+  "success": true,
+  "surveyed_inserts": 0,
+  "track": "Audio 9",
+  "_track_number": 29,
+  "_track_name": "Audio 9"
+ },
+ {
+  "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test",
+  "plugins": [
+   {
+    "accessible_parameters": 0,
+    "bypassed": false,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 6,
+     "AXCheckBox": 3,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 1
+    },
+    "insert_index": 1,
+    "parameters": [],
+    "plugin_display_name": "Sensor"
+   },
+   {
+    "accessible_parameters": 0,
+    "bypassed": false,
+    "classification": "no_semantic_sliders",
+    "control_census": {
+     "AXButton": 9,
+     "AXCheckBox": 3,
+     "AXMenuButton": 1,
+     "AXPopUpButton": 2,
+     "AXSlider": 4
+    },
+    "insert_index": 2,
+    "parameters": [],
+    "plugin_display_name": "Limiter"
+   },
+   {
+    "accessible_parameters": 26,
+    "bypassed": false,
+    "classification": "read_write_candidate",
+    "insert_index": 3,
+    "parameters": [
+     {
+      "name": "Low Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "0",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "1",
+      "writable": true
+     },
+     {
+      "name": "Low Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "200",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Low Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "250",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 1 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "33",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "375",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 2 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "20",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "604",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 3 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "26",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "725",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Peak 4 Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "13",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "900",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "High Shelf Q",
+      "raw_max": "52",
+      "raw_min": "0",
+      "raw_value": "40",
+      "writable": true
+     },
+     {
+      "name": "High Cut Frequency",
+      "raw_max": "1050",
+      "raw_min": "0",
+      "raw_value": "1050",
+      "writable": true
+     },
+     {
+      "name": "High Cut Order",
+      "raw_max": "5",
+      "raw_min": "0",
+      "raw_value": "3",
+      "writable": true
+     },
+     {
+      "name": "High Cut Q",
+      "raw_max": "127",
+      "raw_min": "0",
+      "raw_value": "36",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     },
+     {
+      "name": "Gain",
+      "raw_max": "480",
+      "raw_min": "0",
+      "raw_value": "240",
+      "writable": true
+     }
+    ],
+    "plugin_display_name": "Channel EQ"
+   }
+  ],
+  "success": true,
+  "surveyed_inserts": 3,
+  "track": "Stereo Out",
+  "_track_number": null,
+  "_track_name": "Stereo Out"
+ }
+]
