@@ -1483,3 +1483,7 @@ Tre rotorsaker hittades och fixades, alla generella förbättringar av vpot-moto
 3. **Vy-återinträde före verifiering** (buggen användaren fångade via lane-skärmdumpen: kurvan landade rätt men verifieringen läste fel/None): automationslägesknapparnas tryck kan knuffa ytan ur arbetsvyn — verifieringen går nu in i send-/pluginvyn igen (`refreshView`) innan chase-avläsningarna.
 
 Slutresultat send: −19,8/−20 och −6,1/−6. Familjens facit: volym exakt, pan exakt, plugin exakt, send ±0,2 dB.
+
+### CC + pitch bend i record_midi (2026-08-26, v0.40.0)
+
+`logic_record_midi` tar nu `cc_events` (bar/beat/cc/value/channel — modhjul, expression, valfri controller) och `pitch_bends` (value −8192..8191, 0 = center) — händelserna byggs in i samma tidsstämplade ström som noterna och spelas in i samma region. Billig utbyggnad: bryggans midi_stream tog redan godtyckliga bytes; bara schemat och offset-matematiken behövde breddas (start_bar/duration tar nu hänsyn till cc/bend-händelser som ligger utanför notintervallet). Verifierat: C3 med 9-punkters modsvep + 8-punkters benddyk (19 händelser), inspelat och render-verifierat; ljudfilen levererad till användaren som hörbart bevis.

@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.39.0"
+private let serverVersion = "0.40.0"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -7717,10 +7717,14 @@ private final class MCPServer {
                         channel: channel
                     ))
                 }
-                let startBar = arguments["start_bar"] as? Int ?? parsed.map(\.bar).min()!
-                let lastNoteEndBeats = parsed.map {
+                let extraBars: [Int] = ((arguments["cc_events"] as? [[String: Any]]) ?? []).compactMap { $0["bar"] as? Int }
+                    + ((arguments["pitch_bends"] as? [[String: Any]]) ?? []).compactMap { $0["bar"] as? Int }
+                let startBar = arguments["start_bar"] as? Int
+                    ?? min(parsed.map(\.bar).min()!, extraBars.min() ?? Int.max)
+                let lastExtraBeats = extraBars.map { Double($0 - startBar + 1) * 4 }.max() ?? 0
+                let lastNoteEndBeats = max(parsed.map {
                     Double($0.bar - startBar) * 4 + ($0.beat - 1) + $0.durationBeats
-                }.max() ?? 4
+                }.max() ?? 4, lastExtraBeats)
                 let endBarGuess = startBar + Int((lastNoteEndBeats / 4).rounded(.up))
                 let range = try barRangeSeconds(
                     logic: logic, startBar: startBar, endBar: max(endBarGuess, startBar + 1),
@@ -7747,6 +7751,41 @@ private final class MCPServer {
                                    [0x90 | status, UInt8(note.pitch), UInt8(note.velocity)]))
                     events.append(((offsetBeats + note.durationBeats) * msPerBeat - 1,
                                    [0x80 | status, UInt8(note.pitch), 0]))
+                }
+                // CC and pitch-bend events ride the same timed stream.
+                if let rawCC = arguments["cc_events"] as? [[String: Any]] {
+                    for raw in rawCC {
+                        guard let bar = raw["bar"] as? Int,
+                              let cc = raw["cc"] as? Int, (0...127).contains(cc),
+                              let value = raw["value"] as? Int, (0...127).contains(value) else {
+                            throw DemoError.invalidArguments("each cc_event needs bar, cc (0-127) and value (0-127)")
+                        }
+                        let beat = (raw["beat"] as? Double) ?? (raw["beat"] as? Int).map(Double.init) ?? 1.0
+                        let channel = UInt8(((raw["channel"] as? Int) ?? 1) - 1) & 0x0F
+                        let offsetBeats = Double(bar - startBar) * range.beatsPerBar + (beat - 1)
+                        guard offsetBeats >= 0 else {
+                            throw DemoError.invalidArguments("cc_event at bar \(bar) lies before start_bar \(startBar)")
+                        }
+                        events.append((offsetBeats * msPerBeat,
+                                       [0xB0 | channel, UInt8(cc), UInt8(value)]))
+                    }
+                }
+                if let rawBends = arguments["pitch_bends"] as? [[String: Any]] {
+                    for raw in rawBends {
+                        guard let bar = raw["bar"] as? Int,
+                              let value = raw["value"] as? Int, (-8192...8191).contains(value) else {
+                            throw DemoError.invalidArguments("each pitch_bend needs bar and value (-8192..8191; 0 = center)")
+                        }
+                        let beat = (raw["beat"] as? Double) ?? (raw["beat"] as? Int).map(Double.init) ?? 1.0
+                        let channel = UInt8(((raw["channel"] as? Int) ?? 1) - 1) & 0x0F
+                        let offsetBeats = Double(bar - startBar) * range.beatsPerBar + (beat - 1)
+                        guard offsetBeats >= 0 else {
+                            throw DemoError.invalidArguments("pitch_bend at bar \(bar) lies before start_bar \(startBar)")
+                        }
+                        let fourteen = value + 8192
+                        events.append((offsetBeats * msPerBeat,
+                                       [0xE0 | channel, UInt8(fourteen & 0x7F), UInt8((fourteen >> 7) & 0x7F)]))
+                    }
                 }
                 events.sort { $0.offsetMs < $1.offsetMs }
                 if effectiveSpeed > 1.001 {
@@ -8550,7 +8589,36 @@ private final class MCPServer {
                                 "required": ["pitch", "bar"]
                             ]
                         ],
-                        "start_bar": ["type": "integer", "description": "Recording start bar (>= 2); default = the earliest note's bar."],
+                        "cc_events": [
+                            "type": "array",
+                            "description": "MIDI CC events recorded alongside the notes — e.g. mod-wheel sweeps (cc 1), expression (cc 11). Emit many points for smooth curves.",
+                            "items": [
+                                "type": "object",
+                                "properties": [
+                                    "bar": ["type": "integer"],
+                                    "beat": ["type": "number", "description": "1-based, fractions allowed."],
+                                    "cc": ["type": "integer", "description": "Controller number 0-127."],
+                                    "value": ["type": "integer", "description": "0-127."],
+                                    "channel": ["type": "integer", "description": "1-16, default 1."]
+                                ],
+                                "required": ["bar", "cc", "value"]
+                            ]
+                        ],
+                        "pitch_bends": [
+                            "type": "array",
+                            "description": "Pitch-bend events: value -8192..8191 (0 = center). Emit many points for smooth bends, and return to 0 at the end.",
+                            "items": [
+                                "type": "object",
+                                "properties": [
+                                    "bar": ["type": "integer"],
+                                    "beat": ["type": "number"],
+                                    "value": ["type": "integer"],
+                                    "channel": ["type": "integer"]
+                                ],
+                                "required": ["bar", "value"]
+                            ]
+                        ],
+                        "start_bar": ["type": "integer", "description": "Recording start bar (>= 2); default = the earliest event's bar."],
                         "tempo": ["type": "number", "description": "Override BPM; default reads the control bar."],
                         "beats_per_bar": ["type": "number", "description": "Override meter; default reads the control bar."],
                         "verify_render": ["type": "boolean", "description": "Default true: freeze-render the recorded bars afterwards and return slice metrics as proof."],
