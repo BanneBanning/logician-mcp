@@ -1499,3 +1499,19 @@ Slutresultat send: −19,8/−20 och −6,1/−6. Familjens facit: volym exakt, 
 **`logic_add_send`**: den manuellt bevisade destinationsbläddraren paketerad — första lediga slot, bläddra till namngiven destination (1 post/tick i denna bläddrare), settle-verifiera, bekräfta, verifiera via send-listan. Nya sends startar på −∞; sätt nivå med logic_mcu_set_send.
 
 **`logic_plugin_preset`**: key commandet **"Next/Previous Plug-in Setting for topmost Plug-in Window"** (agerar på översta pluginfönstret — ingen fokusproblematik) + verifiering via pluginfönstrets preset-popup (AXPopUpButton-etiketten läsbar). Verifierat: "Default Preset" → "Classic Drums" → "VCA Vocal" på Compressor. Fönstret stängs igen om verktyget öppnade det.
+
+### Rapido-batch 1 (2026-08-26, v0.42.0)
+
+Allmän hastighetsjakt på användarens begäran. Tre strukturella förbättringar + två grävda rotorsaker:
+
+1. **In-bridge-konvergens** (`converge`-kommandot): hela den adaptiva tick-loopen flyttad in i bryggan där LCD-ekot landar — 3 ms-polling i stället för socket-rundresa + 350 ms await per tick. Inkopplad i param-/send-/volym-/vpot-vägarna med serverloopen som fallback.
+2. **Varm plugin-vy**: `setPluginParameter` lämnar medvetet edit-vyn öppen och cachear (spår, slot, namncache-nyckel); efterföljande skrivningar på samma mål hoppar över hela select→vy→enter-koreografin. Läxa på vägen: cacheKey MÅSTE följa med i hot-state — utan den föll sökningen till slow-vägen med 1,3 s fade per sida (9–13 s-regression innan fixen).
+3. **Uppmätt**: parameterskrivning varm 2,8 → **1,6 s**; kall ~3,8 s (första anropet betalar vy-setup). Kvarvarande varm tid domineras av normalizeToPageOne (0,9 s indikatorvänta) + sidvandring — nästa steg: slå upp parameterns sida direkt ur namncachen.
+
+Rotorsaker grävda under arbetet:
+
+- **En uråldrig fristående `logic-mcu-bridge`-daemon** (från före enbinärs-eran) ägde socketen — ping svarade så ensureRunning bytte aldrig ut den, och alla "bryggomstarter" sedan dess hade varit no-ops. Fix: **versionsstämplad ping** (`bridge_protocol: 2`); föråldrade daemoner termineras och ersätts automatiskt.
+- **Slumpade CoreMIDI-unique-IDs** bröt Logics kontrollytebindning vid varje äkta bryggomstart. Fix: **fasta kMIDIPropertyUniqueID** ('LMC0'–'LMC3') — en engångs-ombindning i Control Surfaces Setup krävdes (utförd av användaren), därefter överlever bindningen alla omstarter.
+- Incidentnotis: sandlådan hade sparats med ENBART ett pluginfönster som fönsterlayout ("jag ser bara en kompressor"); att stänga projektets sista fönster stänger projektet. Huvudfönstret återställdes via Window > Open Main Window och layouten sparad.
+
+Kvarvarande rapido-backlog: parametersida-uppslag ur cachen (1,6 → ~0,8 s), samma varm-vy-mönster för sends/instrument, batch-verktyg (N operationer per anrop utan per-anrops-setup), trimning av await-tak (350 → ~180 ms), volymens payload saknar db-fältet i bridge-converge-vägen (kosmetiskt).

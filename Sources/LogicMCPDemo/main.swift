@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.41.0"
+private let serverVersion = "0.42.0"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -4565,7 +4565,18 @@ private enum MCUBridge {
     /// practice is that the server manages its own sidecars. Looks for the
     /// logic-mcu-bridge binary next to this executable.
     static func ensureRunning() {
-        if (try? send(["cmd": "ping"]))?["ok"] as? Bool == true { return }
+        if let pong = try? send(["cmd": "ping"]), pong["ok"] as? Bool == true {
+            if (pong["bridge_protocol"] as? Int ?? 0) >= 2 { return }
+            // An outdated daemon owns the socket (pre-versioned builds kept
+            // answering pings and silently lacked newer commands) — replace it.
+            FileHandle.standardError.write(Data("[logician] replacing outdated bridge daemon\n".utf8))
+            let kill = Process()
+            kill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+            kill.arguments = ["-f", "logic-mcu-bridge|logician --bridge"]
+            try? kill.run()
+            kill.waitUntilExit()
+            Thread.sleep(forTimeInterval: 0.5)
+        }
         // The bridge daemon is this same binary launched with --bridge —
         // one distributable artifact, no sibling files to install.
         let serverURL = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
@@ -4708,6 +4719,11 @@ private enum KeyCommandRegistry {
 /// on verified success, and throws when a write happened but verification
 /// failed (never silently fall back after a partial write).
 private enum MCUController {
+    /// Hot-view cache: which track/slot the plugin-edit view currently
+    /// shows, so consecutive parameter writes skip the whole select +
+    /// view-switch choreography. Cleared by anything that changes views.
+    nonisolated(unsafe) static var hotPluginView: (track: String, slot: Int, cacheKey: String?)? // single-threaded server loop
+
     static func freshStatus() -> [String: Any]? {
         // In-memory status straight from the bridge socket (no file throttle);
         // fall back to the state file if the socket round trip fails.
@@ -5115,6 +5131,16 @@ private enum MCUController {
             return parseDb(lcdFields(bottom)[channel])
         }
         guard let startDb = currentDb() else { return nil }
+        if let fast = fastConverge(index: channel, target: targetDb,
+                                   tolerance: toleranceDb, maxMs: 3000, seedRatio: 2.5) {
+            _ = fast
+            let landed = currentDb() ?? fast.value
+            return [
+                "success": true, "verified": abs(landed - targetDb) <= max(toleranceDb, 0.6),
+                "state": "volume_set", "requested_db": targetDb, "db": landed,
+                "route": "mcu", "write_route": "bridge_converge"
+            ]
+        }
         var db = startDb
         var ticksPerDb = 2.5
         var stuck = 0
@@ -5183,6 +5209,7 @@ extension MCUController {
     }
 
     static func exitToPan() {
+        hotPluginView = nil
         _ = try? ensurePanNames()
     }
 
@@ -5967,13 +5994,18 @@ extension MCUController {
             }
             _ = awaitEvents(since: before, timeoutMs: 350)
         }
-        let finalText = try convergeNumeric(
-            target: targetDb,
-            tolerance: nil,
-            read: { currentText().flatMap(parseNumber) },
-            readText: { currentText() },
-            turn: turn
-        )
+        let finalText: String
+        if let fast = fastConverge(index: levelIndex, target: targetDb, maxMs: 4000) {
+            finalText = fast.text
+        } else {
+            finalText = try convergeNumeric(
+                target: targetDb,
+                tolerance: nil,
+                read: { currentText().flatMap(parseNumber) },
+                readText: { currentText() },
+                turn: turn
+            )
+        }
         return [
             "success": true,
             "verified": true,
@@ -6228,6 +6260,10 @@ extension MCUController {
         index: Int, target: Double, ticksPerUnit: Double,
         read: () -> Double?, budget: TimeInterval
     ) throws {
+        if fastConverge(index: index, target: target,
+                        maxMs: Int(budget * 1000), seedRatio: ticksPerUnit) != nil {
+            return
+        }
         // ADAPTIVE ratio: encoder scales are nonlinear (a dB near -inf is a
         // fraction of a tick; near unity several ticks), so the seed ratio
         // from the initial probe is only a starting guess — every turn's
@@ -6255,6 +6291,26 @@ extension MCUController {
             }
             current = now
         }
+    }
+
+    /// In-bridge convergence: the whole adaptive tick loop runs next to the
+    /// LCD mirror (3 ms echo polling instead of a socket round trip + fat
+    /// await per tick). Returns nil when the bridge lacks the command.
+    static func fastConverge(
+        index: Int, field: Int? = nil, target: Double,
+        tolerance: Double = 0, maxMs: Int = 3000, seedRatio: Double? = nil
+    ) -> (text: String, value: Double)? {
+        var command: [String: Any] = [
+            "cmd": "converge", "index": index, "target": target,
+            "tolerance": tolerance, "max_ms": maxMs
+        ]
+        if let field { command["field"] = field }
+        if let seedRatio { command["ratio"] = seedRatio }
+        guard let response = try? MCUBridge.send(command),
+              response["ok"] as? Bool == true,
+              let text = response["final_text"] as? String,
+              let value = response["final_value"] as? Double else { return nil }
+        return (text, value)
     }
 
     /// Builds a write closure for a vpot-controlled value: probes the
@@ -7011,25 +7067,45 @@ extension MCUController {
         parameter: String,
         targetValue: String,
         expectedCurrentValue: String?,
-        tolerance: Double?
+        tolerance: Double?,
+        trackName: String? = nil
     ) throws -> [String: Any]? {
         guard freshStatus() != nil else { return nil }
-        guard let listStatus = try ensurePluginList() else { return nil }
-        let slotName = (listStatus["lcd_bottom"] as? String).map {
-            lcdFields($0)[slot - 1].trimmingCharacters(in: CharacterSet(charactersIn: "*"))
+        var slotName: String?
+        let isHot = trackName != nil && hotPluginView?.track == trackName
+            && hotPluginView?.slot == slot
+            && (freshStatus()?["assignment"] as? String) == "P\(slot)"
+        if isHot {
+            slotName = hotPluginView?.cacheKey
+        } else {
+            guard let listStatus = try ensurePluginList() else { return nil }
+            slotName = (listStatus["lcd_bottom"] as? String).map {
+                lcdFields($0)[slot - 1].trimmingCharacters(in: CharacterSet(charactersIn: "*"))
+            }
+            guard try enterPluginEdit(slot: slot) else {
+                exitToPan()
+                hotPluginView = nil
+                return nil
+            }
         }
-        guard try enterPluginEdit(slot: slot) else {
-            exitToPan()
-            return nil
+        // The view is deliberately LEFT in plugin-edit mode afterwards:
+        // consecutive writes on the same track+slot then skip all setup, and
+        // any other operation re-establishes its own view anyway.
+        if let trackName {
+            hotPluginView = (trackName, slot,
+                             slotName.flatMap { $0.isEmpty || $0 == "--" ? nil : $0 })
         }
-        defer { exitToPan() }
         guard var result = try searchAndSetParameter(
             parameter: parameter,
             targetValue: targetValue,
             expectedCurrentValue: expectedCurrentValue,
             tolerance: tolerance,
             cacheKey: slotName.flatMap { $0.isEmpty || $0 == "--" ? nil : $0 }
-        ) else { return nil }
+        ) else {
+            hotPluginView = nil
+            exitToPan()
+            return nil
+        }
         result["insert_slot"] = slot
         return result
     }
@@ -7194,7 +7270,11 @@ extension MCUController {
         }
 
         let finalText: String
-        if let targetNumber = parseNumber(targetValue), parseNumber(originalText) != nil {
+        if let targetNumber = parseNumber(targetValue), parseNumber(originalText) != nil,
+           let fast = fastConverge(index: index, target: targetNumber,
+                                   tolerance: tolerance ?? 0, maxMs: 4000) {
+            finalText = fast.text
+        } else if let targetNumber = parseNumber(targetValue), parseNumber(originalText) != nil {
             finalText = try convergeNumeric(
                 target: targetNumber,
                 tolerance: tolerance,
@@ -7591,7 +7671,8 @@ private final class MCPServer {
                     parameter: requiredString("parameter", in: arguments),
                     targetValue: requiredString("target_value", in: arguments),
                     expectedCurrentValue: arguments["expected_current_value"] as? String,
-                    tolerance: arguments["tolerance"] as? Double
+                    tolerance: arguments["tolerance"] as? Double,
+                    trackName: requiredString("track_name", in: arguments)
                 ) else {
                     throw DemoError.trackNotExposed(
                         requested: "MCU plugin parameter control",

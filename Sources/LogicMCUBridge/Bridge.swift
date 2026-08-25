@@ -41,6 +41,16 @@ final class SurfaceState {
         lock.unlock()
     }
 
+    /// One 7-char LCD cell from the bottom (value) row, trimmed.
+    func lcdBottomField(_ field: Int) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        let start = 56 + field * 7
+        guard start + 7 <= 112 else { return "" }
+        return (String(bytes: lcd[start..<start + 7], encoding: .ascii) ?? "")
+            .trimmingCharacters(in: .whitespaces)
+    }
+
     func snapshotObject() -> [String: Any] {
         lock.lock()
         defer { lock.unlock() }
@@ -246,6 +256,12 @@ func setUpMIDI() -> Bool {
     guard MIDISourceCreate(client, "Logic MCP MIDI In" as CFString, &midiInSource) == noErr else {
         return false
     }
+    // FIXED unique IDs: Logic binds its control-surface/assignment config to
+    // the endpoint's kMIDIPropertyUniqueID. Random IDs (the default) break
+    // every binding on bridge restart; stable IDs reconnect instantly.
+    MIDIObjectSetIntegerProperty(source, kMIDIPropertyUniqueID, 0x4C4D4331)
+    MIDIObjectSetIntegerProperty(commandSource, kMIDIPropertyUniqueID, 0x4C4D4332)
+    MIDIObjectSetIntegerProperty(midiInSource, kMIDIPropertyUniqueID, 0x4C4D4333)
     let status = MIDIDestinationCreateWithBlock(client, portName as CFString, &destination) { packetList, _ in
         let packets = packetList.pointee
         var packet = packets.packet
@@ -257,6 +273,9 @@ func setUpMIDI() -> Bool {
             parser.feed(bytes)
             packet = MIDIPacketNext(&packet).pointee
         }
+    }
+    if status == noErr {
+        MIDIObjectSetIntegerProperty(destination, kMIDIPropertyUniqueID, 0x4C4D4330)
     }
     return status == noErr
 }
@@ -469,6 +488,76 @@ func handleCommand(_ object: [String: Any]) -> [String: Any] {
         snapshot["ok"] = true
         snapshot["timed_out"] = state.eventCount <= since
         return snapshot
+    case "converge":
+        // Server-side convergence pays a socket round trip plus a fat await
+        // per tick; here the LCD echo lands in-process and can be polled
+        // every few milliseconds. Adaptive tick ratio, same discipline as
+        // the server's convergeNumeric.
+        guard let index = object["index"] as? Int, (0...7).contains(index),
+              let target = (object["target"] as? Double) ?? (object["target"] as? Int).map(Double.init) else {
+            return ["ok": false, "error": "index 0-7 and target (number) required"]
+        }
+        let field = object["field"] as? Int ?? index
+        let maxMs = min(object["max_ms"] as? Int ?? 3000, 15000)
+        let tolerance = (object["tolerance"] as? Double) ?? 0.0
+        var ratio = (object["ratio"] as? Double) ?? 2.0
+        func parseValue(_ text: String) -> Double? {
+            let normalized = text.replacingOccurrences(of: ",", with: ".")
+            if normalized.hasPrefix("-oo") { return -70.0 }
+            let numeric = normalized.prefix { "+-0123456789.".contains($0) }
+            guard !numeric.isEmpty, numeric != "-", numeric != "+" else { return nil }
+            return Double(numeric.hasSuffix(".") ? String(numeric.dropLast()) : String(numeric))
+        }
+        let deadline = Date().addingTimeInterval(Double(maxMs) / 1000)
+        guard var current = parseValue(state.lcdBottomField(field)) else {
+            return ["ok": false, "error": "field \(field) is not numeric: '\(state.lcdBottomField(field))'"]
+        }
+        var iterations = 0
+        while Date() < deadline {
+            let step = max(tolerance, abs(0.5 / max(abs(ratio), 0.01)))
+            if abs(current - target) <= step { break }
+            var ticks = Int(((target - current) * ratio).rounded())
+            if ticks == 0 { ticks = (target - current) * ratio > 0 ? 1 : -1 }
+            ticks = max(-60, min(60, ticks))
+            let before = state.eventCount
+            turnVPot(index: index, delta: ticks)
+            iterations += 1
+            // wait for the echo: new events + the field's value changing,
+            // polled at millisecond granularity
+            let echoDeadline = Date().addingTimeInterval(0.25)
+            var updated: Double?
+            while Date() < echoDeadline {
+                usleep(3000)
+                if state.eventCount != before,
+                   let value = parseValue(state.lcdBottomField(field)), value != current {
+                    updated = value
+                    break
+                }
+            }
+            guard let now = updated else {
+                // no movement: either done (clamped at an end stop) or stuck
+                if let value = parseValue(state.lcdBottomField(field)) { current = value }
+                if abs(current - target) <= max(tolerance, 0.5) { break }
+                continue
+            }
+            let change = now - current
+            if abs(change) > 0.0001 {
+                let observed = Double(ticks) / change
+                if observed.isFinite, abs(observed) < 1000 {
+                    ratio = 0.5 * ratio + 0.5 * observed
+                }
+            }
+            current = now
+        }
+        usleep(30000)
+        let finalText = state.lcdBottomField(field)
+        return [
+            "ok": true,
+            "final_text": finalText,
+            "final_value": parseValue(finalText) ?? current,
+            "iterations": iterations,
+            "ratio": ratio
+        ]
     case "midi_stream":
         // Timed performance MIDI on the "Logic MCP MIDI In" port. events is
         // an array of [offset_ms, byte, byte, ...]; playback is asynchronous
@@ -524,7 +613,7 @@ func handleCommand(_ object: [String: Any]) -> [String: Any] {
         sendCommandPort([0x80 | channel, UInt8(note), 0x00])
         return ["ok": true, "sent_note": note, "channel": Int(channel) + 1]
     case "ping":
-        return ["ok": true, "pong": true]
+        return ["ok": true, "pong": true, "bridge_protocol": 2]
     default:
         return ["ok": false, "error": "unknown cmd \(command)"]
     }
