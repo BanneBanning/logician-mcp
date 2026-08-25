@@ -4,8 +4,8 @@ import LogicMCUBridge
 import Foundation
 
 private let protocolVersion = "2025-06-18"
-private let serverName = "logic-mcp-demo"
-private let serverVersion = "0.27.0"
+private let serverName = "logician"
+private let serverVersion = "0.28.0"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -3757,7 +3757,7 @@ private enum MCUBridge {
         for _ in 0..<30 {
             usleep(100_000)
             if (try? send(["cmd": "ping"]))?["ok"] as? Bool == true {
-                FileHandle.standardError.write(Data("[logic-mcp-demo] started logic-mcu-bridge\n".utf8))
+                FileHandle.standardError.write(Data("[logician] started bridge daemon\n".utf8))
                 return
             }
         }

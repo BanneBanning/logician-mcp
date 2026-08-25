@@ -1358,3 +1358,7 @@ Målidentifieringen projekt → spår → insert → plugin är löst och verifi
 ### Enbinär + repo-struktur (2026-08-25, v0.27.0)
 
 Produktifieringssteg 0+1: git-repo initierat (snapshot-commit av forskningsläget först), forskningsloggen flyttad till `docs/FINDINGS.md`, ny engelsk produkt-README i roten. **En distribuerbar binär**: `LogicMCUBridge` är nu ett bibliotek med `public func bridgeMain()`; servern startar daemonen som `logic-mcp-demo --bridge` (själv-spawn — inga grannfiler att installera). Verifierat: dödad brygga → serverstart → själv-spawnad brygga → Logic återansluten (mcu_connected true) → sends-läsning genom nya kedjan. Bryggan överlever server-exit (design: daemonen delas mellan MCP-sessioner). Notera: `timebase` fick bli lazy-initierad konstant (bibliotek tillåter inga top-level-uttryck), och bridge-filen döptes om till `Bridge.swift`.
+
+### Namnet: Logician (2026-08-25, v0.28.0)
+
+Produkten heter **Logician** (Logic + musician + logiker). `logic-mcp` förkastades efter kollisionskoll: 87 GitHub-träffar med båda konkurrenterna (`logic-pro-mcp`, 76★ och 59★) i toppen — och "Logic" ensamt är Apples varumärke. `logician-mcp` hade 0 träffar. Binären/produkten heter `logician`; bryggan är `logician --bridge`. Privat GitHub-repo: BanneBanning/logician-mcp.

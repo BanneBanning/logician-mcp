@@ -3,15 +3,15 @@
 import PackageDescription
 
 let package = Package(
-    name: "LogicMCPDemo",
+    name: "Logician",
     platforms: [
         .macOS(.v13)
     ],
     products: [
         // Single distributable binary: the MCP server, which also runs the
-        // MCU bridge daemon when launched as `logic-mcp-demo --bridge`
+        // MCU bridge daemon when launched as `logician --bridge`
         // (the server spawns that itself; users never start a daemon).
-        .executable(name: "logic-mcp-demo", targets: ["LogicMCPDemo"])
+        .executable(name: "logician", targets: ["LogicMCPDemo"])
     ],
     targets: [
         .executableTarget(

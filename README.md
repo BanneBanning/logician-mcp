@@ -1,10 +1,10 @@
-# Logic MCP
+# Logician
 
 **Control Logic Pro from AI agents — through the data plane, not the UI.**
 
 An MCP (Model Context Protocol) server that gives Claude, Cursor, and other MCP clients real, verified control over Logic Pro on macOS: transport, mixing, every plugin parameter (third-party included), dialog-free audio export, closed-loop A/B evaluation of mix changes, and MIDI composition recorded straight onto your tracks.
 
-> **Working title.** Name, license, and distribution channel are not final. Not yet published — build from source.
+> **Logician** = Logic + musician (+ a reasoning logician). License and distribution channel are not final; currently a private repo — build from source.
 
 ## Why this one is different
 
@@ -38,7 +38,7 @@ swift build -c release
 Then register the single binary with your MCP client, e.g. for Claude Code:
 
 ```bash
-claude mcp add logic -- /path/to/.build/release/logic-mcp-demo
+claude mcp add logic -- /path/to/.build/release/logician
 ```
 
 Everything else is self-serve: the server starts its own bridge daemon, `logic_health` diagnoses every setup step with a concrete fix, and the Logic key commands the tools rely on (freeze render, undo, …) are learned into your Logic automatically on first use — additively, removable in the Key Commands window, with collision handling.
@@ -61,7 +61,7 @@ Everything else is self-serve: the server starts its own bridge daemon, `logic_h
 ```
 MCP client (Claude, Cursor, …)
         │ stdio / JSON-RPC
-logic-mcp-demo  ──spawns──▶  logic-mcp-demo --bridge (daemon)
+logician  ──spawns──▶  logician --bridge (daemon)
    │        │                    │  virtual CoreMIDI ports:
    │        │ unix socket        │   "Logic MCP MCU"      (Mackie Control ⇄ Logic)
    │        └────────────────────┤   "Logic MCP Commands" (key commands → Logic)
