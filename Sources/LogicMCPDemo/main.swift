@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.29.0"
+private let serverVersion = "0.30.0"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -883,6 +883,32 @@ private final class LogicAccessibility {
             guard parts.count == 3 else { return nil }
             return (parts[0], parts[1].isEmpty ? nil : parts[1], parts[2] == "true")
         }
+    }
+
+    /// Answers the "Create New Track" dialog's Create button.
+    func answerCreateTrackDialog() -> Bool {
+        guard let windows = try? logicWindows() else { return false }
+        for window in windows {
+            var isPrompt = false
+            var create: AXUIElement?
+            func walk(_ element: AXUIElement, _ depth: Int) {
+                guard depth < 8 else { return }
+                let role = stringAttribute(element, kAXRoleAttribute as String)
+                if role == "AXStaticText",
+                   stringAttribute(element, kAXValueAttribute as String)
+                       .contains("Create New Track") { isPrompt = true }
+                if role == "AXButton",
+                   stringAttribute(element, kAXTitleAttribute as String) == "Create" {
+                    create = element
+                }
+                for child in children(of: element) { walk(child, depth + 1) }
+            }
+            walk(window, 0)
+            if isPrompt, let button = create {
+                return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
+            }
+        }
+        return false
     }
 
     /// Answers Logic's "open the auto-saved version or the last saved?"
@@ -2736,15 +2762,26 @@ private final class LogicAccessibility {
         let bars = children(of: strip).filter {
             stringAttribute($0, kAXDescriptionAttribute as String) == "insert bar"
         }
-        guard let appendSlot = bars.last else {
+        // A pristine strip (no inserts yet) renders no "insert bar" elements;
+        // its first empty slot is the "audio plug-in" button instead.
+        let pristineSlot = children(of: strip).first {
+            stringAttribute($0, kAXDescriptionAttribute as String) == "audio plug-in"
+        }
+        guard let appendSlot = bars.last ?? pristineSlot else {
             throw DemoError.trackNotExposed(
                 requested: "an empty insert slot on '\(trackName)'",
-                exposed: "no insert bar button found in the strip"
+                exposed: "neither an insert bar nor the audio plug-in button was found in the strip"
             )
         }
         let windowsBefore = Set(try logicWindows().map(WindowKey.init))
         try ensureLogicFrontmost(for: "the plugin chooser") // activating later would close the menu
-        _ = AXUIElementPerformAction(appendSlot, kAXPressAction as CFString) // opens the chooser
+        if bars.isEmpty {
+            // The pristine "audio plug-in" button is AXPress-dead (like the
+            // track-header controls) — a hit-test-guarded click opens it.
+            try clickElement(appendSlot, describedAs: "the empty audio plug-in slot")
+        } else {
+            _ = AXUIElementPerformAction(appendSlot, kAXPressAction as CFString) // opens the chooser
+        }
         let chosenFormat = try chooseFromPluginMenu(pluginName: pluginName, format: format)
 
         // The new insert lands in the first empty slot, which is not
@@ -4120,6 +4157,8 @@ private enum KeyCommandRegistry {
     /// collisions on a user's machine get an alternate note automatically.
     static let standardCommands: [(search: String, name: String, preferredNote: Int)] = [
         ("save", "Save", 105),
+        ("new software instrument", "New Software Instrument Track", 106),
+        ("new audio track", "New Audio Track", 107),
         ("toggle track freeze", "Toggle Track Freeze", 117),
         ("undo", "Undo", 100),
         ("redo", "Redo", 101),
@@ -4859,6 +4898,107 @@ extension MCUController {
             }
         }
         return result
+    }
+
+    // MARK: Plugin insertion via the MCU plugin browser (mouse-free)
+
+    /// Adds a plugin to the selected track's first empty insert slot by
+    /// driving Logic's control-surface plugin browser: vpot turn on an empty
+    /// slot steps through the plugin list (full names on the LCD), vpot
+    /// press instantiates. Leaving to the pan view cancels a browse safely.
+    /// Returns nil when the MCU route is unavailable.
+    static func addPluginViaBrowser(pluginName: String) throws -> [String: Any]? {
+        guard freshStatus() != nil else { return nil }
+        guard let inserts = try pluginInsertNames() else { return nil }
+        guard let emptyIndex = inserts.firstIndex(where: { $0.isEmpty || $0 == "--" }) else {
+            throw DemoError.trackNotExposed(
+                requested: "an empty insert slot",
+                exposed: "all 8 MCU insert slots are occupied"
+            )
+        }
+        func browseName() -> String? {
+            guard let status = freshStatus(),
+                  let bottom = status["lcd_bottom"] as? String else { return nil }
+            let start = bottom.index(bottom.startIndex, offsetBy: min(emptyIndex * 7, bottom.count))
+            // The name spills over several LCD fields; cut at the first long
+            // gap so trailing slot fields do not leak into it.
+            let raw = String(bottom[start...])
+            let cut = raw.range(of: "    ").map { String(raw[..<$0.lowerBound]) } ?? raw
+            return cut.trimmingCharacters(in: .whitespaces)
+        }
+        func matches(_ shown: String) -> Bool {
+            // LCD shows e.g. "Compressor (s/s)"; strip the channel suffix and
+            // compare prefixes both ways (either side may be truncated).
+            let cleaned = shown.replacingOccurrences(
+                of: #"\s*\([sm]/[sm]\)\s*$"#, with: "", options: .regularExpression
+            ).trimmingCharacters(in: .whitespaces)
+            guard !cleaned.isEmpty else { return false }
+            let target = pluginName.trimmingCharacters(in: .whitespaces)
+            return cleaned.lowercased() == target.lowercased()
+                || cleaned.lowercased().hasPrefix(target.lowercased())
+                || target.lowercased().hasPrefix(cleaned.lowercased())
+        }
+        func abortBrowse() {
+            exitToPan()
+        }
+        // The LCD advances only every other vpot tick, so consecutive
+        // duplicate names mean "not moved yet", not a wrap. A wrap is the
+        // FIRST entry reappearing after real progress.
+        var entries: [String] = []
+        var found = false
+        for _ in 0..<500 {
+            let before = freshStatus()?["received_events"] as? Int ?? -1
+            let response = try MCUBridge.send(["cmd": "vpot", "index": emptyIndex, "delta": 1])
+            guard response["ok"] as? Bool == true else { abortBrowse(); return nil }
+            _ = awaitEvents(since: before, timeoutMs: 300)
+            _ = quiescentStatus()
+            guard let name = browseName(), !name.isEmpty, name != "--" else { continue }
+            if matches(name) { found = true; break }
+            if name == entries.last { continue }
+            if let first = entries.first, name == first, entries.count > 2 {
+                abortBrowse()
+                throw DemoError.trackNotExposed(
+                    requested: "plugin '\(pluginName)' in the control-surface browser",
+                    exposed: "the browser wrapped around without a match; entries seen: \(entries.joined(separator: ", "))"
+                )
+            }
+            entries.append(name)
+        }
+        guard found else {
+            abortBrowse()
+            throw DemoError.openVerificationFailed(
+                "the plugin browser never showed '\(pluginName)' within 250 steps"
+            )
+        }
+        let shownName = browseName() ?? pluginName
+        // Confirm: vpot press instantiates and drops into the edit view.
+        let response = try MCUBridge.send(["cmd": "vpot_press", "index": emptyIndex])
+        guard response["ok"] as? Bool == true else { abortBrowse(); return nil }
+        Thread.sleep(forTimeInterval: 1.0)
+        _ = quiescentStatus()
+        // Verify: back in the plugin list the slot is occupied.
+        guard let after = try pluginInsertNames() else { return nil }
+        let slotName = after.indices.contains(emptyIndex)
+            ? after[emptyIndex].trimmingCharacters(in: CharacterSet(charactersIn: "*"))
+            : ""
+        exitToPan()
+        guard !slotName.isEmpty, slotName != "--" else {
+            throw DemoError.verificationFailed(
+                requested: "'\(pluginName)' instantiated in slot \(emptyIndex + 1)",
+                actual: "the slot still shows empty after confirmation",
+                restored: false
+            )
+        }
+        return [
+            "success": true,
+            "verified": true,
+            "state": "added",
+            "plugin": pluginName,
+            "browser_entry": shownName,
+            "mcu_slot": emptyIndex + 1,
+            "write_route": "mcu_plugin_browser",
+            "note": "Added via the control-surface plugin browser — no mouse, no menus."
+        ]
     }
 
     // MARK: Sends (assign_send channel view, assignment code "SE")
@@ -6338,6 +6478,36 @@ private final class MCPServer {
                     expectedProjectPath: arguments["expected_project_path"] as? String
                 )
 
+            case "logic_create_track":
+                let kind = (arguments["type"] as? String) ?? "software_instrument"
+                let commandName = kind == "audio" ? "New Audio Track" : "New Software Instrument Track"
+                let before = ((try? logic.listTracks())?["tracks"] as? [[String: Any]])?.count ?? 0
+                let command = try MCUController.resolveKeyCommand(named: commandName, logic: logic)
+                _ = try MCUController.triggerKeyCommand(note: command.note, channel: command.channel)
+                // The command opens the Create New Track dialog; answer Create.
+                var answered = false
+                for _ in 0..<20 {
+                    Thread.sleep(forTimeInterval: 0.3)
+                    if logic.answerCreateTrackDialog() { answered = true; break }
+                }
+                var created = false
+                var after: [[String: Any]] = []
+                for _ in 0..<10 {
+                    Thread.sleep(forTimeInterval: 0.4)
+                    after = ((try? logic.listTracks())?["tracks"] as? [[String: Any]]) ?? []
+                    if after.count > before { created = true; break }
+                }
+                payload = [
+                    "success": created,
+                    "verified": created,
+                    "type": kind,
+                    "dialog_answered": answered,
+                    "tracks_before": before,
+                    "tracks_after": after.count,
+                    "tracks": after.map { ["track_number": $0["track_number"] ?? 0, "track_name": $0["track_name"] ?? ""] },
+                    "note": created ? "Track created." : "No new track appeared; a dialog may need attention."
+                ]
+
             case "logic_setup_key_commands":
                 let results = try logic.setupKeyCommands(KeyCommandRegistry.standardCommands)
                 payload = [
@@ -6504,12 +6674,32 @@ private final class MCPServer {
                 )
 
             case "logic_add_plugin":
-                payload = try logic.addPlugin(
+                // MCU plugin browser first (mouse-free); the AX chooser needs
+                // the physical mouse for hover navigation, so it only runs
+                // when explicitly allowed.
+                _ = try logic.selectTrack(
                     trackName: requiredString("track_name", in: arguments),
                     trackNumber: arguments["track_number"] as? Int,
-                    pluginName: requiredString("plugin_name", in: arguments),
-                    format: (arguments["format"] as? String) ?? "Stereo"
+                    expectedProjectPath: arguments["expected_project_path"] as? String
                 )
+                if var viaBrowser = try MCUController.addPluginViaBrowser(
+                    pluginName: requiredString("plugin_name", in: arguments)
+                ) {
+                    viaBrowser["track"] = try requiredString("track_name", in: arguments)
+                    payload = viaBrowser
+                } else if arguments["allow_mouse"] as? Bool == true {
+                    payload = try logic.addPlugin(
+                        trackName: requiredString("track_name", in: arguments),
+                        trackNumber: arguments["track_number"] as? Int,
+                        pluginName: requiredString("plugin_name", in: arguments),
+                        format: (arguments["format"] as? String) ?? "Stereo"
+                    )
+                } else {
+                    throw DemoError.trackNotExposed(
+                        requested: "mouse-free plugin insertion",
+                        exposed: "the MCU bridge is unavailable; pass allow_mouse: true to permit the AX chooser fallback (takes over the pointer briefly)"
+                    )
+                }
 
             case "logic_remove_plugin":
                 payload = try logic.removePlugin(
@@ -6892,6 +7082,17 @@ private final class MCPServer {
                 ]
             ],
             [
+                "name": "logic_create_track",
+                "description": "Create a new track (software_instrument or audio) via Logic's key command, answering the Create New Track dialog automatically. Verified by the track count increasing.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "type": ["type": "string", "description": "'software_instrument' (default) or 'audio'."]
+                    ],
+                    "additionalProperties": false
+                ]
+            ],
+            [
                 "name": "logic_save_project",
                 "description": "Save the open Logic project — the ONLY way this server ever saves; no other tool saves as a side effect. Fires the Save key command and verifies via the document's modified flag. Refuses when more than one project is open, when the project has never been saved, or when expected_project_path does not match. Returns already_saved when there is nothing to save.",
                 "inputSchema": [
@@ -7120,7 +7321,7 @@ private final class MCPServer {
             ],
             [
                 "name": "logic_add_plugin",
-                "description": "Insert a plugin in the next empty audio-effect slot on a track by navigating the insert slot's plugin chooser menu (Logic categories, recents and Audio Units are all searched by name). Verifies that the new insert appeared. Logic usually opens the plugin window automatically; the result reports it.",
+                "description": "Add a plugin to a track's first empty insert slot — mouse-free via the Mackie Control plugin browser (vpot-stepped, LCD-verified, vpot-press instantiates). Works for every plugin in Logic's browser including third-party. If the MCU bridge is down, the AX chooser fallback requires allow_mouse: true because it briefly takes over the pointer.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [

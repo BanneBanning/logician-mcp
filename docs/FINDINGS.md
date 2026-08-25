@@ -1372,3 +1372,16 @@ Empirisk kartläggning av Logics AppleScript-standardsuite: `documents` med name
 Fällor som hanteras: Logic kör **enprojektsläge** (öppning stänger aktuellt projekt; osparade ändringar kräver explicit `if_current_modified: save/dont_save`, annars vägran); mallen bar först på **Autosave-data** som gav en recovery-dialog ("Saved or Auto-saved?") vid öppning — mallen städades och `answerRecoveryDialog` svarar defensivt "Saved".
 
 **Incident, dokumenterad som varnande exempel**: under mallskörden träffade ett File > Save-menytryck användarens projekt i stället för det fönsterlösa spökdokumentet — en oavsiktlig sparning i strid med no-save-regeln. Rotorsak: dokumentriktade operationer utan verifiering av aktivt fönster. Kodifierad fix: alla fönsterriktade flöden verifierar AXMainWindow-titeln innan de agerar, och spökdokument-vägen (make new document) övergavs helt.
+
+### Röktestet + musfri plugininsättning (2026-08-25, v0.30.0)
+
+Generaliserings-röktest mot ett projekt Logician själv skapade (`Logician Smoke Test.logicx`). Resultat 7/8 gröna — där "missen" var compare-and-set som korrekt vägrade (Compressors default-Ratio är 2.1:1, inte 2.0:1). Bank- och paramnamnscachar själv-läkte vid projektbytet. `logic_record_midi` fungerade direkt på default-instrumentet (Augmented), spårnivå-A/B likaså.
+
+Äkta generaliseringsfynd, alla fixade:
+
+1. **Mallen har noll spår** → nytt verktyg `logic_create_track` (software_instrument/audio): key command + automatiskt svar på Create New Track-dialogen, verifierat via spårantal.
+2. **Orörda strippar saknar "insert bar"-element** — tomma slots heter "audio plug-in"-knappen och är dessutom AXPress-död (hit-test-klick krävs).
+3. **Användaråterkoppling: musövertagandet vid add_plugin är oacceptabelt** → `logic_add_plugin` är nu MCU-först via **kontrollytans inbyggda pluginbläddrare**: vpot-vridning på tom slot stegar pluginlistan med fulla namn i LCD:n ("Channel EQ (s/s)"), vpot-press instansierar, lämna-vyn avbryter säkert. Verifierat: Channel EQ tillagd på 27,4 s utan mus och utan menyer. LCD:n avancerar bara varannan tick (dubblettnamn = "inte flyttat än", wrap = FÖRSTA posten återkommer). AX-choosern (kräver fysisk mus för hovernavigering) körs bara med explicit `allow_mouse: true`.
+4. Save är sedan v0.29 en MIDI-not (105) — bekräftat på användarfråga: helt musfri.
+
+Kvarstående optimering: bläddringen stegar +1 per varv (~27 s till mitten av listan); större delta med överskjutningshantering kan halvera tiden.
