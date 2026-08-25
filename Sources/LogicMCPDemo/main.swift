@@ -4691,15 +4691,24 @@ extension MCUController {
     /// Resolves a key command to its learned MIDI note; when missing and the
     /// command is one of the standard set, learns it automatically on the
     /// spot (lazy onboarding — the registry records what was added).
+    /// Set when the most recent resolve had to learn the command on the
+    /// spot (the Key Commands window flashes briefly) — surfaced in tool
+    /// results so users understand what they just saw.
+    static var lastResolveLearned = false
+
     static func resolveKeyCommand(
         named name: String, logic: LogicAccessibility?
     ) throws -> (note: Int, channel: Int) {
+        lastResolveLearned = false
         if let found = KeyCommandRegistry.note(named: name) { return found }
         if let logic, let standard = KeyCommandRegistry.standardCommands.first(where: {
             $0.name.caseInsensitiveCompare(name) == .orderedSame
         }) {
             _ = try? logic.setupKeyCommands([standard])
-            if let found = KeyCommandRegistry.note(named: name) { return found }
+            if let found = KeyCommandRegistry.note(named: name) {
+                lastResolveLearned = true
+                return found
+            }
         }
         throw DemoError.trackNotExposed(
             requested: "key command '\(name)'",
@@ -6000,7 +6009,7 @@ private final class MCPServer {
                 "protocolVersion": protocolVersion,
                 "capabilities": ["tools": ["listChanged": false]],
                 "serverInfo": ["name": serverName, "version": serverVersion],
-                "instructions": "Controls Logic Pro on this Mac through its control-surface protocol (no UI clicking). Requires: Logic running with a project open, Accessibility granted, and a Mackie Control configured with ports 'Logic MCP MCU' (one-time). Run logic_health FIRST — it starts the bridge daemon, verifies every setup step, and tells you the fix for anything missing. Key commands (freeze render, undo, etc.) are learned into the user's Logic automatically on first use via logic_setup_key_commands. Writes are compare-and-set with readback: pass expected_current_value and read values before changing them. The sensor AU is an optional add-on for realtime listening; bounce/render tools work without it. English Logic UI assumed (v1)."
+                "instructions": "Controls Logic Pro on this Mac through its control-surface protocol (no UI clicking). Requires: Logic running with a project open, Accessibility granted, and a Mackie Control configured with ports 'Logic MCP MCU' (one-time). Run logic_health FIRST — it starts the bridge daemon, verifies every setup step, and tells you the fix for anything missing. Run logic_setup_key_commands ONCE during onboarding — it opens Logic's Key Commands window briefly and binds all needed commands; skipping it means the same window flashes unannounced the first time a tool needs a missing command (lazy learning). Writes are compare-and-set with readback: pass expected_current_value and read values before changing them. The sensor AU is an optional add-on for realtime listening; bounce/render tools work without it. English Logic UI assumed (v1)."
             ])
 
         case "notifications/initialized", "initialized":
@@ -6518,9 +6527,14 @@ private final class MCPServer {
             case "logic_trigger_key_command":
                 if let name = arguments["name"] as? String {
                     let found = try MCUController.resolveKeyCommand(named: name, logic: logic)
-                    payload = try MCUController.triggerKeyCommand(
+                    var triggered = try MCUController.triggerKeyCommand(
                         note: found.note, channel: found.channel
                     )
+                    if MCUController.lastResolveLearned {
+                        triggered["first_run_learning"] =
+                            "This command was just learned: the Key Commands window opened briefly (one-time per machine). Run logic_setup_key_commands during onboarding to do all learning up front."
+                    }
+                    payload = triggered
                 } else {
                     let note = arguments["note"] as? Int ?? -1
                     let channel = arguments["channel"] as? Int ?? 16
