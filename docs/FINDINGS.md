@@ -1385,3 +1385,11 @@ Generaliserings-röktest mot ett projekt Logician själv skapade (`Logician Smok
 4. Save är sedan v0.29 en MIDI-not (105) — bekräftat på användarfråga: helt musfri.
 
 Kvarstående optimering: bläddringen stegar +1 per varv (~27 s till mitten av listan); större delta med överskjutningshantering kan halvera tiden.
+
+### Fel-kanal-buggen i browser-add + latensprofil (2026-08-25, v0.31.0)
+
+**Benchmarken** (39 verktyg tidsatta): 20 verktyg <0,6 s; outliers = mcu_instrument_parameters kall läsning av Augmented **140 s** (sidantal × indikatorfade — optimering: sidcap + snabbare fade-detektering), record_midi 22 s (realtid, tempo-tricket kvarstår), create_track 12 s (slö dialogpolling), browser-add ~27 s (+1-stegning).
+
+**Buggen (användaren fångade den i mixern)**: LoPass och Channel EQ hamnade på **Stereo Out**, inte Inst 1. Rotorsak: assign_plugin cyklar P1/P2 (multikanal-vy: varje vpot = EN KANALS insert N — St Out är en kanal!) och PL (kanalvy: valda spårets slots) — och PL visar MCU-VALDA spårets inserts utan att namnge det; MCU-valet kan divergera från AX-valet. Fix i addPluginViaBrowser: (1) explicit MCU-select av målspåret (findChannel+select) innan PL-vyn, (2) **AX-korsverifiering efter instansiering** — oberoende källa som namnger spåret, så fel-kanal-träffar inte kan passera tyst. Verifierat: Chorus → Inst 1 (AX: Chorus, Compressor, Augmented), överlevde save/reopen, 7,2 s.
+
+**Bonus: musfri borttagning finns** — bläddraren har en "--"-post (No Plug-in) vid listgränsen; bläddra en upptagen slot dit och bekräfta = plugin bort. Verifierat vid städningen av St Out (102 steg baklänges genom ~100-postlistan, ~60 s). Kandidat för MCU-först logic_remove_plugin. Varning inpräntad: bekräfta ALDRIG en browse utan att ha verifierat att önskad post visas (en oskyddad loop instansierade Distortion II av misstag under städningen — borttagen igen).

@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.30.0"
+private let serverVersion = "0.31.0"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -4694,7 +4694,7 @@ extension MCUController {
     /// Set when the most recent resolve had to learn the command on the
     /// spot (the Key Commands window flashes briefly) — surfaced in tool
     /// results so users understand what they just saw.
-    static var lastResolveLearned = false
+    nonisolated(unsafe) static var lastResolveLearned = false // single-threaded server loop
 
     static func resolveKeyCommand(
         named name: String, logic: LogicAccessibility?
@@ -4916,8 +4916,16 @@ extension MCUController {
     /// slot steps through the plugin list (full names on the LCD), vpot
     /// press instantiates. Leaving to the pan view cancels a browse safely.
     /// Returns nil when the MCU route is unavailable.
-    static func addPluginViaBrowser(pluginName: String) throws -> [String: Any]? {
+    static func addPluginViaBrowser(
+        pluginName: String, logic: LogicAccessibility, trackName: String
+    ) throws -> [String: Any]? {
         guard freshStatus() != nil else { return nil }
+        // The PL channel view shows the MCU-SELECTED track's inserts without
+        // naming it — and MCU selection can diverge from the AX selection
+        // (this once put plugins on Stereo Out). Bind the MCU selection to
+        // the target track explicitly before entering the view.
+        guard let channel = try findChannel(trackName: trackName) else { return nil }
+        guard try selectFoundChannel(channel) else { return nil }
         guard let inserts = try pluginInsertNames() else { return nil }
         guard let emptyIndex = inserts.firstIndex(where: { $0.isEmpty || $0 == "--" }) else {
             throw DemoError.trackNotExposed(
@@ -4995,6 +5003,31 @@ extension MCUController {
             throw DemoError.verificationFailed(
                 requested: "'\(pluginName)' instantiated in slot \(emptyIndex + 1)",
                 actual: "the slot still shows empty after confirmation",
+                restored: false
+            )
+        }
+        // Cross-verify through Accessibility — an independent source that
+        // names the track, so a wrong-channel insertion cannot pass silently.
+        var axConfirmed = false
+        for _ in 0..<10 {
+            if let axInserts = (try? logic.listInserts(trackName: trackName))?["inserts"]
+                as? [[String: Any]] {
+                let names = axInserts.compactMap { $0["plugin_display_name"] as? String }
+                if names.contains(where: {
+                    $0.lowercased().hasPrefix(pluginName.lowercased())
+                        || pluginName.lowercased().hasPrefix(
+                            $0.trimmingCharacters(in: .whitespaces).lowercased())
+                }) {
+                    axConfirmed = true
+                    break
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.4)
+        }
+        guard axConfirmed else {
+            throw DemoError.verificationFailed(
+                requested: "'\(pluginName)' on track '\(trackName)' (AX cross-check)",
+                actual: "the LCD claimed success but the track's AX insert list never showed the plugin — it may have landed on another channel; check the mixer",
                 restored: false
             )
         }
@@ -6697,7 +6730,9 @@ private final class MCPServer {
                     expectedProjectPath: arguments["expected_project_path"] as? String
                 )
                 if var viaBrowser = try MCUController.addPluginViaBrowser(
-                    pluginName: requiredString("plugin_name", in: arguments)
+                    pluginName: requiredString("plugin_name", in: arguments),
+                    logic: logic,
+                    trackName: requiredString("track_name", in: arguments)
                 ) {
                     viaBrowser["track"] = try requiredString("track_name", in: arguments)
                     payload = viaBrowser
