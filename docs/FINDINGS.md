@@ -1515,3 +1515,9 @@ Rotorsaker grävda under arbetet:
 - Incidentnotis: sandlådan hade sparats med ENBART ett pluginfönster som fönsterlayout ("jag ser bara en kompressor"); att stänga projektets sista fönster stänger projektet. Huvudfönstret återställdes via Window > Open Main Window och layouten sparad.
 
 Kvarvarande rapido-backlog: parametersida-uppslag ur cachen (1,6 → ~0,8 s), samma varm-vy-mönster för sends/instrument, batch-verktyg (N operationer per anrop utan per-anrops-setup), trimning av await-tak (350 → ~180 ms), volymens payload saknar db-fältet i bridge-converge-vägen (kosmetiskt).
+
+### Gemini-kraschen + lyssningsvägen (2026-08-26, v0.43.0)
+
+Användarens Gemini-session kraschade hårt ("Agent execution terminated") efter "can you listen to the file?": Gemini LÄSTE den råa binära wav-filen in i sin kontext (megabytes) — känd Gemini-krasch vid för stor input, och sessionen förblir brickad eftersom historiken följer med varje ny prompt. Inte ett Logician-fel, men det exponerade en verklig lucka: agenter behöver en SÄKER lyssningsväg.
+
+Åtgärder: (1) **`logic_get_audio_clip`** — trimmar (via vår egen sliceAudioFile; afconvert saknar offset-stöd) och komprimerar (mono AAC 64 kbps) upp till 20 s och returnerar det som ett äkta **MCP audio content block** (typ "audio", base64 + mimeType) — multimodala klienter kan lyssna på protokollets villkor, ~8 KB/s. `toolResult` stödjer nu audio-block via `_audio`-nyckeln. (2) **`preview_path`** på render/bounce-resultat: komprimerad stereo-AAC-syskonfil (Geminis filvisare stödjer AAC/MP3/WAV men INTE AIFF — användarens fynd). (3) Varningsnoter i resultat + nytt guide-avsnitt "Listening to audio (IMPORTANT)": läs aldrig audiofiler som text.

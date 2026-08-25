@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.42.0"
+private let serverVersion = "0.43.0"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -517,16 +517,18 @@ private final class LogicAccessibility {
             finalPath = renderedPath
         }
 
+        let bouncePreview = LogicAccessibility.makeAACPreview(sourcePath: finalPath)
         return [
             "success": true,
             "verified": true,
             "state": "bounced",
             "path": finalPath,
+            "preview_path": bouncePreview.map { $0 as Any } ?? NSNull() as Any,
             "start_bar": startBar,
             "end_bar": endBar,
             "bytes": Int(lastSize),
             "write_route": "bounce_dialog_offline",
-            "note": "Offline render of the master output; destination settings restored to the user's previous selection."
+            "note": "Offline render of the master output; destination settings restored. To LISTEN, use logic_get_audio_clip on the path - never read audio files as text."
         ]
     }
 
@@ -621,6 +623,26 @@ private final class LogicAccessibility {
             "bits": bits,
             "frames": frames
         ]
+    }
+
+    /// Writes a compressed stereo AAC (.m4a) sibling of an audio file —
+    /// natively playable/attachable in agent clients (AIFF often is not).
+    static func makeAACPreview(sourcePath: String) -> String? {
+        let source = URL(fileURLWithPath: sourcePath)
+        let destination = source.deletingPathExtension()
+            .appendingPathExtension("m4a")
+        let convert = Process()
+        convert.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
+        convert.arguments = [
+            source.path, destination.path,
+            "-f", "m4af", "-d", "aac", "-b", "128000"
+        ]
+        convert.standardError = FileHandle.nullDevice
+        guard (try? convert.run()) != nil else { return nil }
+        convert.waitUntilExit()
+        guard convert.terminationStatus == 0,
+              FileManager.default.fileExists(atPath: destination.path) else { return nil }
+        return destination.path
     }
 
     /// Cuts a time range out of an AIFF/AIFC render (16/24-bit PCM or fl32)
@@ -5456,6 +5478,10 @@ extension MCUController {
                 ? "Track rendered offline via Freeze (no dialogs) and unfrozen again; the file is the full track from project start, mono/stereo as the track."
                 : "Rendered file copied out, but the freeze file is still present — the track may still be frozen; toggle freeze manually or rerun."
         ]
+        if let preview = LogicAccessibility.makeAACPreview(sourcePath: destination.path) {
+            result["preview_path"] = preview
+            result["preview_note"] = "Compressed stereo AAC copy - playable/attachable in agent clients; use logic_get_audio_clip for an in-protocol audio block."
+        }
         if let metrics = LogicAccessibility.audioFileMetrics(path: destination.path),
            (metrics["frames"] as? Int ?? 0) > 0 {
             result["metrics"] = metrics
@@ -8381,6 +8407,64 @@ private final class MCPServer {
                 }
                 payload = try MCUBridge.send(command)
 
+            case "logic_get_audio_clip":
+                let clipPath = (try requiredString("path", in: arguments) as NSString).expandingTildeInPath
+                guard FileManager.default.fileExists(atPath: clipPath) else {
+                    throw DemoError.trackNotExposed(requested: "audio file at '\(clipPath)'", exposed: "no such file")
+                }
+                let clipStart = (arguments["start_seconds"] as? Double)
+                    ?? (arguments["start_seconds"] as? Int).map(Double.init) ?? 0
+                let clipDuration = min(
+                    (arguments["duration_seconds"] as? Double)
+                        ?? (arguments["duration_seconds"] as? Int).map(Double.init) ?? 8.0,
+                    20.0
+                )
+                let scratchBase = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("logician-clip-\(UUID().uuidString)")
+                let trimmed = scratchBase.appendingPathExtension("wav")
+                let scratch = scratchBase.appendingPathExtension("m4a")
+                defer {
+                    try? FileManager.default.removeItem(at: trimmed)
+                    try? FileManager.default.removeItem(at: scratch)
+                }
+                // Trim with our own slicer (afconvert has no offset support),
+                // then compress: mono AAC 64 kbps keeps a clip tiny.
+                var convertSource = clipPath
+                if LogicAccessibility.sliceAudioFile(
+                    path: clipPath, startSeconds: clipStart,
+                    endSeconds: clipStart + clipDuration,
+                    destinationPath: trimmed.path
+                ) != nil {
+                    convertSource = trimmed.path
+                }
+                let convert = Process()
+                convert.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
+                convert.arguments = [
+                    convertSource, scratch.path,
+                    "-f", "m4af", "-d", "aac", "-b", "64000", "-c", "1"
+                ]
+                convert.standardError = FileHandle.nullDevice
+                try convert.run()
+                convert.waitUntilExit()
+                guard convert.terminationStatus == 0,
+                      let clipData = try? Data(contentsOf: scratch), !clipData.isEmpty else {
+                    throw DemoError.writeFailed("afconvert could not produce the clip (is the source a readable audio file?)")
+                }
+                guard clipData.count <= 400_000 else {
+                    throw DemoError.invalidArguments(
+                        "the encoded clip is \(clipData.count / 1000) KB - too large to attach safely; request a shorter duration_seconds"
+                    )
+                }
+                payload = [
+                    "success": true,
+                    "source": clipPath,
+                    "start_seconds": clipStart,
+                    "duration_seconds": clipDuration,
+                    "encoded_bytes": clipData.count,
+                    "note": "The audio content block accompanies this result (mono AAC). NEVER read raw audio files as text - they will overflow the model context.",
+                    "_audio": ["data": clipData.base64EncodedString(), "mimeType": "audio/mp4"]
+                ]
+
             case "logic_sensor_capture":
                 let seconds = (arguments["seconds"] as? Double)
                     ?? (arguments["seconds"] as? Int).map(Double.init)
@@ -8734,20 +8818,34 @@ private final class MCPServer {
     }
 
     private func toolResult(payload: Any, isError: Bool) -> [String: Any] {
+        // A payload carrying "_audio" {data, mimeType} becomes an MCP audio
+        // content block so multimodal clients can LISTEN instead of being
+        // tempted to read raw audio files into their context.
+        var textPayload = payload
+        var audioBlock: [String: Any]?
+        if var object = payload as? [String: Any],
+           let audio = object["_audio"] as? [String: String],
+           let data = audio["data"], let mime = audio["mimeType"] {
+            audioBlock = ["type": "audio", "data": data, "mimeType": mime]
+            object.removeValue(forKey: "_audio")
+            textPayload = object
+        }
         let text: String
-        if JSONSerialization.isValidJSONObject(payload),
-           let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+        if JSONSerialization.isValidJSONObject(textPayload),
+           let data = try? JSONSerialization.data(withJSONObject: textPayload, options: [.sortedKeys]),
            let json = String(data: data, encoding: .utf8) {
             text = json
         } else {
-            text = String(describing: payload)
+            text = String(describing: textPayload)
         }
 
+        var content: [[String: Any]] = [["type": "text", "text": text]]
+        if let audioBlock { content.append(audioBlock) }
         var result: [String: Any] = [
-            "content": [["type": "text", "text": text]],
+            "content": content,
             "isError": isError
         ]
-        if let structured = payload as? [String: Any] {
+        if let structured = textPayload as? [String: Any] {
             result["structuredContent"] = structured
         }
         return result
@@ -9298,6 +9396,20 @@ private final class MCPServer {
                         "bytes": ["type": "array", "items": ["type": "integer"]]
                     ],
                     "required": ["cmd"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "logic_get_audio_clip",
+                "description": "LISTEN to rendered audio: returns a short clip (default 8 s, max 20 s) of a local audio file as an MCP audio content block (mono AAC, roughly 64 KB per 8 s) that multimodal models can hear. Use this on the file paths returned by logic_render_track / logic_bounce_range / logic_evaluate_change. NEVER read raw audio files with a text/file tool - megabytes of binary will overflow the model context and can crash the client.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "path": ["type": "string", "description": "Absolute path to a local audio file (AIFF/WAV/etc)."],
+                        "start_seconds": ["type": "number", "description": "Offset into the file, default 0."],
+                        "duration_seconds": ["type": "number", "description": "Clip length, default 8, max 20."]
+                    ],
+                    "required": ["path"],
                     "additionalProperties": false
                 ]
             ],

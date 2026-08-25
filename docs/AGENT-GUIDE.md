@@ -56,6 +56,14 @@ Run `logic_health` first. It starts the bridge daemon, checks every setup requir
 **Deliver audio:**
 `logic_render_track {track_name, start_bar?, end_bar?}` — dialog-free track export (32-bit float AIFF + optional bar-sliced WAV with RMS/peak metrics), ~6 s. `logic_bounce_range` for the master.
 
+## Listening to audio (IMPORTANT)
+
+**NEVER read an audio file with a text/file tool.** Render and bounce results return file paths to multi-megabyte binary files; reading one into your context will overflow it and can crash your client outright. Instead:
+
+- Judge objectively with the returned `metrics` (RMS/peak per channel) and `deltas` from `logic_evaluate_change`.
+- To actually HEAR audio, call `logic_get_audio_clip {path, start_seconds?, duration_seconds?}` — it returns a short mono AAC clip (~8 KB/s) as a native MCP audio content block your multimodal model can listen to. Pick the interesting window (e.g. where the regions are) rather than second 0, which may be silence.
+- Render/bounce results also include `preview_path` — a compressed stereo `.m4a` sibling that agent clients can attach/play natively (the full-quality AIFF/WAV often cannot be).
+
 ## Error taxonomy
 
 - `not_found` / `not_exposed` — the target does not exist or is not reachable; the message lists what IS visible. Check names/slots.
