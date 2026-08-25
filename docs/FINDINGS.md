@@ -1453,3 +1453,13 @@ Skarp användning direkt: användarens skräpregioner på Bas i Testlåt (test-t
 4. **Verifiering med Logic som vittne**: intervallet SPELAS OM i Read-läge och motorfader-ekot samplas vid varje punkt. Första skarpa testet: 0 dB@takt2 → −15 dB@takt4, **exakt återläsning på båda punkterna (12483/12483, 6479/6479 av 16384 — noll avvikelse)**, 20,2 s totalt inklusive kalibrering och verifieringsreplay.
 
 Felvägar återställer alltid: stop + Read-läge + ursprungsfader. v1 = volym; pan/sends/pluginparametrar via vpot-läget är nästa utbyggnad (relativa vpots kräver eko-konvergens under uppspelning).
+
+### Pan/send/plugin-automation (2026-08-26, v0.38.0)
+
+`logic_record_automation` breddad till **pan, send-nivåer och godtyckliga pluginparametrar** via en generaliserad motor med läs/skriv-closures per parametertyp:
+
+- **Pan**: läser och skriver via stripens pan-knopp i AX (exakt eko; rapid-fire stegvis skrivning ±1/15 ms). PN-vyns LCD-värderad visade sig INTE alltid vara målad — AX-knoppen är den pålitliga källan. Verifierat: 0→+40→0, exakt återläsning på alla tre punkter.
+- **Send/plugin**: relativa vpots med engångskalibrerad ticks-per-enhet (4-ticks-probe, återställd), blinda kalibrerade hopp vid varje musikaliskt ögonblick + budgetstyrda korrektionsrundor mot LCD-ekot; sista punkten får full konvergensbudget (1,5 s).
+- **Verifieringsgenombrott: playhead-chase.** Replay-sampling av plugin-LCD:n underrapporterade (LCD:n laggar under uppspelning; kurvan såg ut att sluta på −33 när den i själva verket slutade exakt på −35 — bevisat genom att parkera playheaden efter riden: Logic chasar automationslanen till playheadpositionen och ger stationära, exakta avläsningar). Vpot-motorns verifiering parkerar nu playheaden på varje punkt i Read-läge i stället för att replaya — exaktare OCH snabbare. Verifierat: Compressor Thrs −20→−35 över takt 2–4, chase-avläsning −20,5/−35,0.
+
+Send-vägen delar exakt samma maskineri men är inte skarptestad end-to-end (sandlådan saknar sends) — noterat som känd lucka tills ett send-projekt testas.

@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.37.0"
+private let serverVersion = "0.38.0"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -1006,6 +1006,38 @@ private final class LogicAccessibility {
         result["track"] = row.track
         result["exclusive"] = exclusive
         return result
+    }
+
+    /// The channel strip's pan value (the strip's pan AXSlider), always
+    /// readable regardless of which MCU view is active.
+    func stripPanValue(trackName: String) -> Double? {
+        guard let strip = try? inspectorStrip(named: trackName) else { return nil }
+        for child in children(of: strip)
+        where stringAttribute(child, kAXDescriptionAttribute as String) == "pan" {
+            return Double(stringAttribute(child, kAXValueAttribute as String))
+        }
+        return nil
+    }
+
+    /// Rapid-fire stepwise write toward a pan target on the strip's pan
+    /// knob, bounded by a time budget (one step per ~15 ms write).
+    func stripPanWrite(trackName: String, target: Double, budget: TimeInterval) throws {
+        guard let strip = try? inspectorStrip(named: trackName) else {
+            throw DemoError.windowNotFound("channel strip for '\(trackName)'")
+        }
+        guard let knob = children(of: strip).first(where: {
+            stringAttribute($0, kAXDescriptionAttribute as String) == "pan"
+        }) else {
+            throw DemoError.windowNotFound("pan knob on '\(trackName)'")
+        }
+        let goal = Int(target.rounded())
+        let deadline = Date().addingTimeInterval(budget)
+        while Date() < deadline {
+            guard let current = Int(stringAttribute(knob, kAXValueAttribute as String)) else { break }
+            if current == goal { return }
+            _ = AXUIElementSetAttributeValue(knob, kAXValueAttribute as CFString, goal as CFNumber)
+            usleep(15000)
+        }
     }
 
     /// The channel strip's automation-mode label, e.g. "Latch" from
@@ -4738,7 +4770,7 @@ private enum MCUController {
     /// names on top) and a single-channel view ("Pan    -      -   ..."), and
     /// the assignment display reads "PN" in both — so the mode must be verified
     /// by LCD content, never by blind presses.
-    private static func ensurePanNames() throws -> Bool {
+    static func ensurePanNames() throws -> Bool {
         for _ in 0..<5 {
             guard let status = freshStatus(), let top = status["lcd_top"] as? String else { return false }
             let assignment = status["assignment"] as? String
@@ -5627,6 +5659,34 @@ extension MCUController {
         _ = quiescentStatus()
     }
 
+    /// Pages the send channel view to the page holding the given send slot.
+    static func sendViewToPage(forSend send: Int) throws {
+        try sendViewLeftmost()
+        for _ in 0..<((send - 1) / 2) {
+            try pressNote(0x63)
+            Thread.sleep(forTimeInterval: 0.2)
+            _ = quiescentStatus()
+        }
+    }
+
+    /// Walks the plugin-edit parameter pages until the named parameter is on
+    /// screen; returns its vpot index and LEAVES the view on that page.
+    static func locateParameter(named name: String) throws -> Int? {
+        let total = try normalizeToPageOne()
+        for page in 1...max(total, 1) {
+            if let entries = settledParameterPage() {
+                for (index, entry) in entries.enumerated() where !entry.name.isEmpty {
+                    if entry.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+                        || lcdNameMatches(track: name, lcd: entry.name) {
+                        return index
+                    }
+                }
+            }
+            if page < max(total, 1) { try pageRight() }
+        }
+        return nil
+    }
+
     /// Reads all sends of the selected track. Returns nil when the MCU route
     /// is unavailable; an empty array when the track simply has no sends.
     static func readSends() throws -> [[String: Any]]? {
@@ -5941,6 +6001,232 @@ extension MCUController {
             report["verification"] = [
                 "samples": samples,
                 "note": "The range was replayed in Read mode and Logic's own motorized-fader echo sampled at each point (14-bit positions; tolerance 500 ≈ 1.5 dB near unity)."
+            ]
+        } else {
+            report["verified"] = false
+        }
+        return report
+    }
+
+    // MARK: Vpot automation (pan / send / plugin parameters)
+
+    /// Sends a relative vpot move of any size (the wire format caps one
+    /// message at 63 ticks).
+    private static func turnVpot(_ index: Int, by delta: Int) throws {
+        var remaining = delta
+        while remaining != 0 {
+            let chunk = max(-63, min(63, remaining))
+            let response = try MCUBridge.send(["cmd": "vpot", "index": index, "delta": chunk])
+            guard response["ok"] as? Bool == true else {
+                throw DemoError.writeFailed("vpot failed mid-automation")
+            }
+            remaining -= chunk
+        }
+    }
+
+    /// One quick "land on target" pass for a relative encoder during
+    /// playback: a calibrated blind jump followed by up to two echo-checked
+    /// corrections, all inside a small time budget so the point does not
+    /// smear across the timeline.
+    private static func vpotJump(
+        index: Int, target: Double, ticksPerUnit: Double,
+        read: () -> Double?, budget: TimeInterval
+    ) throws {
+        let deadline = Date().addingTimeInterval(budget)
+        guard var current = read() else { return }
+        try turnVpot(index, by: Int(((target - current) * ticksPerUnit).rounded()))
+        // Correct against the echo until the budget runs out (a short budget
+        // mid-curve gets 1-2 rounds; the final point can converge fully).
+        while Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.12)
+            guard let now = read() else { return }
+            current = now
+            let step = abs(0.5 / max(abs(ticksPerUnit), 0.01))
+            if abs(current - target) <= step { return }
+            try turnVpot(index, by: Int(((target - current) * ticksPerUnit).rounded()))
+        }
+    }
+
+    /// Builds a write closure for a vpot-controlled value: probes the
+    /// encoder's ticks-per-unit once, then lands on targets with a blind
+    /// calibrated jump plus up to two echo-checked corrections.
+    static func makeVpotWriter(
+        index: Int, read: @escaping () -> Double?
+    ) throws -> (Double, TimeInterval) throws -> Void {
+        var current: Double?
+        for _ in 0..<12 {
+            if let value = read() { current = value; break }
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        guard let origin = current else {
+            throw DemoError.trackNotExposed(requested: "a readable vpot echo", exposed: "none")
+        }
+        try turnVpot(index, by: 4)
+        Thread.sleep(forTimeInterval: 0.35)
+        guard let probed = read(), abs(probed - origin) > 0.0001 else {
+            throw DemoError.verificationFailed(
+                requested: "a vpot probe response",
+                actual: "the value did not move on a 4-tick probe",
+                restored: false
+            )
+        }
+        let ticksPerUnit = 4.0 / (probed - origin)
+        try turnVpot(index, by: -4) // undo the probe
+        Thread.sleep(forTimeInterval: 0.2)
+        return { target, budget in
+            try vpotJump(index: index, target: target, ticksPerUnit: ticksPerUnit,
+                         read: read, budget: budget)
+        }
+    }
+
+    /// Records an automation curve for a vpot-controlled value (pan, a send
+    /// level, or a plugin parameter): measure the encoder's ticks-per-unit
+    /// near the working range, converge to the first point, switch to Latch,
+    /// roll playback placing calibrated jumps at each musical moment, return
+    /// to Read, restore the original value, and verify by replaying while
+    /// sampling the LCD echo.
+    static func recordVpotAutomation(
+        logic: LogicAccessibility,
+        trackName: String,
+        kindLabel: String,
+        points: [(bar: Int, beat: Double, value: Double)],
+        ramp: Bool,
+        verify: Bool,
+        tolerance: Double,
+        enterView: (Int) throws -> (read: () -> Double?, write: (Double, TimeInterval) throws -> Void),
+        restoreView: @escaping () -> Void
+    ) throws -> [String: Any] {
+        let transport = try logic.getTransport()
+        guard let tempo = transport["tempo"] as? Double else {
+            throw DemoError.trackNotExposed(
+                requested: "tempo from the control bar", exposed: "not readable"
+            )
+        }
+        let beatsPerBar = Double((transport["time_signature"] as? String)?
+            .split(separator: "/").first.flatMap { Int($0) } ?? 4)
+        let sorted = points.sorted { ($0.bar, $0.beat) < ($1.bar, $1.beat) }
+        guard let first = sorted.first, first.bar >= 2 else {
+            throw DemoError.invalidArguments("points need bar >= 2 (one bar of pre-roll)")
+        }
+        guard let channel = try findChannel(trackName: trackName) else {
+            throw DemoError.trackNotExposed(
+                requested: "MCU channel for '\(trackName)'", exposed: "not in the bank view"
+            )
+        }
+        guard try selectFoundChannel(channel) else {
+            throw DemoError.writeFailed("MCU select failed")
+        }
+        let view = try enterView(channel)
+        defer { restoreView() }
+        // The control repaints for a moment after a view switch — poll patiently.
+        var initial: Double?
+        for _ in 0..<12 {
+            if let value = view.read() { initial = value; break }
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        guard let original = initial else {
+            throw DemoError.trackNotExposed(
+                requested: "a readable \(kindLabel) value", exposed: "no echo after 3 s"
+            )
+        }
+        // Park on the first point's value before rolling.
+        try view.write(first.value, 2.0)
+
+        let msPerBeat = 60000.0 / tempo
+        func offsetMs(_ bar: Int, _ beat: Double) -> Double {
+            (Double(bar - first.bar) * beatsPerBar + (beat - 1)) * msPerBeat
+        }
+        var schedule: [(ms: Double, value: Double)] = sorted.map {
+            (offsetMs($0.bar, $0.beat), $0.value)
+        }
+        if ramp && schedule.count > 1 {
+            var expanded: [(Double, Double)] = []
+            for index in 0..<(schedule.count - 1) {
+                let a = schedule[index], b = schedule[index + 1]
+                expanded.append(a)
+                let steps = max(Int((b.ms - a.ms) / msPerBeat), 1) // 1 delvärde/slag
+                if steps > 1 {
+                    for s in 1..<steps {
+                        let t = Double(s) / Double(steps)
+                        expanded.append((a.ms + (b.ms - a.ms) * t, a.value + (b.value - a.value) * t))
+                    }
+                }
+            }
+            expanded.append(schedule[schedule.count - 1])
+            schedule = expanded
+        }
+
+        try setAutomationMode("latch", logic: logic, trackName: trackName)
+        do {
+            _ = try logic.setPlayhead(barNumber: first.bar - 1, beat: 1)
+            Thread.sleep(forTimeInterval: 0.5)
+            guard (try? setPlaying(true)) != nil else {
+                throw DemoError.writeFailed("play failed")
+            }
+            let syncDeadline = Date().addingTimeInterval(20)
+            var anchor: Date?
+            while Date() < syncDeadline {
+                if let bar = timecodeBar(), bar >= first.bar { anchor = Date(); break }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            guard let start = anchor else {
+                throw DemoError.verificationFailed(
+                    requested: "playback reaching bar \(first.bar)",
+                    actual: "the timecode never got there", restored: false
+                )
+            }
+            for (position, entry) in schedule.enumerated() {
+                let wait = entry.ms / 1000 - Date().timeIntervalSince(start)
+                if wait > 0 { Thread.sleep(forTimeInterval: wait) }
+                // The last point has no successor waiting — give it a full
+                // convergence budget so latch holds the exact end value.
+                let isLast = position == schedule.count - 1
+                try view.write(entry.value, isLast ? 1.5 : max(0.15, min(0.6, msPerBeat / 2000)))
+            }
+            Thread.sleep(forTimeInterval: 0.5)
+            _ = try? setPlaying(false)
+            try setAutomationMode("read", logic: logic, trackName: trackName)
+            try view.write(original, 2.0)
+        } catch {
+            _ = try? setPlaying(false)
+            _ = try? setAutomationMode("read", logic: logic, trackName: trackName)
+            _ = try? view.write(original, 2.0)
+            throw error
+        }
+
+        var report: [String: Any] = [
+            "success": true,
+            "state": "recorded",
+            "parameter": kindLabel,
+            "points": sorted.map { ["bar": $0.bar, "beat": $0.beat, "value": $0.value] },
+            "ramp": ramp,
+            "write_route": "mcu_vpot_latch"
+        ]
+        if verify {
+            // Playhead-chase verification: parked in Read mode, Logic chases
+            // the automation lane to the playhead position — stationary,
+            // exact reads with no live-LCD lag, and no realtime replay.
+            var samples: [[String: Any]] = []
+            for point in sorted {
+                _ = try? logic.setPlayhead(
+                    barNumber: point.bar, beat: max(Int(point.beat.rounded()), 1)
+                )
+                Thread.sleep(forTimeInterval: 0.8)
+                let observed = view.read()
+                samples.append([
+                    "bar": point.bar, "beat": point.beat,
+                    "expected": point.value,
+                    "observed": observed.map { $0 as Any } ?? NSNull() as Any,
+                    "pass": observed.map { abs($0 - point.value) <= tolerance } ?? false
+                ])
+            }
+            _ = try? view.write(original, 2.0)
+            let allPass = !samples.isEmpty && samples.allSatisfy { $0["pass"] as? Bool == true }
+            report["verified"] = allPass
+            report["verification"] = [
+                "samples": samples,
+                "tolerance": tolerance,
+                "note": "Verified by parking the playhead at each point in Read mode and reading the automation-chased value."
             ]
         } else {
             report["verified"] = false
@@ -7191,25 +7477,116 @@ private final class MCPServer {
                     throw DemoError.invalidArguments("points required: [{bar, beat?, db}, ...]")
                 }
                 let parameter = (arguments["parameter"] as? String) ?? "volume"
-                guard parameter == "volume" else {
-                    throw DemoError.invalidArguments("v1 records volume automation only; pan/plugin parameters are future work")
-                }
-                let automationPoints: [(bar: Int, beat: Double, db: Double)] = try rawPoints.map { raw in
+                let automationPoints: [(bar: Int, beat: Double, value: Double)] = try rawPoints.map { raw in
                     guard let bar = raw["bar"] as? Int,
-                          let db = (raw["db"] as? Double) ?? (raw["db"] as? Int).map(Double.init) else {
-                        throw DemoError.invalidArguments("each point needs bar (int) and db (number)")
+                          let value = (raw["value"] as? Double) ?? (raw["value"] as? Int).map(Double.init)
+                              ?? (raw["db"] as? Double) ?? (raw["db"] as? Int).map(Double.init) else {
+                        throw DemoError.invalidArguments("each point needs bar (int) and value/db (number)")
                     }
                     let beat = (raw["beat"] as? Double) ?? (raw["beat"] as? Int).map(Double.init) ?? 1.0
-                    return (bar, beat, db)
+                    return (bar, beat, value)
                 }
-                var automationResult = try MCUController.recordVolumeAutomation(
-                    logic: logic,
-                    trackName: requiredString("track_name", in: arguments),
-                    points: automationPoints,
-                    ramp: arguments["ramp"] as? Bool ?? true,
-                    verify: arguments["verify"] as? Bool ?? true
-                )
-                automationResult["track"] = try requiredString("track_name", in: arguments)
+                let automationTrack = try requiredString("track_name", in: arguments)
+                let ramp = arguments["ramp"] as? Bool ?? true
+                let verifyCurve = arguments["verify"] as? Bool ?? true
+                let toleranceArg = (arguments["tolerance"] as? Double)
+                    ?? (arguments["tolerance"] as? Int).map(Double.init)
+                var automationResult: [String: Any]
+                switch parameter {
+                case "volume":
+                    automationResult = try MCUController.recordVolumeAutomation(
+                        logic: logic,
+                        trackName: automationTrack,
+                        points: automationPoints.map { ($0.bar, $0.beat, $0.value) },
+                        ramp: ramp,
+                        verify: verifyCurve
+                    )
+                case "pan":
+                    automationResult = try MCUController.recordVpotAutomation(
+                        logic: logic, trackName: automationTrack, kindLabel: "pan",
+                        points: automationPoints, ramp: ramp, verify: verifyCurve,
+                        tolerance: toleranceArg ?? 2.0,
+                        enterView: { _ in
+                            // Pan reads and writes through the strip's pan
+                            // knob (AX): exact echo, rapid-fire stepwise write.
+                            (
+                                { [logic] in logic.stripPanValue(trackName: automationTrack) },
+                                { [logic] target, budget in
+                                    try logic.stripPanWrite(
+                                        trackName: automationTrack, target: target, budget: budget
+                                    )
+                                }
+                            )
+                        },
+                        restoreView: { }
+                    )
+                case "send":
+                    guard let sendSlot = arguments["send"] as? Int, (1...8).contains(sendSlot) else {
+                        throw DemoError.invalidArguments("parameter 'send' requires send: 1-8")
+                    }
+                    automationResult = try MCUController.recordVpotAutomation(
+                        logic: logic, trackName: automationTrack, kindLabel: "send \(sendSlot) level",
+                        points: automationPoints, ramp: ramp, verify: verifyCurve,
+                        tolerance: toleranceArg ?? 1.0,
+                        enterView: { _ in
+                            guard try MCUController.ensureSendView() else {
+                                throw DemoError.trackNotExposed(
+                                    requested: "the send channel view", exposed: "not reachable"
+                                )
+                            }
+                            try MCUController.sendViewToPage(forSend: sendSlot)
+                            let levelIndex = ((sendSlot - 1) % 2) * 4 + 1
+                            let read: () -> Double? = {
+                                guard let status = MCUController.freshStatus(),
+                                      let bottom = status["lcd_bottom"] as? String else { return nil }
+                                return MCUController.parseNumber(
+                                    MCUController.lcdFields(bottom)[levelIndex]
+                                )
+                            }
+                            let write = try MCUController.makeVpotWriter(index: levelIndex, read: read)
+                            return (read, write)
+                        },
+                        restoreView: { MCUController.exitToPan() }
+                    )
+                case "plugin":
+                    guard let slot = arguments["insert_slot"] as? Int else {
+                        throw DemoError.invalidArguments("parameter 'plugin' requires insert_slot (1-8)")
+                    }
+                    let paramName = try requiredString("plugin_parameter", in: arguments)
+                    let maxAbs = automationPoints.map { abs($0.value) }.max() ?? 1
+                    automationResult = try MCUController.recordVpotAutomation(
+                        logic: logic, trackName: automationTrack,
+                        kindLabel: "plugin slot \(slot): \(paramName)",
+                        points: automationPoints, ramp: ramp, verify: verifyCurve,
+                        tolerance: toleranceArg ?? max(0.5, maxAbs * 0.05),
+                        enterView: { _ in
+                            guard try MCUController.ensurePluginList() != nil,
+                                  try MCUController.enterPluginEdit(slot: slot) else {
+                                throw DemoError.trackNotExposed(
+                                    requested: "plugin edit mode for slot \(slot)",
+                                    exposed: "could not enter"
+                                )
+                            }
+                            guard let found = try MCUController.locateParameter(named: paramName) else {
+                                throw DemoError.trackNotExposed(
+                                    requested: "parameter '\(paramName)' in slot \(slot)",
+                                    exposed: "not found on the parameter pages"
+                                )
+                            }
+                            let read: () -> Double? = {
+                                MCUController.parameterPage().flatMap {
+                                    MCUController.parseNumber($0[found].value)
+                                }
+                            }
+                            let write = try MCUController.makeVpotWriter(index: found, read: read)
+                            return (read, write)
+                        },
+                        restoreView: { MCUController.exitToPan() }
+                    )
+                default:
+                    throw DemoError.invalidArguments("parameter must be volume, pan, send or plugin")
+                }
+                automationResult["track"] = automationTrack
                 payload = automationResult
 
             case "logic_record_midi":
@@ -8069,7 +8446,7 @@ private final class MCPServer {
             ],
             [
                 "name": "logic_record_automation",
-                "description": "Write a VOLUME automation curve on a track — no mouse, no automation-lane clicking: each target dB is calibrated to an absolute fader position via Logic's own motorized-fader echo, the track is switched to Latch over the control surface, playback rolls while the fader is placed at each point's musical moment, then the track returns to Read and the range is REPLAYED with the fader echo sampled at every point as verification. ramp (default true) interpolates smooth transitions between points; false gives stepped jumps. Points need bar >= 2 (one pre-roll bar). Takes real time (about the length of the automated range, twice with verify).",
+                "description": "Write an automation curve on a track — volume (absolute fader), pan, a send level (send: 1-8) or ANY plugin parameter (insert_slot + plugin_parameter) — with no mouse and no automation-lane clicking. The value scale follows the parameter: dB for volume/sends, -64..63 for pan, the plugin's own units otherwise. Mechanism: calibrate the control near the working range, switch the track to Latch over the control surface, roll playback placing calibrated moves at each musical moment, return to Read, restore the original value, and verify by REPLAYING the range while sampling Logic's own echo at every point. ramp (default true) interpolates between points. Points need bar >= 2. Takes real time (the automated range, twice with verify)",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
