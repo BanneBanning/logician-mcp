@@ -1408,3 +1408,9 @@ Från latensprofilen, uppmätta resultat:
 Cappade kalla läsningar skriver INTE namncachen (bara fullständiga läsningar gör det) så cachens fast-väg förblir ärlig. Viktig regression som fångades av AX-korskollen under arbetet: delta-2-stegningen driftade systematiskt en post förbi matchen och instansierade fel plugin en gång — settle-vakten + korrigeringsloopen eliminerar det, och vakten bevisade därmed sitt värde inom en timme från att den byggdes.
 
 Kvarstående ur optimeringslistan: record_midi-tempotricket (höj BPM N×, skala händelsetider — halverar+ inspelningstid), musfri logic_remove_plugin via "--"-posten.
+
+### Tempo-tricket som opt-in (2026-08-25, v0.33.0)
+
+Produktbeslut (användaren): realtid förblir DEFAULT — att höra taken spelas in är ett värde, inte en väntetid. `speed` (1–8) är opt-in för långa fraser.
+
+Mekanik: tempo-slidern i Control Bar är AXValue-skrivbar men stegvis (±1 BPM per skrivning oavsett mål) — MEN accepterar skrivningar var ~8:e ms, så `setTempo` rapid-fire-konvergerar 120→240 på 1,3 s. `logic_record_midi {speed: 4}` höjer tempot ×4, skalar händelsetiderna, spelar in, återställer tempot (verifierat: exakt återställning, restore även i felvägar). Ärlig ekonomi: korta fraser vinner lite (fast overhead på ~10 s dominerar: select, playhead-park, preroll, tail, tempo-swap); vinsten skalar med fraslängden (16 takter: ~40 s → ~13 s). Timing-jitter skalar med speed — dokumenterat i schemat med kvantiseringsrekommendation.

@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.32.0"
+private let serverVersion = "0.33.0"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -838,6 +838,55 @@ private final class LogicAccessibility {
             "deltas": deltas,
             "note": "Offline 24-bit master renders; no playback occurred. Metrics computed from the files."
         ]
+    }
+
+    // MARK: - Tempo write (control bar slider, rapid-fire stepwise)
+
+    /// Sets the project tempo by converging the control bar's Tempo slider.
+    /// The slider steps ±1 BPM per AXValue write regardless of the target,
+    /// but accepts writes every ~8 ms, so even a doubling converges in ~1.3 s.
+    func setTempo(_ target: Double) throws -> Double {
+        guard target >= 5, target <= 990 else {
+            throw DemoError.invalidArguments("tempo must be 5-990 BPM")
+        }
+        let bar = try controlBarGroup()
+        guard let inner = children(of: bar).first(where: {
+            stringAttribute($0, kAXDescriptionAttribute as String) == "Control Bar"
+        }), let slider = children(of: inner).first(where: {
+            stringAttribute($0, kAXDescriptionAttribute as String) == "Tempo"
+        }) else {
+            throw DemoError.windowNotFound("Tempo slider in the control bar")
+        }
+        let goal = Double(Int(target.rounded()))
+        let deadline = Date().addingTimeInterval(25)
+        var lastValue = Double(stringAttribute(slider, kAXValueAttribute as String)) ?? -1
+        var stuckCount = 0
+        while Date() < deadline {
+            guard let current = Double(stringAttribute(slider, kAXValueAttribute as String)) else {
+                break
+            }
+            if abs(current - goal) < 0.5 { return current }
+            _ = AXUIElementSetAttributeValue(
+                slider, kAXValueAttribute as CFString, Int(goal) as CFNumber
+            )
+            usleep(8000)
+            if current == lastValue {
+                stuckCount += 1
+                if stuckCount > 40 { break }
+            } else {
+                stuckCount = 0
+            }
+            lastValue = current
+        }
+        let final = Double(stringAttribute(slider, kAXValueAttribute as String)) ?? -1
+        guard abs(final - goal) < 0.5 else {
+            throw DemoError.verificationFailed(
+                requested: "tempo \(Int(goal)) BPM",
+                actual: "tempo stuck at \(final)",
+                restored: false
+            )
+        }
+        return final
     }
 
     // MARK: - Project lifecycle (AppleScript standard suite + template)
@@ -6520,7 +6569,14 @@ private final class MCPServer {
                     logic: logic, startBar: startBar, endBar: max(endBarGuess, startBar + 1),
                     arguments: arguments
                 )
-                let msPerBeat = 60000.0 / range.tempo
+                // speed > 1 records at a raised tempo and scales event times:
+                // the region lands at identical bar positions in a fraction
+                // of the wall time. Default 1 = real time (audible playback).
+                let requestedSpeed = (arguments["speed"] as? Double)
+                    ?? (arguments["speed"] as? Int).map(Double.init) ?? 1.0
+                let effectiveSpeed = min(max(requestedSpeed, 1.0), 8.0, 960.0 / range.tempo)
+                let recordingTempo = range.tempo * effectiveSpeed
+                let msPerBeat = 60000.0 / recordingTempo
                 var events: [(offsetMs: Double, bytes: [UInt8])] = []
                 for note in parsed {
                     let offsetBeats = Double(note.bar - startBar) * range.beatsPerBar + (note.beat - 1)
@@ -6536,18 +6592,34 @@ private final class MCPServer {
                                    [0x80 | status, UInt8(note.pitch), 0]))
                 }
                 events.sort { $0.offsetMs < $1.offsetMs }
-                var result = try MCUController.recordMIDI(
-                    logic: logic,
-                    trackName: trackName,
-                    trackNumber: arguments["track_number"] as? Int,
-                    events: events,
-                    startBar: startBar,
-                    tailMs: 600,
-                    tempo: range.tempo,
-                    beatsPerBar: range.beatsPerBar,
-                    syncCompensationMs: (arguments["sync_compensation_ms"] as? Double)
-                        ?? (arguments["sync_compensation_ms"] as? Int).map(Double.init) ?? 45
-                )
+                if effectiveSpeed > 1.001 {
+                    _ = try logic.setTempo(recordingTempo)
+                }
+                var result: [String: Any]
+                do {
+                    result = try MCUController.recordMIDI(
+                        logic: logic,
+                        trackName: trackName,
+                        trackNumber: arguments["track_number"] as? Int,
+                        events: events,
+                        startBar: startBar,
+                        tailMs: 600,
+                        tempo: recordingTempo,
+                        beatsPerBar: range.beatsPerBar,
+                        syncCompensationMs: (arguments["sync_compensation_ms"] as? Double)
+                            ?? (arguments["sync_compensation_ms"] as? Int).map(Double.init) ?? 45
+                    )
+                } catch {
+                    if effectiveSpeed > 1.001 { _ = try? logic.setTempo(range.tempo) }
+                    throw error
+                }
+                if effectiveSpeed > 1.001 {
+                    let restored = (try? logic.setTempo(range.tempo)) ?? -1
+                    result["speed"] = effectiveSpeed
+                    result["recording_tempo"] = recordingTempo
+                    result["tempo_restored"] = abs(restored - range.tempo) < 0.5
+                    result["speed_note"] = "Recorded at \(Int(recordingTempo)) BPM and restored to \(Int(range.tempo)); timing jitter scales with speed — quantize if it matters."
+                }
                 result["track"] = trackName
                 result["notes"] = parsed.count
                 result["start_bar"] = startBar
@@ -7210,6 +7282,7 @@ private final class MCPServer {
                         "tempo": ["type": "number", "description": "Override BPM; default reads the control bar."],
                         "beats_per_bar": ["type": "number", "description": "Override meter; default reads the control bar."],
                         "verify_render": ["type": "boolean", "description": "Default true: freeze-render the recorded bars afterwards and return slice metrics as proof."],
+                        "speed": ["type": "number", "description": "Optional fast mode: record at speed x tempo (1-8, default 1) and scale event times — same bar positions in a fraction of the wall time. Default 1 keeps real-time recording so the take is audible as it happens; higher speeds trade timing precision (jitter scales with speed) and chipmunked monitoring."],
                         "sync_compensation_ms": ["type": "number", "description": "Timecode display latency compensated in the beat-edge sync, default 45 ms (measured). Raise if notes land early, lower if late."],
                         "expected_project_path": ["type": "string"]
                     ],
