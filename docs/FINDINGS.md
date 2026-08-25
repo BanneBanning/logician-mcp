@@ -1463,3 +1463,13 @@ Felvägar återställer alltid: stop + Read-läge + ursprungsfader. v1 = volym; 
 - **Verifieringsgenombrott: playhead-chase.** Replay-sampling av plugin-LCD:n underrapporterade (LCD:n laggar under uppspelning; kurvan såg ut att sluta på −33 när den i själva verket slutade exakt på −35 — bevisat genom att parkera playheaden efter riden: Logic chasar automationslanen till playheadpositionen och ger stationära, exakta avläsningar). Vpot-motorns verifiering parkerar nu playheaden på varje punkt i Read-läge i stället för att replaya — exaktare OCH snabbare. Verifierat: Compressor Thrs −20→−35 över takt 2–4, chase-avläsning −20,5/−35,0.
 
 Send-vägen delar exakt samma maskineri men är inte skarptestad end-to-end (sandlådan saknar sends) — noterat som känd lucka tills ett send-projekt testas.
+
+### Send-automationens skarptest (2026-08-26, v0.38.1)
+
+Användarens utmaning: "gör testet i detta projekt — du har verktygen". Stämde nästan helt:
+
+1. **Send-SKAPANDE via kontrollytan bevisat**: vpot-vridning på SenNIn-destinationsfältet i SE-vyn bläddrar destinationer (Output 1/2, Bus 1, 2, 3…) och vpot-press bekräftar — Inst 1 fick en Bus 1-send helt via MIDI. OBS: denna bläddrare stegar **1 post per tick** (pluginbläddraren: 1 per 2 ticks) — stegtakten måste probas per bläddrartyp. Kandidat för `logic_add_send`-verktyg.
+2. Nya sends startar på **"-oodB"** (−∞): `parseDb` hanterar nu -oo (som −70) — parseNumber gjorde det inte.
+3. **Send-automationen skriver äkta kurvor** (chase: −15,2 mitt i rampen, slutvärde −7,8 stabilt efter riden) men träffar inte målen exakt: (a) ankarpunkten vid första takten registreras inte trots touch-wiggle (Latch verkar inte fånga send-vpotens touch i SE-vyn — kurvan börjar först vid första faktiska värdeändringen), (b) slutvärdet stannade −7,8 mot mål −6 (konvergensen i SE-vyn under uppspelning terminerar tidigt). **Status: funktionell men ±2 dB — volym/pan/plugin är exakta; send behöver en egen finjusteringssession.** Även: vy-tillståndsläxa igen — en abort som lämnar PN-vyn aktiv gör att nästa raw-vpot-probe träffar PAN på kanal 0; alltid verifiera assignment-koden före vpot-vridningar.
+
+Incidentnotis: pan-vridningar på Audio 1 under felsökningen tog aldrig (pan var kvar på 0 — enkelparamläget i PN ignorerade dem); inget att återställa.

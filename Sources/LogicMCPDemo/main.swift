@@ -4996,6 +4996,7 @@ private enum MCUController {
         let normalized = text
             .replacingOccurrences(of: ",", with: ".")
             .trimmingCharacters(in: .whitespaces)
+        if normalized.hasPrefix("-oo") { return -70.0 } // Logic's minus infinity
         let numeric = normalized.prefix { "+-0123456789.".contains($0) }
         return Double(numeric)
     }
@@ -6176,10 +6177,20 @@ extension MCUController {
                 )
             }
             for (position, entry) in schedule.enumerated() {
-                let wait = entry.ms / 1000 - Date().timeIntervalSince(start)
+                // Vpot convergence takes ~0.3 s — lead each write so the
+                // curve centers on the musical moment instead of trailing it.
+                let lead = 0.35
+                let wait = entry.ms / 1000 - lead - Date().timeIntervalSince(start)
                 if wait > 0 { Thread.sleep(forTimeInterval: wait) }
-                // The last point has no successor waiting — give it a full
-                // convergence budget so latch holds the exact end value.
+                if position == 0 {
+                    // Latch only writes on a TOUCH: if the control already
+                    // sits on the first value nothing would be recorded, so
+                    // wiggle one unit down and back to anchor the curve here.
+                    if let current = view.read(), abs(current - entry.value) < 0.01 {
+                        try view.write(entry.value - 1, 0.25)
+                        try view.write(entry.value, 0.4)
+                    }
+                }
                 let isLast = position == schedule.count - 1
                 try view.write(entry.value, isLast ? 1.5 : max(0.15, min(0.6, msPerBeat / 2000)))
             }
@@ -7539,7 +7550,8 @@ private final class MCPServer {
                             let read: () -> Double? = {
                                 guard let status = MCUController.freshStatus(),
                                       let bottom = status["lcd_bottom"] as? String else { return nil }
-                                return MCUController.parseNumber(
+                                // parseDb handles "-oodB" (new sends start at -inf)
+                                return MCUController.parseDb(
                                     MCUController.lcdFields(bottom)[levelIndex]
                                 )
                             }
