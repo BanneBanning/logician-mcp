@@ -1429,3 +1429,16 @@ Mekanik: tempo-slidern i Control Bar är AXValue-skrivbar men stegvis (±1 BPM p
 `logic_select_region` väljer exakt EN region (spår + namn/starttakt; tvetydighet vägras med kandidatlista) — `AXSelected` är skrivbar åt båda hållen, och `exclusive` (default) rensar först alla andra regionval så nästa redigeringskommando träffar bara målet. Verifierat: exklusivt val + korrekt avmarkering av övriga. En stale-element-transient direkt efter kartläsning motiverade engångs-retry i verifieringen.
 
 Regionerna exponerar också AXHandles (trim-handtag!) och AXPosition/AXFrame — pixelvägar för framtida behov, men nudge-key-commands är rätt flyttmekanism. Nästa: redigeringssviten (cut/copy/paste/delete/nudge via inlärda kommandon ovanpå valet).
+
+### Redigeringssviten (2026-08-25, v0.36.0)
+
+**`logic_delete_region`, `logic_move_region`, `logic_copy_region`** — klipp/klistra/flytta utan mus, byggda på exklusivt regionval + inlärda key commands (Cut=108, Copy=109, Paste=110, Delete=111, Nudge bar/beat höger/vänster=112–115; exakta namn: "Nudge Region/Event Position Right by Bar" osv).
+
+Säkerhetsdesign: **delete vägrar om inte EXAKT en region är vald projektövergripande** omedelbart innan kommandot avfyras (`selectedRegionCount`-vakten); flytt verifieras exakt mot arrangemangskartan för heltaktssteg; copy verifieras genom att regionen dyker upp på måltakten.
+
+Två buggar hittade och fixade under verifieringen:
+
+1. **Paste landade på fel slag**: `setPlayhead(bar:)` konvergerar bara takten och lämnar slaget där det stod — paste hamnade på 20.4 i stället för 20.1 (samma attributklass som beat-synk-buggen i record). Fix: copy sätter alltid beat 1 explicit.
+2. **Delete kräver fokus**: Delete-kommandot agerar på fokuserad area — med enbart AXSelected misslyckades 3 av 4 raderingar tyst ("region still in the arrangement map"). Regionerna har skrivbart AXFocused; selectRegion ger nu regionen tangentbordsfokus efter valet. Därefter 3/3 raderingar.
+
+Skarp användning direkt: användarens skräpregioner på Bas i Testlåt (test-tagningar "Bas" @ 44, 48, 62, 63) raderade och verifierade; spåret återställt till originalinnehållet (Inst 31 @ 9, 23, 35). Regionen @73 som synts tidigare fanns inte längre i kartan (redan borttagen).

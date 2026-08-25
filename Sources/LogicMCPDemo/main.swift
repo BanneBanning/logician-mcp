@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.35.0"
+private let serverVersion = "0.36.0"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -997,12 +997,186 @@ private final class LogicAccessibility {
                 restored: false
             )
         }
+        // Key commands like Delete act on the FOCUSED area's selection —
+        // hand the region keyboard focus so they cannot miss (best effort).
+        _ = AXUIElementSetAttributeValue(hit.0, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         var result = parseRegion(hit.0)
         result["success"] = true
         result["verified"] = true
         result["track"] = row.track
         result["exclusive"] = exclusive
         return result
+    }
+
+    // MARK: - Region editing (exclusive selection + learned key commands)
+
+    private func fireKeyCommand(_ name: String) throws {
+        let command = try MCUController.resolveKeyCommand(named: name, logic: self)
+        _ = try MCUController.triggerKeyCommand(note: command.note, channel: command.channel)
+    }
+
+    private func regionSnapshot(trackName: String) throws -> [[String: Any]] {
+        let map = try listRegions(trackName: trackName)
+        return ((map["tracks"] as? [[String: Any]])?.first?["regions"] as? [[String: Any]]) ?? []
+    }
+
+    /// Counts selected regions across ALL visible rows — the guard that must
+    /// pass (exactly 1) immediately before any destructive key command fires.
+    private func selectedRegionCount() throws -> Int {
+        try regionRows().reduce(0) { sum, row in
+            sum + row.regions.filter { stringAttribute($0, "AXSelected") == "1" }.count
+        }
+    }
+
+    func deleteRegion(
+        trackName: String, regionName: String?, startBar: Int?
+    ) throws -> [String: Any] {
+        let before = try regionSnapshot(trackName: trackName)
+        let selection = try selectRegion(
+            trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true
+        )
+        guard try selectedRegionCount() == 1 else {
+            throw DemoError.verificationFailed(
+                requested: "exactly one selected region before Delete",
+                actual: "\(try selectedRegionCount()) regions selected; refusing to fire Delete",
+                restored: true
+            )
+        }
+        try fireKeyCommand("Delete")
+        var gone = false
+        for _ in 0..<10 {
+            Thread.sleep(forTimeInterval: 0.4)
+            let after = try regionSnapshot(trackName: trackName)
+            let stillThere = after.contains {
+                $0["start_bar"] as? Int == selection["start_bar"] as? Int
+                    && ($0["name"] as? String) == (selection["name"] as? String)
+            }
+            if after.count == before.count - 1 && !stillThere { gone = true; break }
+        }
+        guard gone else {
+            throw DemoError.verificationFailed(
+                requested: "region '\(selection["name"] ?? "?")' deleted",
+                actual: "the region is still in the arrangement map (undo history unaffected)",
+                restored: false
+            )
+        }
+        return [
+            "success": true, "verified": true, "state": "deleted",
+            "track": trackName,
+            "region": selection["name"] ?? "?",
+            "start_bar": selection["start_bar"] ?? NSNull(),
+            "note": "Removable mistake? Undo restores it."
+        ]
+    }
+
+    func moveRegion(
+        trackName: String, regionName: String?, startBar: Int?,
+        byBars: Int, byBeats: Int
+    ) throws -> [String: Any] {
+        guard byBars != 0 || byBeats != 0 else {
+            throw DemoError.invalidArguments("pass a non-zero by_bars and/or by_beats")
+        }
+        let selection = try selectRegion(
+            trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true
+        )
+        guard try selectedRegionCount() == 1 else {
+            throw DemoError.verificationFailed(
+                requested: "exactly one selected region before nudging",
+                actual: "selection drifted; refusing", restored: true
+            )
+        }
+        let oldStart = selection["start_bar"] as? Int ?? 0
+        for _ in 0..<abs(byBars) {
+            try fireKeyCommand(byBars > 0
+                ? "Nudge Region/Event Position Right by Bar"
+                : "Nudge Region/Event Position Left by Bar")
+            Thread.sleep(forTimeInterval: 0.15)
+        }
+        for _ in 0..<abs(byBeats) {
+            try fireKeyCommand(byBeats > 0
+                ? "Nudge Region/Event Position Right by Beat"
+                : "Nudge Region/Event Position Left by Beat")
+            Thread.sleep(forTimeInterval: 0.15)
+        }
+        Thread.sleep(forTimeInterval: 0.4)
+        // Whole-bar moves verify exactly; beat moves verify that the region
+        // left its old slot (Logic's help text rounds to bars+beats).
+        let after = try regionSnapshot(trackName: trackName)
+        let target = after.first {
+            ($0["name"] as? String) == (selection["name"] as? String)
+                && ($0["selected"] as? Bool) == true
+        }
+        guard let moved = target else {
+            throw DemoError.verificationFailed(
+                requested: "the moved region still selected at its new position",
+                actual: "could not find it in the arrangement map",
+                restored: false
+            )
+        }
+        if byBeats == 0, let newBar = moved["start_bar"] as? Int, newBar != oldStart + byBars {
+            throw DemoError.verificationFailed(
+                requested: "region at bar \(oldStart + byBars)",
+                actual: "region at bar \(newBar)",
+                restored: false
+            )
+        }
+        return [
+            "success": true, "verified": true, "state": "moved",
+            "track": trackName,
+            "region": selection["name"] ?? "?",
+            "from_bar": oldStart,
+            "to_bar": moved["start_bar"] ?? NSNull(),
+            "to_beat": moved["start_beat"] ?? 1
+        ]
+    }
+
+    func copyRegion(
+        trackName: String, regionName: String?, startBar: Int?,
+        toBar: Int, toTrack: String?, move: Bool
+    ) throws -> [String: Any] {
+        let selection = try selectRegion(
+            trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true
+        )
+        guard try selectedRegionCount() == 1 else {
+            throw DemoError.verificationFailed(
+                requested: "exactly one selected region before \(move ? "Cut" : "Copy")",
+                actual: "selection drifted; refusing", restored: true
+            )
+        }
+        try fireKeyCommand(move ? "Cut" : "Copy")
+        Thread.sleep(forTimeInterval: 0.4)
+        let destinationTrack = toTrack ?? trackName
+        if let target = toTrack {
+            _ = try selectTrack(trackName: target, trackNumber: nil, expectedProjectPath: nil)
+        }
+        // beat 1 explicitly: the bar converge alone leaves the beat wherever
+        // the playhead last stood, and Paste lands at the playhead exactly.
+        _ = try setPlayhead(barNumber: toBar, beat: 1)
+        try fireKeyCommand("Paste")
+        var pasted: [String: Any]?
+        for _ in 0..<10 {
+            Thread.sleep(forTimeInterval: 0.4)
+            let after = try regionSnapshot(trackName: destinationTrack)
+            if let hit = after.first(where: { $0["start_bar"] as? Int == toBar }) {
+                pasted = hit
+                break
+            }
+        }
+        guard let landed = pasted else {
+            throw DemoError.verificationFailed(
+                requested: "a region at bar \(toBar) on '\(destinationTrack)'",
+                actual: "nothing appeared there after Paste (clipboard state uncertain)",
+                restored: false
+            )
+        }
+        return [
+            "success": true, "verified": true,
+            "state": move ? "moved_via_clipboard" : "copied",
+            "region": selection["name"] ?? "?",
+            "from": ["track": trackName, "start_bar": selection["start_bar"] ?? NSNull()],
+            "to": ["track": destinationTrack, "start_bar": landed["start_bar"] ?? toBar],
+            "note": "Paste lands at the playhead on the selected track."
+        ]
     }
 
     // MARK: - Tempo write (control bar slider, rapid-fire stepwise)
@@ -4378,6 +4552,14 @@ private enum KeyCommandRegistry {
         ("redo", "Redo", 101),
         ("flashback", "Flashback Capture as Recording", 102),
         ("split regions/events", "Split Regions/Events at Playhead Position", 103),
+        ("cut", "Cut", 108),
+        ("copy", "Copy", 109),
+        ("paste", "Paste", 110),
+        ("delete", "Delete", 111),
+        ("nudge region", "Nudge Region/Event Position Right by Bar", 112),
+        ("nudge region", "Nudge Region/Event Position Left by Bar", 113),
+        ("nudge region", "Nudge Region/Event Position Right by Beat", 114),
+        ("nudge region", "Nudge Region/Event Position Left by Beat", 115),
         ("create marker", "Create Marker", 104)
     ]
 }
@@ -7235,6 +7417,35 @@ private final class MCPServer {
                     exclusive: arguments["exclusive"] as? Bool ?? true
                 )
 
+            case "logic_delete_region":
+                payload = try logic.deleteRegion(
+                    trackName: requiredString("track_name", in: arguments),
+                    regionName: arguments["region_name"] as? String,
+                    startBar: arguments["start_bar"] as? Int
+                )
+
+            case "logic_move_region":
+                payload = try logic.moveRegion(
+                    trackName: requiredString("track_name", in: arguments),
+                    regionName: arguments["region_name"] as? String,
+                    startBar: arguments["start_bar"] as? Int,
+                    byBars: arguments["by_bars"] as? Int ?? 0,
+                    byBeats: arguments["by_beats"] as? Int ?? 0
+                )
+
+            case "logic_copy_region":
+                guard let toBar = arguments["to_bar"] as? Int else {
+                    throw DemoError.invalidArguments("missing integer: to_bar")
+                }
+                payload = try logic.copyRegion(
+                    trackName: requiredString("track_name", in: arguments),
+                    regionName: arguments["region_name"] as? String,
+                    startBar: arguments["start_bar"] as? Int,
+                    toBar: toBar,
+                    toTrack: arguments["to_track"] as? String,
+                    move: arguments["move"] as? Bool ?? false
+                )
+
             case "logic_set_tempo":
                 let bpm = (arguments["bpm"] as? Double)
                     ?? (arguments["bpm"] as? Int).map(Double.init)
@@ -7671,6 +7882,53 @@ private final class MCPServer {
                         "exclusive": ["type": "boolean", "description": "Default true: clear other selections first."]
                     ],
                     "required": ["track_name"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "logic_delete_region",
+                "description": "DESTRUCTIVE: delete one region (selected exclusively first; refuses unless exactly ONE region is selected project-wide right before Delete fires). Verified against the arrangement map; Undo restores.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "track_name": ["type": "string"],
+                        "region_name": ["type": "string"],
+                        "start_bar": ["type": "integer"]
+                    ],
+                    "required": ["track_name"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "logic_move_region",
+                "description": "Move one region by whole bars and/or beats via Logic's nudge key commands (no dragging, no mouse). Whole-bar moves are verified exactly against the arrangement map.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "track_name": ["type": "string"],
+                        "region_name": ["type": "string"],
+                        "start_bar": ["type": "integer", "description": "Which region (its current start bar)."],
+                        "by_bars": ["type": "integer", "description": "Positive = right, negative = left."],
+                        "by_beats": ["type": "integer"]
+                    ],
+                    "required": ["track_name"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "logic_copy_region",
+                "description": "Copy (or move, with move: true = Cut) one region to a target bar, optionally onto another track: exclusive select, Copy/Cut, select destination track, park playhead, Paste. Verified by the region appearing at the target bar in the arrangement map.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "track_name": ["type": "string"],
+                        "region_name": ["type": "string"],
+                        "start_bar": ["type": "integer"],
+                        "to_bar": ["type": "integer"],
+                        "to_track": ["type": "string", "description": "Destination track; default same track."],
+                        "move": ["type": "boolean", "description": "true uses Cut instead of Copy (moves across tracks)."]
+                    ],
+                    "required": ["track_name", "to_bar"],
                     "additionalProperties": false
                 ]
             ],
