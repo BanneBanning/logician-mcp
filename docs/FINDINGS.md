@@ -1487,3 +1487,15 @@ Slutresultat send: −19,8/−20 och −6,1/−6. Familjens facit: volym exakt, 
 ### CC + pitch bend i record_midi (2026-08-26, v0.40.0)
 
 `logic_record_midi` tar nu `cc_events` (bar/beat/cc/value/channel — modhjul, expression, valfri controller) och `pitch_bends` (value −8192..8191, 0 = center) — händelserna byggs in i samma tidsstämplade ström som noterna och spelas in i samma region. Billig utbyggnad: bryggans midi_stream tog redan godtyckliga bytes; bara schemat och offset-matematiken behövde breddas (start_bar/duration tar nu hänsyn till cc/bend-händelser som ligger utanför notintervallet). Verifierat: C3 med 9-punkters modsvep + 8-punkters benddyk (19 händelser), inspelat och render-verifierat; ljudfilen levererad till användaren som hörbart bevis.
+
+### Spårlivscykel, send-destinationer, presets (2026-08-26, v0.41.0)
+
+**`logic_rename_track`**: headerns/stripens namnfält ignorerar direkta AXValue-skrivningar OCH AXPress — vägen är key commandet **"Rename Track"** som öppnar inline-editorn, vars fokuserade element ÄR skrivbart (AXValue + AXConfirm). Fälla fixad: rename-POPOVERN hänger kvar efter bekräftelsen och blockerar efterföljande kommandon — den stängs nu explicit (AXDialog med nya namnet som titel).
+
+**`logic_duplicate_track`**: Logic har inget "Duplicate Track"-kommando — det heter **"New Track with Duplicate Settings and Content"**. Verifierad via spårantal.
+
+**`logic_delete_track`** (destruktiv): selektionen omverifieras mot spårlistan omedelbart före avfyrning; verifieringen räknar namn-FÖREKOMSTER (inte total frånvaro — dubbletter delar ju namn).
+
+**`logic_add_send`**: den manuellt bevisade destinationsbläddraren paketerad — första lediga slot, bläddra till namngiven destination (1 post/tick i denna bläddrare), settle-verifiera, bekräfta, verifiera via send-listan. Nya sends startar på −∞; sätt nivå med logic_mcu_set_send.
+
+**`logic_plugin_preset`**: key commandet **"Next/Previous Plug-in Setting for topmost Plug-in Window"** (agerar på översta pluginfönstret — ingen fokusproblematik) + verifiering via pluginfönstrets preset-popup (AXPopUpButton-etiketten läsbar). Verifierat: "Default Preset" → "Classic Drums" → "VCA Vocal" på Compressor. Fönstret stängs igen om verktyget öppnade det.

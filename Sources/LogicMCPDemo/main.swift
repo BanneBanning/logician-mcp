@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.40.0"
+private let serverVersion = "0.41.0"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -1017,6 +1017,94 @@ private final class LogicAccessibility {
             return Double(stringAttribute(child, kAXValueAttribute as String))
         }
         return nil
+    }
+
+    /// The preset label from a plugin window's header (the rightmost popup).
+    func pluginPresetLabel(windowTitle: String) -> String? {
+        guard let windows = try? logicWindows() else { return nil }
+        for window in windows
+        where stringAttribute(window, kAXTitleAttribute as String) == windowTitle
+            && stringAttribute(window, kAXSubroleAttribute as String) != "AXStandardWindow" {
+            var popups: [String] = []
+            func walk(_ element: AXUIElement, _ depth: Int) {
+                guard depth < 6 else { return }
+                if stringAttribute(element, kAXRoleAttribute as String) == "AXPopUpButton" {
+                    popups.append(stringAttribute(element, kAXValueAttribute as String))
+                }
+                for child in children(of: element) { walk(child, depth + 1) }
+            }
+            walk(window, 0)
+            return popups.last { !$0.isEmpty }
+        }
+        return nil
+    }
+
+    /// Renames a track by writing the channel strip's name field.
+    func renameTrack(trackName: String, newName: String) throws -> [String: Any] {
+        guard !newName.trimmingCharacters(in: .whitespaces).isEmpty else {
+            throw DemoError.invalidArguments("new_name must be non-empty")
+        }
+        _ = try selectTrack(trackName: trackName, trackNumber: nil, expectedProjectPath: nil)
+        // The header/strip name fields ignore direct AXValue writes; the
+        // Rename Track key command opens an inline editor whose focused
+        // element IS settable.
+        let command = try MCUController.resolveKeyCommand(named: "Rename Track", logic: self)
+        _ = try MCUController.triggerKeyCommand(note: command.note, channel: command.channel)
+        var editor: AXUIElement?
+        guard let application = NSRunningApplication
+            .runningApplications(withBundleIdentifier: bundleIdentifier).first else {
+            throw DemoError.logicNotRunning
+        }
+        let appElement = AXUIElementCreateApplication(application.processIdentifier)
+        for _ in 0..<15 {
+            Thread.sleep(forTimeInterval: 0.2)
+            if let focused = attribute(appElement, "AXFocusedUIElement") {
+                let element = focused as! AXUIElement
+                var settable = DarwinBoolean(false)
+                AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
+                if settable.boolValue { editor = element; break }
+            }
+        }
+        guard let field = editor else {
+            throw DemoError.trackNotExposed(
+                requested: "the inline rename editor",
+                exposed: "no settable focused element appeared after Rename Track"
+            )
+        }
+        let status = AXUIElementSetAttributeValue(
+            field, kAXValueAttribute as CFString, newName as CFString
+        )
+        guard status == .success else {
+            throw DemoError.writeFailed("name write returned AXError \(status.rawValue)")
+        }
+        _ = AXUIElementPerformAction(field, kAXConfirmAction as CFString)
+        Thread.sleep(forTimeInterval: 0.6)
+        // The rename popover can linger after confirmation and blocks
+        // subsequent commands — close any dialog carrying the new name.
+        if let windows = try? logicWindows() {
+            for window in windows
+            where stringAttribute(window, kAXSubroleAttribute as String) == "AXDialog"
+                && stringAttribute(window, kAXTitleAttribute as String) == newName {
+                if let close = attribute(window, kAXCloseButtonAttribute as String) {
+                    _ = AXUIElementPerformAction(close as! AXUIElement, kAXPressAction as CFString)
+                }
+            }
+        }
+        Thread.sleep(forTimeInterval: 0.3)
+        let tracks = ((try? listTracks())?["tracks"] as? [[String: Any]]) ?? []
+        guard tracks.contains(where: {
+            ($0["track_name"] as? String)?.caseInsensitiveCompare(newName) == .orderedSame
+        }) else {
+            throw DemoError.verificationFailed(
+                requested: "track renamed to '\(newName)'",
+                actual: "no track header shows the new name",
+                restored: false
+            )
+        }
+        return [
+            "success": true, "verified": true, "state": "renamed",
+            "from": trackName, "to": newName
+        ]
     }
 
     /// Rapid-fire stepwise write toward a pan target on the strip's pan
@@ -4605,6 +4693,11 @@ private enum KeyCommandRegistry {
         ("nudge region", "Nudge Region/Event Position Left by Bar", 113),
         ("nudge region", "Nudge Region/Event Position Right by Beat", 114),
         ("nudge region", "Nudge Region/Event Position Left by Beat", 115),
+        ("duplicate", "New Track with Duplicate Settings and Content", 116),
+        ("delete track", "Delete Track", 118),
+        ("rename track", "Rename Track", 119),
+        ("next plug-in", "Next Plug-in Setting for topmost Plug-in Window", 120),
+        ("previous plug-in", "Previous Plug-in Setting for topmost Plug-in Window", 121),
         ("create marker", "Create Marker", 104)
     ]
 }
@@ -5658,6 +5751,108 @@ extension MCUController {
             Thread.sleep(forTimeInterval: 0.15)
         }
         _ = quiescentStatus()
+    }
+
+    /// Creates a send by browsing the destination field of the first empty
+    /// send slot (1 entry per tick in THIS browser, unlike the plugin
+    /// browser's 1-per-2), settle-verifying the shown name, and confirming.
+    static func addSend(
+        logic: LogicAccessibility, trackName: String, destination: String
+    ) throws -> [String: Any]? {
+        guard freshStatus() != nil else { return nil }
+        guard let channel = try findChannel(trackName: trackName) else { return nil }
+        guard try selectFoundChannel(channel) else { return nil }
+        guard try ensureSendView() else { return nil }
+        defer { exitToPan() }
+        try sendViewLeftmost()
+        // find first empty slot across the pages
+        var slotNumber: Int?
+        for page in 0..<4 {
+            guard let status = freshStatus(),
+                  let top = status["lcd_top"] as? String,
+                  let bottom = status["lcd_bottom"] as? String else { break }
+            for half in 0..<2 {
+                let base = half * 4
+                if lcdFields(top)[base].hasPrefix("Sen"),
+                   ["", "--"].contains(lcdFields(bottom)[base]) {
+                    slotNumber = page * 2 + half + 1
+                    break
+                }
+            }
+            if slotNumber != nil { break }
+            try pressNote(0x63)
+            Thread.sleep(forTimeInterval: 0.2)
+            _ = quiescentStatus()
+        }
+        guard let slot = slotNumber else {
+            throw DemoError.trackNotExposed(
+                requested: "an empty send slot", exposed: "all 8 send slots are occupied"
+            )
+        }
+        let destIndex = ((slot - 1) % 2) * 4
+        func shownDestination() -> String {
+            guard let status = freshStatus(),
+                  let bottom = status["lcd_bottom"] as? String else { return "" }
+            let start = bottom.index(bottom.startIndex, offsetBy: min(destIndex * 7, bottom.count))
+            let raw = String(bottom[start...])
+            return (raw.range(of: "    ").map { String(raw[..<$0.lowerBound]) } ?? raw)
+                .trimmingCharacters(in: .whitespaces)
+        }
+        var entries: [String] = []
+        var found = false
+        for _ in 0..<80 {
+            let before = freshStatus()?["received_events"] as? Int ?? -1
+            let response = try MCUBridge.send(["cmd": "vpot", "index": destIndex, "delta": 1])
+            guard response["ok"] as? Bool == true else { return nil }
+            _ = awaitEvents(since: before, timeoutMs: 300)
+            _ = quiescentStatus()
+            let name = shownDestination()
+            guard !name.isEmpty, name != "--" else { continue }
+            if name.caseInsensitiveCompare(destination) == .orderedSame { found = true; break }
+            if name == entries.last { continue }
+            if let firstEntry = entries.first, name == firstEntry, entries.count > 2 {
+                exitToPan()
+                throw DemoError.trackNotExposed(
+                    requested: "destination '\(destination)'",
+                    exposed: "the browser wrapped; entries: " + entries.joined(separator: ", ")
+                )
+            }
+            entries.append(name)
+        }
+        guard found else {
+            throw DemoError.openVerificationFailed(
+                "the destination browser never showed '\(destination)'"
+            )
+        }
+        Thread.sleep(forTimeInterval: 0.3)
+        _ = quiescentStatus()
+        guard shownDestination().caseInsensitiveCompare(destination) == .orderedSame else {
+            throw DemoError.verificationFailed(
+                requested: "'\(destination)' shown at confirmation time",
+                actual: "the entry drifted to '\(shownDestination())'; aborted",
+                restored: true
+            )
+        }
+        let confirm = try MCUBridge.send(["cmd": "vpot_press", "index": destIndex])
+        guard confirm["ok"] as? Bool == true else { return nil }
+        Thread.sleep(forTimeInterval: 1.0)
+        guard let sends = try readSends(),
+              sends.contains(where: {
+                  ($0["send"] as? Int) == slot
+                      && (($0["destination"] as? String) ?? "").caseInsensitiveCompare(destination) == .orderedSame
+              }) else {
+            throw DemoError.verificationFailed(
+                requested: "send \(slot) -> \(destination)",
+                actual: "the send list does not show it after confirmation",
+                restored: false
+            )
+        }
+        return [
+            "success": true, "verified": true, "state": "added",
+            "send": slot, "destination": destination,
+            "level": "-oo dB (new sends start silent; set with logic_mcu_set_send)",
+            "write_route": "mcu_send_destination_browser"
+        ]
     }
 
     /// Pages the send channel view to the page holding the given send slot.
@@ -7873,6 +8068,129 @@ private final class MCPServer {
                     expectedProjectPath: arguments["expected_project_path"] as? String
                 )
 
+            case "logic_plugin_preset":
+                let presetTrack = try requiredString("track_name", in: arguments)
+                let presetPlugin = try requiredString("plugin_name", in: arguments)
+                let direction = (arguments["direction"] as? String) ?? "next"
+                guard ["next", "previous"].contains(direction) else {
+                    throw DemoError.invalidArguments("direction must be 'next' or 'previous'")
+                }
+                let steps = max(arguments["steps"] as? Int ?? 1, 1)
+                _ = try logic.selectTrack(trackName: presetTrack, trackNumber: arguments["track_number"] as? Int, expectedProjectPath: nil)
+                let opened = try logic.openPlugin(
+                    trackName: presetTrack, pluginName: presetPlugin,
+                    insertIndex: arguments["insert_index"] as? Int, expectedProjectPath: nil
+                )
+                let openedByUs = (opened["state"] as? String) == "opened"
+                let labelBefore = logic.pluginPresetLabel(windowTitle: presetTrack)
+                let presetCommand = try MCUController.resolveKeyCommand(
+                    named: direction == "next"
+                        ? "Next Plug-in Setting for topmost Plug-in Window"
+                        : "Previous Plug-in Setting for topmost Plug-in Window",
+                    logic: logic
+                )
+                for _ in 0..<steps {
+                    _ = try MCUController.triggerKeyCommand(note: presetCommand.note, channel: presetCommand.channel)
+                    Thread.sleep(forTimeInterval: 0.5)
+                }
+                Thread.sleep(forTimeInterval: 0.5)
+                let labelAfter = logic.pluginPresetLabel(windowTitle: presetTrack)
+                if openedByUs {
+                    _ = try? logic.closePlugin(trackName: presetTrack, pluginName: presetPlugin, insertIndex: arguments["insert_index"] as? Int)
+                }
+                payload = [
+                    "success": true,
+                    "verified": labelAfter != nil && labelAfter != labelBefore,
+                    "direction": direction,
+                    "steps": steps,
+                    "preset_before": labelBefore.map { $0 as Any } ?? NSNull() as Any,
+                    "preset_after": labelAfter.map { $0 as Any } ?? NSNull() as Any,
+                    "note": labelAfter == labelBefore
+                        ? "The preset label did not change (end of the list, or the plugin has no factory settings)."
+                        : "Preset stepped via the topmost-plugin-window key command."
+                ]
+
+            case "logic_rename_track":
+                payload = try logic.renameTrack(
+                    trackName: requiredString("track_name", in: arguments),
+                    newName: requiredString("new_name", in: arguments)
+                )
+
+            case "logic_duplicate_track":
+                let dupTrack = try requiredString("track_name", in: arguments)
+                _ = try logic.selectTrack(trackName: dupTrack, trackNumber: arguments["track_number"] as? Int, expectedProjectPath: nil)
+                let dupBefore = ((try? logic.listTracks())?["tracks"] as? [[String: Any]])?.count ?? 0
+                let dupCommand = try MCUController.resolveKeyCommand(named: "New Track with Duplicate Settings and Content", logic: logic)
+                _ = try MCUController.triggerKeyCommand(note: dupCommand.note, channel: dupCommand.channel)
+                var dupAfter: [[String: Any]] = []
+                var duplicated = false
+                for _ in 0..<15 {
+                    Thread.sleep(forTimeInterval: 0.3)
+                    dupAfter = ((try? logic.listTracks())?["tracks"] as? [[String: Any]]) ?? []
+                    if dupAfter.count > dupBefore { duplicated = true; break }
+                }
+                payload = [
+                    "success": duplicated, "verified": duplicated,
+                    "state": duplicated ? "duplicated" : "failed",
+                    "track": dupTrack,
+                    "tracks_after": dupAfter.map { ["track_number": $0["track_number"] ?? 0, "track_name": $0["track_name"] ?? ""] }
+                ]
+
+            case "logic_delete_track":
+                let delTrack = try requiredString("track_name", in: arguments)
+                _ = try logic.selectTrack(trackName: delTrack, trackNumber: arguments["track_number"] as? Int, expectedProjectPath: nil)
+                // DESTRUCTIVE: re-verify that the selected track really is the
+                // requested one right before firing.
+                let delList = ((try? logic.listTracks())?["tracks"] as? [[String: Any]]) ?? []
+                guard let selected = delList.first(where: { $0["selected"] as? Bool == true }),
+                      (selected["track_name"] as? String)?.caseInsensitiveCompare(delTrack) == .orderedSame else {
+                    throw DemoError.verificationFailed(
+                        requested: "'\(delTrack)' selected before Delete Track",
+                        actual: "the selection shows a different track; refusing",
+                        restored: true
+                    )
+                }
+                let delCommand = try MCUController.resolveKeyCommand(named: "Delete Track", logic: logic)
+                _ = try MCUController.triggerKeyCommand(note: delCommand.note, channel: delCommand.channel)
+                var deleted = false
+                var delAfter: [[String: Any]] = []
+                let nameCountBefore = delList.filter {
+                    ($0["track_name"] as? String)?.caseInsensitiveCompare(delTrack) == .orderedSame
+                }.count
+                for _ in 0..<15 {
+                    Thread.sleep(forTimeInterval: 0.3)
+                    delAfter = ((try? logic.listTracks())?["tracks"] as? [[String: Any]]) ?? []
+                    let nameCountAfter = delAfter.filter {
+                        ($0["track_name"] as? String)?.caseInsensitiveCompare(delTrack) == .orderedSame
+                    }.count
+                    // Occurrence count, not absence: duplicates share the name.
+                    if delAfter.count == delList.count - 1, nameCountAfter == nameCountBefore - 1 {
+                        deleted = true; break
+                    }
+                }
+                payload = [
+                    "success": deleted, "verified": deleted,
+                    "state": deleted ? "deleted" : "failed",
+                    "track": delTrack,
+                    "note": deleted ? "Undo restores the track." : "The track is still listed; a dialog may need attention.",
+                    "tracks_after": delAfter.map { ["track_number": $0["track_number"] ?? 0, "track_name": $0["track_name"] ?? ""] }
+                ]
+
+            case "logic_add_send":
+                guard let addedSend = try MCUController.addSend(
+                    logic: logic,
+                    trackName: requiredString("track_name", in: arguments),
+                    destination: requiredString("destination", in: arguments)
+                ) else {
+                    throw DemoError.trackNotExposed(
+                        requested: "send creation via the control surface",
+                        exposed: "the MCU bridge is unavailable"
+                    )
+                }
+                var sendPayload = addedSend
+                sendPayload["track"] = try requiredString("track_name", in: arguments)
+                payload = sendPayload
+
             case "logic_create_track":
                 let kind = (arguments["type"] as? String) ?? "software_instrument"
                 let commandName = kind == "audio" ? "New Audio Track" : "New Software Instrument Track"
@@ -8627,6 +8945,75 @@ private final class MCPServer {
                         "expected_project_path": ["type": "string"]
                     ],
                     "required": ["track_name", "notes"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "logic_plugin_preset",
+                "description": "Step a plugin's factory/user preset (next/previous, N steps) via Logic's topmost-plugin-window key command: the plugin window is opened (and closed again if this call opened it), the command fired, and the change verified against the window's preset label. Preset before/after names are returned.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "track_name": ["type": "string"],
+                        "plugin_name": ["type": "string"],
+                        "insert_index": ["type": "integer"],
+                        "track_number": ["type": "integer"],
+                        "direction": ["type": "string", "description": "'next' (default) or 'previous'."],
+                        "steps": ["type": "integer", "description": "How many presets to step, default 1."]
+                    ],
+                    "required": ["track_name", "plugin_name"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "logic_rename_track",
+                "description": "Rename a track by writing the channel strip's name field (element-addressed AX). Verified against the track headers.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "track_name": ["type": "string"],
+                        "new_name": ["type": "string"]
+                    ],
+                    "required": ["track_name", "new_name"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "logic_duplicate_track",
+                "description": "Duplicate a track via Logic's Duplicate Track key command (learned automatically). Verified by the track count increasing.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "track_name": ["type": "string"],
+                        "track_number": ["type": "integer"]
+                    ],
+                    "required": ["track_name"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "logic_delete_track",
+                "description": "DESTRUCTIVE: delete a track via the Delete Track key command. The selection is re-verified to be the named track immediately before firing, and the result is verified against the track list. Undo restores.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "track_name": ["type": "string"],
+                        "track_number": ["type": "integer", "description": "Recommended for duplicate names."]
+                    ],
+                    "required": ["track_name"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "logic_add_send",
+                "description": "Create a send on a track to a bus/output — mouse-free via the control surface's send-destination browser (first empty slot, browsed to the named destination, settle-verified, confirmed). New sends start at -oo dB; set the level with logic_mcu_set_send. Destination names as Logic shows them, e.g. 'Bus 1', 'Bus 2'.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "track_name": ["type": "string"],
+                        "destination": ["type": "string", "description": "e.g. 'Bus 3'."]
+                    ],
+                    "required": ["track_name", "destination"],
                     "additionalProperties": false
                 ]
             ],
