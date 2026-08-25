@@ -1393,3 +1393,18 @@ Kvarstående optimering: bläddringen stegar +1 per varv (~27 s till mitten av l
 **Buggen (användaren fångade den i mixern)**: LoPass och Channel EQ hamnade på **Stereo Out**, inte Inst 1. Rotorsak: assign_plugin cyklar P1/P2 (multikanal-vy: varje vpot = EN KANALS insert N — St Out är en kanal!) och PL (kanalvy: valda spårets slots) — och PL visar MCU-VALDA spårets inserts utan att namnge det; MCU-valet kan divergera från AX-valet. Fix i addPluginViaBrowser: (1) explicit MCU-select av målspåret (findChannel+select) innan PL-vyn, (2) **AX-korsverifiering efter instansiering** — oberoende källa som namnger spåret, så fel-kanal-träffar inte kan passera tyst. Verifierat: Chorus → Inst 1 (AX: Chorus, Compressor, Augmented), överlevde save/reopen, 7,2 s.
 
 **Bonus: musfri borttagning finns** — bläddraren har en "--"-post (No Plug-in) vid listgränsen; bläddra en upptagen slot dit och bekräfta = plugin bort. Verifierat vid städningen av St Out (102 steg baklänges genom ~100-postlistan, ~60 s). Kandidat för MCU-först logic_remove_plugin. Varning inpräntad: bekräfta ALDRIG en browse utan att ha verifierat att önskad post visas (en oskyddad loop instansierade Distortion II av misstag under städningen — borttagen igen).
+
+### Optimeringsbatch (2026-08-25, v0.32.0)
+
+Från latensprofilen, uppmätta resultat:
+
+| Operation | Före | Efter | Metod |
+|---|---|---|---|
+| Instrumentparametrar, kall (Augmented, 76 sidor) | 140 s | **29 s** | `max_pages`-cap (default 12) — varje ocachad sida kostar ~1,7 s indikatorfade (Logics egen, opressbar); trunkering rapporteras ärligt med `pages_total`/`truncated` |
+| Instrumentparametrar, cachad + cap | — | **6,1 s** | fast-vägen vandrar bara cappade sidor (inte alla 76) |
+| create_track | 12,4 s | **8,3 s** | tätare dialog-/spårlistpolling (0,12/0,15 s-steg); resten är Logics egen dialogtid |
+| add_plugin via bläddraren | ~27 s | **~6 s** | delta 2 per sändning (listan avancerar per TVÅ ticks), kortare awaits — plus settle-omläsning före bekräftelse och baksteg-korrigering när visningen driftat förbi målet |
+
+Cappade kalla läsningar skriver INTE namncachen (bara fullständiga läsningar gör det) så cachens fast-väg förblir ärlig. Viktig regression som fångades av AX-korskollen under arbetet: delta-2-stegningen driftade systematiskt en post förbi matchen och instansierade fel plugin en gång — settle-vakten + korrigeringsloopen eliminerar det, och vakten bevisade därmed sitt värde inom en timme från att den byggdes.
+
+Kvarstående ur optimeringslistan: record_midi-tempotricket (höj BPM N×, skala händelsetider — halverar+ inspelningstid), musfri logic_remove_plugin via "--"-posten.

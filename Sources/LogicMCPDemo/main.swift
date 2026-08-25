@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.31.0"
+private let serverVersion = "0.32.0"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -4963,12 +4963,13 @@ extension MCUController {
         // FIRST entry reappearing after real progress.
         var entries: [String] = []
         var found = false
-        for _ in 0..<500 {
+        for step in 0..<500 {
             let before = freshStatus()?["received_events"] as? Int ?? -1
-            let response = try MCUBridge.send(["cmd": "vpot", "index": emptyIndex, "delta": 1])
+            // The list advances one entry per TWO vpot ticks — send both at once.
+            let response = try MCUBridge.send(["cmd": "vpot", "index": emptyIndex, "delta": 2])
             guard response["ok"] as? Bool == true else { abortBrowse(); return nil }
-            _ = awaitEvents(since: before, timeoutMs: 300)
-            _ = quiescentStatus()
+            _ = awaitEvents(since: before, timeoutMs: 250)
+            if step % 4 == 3 { _ = quiescentStatus() }
             guard let name = browseName(), !name.isEmpty, name != "--" else { continue }
             if matches(name) { found = true; break }
             if name == entries.last { continue }
@@ -4987,7 +4988,31 @@ extension MCUController {
                 "the plugin browser never showed '\(pluginName)' within 250 steps"
             )
         }
-        let shownName = browseName() ?? pluginName
+        // The display can advance one more entry after the matching read
+        // (trailing sysex from the double-tick) — settle and re-verify that
+        // the shown entry is STILL the target before confirming anything.
+        _ = quiescentStatus()
+        Thread.sleep(forTimeInterval: 0.3)
+        // The double-tick stepping tends to drift one entry past the match —
+        // correct by stepping back until the target is shown again.
+        var settledName = browseName()
+        var corrections = 0
+        while let drifted = settledName, !matches(drifted), corrections < 4 {
+            _ = try? MCUBridge.send(["cmd": "vpot", "index": emptyIndex, "delta": -2])
+            Thread.sleep(forTimeInterval: 0.4)
+            _ = quiescentStatus()
+            settledName = browseName()
+            corrections += 1
+        }
+        guard let settled = settledName, matches(settled) else {
+            abortBrowse()
+            throw DemoError.verificationFailed(
+                requested: "'\(pluginName)' shown at confirmation time",
+                actual: "the browser entry drifted to '\(browseName() ?? "?")' and back-stepping could not recover it; aborted without instantiating",
+                restored: true
+            )
+        }
+        let shownName = settled
         // Confirm: vpot press instantiates and drops into the edit view.
         let response = try MCUBridge.send(["cmd": "vpot_press", "index": emptyIndex])
         guard response["ok"] as? Bool == true else { abortBrowse(); return nil }
@@ -5589,14 +5614,57 @@ extension MCUController {
         return pages
     }
 
+    /// Cold read capped at maxPages: each page costs ~1.7 s (Logic's own
+    /// "Page x/y" indicator fade), so an 80-page instrument like Augmented
+    /// takes minutes uncapped — and floods the caller with hundreds of
+    /// parameters it rarely needs at once. Returns the total page count so
+    /// truncation is always explicit. Full (uncapped) reads still populate
+    /// the name cache; capped reads do not, so later full reads stay honest.
+    static func parameterPagesCapped(
+        cacheKey: String?, maxPages: Int
+    ) throws -> (pages: [[(name: String, value: String)]], total: Int, truncated: Bool)? {
+        // A complete cached name set makes even the full read cheap — use it.
+        if let key = cacheKey, let cachedNames = loadNameCache()[key] {
+            let walk = min(maxPages, cachedNames.count)
+            if let fast = (try? rawParameterPagesFast(cachedNames: cachedNames, limit: walk)) ?? nil {
+                // End-overlap dedup only applies when the true last page was read.
+                let pages = walk == cachedNames.count
+                    ? dedupedPages(fast)
+                    : fast.map { page in page.filter { !$0.name.isEmpty } }
+                return (pages, cachedNames.count, walk < cachedNames.count)
+            }
+        }
+        let total = try normalizeToPageOne()
+        let limit = min(max(total, 1), max(maxPages, 1))
+        var pages: [[(name: String, value: String)]] = []
+        for pageNumber in 1...limit {
+            guard let page = settledParameterPage() else { return nil }
+            pages.append(page)
+            if pageNumber < limit {
+                try pageRight()
+            }
+        }
+        if limit >= max(total, 1), let key = cacheKey {
+            var cache = loadNameCache()
+            cache[key] = pages.map { $0.map(\.name) }
+            if let data = try? JSONEncoder().encode(cache) {
+                try? data.write(to: nameCacheURL)
+            }
+        }
+        return (dedupedPages(pages), max(total, 1), limit < max(total, 1))
+    }
+
     /// Raw pages using cached name rows: waits only for the redraw burst per
     /// page, never the indicator fade. Validates the always-visible fields 0-5
     /// against the cache; nil on any mismatch (caller takes the slow path).
-    private static func rawParameterPagesFast(cachedNames: [[String]]) throws -> [[(name: String, value: String)]]? {
+    private static func rawParameterPagesFast(
+        cachedNames: [[String]], limit: Int? = nil
+    ) throws -> [[(name: String, value: String)]]? {
         let total = try normalizeToPageOne()
         guard max(total, 1) == cachedNames.count else { return nil }
+        let walkCount = min(limit ?? cachedNames.count, cachedNames.count)
         var pages: [[(name: String, value: String)]] = []
-        for pageNumber in 1...cachedNames.count {
+        for pageNumber in 1...walkCount {
             _ = quiescentStatus() // burst settle only
             guard let status = freshStatus(),
                   let top = status["lcd_top"] as? String,
@@ -5611,7 +5679,7 @@ extension MCUController {
                 return nil // layout changed; rescan slowly
             }
             pages.append(zip(names, values).map { ($0, $1) })
-            if pageNumber < cachedNames.count {
+            if pageNumber < walkCount {
                 try pageRight()
             }
         }
@@ -6210,14 +6278,16 @@ private final class MCPServer {
                     trackNumber: arguments["track_number"] as? Int,
                     expectedProjectPath: nil
                 )
+                let pluginMaxPages = arguments["max_pages"] as? Int ?? 12
                 guard let listStatus = try MCUController.ensurePluginList(),
                       try MCUController.enterPluginEdit(slot: slot),
-                      let pages = try MCUController.parameterPages(
+                      let capped = try MCUController.parameterPagesCapped(
                           cacheKey: (listStatus["lcd_bottom"] as? String).flatMap { bottom -> String? in
                               let name = MCUController.lcdFields(bottom)[slot - 1]
                                   .trimmingCharacters(in: CharacterSet(charactersIn: "*"))
                               return name.isEmpty || name == "--" ? nil : name
-                          }
+                          },
+                          maxPages: pluginMaxPages
                       ) else {
                     MCUController.exitToPan()
                     throw DemoError.trackNotExposed(
@@ -6226,14 +6296,20 @@ private final class MCPServer {
                     )
                 }
                 MCUController.exitToPan()
-                payload = [
+                var pluginPayload: [String: Any] = [
                     "track": try requiredString("track_name", in: arguments),
                     "insert_slot": slot,
-                    "pages": pages.count,
-                    "parameters": pages.enumerated().flatMap { pageIndex, page in
+                    "pages": capped.pages.count,
+                    "pages_total": capped.total,
+                    "parameters": capped.pages.enumerated().flatMap { pageIndex, page in
                         page.map { ["name": $0.name, "value": $0.value, "page": pageIndex + 1] }
                     }
                 ]
+                if capped.truncated {
+                    pluginPayload["truncated"] = true
+                    pluginPayload["note"] = "Showing \(capped.pages.count) of \(capped.total) pages (each uncached page costs ~1.7 s of LCD indicator fade). Pass max_pages for more."
+                }
+                payload = pluginPayload
 
             case "logic_mcu_set_plugin_parameter":
                 guard let slot = arguments["insert_slot"] as? Int else {
@@ -6264,10 +6340,12 @@ private final class MCPServer {
                     trackNumber: arguments["track_number"] as? Int,
                     expectedProjectPath: nil
                 )
+                let instrumentMaxPages = arguments["max_pages"] as? Int ?? 12
                 guard let entered = try MCUController.enterInstrumentEdit(
                     trackName: requiredString("track_name", in: arguments)
-                ), let pages = try MCUController.parameterPages(
-                    cacheKey: "instrument:" + entered.name
+                ), let capped = try MCUController.parameterPagesCapped(
+                    cacheKey: "instrument:" + entered.name,
+                    maxPages: instrumentMaxPages
                 ) else {
                     MCUController.exitToPan()
                     throw DemoError.trackNotExposed(
@@ -6276,14 +6354,21 @@ private final class MCPServer {
                     )
                 }
                 MCUController.exitToPan()
-                payload = [
+                var instrumentPayload: [String: Any] = [
                     "track": try requiredString("track_name", in: arguments),
                     "slot_type": "instrument",
-                    "pages": pages.count,
-                    "parameters": pages.enumerated().flatMap { pageIndex, page in
+                    "instrument": entered.name,
+                    "pages": capped.pages.count,
+                    "pages_total": capped.total,
+                    "parameters": capped.pages.enumerated().flatMap { pageIndex, page in
                         page.map { ["name": $0.name, "value": $0.value, "page": pageIndex + 1] }
                     }
                 ]
+                if capped.truncated {
+                    instrumentPayload["truncated"] = true
+                    instrumentPayload["note"] = "Showing \(capped.pages.count) of \(capped.total) pages (each uncached page costs ~1.7 s of LCD indicator fade). Pass max_pages for more."
+                }
+                payload = instrumentPayload
 
             case "logic_mcu_set_instrument_parameter":
                 _ = try logic.selectTrack(
@@ -6528,14 +6613,14 @@ private final class MCPServer {
                 _ = try MCUController.triggerKeyCommand(note: command.note, channel: command.channel)
                 // The command opens the Create New Track dialog; answer Create.
                 var answered = false
-                for _ in 0..<20 {
-                    Thread.sleep(forTimeInterval: 0.3)
+                for _ in 0..<50 {
+                    Thread.sleep(forTimeInterval: 0.12)
                     if logic.answerCreateTrackDialog() { answered = true; break }
                 }
                 var created = false
                 var after: [[String: Any]] = []
-                for _ in 0..<10 {
-                    Thread.sleep(forTimeInterval: 0.4)
+                for _ in 0..<25 {
+                    Thread.sleep(forTimeInterval: 0.15)
                     after = ((try? logic.listTracks())?["tracks"] as? [[String: Any]]) ?? []
                     if after.count > before { created = true; break }
                 }
@@ -7004,6 +7089,7 @@ private final class MCPServer {
                     "type": "object",
                     "properties": [
                         "track_name": ["type": "string"],
+                        "max_pages": ["type": "integer", "description": "Page cap, default 12 (each uncached page costs ~1.7 s; large instruments have 80+). pages_total and truncated report what was left out."],
                         "track_number": ["type": "integer"],
                         "insert_slot": ["type": "integer"]
                     ],
@@ -7036,6 +7122,7 @@ private final class MCPServer {
                     "type": "object",
                     "properties": [
                         "track_name": ["type": "string"],
+                        "max_pages": ["type": "integer", "description": "Page cap, default 12 (each uncached page costs ~1.7 s; large instruments have 80+). pages_total and truncated report what was left out."],
                         "track_number": ["type": "integer"]
                     ],
                     "required": ["track_name"],
