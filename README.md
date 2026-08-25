@@ -35,11 +35,23 @@ Every write is **compare-and-set**: the tool reads the current value, refuses on
 swift build -c release
 ```
 
-Then register the single binary with your MCP client, e.g. for Claude Code:
+Then register the single binary with your MCP client.
+
+**Claude Code:**
 
 ```bash
 claude mcp add logic -- /path/to/.build/release/logician
 ```
+
+**Gemini CLI** — add to `~/.gemini/settings.json`:
+
+```json
+{ "mcpServers": { "logician": { "command": "/path/to/.build/release/logician" } } }
+```
+
+**Antigravity / other MCP clients:** the same `mcpServers` JSON shape in the client's MCP configuration.
+
+**For the agent:** point it at [docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md) — core concepts, workflows, error taxonomy, and the complete tool reference generated from the live schemas.
 
 Everything else is self-serve: the server starts its own bridge daemon, `logic_health` diagnoses every setup step with a concrete fix, and the Logic key commands the tools rely on (freeze render, undo, …) are learned into your Logic automatically on first use — additively, removable in the Key Commands window, with collision handling.
 
