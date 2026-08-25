@@ -1362,3 +1362,13 @@ Produktifieringssteg 0+1: git-repo initierat (snapshot-commit av forskningsläge
 ### Namnet: Logician (2026-08-25, v0.28.0)
 
 Produkten heter **Logician** (Logic + musician + logiker). `logic-mcp` förkastades efter kollisionskoll: 87 GitHub-träffar med båda konkurrenterna (`logic-pro-mcp`, 76★ och 59★) i toppen — och "Logic" ensamt är Apples varumärke. `logician-mcp` hade 0 träffar. Binären/produkten heter `logician`; bryggan är `logician --bridge`. Privat GitHub-repo: BanneBanning/logician-mcp.
+
+### Projektlivscykel: new/open/save/close (2026-08-25, v0.29.0)
+
+Fyra nya verktyg efter användarens önskan om konkurrensparitet — med sparande som EXPLICIT verktyg (regeln skärptes: `logic_save_project` är den enda vägen något någonsin sparas; inga bieffektssparningar).
+
+Empirisk kartläggning av Logics AppleScript-standardsuite: `documents` med name/path/**modified** fungerar (datadriven osparat-detektering!), `close saving yes/no` fungerar, men `save` är en stub (AppleEvent-timeout −1712) och `make new document` skapar fönsterlösa **spökdokument**. Därför: save via inlärt Save-keycommand (not 105, tyst för sökvägssatta projekt) verifierat mot modified-flaggan; nya projekt via **bundlad tom mall** (`Resources/EmptyProject.logicx`, 160K, skördad från File > New + engångs-panelautomation med användarens uttryckliga OK) som kopieras till målsökvägen och öppnas — 1,9 s, noll dialoger.
+
+Fällor som hanteras: Logic kör **enprojektsläge** (öppning stänger aktuellt projekt; osparade ändringar kräver explicit `if_current_modified: save/dont_save`, annars vägran); mallen bar först på **Autosave-data** som gav en recovery-dialog ("Saved or Auto-saved?") vid öppning — mallen städades och `answerRecoveryDialog` svarar defensivt "Saved".
+
+**Incident, dokumenterad som varnande exempel**: under mallskörden träffade ett File > Save-menytryck användarens projekt i stället för det fönsterlösa spökdokumentet — en oavsiktlig sparning i strid med no-save-regeln. Rotorsak: dokumentriktade operationer utan verifiering av aktivt fönster. Kodifierad fix: alla fönsterriktade flöden verifierar AXMainWindow-titeln innan de agerar, och spökdokument-vägen (make new document) övergavs helt.

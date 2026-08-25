@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.28.0"
+private let serverVersion = "0.29.0"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -837,6 +837,269 @@ private final class LogicAccessibility {
             "after_metrics": metricsB ?? NSNull(),
             "deltas": deltas,
             "note": "Offline 24-bit master renders; no playback occurred. Metrics computed from the files."
+        ]
+    }
+
+    // MARK: - Project lifecycle (AppleScript standard suite + template)
+
+    /// Logic's standard AppleScript suite is partially real: documents with
+    /// name/path/modified and `close saving yes/no` work; `save` is a stub
+    /// (event timeout) and `make new document` creates a windowless ghost.
+    /// Saving therefore goes through the Save key command, and new projects
+    /// through a bundled empty template.
+    private func runAppleScript(_ source: String) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", source]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return nil }
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Open documents as (name, path?, modified) via the standard suite.
+    func openDocuments() -> [(name: String, path: String?, modified: Bool)] {
+        guard let raw = runAppleScript("""
+        set out to ""
+        tell application "Logic Pro"
+            repeat with d in documents
+                try
+                    set p to path of d
+                on error
+                    set p to ""
+                end try
+                set out to out & (name of d) & "\u{1F}" & p & "\u{1F}" & (modified of d) & "\u{1E}"
+            end repeat
+        end tell
+        return out
+        """) else { return [] }
+        return raw.split(separator: "\u{1E}").compactMap { entry in
+            let parts = entry.components(separatedBy: "\u{1F}")
+            guard parts.count == 3 else { return nil }
+            return (parts[0], parts[1].isEmpty ? nil : parts[1], parts[2] == "true")
+        }
+    }
+
+    /// Answers Logic's "open the auto-saved version or the last saved?"
+    /// recovery prompt with Saved. Returns false when not visible.
+    func answerRecoveryDialog() -> Bool {
+        guard let windows = try? logicWindows() else { return false }
+        for window in windows {
+            var isPrompt = false
+            var savedButton: AXUIElement?
+            func walk(_ element: AXUIElement, _ depth: Int) {
+                guard depth < 8 else { return }
+                let role = stringAttribute(element, kAXRoleAttribute as String)
+                if role == "AXStaticText",
+                   stringAttribute(element, kAXValueAttribute as String)
+                       .contains("auto-saved") { isPrompt = true }
+                if role == "AXButton",
+                   stringAttribute(element, kAXTitleAttribute as String) == "Saved" {
+                    savedButton = element
+                }
+                for child in children(of: element) { walk(child, depth + 1) }
+            }
+            walk(window, 0)
+            if isPrompt, let button = savedButton {
+                return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
+            }
+        }
+        return false
+    }
+
+    /// Answers Logic's "Do you want to save the changes…?" prompt.
+    /// Returns false when no such prompt is visible.
+    func answerSaveChangesDialog(save: Bool) -> Bool {
+        guard let windows = try? logicWindows() else { return false }
+        for window in windows {
+            var isPrompt = false
+            var target: AXUIElement?
+            let wanted = save ? "Save" : "Don’t Save"
+            func walk(_ element: AXUIElement, _ depth: Int) {
+                guard depth < 8 else { return }
+                let role = stringAttribute(element, kAXRoleAttribute as String)
+                if role == "AXStaticText",
+                   stringAttribute(element, kAXValueAttribute as String)
+                       .contains("save the changes") { isPrompt = true }
+                if role == "AXButton",
+                   stringAttribute(element, kAXTitleAttribute as String) == wanted {
+                    target = element
+                }
+                for child in children(of: element) { walk(child, depth + 1) }
+            }
+            walk(window, 0)
+            if isPrompt, let button = target {
+                return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
+            }
+        }
+        return false
+    }
+
+    /// Saves the open project via the Save key command, verified through the
+    /// AppleScript modified flag and the ProjectData mtime. Refuses when the
+    /// open document does not match expectedProjectPath (when given) or has
+    /// no path yet.
+    func saveProject(expectedProjectPath: String?) throws -> [String: Any] {
+        let documents = openDocuments()
+        guard documents.count == 1, let document = documents.first else {
+            throw DemoError.trackNotExposed(
+                requested: "exactly one open project to save",
+                exposed: "open documents: \(documents.map(\.name).joined(separator: ", "))"
+            )
+        }
+        guard let path = document.path else {
+            throw DemoError.trackNotExposed(
+                requested: "a project with a file path",
+                exposed: "'\(document.name)' has never been saved; use logic_new_project to create pathed projects"
+            )
+        }
+        if let expected = expectedProjectPath {
+            guard normalizedPath(path) == normalizedPath(expected) else {
+                throw DemoError.currentValueMismatch(expected: expected, actual: path)
+            }
+        }
+        if !document.modified {
+            return [
+                "success": true, "verified": true, "state": "already_saved",
+                "project": document.name, "path": path
+            ]
+        }
+        let save = try MCUController.resolveKeyCommand(named: "Save", logic: self)
+        _ = try MCUController.triggerKeyCommand(note: save.note, channel: save.channel)
+        for _ in 0..<40 {
+            Thread.sleep(forTimeInterval: 0.25)
+            if let fresh = openDocuments().first, !fresh.modified {
+                return [
+                    "success": true, "verified": true, "state": "saved",
+                    "project": document.name, "path": path,
+                    "write_route": "midi_key_command_save"
+                ]
+            }
+        }
+        throw DemoError.verificationFailed(
+            requested: "save of '\(document.name)'",
+            actual: "the modified flag never cleared within 10 s",
+            restored: false
+        )
+    }
+
+    /// Opens a project (or creates one from the bundled empty template when
+    /// creating). Logic runs single-project: an open modified project blocks
+    /// unless the caller explicitly chose to save or discard it.
+    func openProject(
+        path: String, createFromTemplate: Bool, ifCurrentModified: String
+    ) throws -> [String: Any] {
+        let target = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        if createFromTemplate {
+            guard target.pathExtension == "logicx" else {
+                throw DemoError.invalidArguments("path must end in .logicx")
+            }
+            guard !FileManager.default.fileExists(atPath: target.path) else {
+                throw DemoError.invalidArguments("'\(target.path)' already exists; use logic_open_project")
+            }
+            guard let template = Bundle.module.url(
+                forResource: "EmptyProject", withExtension: "logicx"
+            ) else {
+                throw DemoError.trackNotExposed(
+                    requested: "the bundled empty project template",
+                    exposed: "EmptyProject.logicx missing from the resource bundle"
+                )
+            }
+            try? FileManager.default.createDirectory(
+                at: target.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            try FileManager.default.copyItem(at: template, to: target)
+        } else {
+            guard FileManager.default.fileExists(atPath: target.path) else {
+                throw DemoError.trackNotExposed(
+                    requested: "project at '\(target.path)'", exposed: "no such file"
+                )
+            }
+        }
+        // Single-project guard: a modified current project needs an explicit decision.
+        let current = openDocuments()
+        if let open = current.first, open.modified, normalizedPath(open.path ?? "") != normalizedPath(target.path) {
+            switch ifCurrentModified {
+            case "save", "dont_save":
+                break // answered below once Logic asks
+            default:
+                throw DemoError.trackNotExposed(
+                    requested: "opening '\(target.lastPathComponent)'",
+                    exposed: "'\(open.name)' has unsaved changes; pass if_current_modified: 'save' or 'dont_save' (explicit decision required), or call logic_save_project first"
+                )
+            }
+        }
+        let openProcess = Process()
+        openProcess.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        openProcess.arguments = ["-a", "Logic Pro", target.path]
+        try openProcess.run()
+        openProcess.waitUntilExit()
+        // Answer the save-changes prompt per the caller's explicit choice.
+        let expectedName = target.deletingPathExtension().lastPathComponent
+        let deadline = Date().addingTimeInterval(30)
+        while Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.5)
+            if ifCurrentModified == "save" || ifCurrentModified == "dont_save" {
+                _ = answerSaveChangesDialog(save: ifCurrentModified == "save")
+            }
+            // Auto-save recovery prompt: always prefer the canonical saved
+            // version (the auto-saved one is what a crash would recover).
+            _ = answerRecoveryDialog()
+            let docs = openDocuments()
+            if docs.contains(where: { $0.name == expectedName }) {
+                return [
+                    "success": true, "verified": true,
+                    "state": createFromTemplate ? "created" : "opened",
+                    "project": expectedName, "path": target.path,
+                    "note": createFromTemplate
+                        ? "Created from the bundled empty template and opened; already saved on disk."
+                        : "Opened."
+                ]
+            }
+        }
+        throw DemoError.verificationFailed(
+            requested: "'\(expectedName)' appearing in Logic's document list",
+            actual: "not there within 30 s (a dialog may need attention)",
+            restored: false
+        )
+    }
+
+    /// Closes the open project. `saving` must be an explicit 'yes' or 'no'.
+    func closeProject(saving: String, expectedProjectPath: String?) throws -> [String: Any] {
+        guard saving == "yes" || saving == "no" else {
+            throw DemoError.invalidArguments("saving must be 'yes' or 'no' (explicit decision)")
+        }
+        let documents = openDocuments()
+        guard documents.count == 1, let document = documents.first else {
+            throw DemoError.trackNotExposed(
+                requested: "exactly one open project",
+                exposed: "open documents: \(documents.map(\.name).joined(separator: ", "))"
+            )
+        }
+        if let expected = expectedProjectPath, let path = document.path {
+            guard normalizedPath(path) == normalizedPath(expected) else {
+                throw DemoError.currentValueMismatch(expected: expected, actual: path)
+            }
+        }
+        guard runAppleScript(
+            "tell application \"Logic Pro\" to close document \"\(document.name)\" saving \(saving)"
+        ) != nil else {
+            throw DemoError.writeFailed("AppleScript close failed")
+        }
+        Thread.sleep(forTimeInterval: 1.0)
+        let remaining = openDocuments()
+        return [
+            "success": true,
+            "verified": !remaining.contains(where: { $0.name == document.name }),
+            "state": "closed",
+            "project": document.name,
+            "saved": saving == "yes",
+            "remaining_documents": remaining.map(\.name)
         ]
     }
 
@@ -3856,6 +4119,7 @@ private enum KeyCommandRegistry {
     /// Key Commands window and preferred (not guaranteed) note numbers —
     /// collisions on a user's machine get an alternate note automatically.
     static let standardCommands: [(search: String, name: String, preferredNote: Int)] = [
+        ("save", "Save", 105),
         ("toggle track freeze", "Toggle Track Freeze", 117),
         ("undo", "Undo", 100),
         ("redo", "Redo", 101),
@@ -6049,6 +6313,31 @@ private final class MCPServer {
                 }
                 payload = result
 
+            case "logic_save_project":
+                payload = try logic.saveProject(
+                    expectedProjectPath: arguments["expected_project_path"] as? String
+                )
+
+            case "logic_new_project":
+                payload = try logic.openProject(
+                    path: requiredString("path", in: arguments),
+                    createFromTemplate: true,
+                    ifCurrentModified: (arguments["if_current_modified"] as? String) ?? "fail"
+                )
+
+            case "logic_open_project":
+                payload = try logic.openProject(
+                    path: requiredString("path", in: arguments),
+                    createFromTemplate: false,
+                    ifCurrentModified: (arguments["if_current_modified"] as? String) ?? "fail"
+                )
+
+            case "logic_close_project":
+                payload = try logic.closeProject(
+                    saving: requiredString("saving", in: arguments),
+                    expectedProjectPath: arguments["expected_project_path"] as? String
+                )
+
             case "logic_setup_key_commands":
                 let results = try logic.setupKeyCommands(KeyCommandRegistry.standardCommands)
                 payload = [
@@ -6599,6 +6888,56 @@ private final class MCPServer {
                         "expected_project_path": ["type": "string"]
                     ],
                     "required": ["track_name", "notes"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "logic_save_project",
+                "description": "Save the open Logic project — the ONLY way this server ever saves; no other tool saves as a side effect. Fires the Save key command and verifies via the document's modified flag. Refuses when more than one project is open, when the project has never been saved, or when expected_project_path does not match. Returns already_saved when there is nothing to save.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "expected_project_path": ["type": "string", "description": "Recommended: absolute .logicx path that must match the open project."]
+                    ],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "logic_new_project",
+                "description": "Create a NEW Logic project at the given .logicx path — dialog-free, from a bundled empty project template — and open it. Logic runs single-project: if the current project has unsaved changes the call fails unless if_current_modified explicitly chooses 'save' or 'dont_save'. The created project is already saved on disk.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "path": ["type": "string", "description": "Absolute destination path ending in .logicx; must not already exist."],
+                        "if_current_modified": ["type": "string", "description": "'fail' (default), 'save' or 'dont_save' — what to do with the currently open project's unsaved changes."]
+                    ],
+                    "required": ["path"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "logic_open_project",
+                "description": "Open an existing .logicx project. Single-project semantics as logic_new_project: unsaved changes in the current project require an explicit if_current_modified decision.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "path": ["type": "string", "description": "Absolute path to an existing .logicx."],
+                        "if_current_modified": ["type": "string", "description": "'fail' (default), 'save' or 'dont_save'."]
+                    ],
+                    "required": ["path"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "logic_close_project",
+                "description": "Close the open project via AppleScript. 'saving' must be an explicit 'yes' or 'no' — there is no default, because discarding versus persisting changes is always the caller's decision.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "saving": ["type": "string", "description": "'yes' saves before closing; 'no' discards unsaved changes."],
+                        "expected_project_path": ["type": "string"]
+                    ],
+                    "required": ["saving"],
                     "additionalProperties": false
                 ]
             ],

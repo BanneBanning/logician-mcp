@@ -17,6 +17,9 @@ let package = Package(
         .executableTarget(
             name: "LogicMCPDemo",
             dependencies: ["LogicMCUBridge"],
+            resources: [
+                .copy("Resources/EmptyProject.logicx")
+            ],
             linkerSettings: [
                 .linkedFramework("ApplicationServices"),
                 .linkedFramework("AppKit")
