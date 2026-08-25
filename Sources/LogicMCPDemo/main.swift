@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.33.0"
+private let serverVersion = "0.34.0"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -4444,7 +4444,7 @@ private enum MCUController {
         return waitFor(seconds: 1.5, { ($0["lcd_top"] as? String) == expectedTop }) != nil
     }
 
-    static func findChannel(trackName: String) throws -> Int? {
+    static func findChannel(trackName: String, retryOnEmpty: Bool = true) throws -> Int? {
         guard try ensurePanNames() else { debugLog("pan multi-channel view failed"); return nil }
 
         // Fastest path: the track is unique on the bank already showing.
@@ -4499,6 +4499,15 @@ private enum MCUController {
         }
         if let encoded = try? JSONEncoder().encode(bankTops) {
             try? encoded.write(to: bankCacheURL)
+        }
+        // Right after a project switch Logic rebuilds the control surface for
+        // a few seconds and a full scan can come up empty — settle and rescan
+        // once before giving up.
+        if matches.isEmpty, retryOnEmpty {
+            debugLog("empty bank scan; settling and rescanning once")
+            Thread.sleep(forTimeInterval: 2.5)
+            try? FileManager.default.removeItem(at: bankCacheURL)
+            return try findChannel(trackName: trackName, retryOnEmpty: false)
         }
         guard matches.count == 1, let match = matches.first else { debugLog("match count \(matches.count)"); return nil }
         // Navigate back: we are at bank bankTops.count-1 (or the repeat point).
@@ -5114,6 +5123,120 @@ extension MCUController {
             "mcu_slot": emptyIndex + 1,
             "write_route": "mcu_plugin_browser",
             "note": "Added via the control-surface plugin browser — no mouse, no menus."
+        ]
+    }
+
+    /// Removes a plugin mouse-free: browse the occupied slot to the "--"
+    /// (No Plug-in) entry at the list boundary and confirm. The boundary can
+    /// be up to a full list away (~100 entries), so this takes up to ~60 s —
+    /// still no pointer, no menus. Returns nil when MCU is unavailable.
+    static func removePluginViaBrowser(
+        pluginName: String, logic: LogicAccessibility, trackName: String
+    ) throws -> [String: Any]? {
+        guard freshStatus() != nil else { return nil }
+        guard let channel = try findChannel(trackName: trackName) else { return nil }
+        guard try selectFoundChannel(channel) else { return nil }
+        guard let inserts = try pluginInsertNames() else { return nil }
+        // Match the target slot by LCD name (truncated) against the request.
+        let matches = inserts.enumerated().filter { _, name in
+            let cleaned = name.trimmingCharacters(in: CharacterSet(charactersIn: "*"))
+            guard !cleaned.isEmpty, cleaned != "--" else { return false }
+            return lcdNameMatches(track: pluginName, lcd: cleaned)
+                || pluginName.lowercased().hasPrefix(cleaned.lowercased())
+        }
+        guard matches.count == 1, let target = matches.first else {
+            exitToPan()
+            throw DemoError.trackNotExposed(
+                requested: "exactly one insert matching '\(pluginName)'",
+                exposed: "MCU slots: " + inserts.enumerated()
+                    .map { "\($0 + 1): \($1.isEmpty ? "--" : $1)" }.joined(separator: ", ")
+            )
+        }
+        let slotIndex = target.offset
+        func browseName() -> String? {
+            guard let status = freshStatus(),
+                  let bottom = status["lcd_bottom"] as? String else { return nil }
+            let start = bottom.index(bottom.startIndex, offsetBy: min(slotIndex * 7, bottom.count))
+            let raw = String(bottom[start...])
+            let cut = raw.range(of: "    ").map { String(raw[..<$0.lowerBound]) } ?? raw
+            return cut.trimmingCharacters(in: .whitespaces)
+        }
+        // Browse backward toward the "--" boundary entry.
+        var reached = false
+        for step in 0..<400 {
+            let before = freshStatus()?["received_events"] as? Int ?? -1
+            let response = try MCUBridge.send(["cmd": "vpot", "index": slotIndex, "delta": -2])
+            guard response["ok"] as? Bool == true else { exitToPan(); return nil }
+            _ = awaitEvents(since: before, timeoutMs: 250)
+            if step % 4 == 3 { _ = quiescentStatus() }
+            if browseName() == "--" { reached = true; break }
+        }
+        guard reached else {
+            exitToPan()
+            throw DemoError.openVerificationFailed(
+                "the browser never reached the No Plug-in entry within 400 steps; nothing was changed (browse abandoned)"
+            )
+        }
+        // Settle and re-verify "--" is still shown before confirming.
+        _ = quiescentStatus()
+        Thread.sleep(forTimeInterval: 0.3)
+        var corrections = 0
+        while browseName() != "--", corrections < 4 {
+            _ = try? MCUBridge.send(["cmd": "vpot", "index": slotIndex, "delta": 2])
+            Thread.sleep(forTimeInterval: 0.4)
+            _ = quiescentStatus()
+            corrections += 1
+        }
+        guard browseName() == "--" else {
+            exitToPan()
+            throw DemoError.verificationFailed(
+                requested: "the No Plug-in entry shown at confirmation time",
+                actual: "the entry drifted to '\(browseName() ?? "?")'; aborted without removing",
+                restored: true
+            )
+        }
+        let response = try MCUBridge.send(["cmd": "vpot_press", "index": slotIndex])
+        guard response["ok"] as? Bool == true else { exitToPan(); return nil }
+        Thread.sleep(forTimeInterval: 1.0)
+        _ = quiescentStatus()
+        guard let after = try pluginInsertNames() else { return nil }
+        exitToPan()
+        let nowEmpty = !after.indices.contains(slotIndex)
+            || after[slotIndex].isEmpty || after[slotIndex] == "--"
+        // AX cross-check: the plugin must be gone from the track's inserts.
+        var axGone = false
+        for _ in 0..<10 {
+            if let axInserts = (try? logic.listInserts(trackName: trackName))?["inserts"]
+                as? [[String: Any]] {
+                let names = axInserts.compactMap { $0["plugin_display_name"] as? String }
+                if !names.contains(where: {
+                    $0.lowercased().hasPrefix(pluginName.lowercased())
+                        || pluginName.lowercased().hasPrefix(
+                            $0.trimmingCharacters(in: .whitespaces).lowercased())
+                }) {
+                    axGone = true
+                    break
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.4)
+        }
+        guard nowEmpty, axGone else {
+            throw DemoError.verificationFailed(
+                requested: "'\(pluginName)' removed from '\(trackName)'",
+                actual: nowEmpty
+                    ? "the LCD slot cleared but AX still lists the plugin"
+                    : "the LCD slot still shows '\(after[slotIndex])'",
+                restored: false
+            )
+        }
+        return [
+            "success": true,
+            "verified": true,
+            "state": "removed",
+            "plugin": pluginName,
+            "mcu_slot": slotIndex + 1,
+            "write_route": "mcu_plugin_browser",
+            "note": "Removed via the control-surface plugin browser's No Plug-in entry — no mouse, no menus."
         ]
     }
 
@@ -6908,12 +7031,58 @@ private final class MCPServer {
                 }
 
             case "logic_remove_plugin":
-                payload = try logic.removePlugin(
+                _ = try logic.selectTrack(
                     trackName: requiredString("track_name", in: arguments),
                     trackNumber: arguments["track_number"] as? Int,
-                    pluginName: requiredString("plugin_name", in: arguments),
-                    insertIndex: arguments["insert_index"] as? Int
+                    expectedProjectPath: arguments["expected_project_path"] as? String
                 )
+                if var removed = try MCUController.removePluginViaBrowser(
+                    pluginName: requiredString("plugin_name", in: arguments),
+                    logic: logic,
+                    trackName: requiredString("track_name", in: arguments)
+                ) {
+                    removed["track"] = try requiredString("track_name", in: arguments)
+                    payload = removed
+                } else if arguments["allow_mouse"] as? Bool == true {
+                    payload = try logic.removePlugin(
+                        trackName: requiredString("track_name", in: arguments),
+                        trackNumber: arguments["track_number"] as? Int,
+                        pluginName: requiredString("plugin_name", in: arguments),
+                        insertIndex: arguments["insert_index"] as? Int
+                    )
+                } else {
+                    throw DemoError.trackNotExposed(
+                        requested: "mouse-free plugin removal",
+                        exposed: "the MCU bridge is unavailable; pass allow_mouse: true to permit the AX chooser fallback (takes over the pointer briefly)"
+                    )
+                }
+
+            case "logic_set_tempo":
+                let bpm = (arguments["bpm"] as? Double)
+                    ?? (arguments["bpm"] as? Int).map(Double.init)
+                guard let targetBpm = bpm else {
+                    throw DemoError.invalidArguments("missing number: bpm")
+                }
+                let transportBefore = try logic.getTransport()
+                let currentBpm = transportBefore["tempo"] as? Double
+                if let expected = (arguments["expected_current_bpm"] as? Double)
+                    ?? (arguments["expected_current_bpm"] as? Int).map(Double.init) {
+                    guard let current = currentBpm, abs(current - expected) < 0.5 else {
+                        throw DemoError.currentValueMismatch(
+                            expected: "\(expected) BPM",
+                            actual: "\(currentBpm.map { "\($0)" } ?? "unreadable") BPM"
+                        )
+                    }
+                }
+                let landed = try logic.setTempo(targetBpm)
+                payload = [
+                    "success": true,
+                    "verified": true,
+                    "before_bpm": currentBpm.map { $0 as Any } ?? NSNull() as Any,
+                    "bpm": landed,
+                    "write_route": "control_bar_tempo_slider",
+                    "note": "Whole-BPM resolution (the slider steps 1 BPM). Constant project tempo assumed; tempo-track changes are not managed."
+                ]
 
             case "logic_set_track_mute", "logic_set_track_solo":
                 let control = name == "logic_set_track_mute" ? "mute" : "solo"
@@ -7302,6 +7471,19 @@ private final class MCPServer {
                 ]
             ],
             [
+                "name": "logic_set_tempo",
+                "description": "Set the project tempo in BPM via the control bar's tempo display (rapid-fire stepwise converge, ~1.3 s per 120 BPM of distance). Whole-BPM resolution. Compare-and-set with expected_current_bpm. Assumes constant project tempo.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "bpm": ["type": "number", "description": "Target tempo, 5-990."],
+                        "expected_current_bpm": ["type": "number", "description": "Abort unless the current tempo matches."]
+                    ],
+                    "required": ["bpm"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
                 "name": "logic_save_project",
                 "description": "Save the open Logic project — the ONLY way this server ever saves; no other tool saves as a side effect. Fires the Save key command and verifies via the document's modified flag. Refuses when more than one project is open, when the project has never been saved, or when expected_project_path does not match. Returns already_saved when there is nothing to save.",
                 "inputSchema": [
@@ -7545,7 +7727,7 @@ private final class MCPServer {
             ],
             [
                 "name": "logic_remove_plugin",
-                "description": "Remove one insert from a track by choosing 'No Plug-in' in that slot's plugin menu. Requires insert_index when the same plugin occupies several slots. Verified by the insert count decreasing.",
+                "description": "Remove a plugin from a track — mouse-free via the Mackie Control plugin browser's No Plug-in entry (can take up to ~60 s of vpot stepping; verified via LCD and an AX cross-check on the named track). If the MCU bridge is down, the AX chooser fallback requires allow_mouse: true because it briefly takes over the pointer.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [

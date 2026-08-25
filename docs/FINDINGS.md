@@ -1414,3 +1414,10 @@ Kvarstående ur optimeringslistan: record_midi-tempotricket (höj BPM N×, skala
 Produktbeslut (användaren): realtid förblir DEFAULT — att höra taken spelas in är ett värde, inte en väntetid. `speed` (1–8) är opt-in för långa fraser.
 
 Mekanik: tempo-slidern i Control Bar är AXValue-skrivbar men stegvis (±1 BPM per skrivning oavsett mål) — MEN accepterar skrivningar var ~8:e ms, så `setTempo` rapid-fire-konvergerar 120→240 på 1,3 s. `logic_record_midi {speed: 4}` höjer tempot ×4, skalar händelsetiderna, spelar in, återställer tempot (verifierat: exakt återställning, restore även i felvägar). Ärlig ekonomi: korta fraser vinner lite (fast overhead på ~10 s dominerar: select, playhead-park, preroll, tail, tempo-swap); vinsten skalar med fraslängden (16 takter: ~40 s → ~13 s). Timing-jitter skalar med speed — dokumenterat i schemat med kvantiseringsrekommendation.
+
+### set_tempo, musfri remove, MIT (2026-08-25, v0.34.0)
+
+- **`logic_set_tempo`**: control bar-sliderns rapid-fire-konvergens som eget verktyg med compare-and-set (`expected_current_bpm`). Uppmätt 0,3 s för 120→140; vägran vid fel förväntan verifierad. Hel-BPM-upplösning; konstant tempo antas.
+- **`logic_remove_plugin` MCU-först**: bläddra den upptagna slotten baklänges till "--" (No Plug-in), settle-verifiera posten, bekräfta, korsverifiera via AX att pluginen är borta från spårets namngivna insertlista. Uppmätt 7,1 s för Exciter (gränsposten låg nära). AX-choosern (mus) endast bakom `allow_mouse: true` — sista musberoende operationen är därmed opt-in-degraderad.
+- **findChannel själv-läker projektbytestransienten**: en tom full-scan (Logic bygger om ytan i sekunder efter projektladdning) väntar 2,5 s och skannar om en gång i stället för att fela — eliminerar den återkommande "match count 0"-klassen.
+- **Licens: MIT** (LICENSE-fil, README uppdaterad).

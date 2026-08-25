@@ -4,7 +4,7 @@
 
 An MCP (Model Context Protocol) server that gives Claude, Cursor, and other MCP clients real, verified control over Logic Pro on macOS: transport, mixing, every plugin parameter (third-party included), dialog-free audio export, closed-loop A/B evaluation of mix changes, and MIDI composition recorded straight onto your tracks.
 
-> **Logician** = Logic + musician (+ a reasoning logician). License and distribution channel are not final; currently a private repo — build from source.
+> **Logician** = Logic + musician (+ a reasoning logician). MIT licensed. Currently a private repo — build from source.
 
 ## Why this one is different
 
