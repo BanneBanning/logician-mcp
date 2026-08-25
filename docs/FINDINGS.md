@@ -1473,3 +1473,13 @@ Användarens utmaning: "gör testet i detta projekt — du har verktygen". Stäm
 3. **Send-automationen skriver äkta kurvor** (chase: −15,2 mitt i rampen, slutvärde −7,8 stabilt efter riden) men träffar inte målen exakt: (a) ankarpunkten vid första takten registreras inte trots touch-wiggle (Latch verkar inte fånga send-vpotens touch i SE-vyn — kurvan börjar först vid första faktiska värdeändringen), (b) slutvärdet stannade −7,8 mot mål −6 (konvergensen i SE-vyn under uppspelning terminerar tidigt). **Status: funktionell men ±2 dB — volym/pan/plugin är exakta; send behöver en egen finjusteringssession.** Även: vy-tillståndsläxa igen — en abort som lämnar PN-vyn aktiv gör att nästa raw-vpot-probe träffar PAN på kanal 0; alltid verifiera assignment-koden före vpot-vridningar.
 
 Incidentnotis: pan-vridningar på Audio 1 under felsökningen tog aldrig (pan var kvar på 0 — enkelparamläget i PN ignorerade dem); inget att återställa.
+
+### Send-finjusteringen (2026-08-26, v0.39.0) — automationsfamiljen komplett och exakt
+
+Tre rotorsaker hittades och fixades, alla generella förbättringar av vpot-motorn:
+
+1. **Adaptiv tick-ratio**: encoderskalor är olinjära (en dB nära −∞ är en bråkdel av en tick; nära unity flera) — seed-ration från startproben undersköt alla blinda hopp. `vpotJump` mäter nu observerad förflyttning per tick vid varje varv och uppdaterar ration löpande (glidande medel). Detta ensamt fixade slutpunkten (−6,0 exakt, synligt i användarens skärmdump av lanen).
+2. **Rullstarts-ankare i stället för taktkorsnings-ankare**: första punktens konvergens behöver försprång, men med ankaret på korsningen in i första takten finns ingen tid "före". Synken ankrar nu vid själva rullstarten (timecode-förändring från parkerad position) och schemat förskjuts en förrullningstakt — första punkten får 1,2 s lead och full budget, så kurvan är framme och ankrad när dess ögonblick kommer (viktigt när en BEFINTLIG lane spelar upp ett annat värde vid rullstart och åsidosätter det parkerade statiska värdet).
+3. **Vy-återinträde före verifiering** (buggen användaren fångade via lane-skärmdumpen: kurvan landade rätt men verifieringen läste fel/None): automationslägesknapparnas tryck kan knuffa ytan ur arbetsvyn — verifieringen går nu in i send-/pluginvyn igen (`refreshView`) innan chase-avläsningarna.
+
+Slutresultat send: −19,8/−20 och −6,1/−6. Familjens facit: volym exakt, pan exakt, plugin exakt, send ±0,2 dB.

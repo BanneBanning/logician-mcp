@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.38.0"
+private let serverVersion = "0.39.0"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -6033,18 +6033,32 @@ extension MCUController {
         index: Int, target: Double, ticksPerUnit: Double,
         read: () -> Double?, budget: TimeInterval
     ) throws {
+        // ADAPTIVE ratio: encoder scales are nonlinear (a dB near -inf is a
+        // fraction of a tick; near unity several ticks), so the seed ratio
+        // from the initial probe is only a starting guess — every turn's
+        // observed movement refines it.
         let deadline = Date().addingTimeInterval(budget)
+        var ratio = ticksPerUnit
         guard var current = read() else { return }
-        try turnVpot(index, by: Int(((target - current) * ticksPerUnit).rounded()))
-        // Correct against the echo until the budget runs out (a short budget
-        // mid-curve gets 1-2 rounds; the final point can converge fully).
-        while Date() < deadline {
+        while true {
+            let step = abs(0.5 / max(abs(ratio), 0.01))
+            if abs(current - target) <= step { return }
+            var ticks = Int(((target - current) * ratio).rounded())
+            if ticks == 0 {
+                ticks = (target - current) * ratio > 0 ? 1 : -1
+            }
+            try turnVpot(index, by: ticks)
+            guard Date() < deadline else { return }
             Thread.sleep(forTimeInterval: 0.12)
             guard let now = read() else { return }
+            let change = now - current
+            if abs(change) > 0.0001, ticks != 0 {
+                let observedRatio = Double(ticks) / change
+                if observedRatio.isFinite, abs(observedRatio) < 1000 {
+                    ratio = 0.5 * ratio + 0.5 * observedRatio
+                }
+            }
             current = now
-            let step = abs(0.5 / max(abs(ticksPerUnit), 0.01))
-            if abs(current - target) <= step { return }
-            try turnVpot(index, by: Int(((target - current) * ticksPerUnit).rounded()))
         }
     }
 
@@ -6095,6 +6109,7 @@ extension MCUController {
         verify: Bool,
         tolerance: Double,
         enterView: (Int) throws -> (read: () -> Double?, write: (Double, TimeInterval) throws -> Void),
+        refreshView: (() throws -> Void)? = nil,
         restoreView: @escaping () -> Void
     ) throws -> [String: Any] {
         let transport = try logic.getTransport()
@@ -6161,38 +6176,46 @@ extension MCUController {
         do {
             _ = try logic.setPlayhead(barNumber: first.bar - 1, beat: 1)
             Thread.sleep(forTimeInterval: 0.5)
+            let parkedTimecode = freshStatus()?["timecode"] as? String
             guard (try? setPlaying(true)) != nil else {
                 throw DemoError.writeFailed("play failed")
             }
+            // Anchor at ROLL START (the parked bar), not at the first point's
+            // bar crossing: the whole pre-roll bar is then usable for the
+            // first point's convergence lead.
             let syncDeadline = Date().addingTimeInterval(20)
             var anchor: Date?
             while Date() < syncDeadline {
-                if let bar = timecodeBar(), bar >= first.bar { anchor = Date(); break }
+                if let timecode = freshStatus()?["timecode"] as? String,
+                   timecode != parkedTimecode { anchor = Date(); break }
                 Thread.sleep(forTimeInterval: 0.01)
             }
             guard let start = anchor else {
                 throw DemoError.verificationFailed(
-                    requested: "playback reaching bar \(first.bar)",
-                    actual: "the timecode never got there", restored: false
+                    requested: "playback rolling from bar \(first.bar - 1)",
+                    actual: "the timecode never moved", restored: false
                 )
             }
+            let preRollMs = beatsPerBar * msPerBeat // one bar before the first point
             for (position, entry) in schedule.enumerated() {
-                // Vpot convergence takes ~0.3 s — lead each write so the
-                // curve centers on the musical moment instead of trailing it.
-                let lead = 0.35
-                let wait = entry.ms / 1000 - lead - Date().timeIntervalSince(start)
-                if wait > 0 { Thread.sleep(forTimeInterval: wait) }
-                if position == 0 {
-                    // Latch only writes on a TOUCH: if the control already
-                    // sits on the first value nothing would be recorded, so
-                    // wiggle one unit down and back to anchor the curve here.
-                    if let current = view.read(), abs(current - entry.value) < 0.01 {
-                        try view.write(entry.value - 1, 0.25)
-                        try view.write(entry.value, 0.4)
-                    }
-                }
+                // Vpot convergence takes time — lead each write so the curve
+                // centers on the musical moment instead of trailing it. The
+                // FIRST point gets a long lead and a full budget: an existing
+                // lane can start playback far from the target (overriding the
+                // pre-parked static value), and the anchor must be converged
+                // BEFORE its moment arrives.
+                let isFirst = position == 0
                 let isLast = position == schedule.count - 1
-                try view.write(entry.value, isLast ? 1.5 : max(0.15, min(0.6, msPerBeat / 2000)))
+                let lead = isFirst ? 1.2 : 0.35
+                let wait = (preRollMs + entry.ms) / 1000 - lead - Date().timeIntervalSince(start)
+                if wait > 0 { Thread.sleep(forTimeInterval: wait) }
+                if isFirst, let current = view.read(), abs(current - entry.value) < 0.01 {
+                    // Latch only writes on a TOUCH: already on target means
+                    // nothing would be recorded — wiggle to anchor the curve.
+                    try view.write(entry.value - 1, 0.25)
+                }
+                try view.write(entry.value,
+                               isFirst ? 1.0 : (isLast ? 1.5 : max(0.15, min(0.6, msPerBeat / 2000))))
             }
             Thread.sleep(forTimeInterval: 0.5)
             _ = try? setPlaying(false)
@@ -6214,6 +6237,9 @@ extension MCUController {
             "write_route": "mcu_vpot_latch"
         ]
         if verify {
+            // The automation-mode button presses can knock the surface out of
+            // the working view — re-enter it before reading anything.
+            try refreshView?()
             // Playhead-chase verification: parked in Read mode, Logic chases
             // the automation lane to the playhead position — stationary,
             // exact reads with no live-LCD lag, and no realtime replay.
@@ -7558,6 +7584,14 @@ private final class MCPServer {
                             let write = try MCUController.makeVpotWriter(index: levelIndex, read: read)
                             return (read, write)
                         },
+                        refreshView: {
+                            guard try MCUController.ensureSendView() else {
+                                throw DemoError.trackNotExposed(
+                                    requested: "the send view for verification", exposed: "not reachable"
+                                )
+                            }
+                            try MCUController.sendViewToPage(forSend: sendSlot)
+                        },
                         restoreView: { MCUController.exitToPan() }
                     )
                 case "plugin":
@@ -7592,6 +7626,15 @@ private final class MCPServer {
                             }
                             let write = try MCUController.makeVpotWriter(index: found, read: read)
                             return (read, write)
+                        },
+                        refreshView: {
+                            guard try MCUController.ensurePluginList() != nil,
+                                  try MCUController.enterPluginEdit(slot: slot),
+                                  try MCUController.locateParameter(named: paramName) != nil else {
+                                throw DemoError.trackNotExposed(
+                                    requested: "the plugin view for verification", exposed: "not reachable"
+                                )
+                            }
                         },
                         restoreView: { MCUController.exitToPan() }
                     )
