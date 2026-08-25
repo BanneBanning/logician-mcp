@@ -1421,3 +1421,11 @@ Mekanik: tempo-slidern i Control Bar är AXValue-skrivbar men stegvis (±1 BPM p
 - **`logic_remove_plugin` MCU-först**: bläddra den upptagna slotten baklänges till "--" (No Plug-in), settle-verifiera posten, bekräfta, korsverifiera via AX att pluginen är borta från spårets namngivna insertlista. Uppmätt 7,1 s för Exciter (gränsposten låg nära). AX-choosern (mus) endast bakom `allow_mouse: true` — sista musberoende operationen är därmed opt-in-degraderad.
 - **findChannel själv-läker projektbytestransienten**: en tom full-scan (Logic bygger om ytan i sekunder efter projektladdning) väntar 2,5 s och skannar om en gång i stället för att fela — eliminerar den återkommande "match count 0"-klassen.
 - **Licens: MIT** (LICENSE-fil, README uppdaterad).
+
+### Regionläsning + regionval (2026-08-25, v0.35.0)
+
+**Arrangemangskartan är läsbar** — fundamentet för hela redigeringssviten. Tracks-areans spårrader är `AXLayoutArea 'Track N "Namn"'` och deras AXLayoutItem-barn (AXRoleDescription "Region") ÄR regionerna: namn i AXDescription, och **AXHelp innehåller allt**: "Region starts at 9 bars 2 beats and ends at 11 bars , MIDI region." → start/slut-takt (+slag), typ. `logic_list_regions` parsar hela kartan på **0,2 s** (Testlåt: 15 spår, 38 regioner).
+
+`logic_select_region` väljer exakt EN region (spår + namn/starttakt; tvetydighet vägras med kandidatlista) — `AXSelected` är skrivbar åt båda hållen, och `exclusive` (default) rensar först alla andra regionval så nästa redigeringskommando träffar bara målet. Verifierat: exklusivt val + korrekt avmarkering av övriga. En stale-element-transient direkt efter kartläsning motiverade engångs-retry i verifieringen.
+
+Regionerna exponerar också AXHandles (trim-handtag!) och AXPosition/AXFrame — pixelvägar för framtida behov, men nudge-key-commands är rätt flyttmekanism. Nästa: redigeringssviten (cut/copy/paste/delete/nudge via inlärda kommandon ovanpå valet).

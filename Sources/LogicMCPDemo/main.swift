@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.34.0"
+private let serverVersion = "0.35.0"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -838,6 +838,171 @@ private final class LogicAccessibility {
             "deltas": deltas,
             "note": "Offline 24-bit master renders; no playback occurred. Metrics computed from the files."
         ]
+    }
+
+    // MARK: - Regions (Tracks-area layout items)
+
+    /// Region elements grouped per track row. Each row is an AXLayoutArea
+    /// described 'Track N “Name”'; its AXLayoutItem children are the regions,
+    /// with name in AXDescription and musical position in AXHelp
+    /// ("Region starts at X bars ... and ends at Y bars ..., MIDI region.").
+    private func regionRows() throws -> [(number: Int, track: String, regions: [AXUIElement])] {
+        guard let window = try logicWindows().first(where: {
+            stringAttribute($0, kAXSubroleAttribute as String) == "AXStandardWindow"
+        }) else {
+            throw DemoError.windowNotFound("project window")
+        }
+        var rows: [(Int, String, [AXUIElement])] = []
+        func walk(_ element: AXUIElement, _ depth: Int) {
+            guard depth < 10 else { return }
+            let description = stringAttribute(element, kAXDescriptionAttribute as String)
+            if stringAttribute(element, kAXRoleAttribute as String) == "AXLayoutArea",
+               description.hasPrefix("Track "), description.contains("“") {
+                let digits = description.dropFirst(6).prefix { $0.isNumber }
+                let name = description.split(separator: "“").last.map {
+                    String($0).replacingOccurrences(of: "”", with: "")
+                } ?? description
+                let regions = children(of: element).filter {
+                    stringAttribute($0, "AXRoleDescription") == "Region"
+                }
+                rows.append((Int(digits) ?? 0, name, regions))
+                return // region items have no nested rows
+            }
+            for child in children(of: element) { walk(child, depth + 1) }
+        }
+        walk(window, 0)
+        return rows
+    }
+
+    private func parseRegion(_ element: AXUIElement) -> [String: Any] {
+        var entry: [String: Any] = [
+            "name": stringAttribute(element, kAXDescriptionAttribute as String),
+            "selected": stringAttribute(element, "AXSelected") == "1"
+        ]
+        let help = stringAttribute(element, kAXHelpAttribute as String)
+        // "Region starts at 9 bars 2 beats and ends at 11 bars , MIDI region."
+        // Two independent regexes keep the optional beats simple.
+        func capture(_ pattern: String) -> (bar: Int, beat: Int)? {
+            guard let range = help.range(of: pattern, options: .regularExpression) else { return nil }
+            let segment = String(help[range])
+            let parts = segment.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
+            guard let bar = parts.first else { return nil }
+            return (bar, parts.count > 1 ? parts[1] : 1)
+        }
+        if let start = capture(#"starts at \d+ bars?\s*(\d+ beats?)?"#) {
+            entry["start_bar"] = start.bar
+            if start.beat != 1 { entry["start_beat"] = start.beat }
+        }
+        if let end = capture(#"ends at \d+ bars?\s*(\d+ beats?)?"#) {
+            entry["end_bar"] = end.bar
+            if end.beat != 1 { entry["end_beat"] = end.beat }
+        }
+        if let typeRange = help.range(of: #",\s*([A-Za-z]+) region"#, options: .regularExpression) {
+            let segment = String(help[typeRange])
+            entry["type"] = segment
+                .replacingOccurrences(of: ",", with: "")
+                .replacingOccurrences(of: "region", with: "")
+                .trimmingCharacters(in: .whitespaces)
+                .lowercased()
+        }
+        return entry
+    }
+
+    /// The arrangement map: every region on every visible track, with bar
+    /// positions and type parsed from the element's help text.
+    func listRegions(trackName: String?) throws -> [String: Any] {
+        let rows = try regionRows()
+        var tracks: [[String: Any]] = []
+        for row in rows {
+            if let filter = trackName,
+               row.track.caseInsensitiveCompare(filter) != .orderedSame { continue }
+            tracks.append([
+                "track_number": row.number,
+                "track_name": row.track,
+                "regions": row.regions.map(parseRegion)
+            ])
+        }
+        if let filter = trackName, tracks.isEmpty {
+            throw DemoError.trackNotExposed(
+                requested: "regions on '\(filter)'",
+                exposed: "visible track rows: " + rows.map(\.track).joined(separator: ", ")
+            )
+        }
+        return [
+            "project_document": (try? projectDocumentPath()) ?? NSNull(),
+            "tracks": tracks,
+            "note": "Only regions on currently rendered track rows are listed (scrolled-out tracks are not exposed). Positions are whole bars/beats as Logic's own help text reports them."
+        ]
+    }
+
+    /// Selects one region, identified by track + name and/or start bar.
+    /// exclusive (default) first clears every other selected region so the
+    /// following edit operation (cut/copy/nudge…) touches ONLY this one.
+    func selectRegion(
+        trackName: String, regionName: String?, startBar: Int?, exclusive: Bool
+    ) throws -> [String: Any] {
+        guard regionName != nil || startBar != nil else {
+            throw DemoError.invalidArguments("pass region_name and/or start_bar")
+        }
+        let rows = try regionRows()
+        guard let row = rows.first(where: {
+            $0.track.caseInsensitiveCompare(trackName) == .orderedSame
+        }) else {
+            throw DemoError.trackNotExposed(
+                requested: "track '\(trackName)'",
+                exposed: "visible track rows: " + rows.map(\.track).joined(separator: ", ")
+            )
+        }
+        let annotated = row.regions.map { ($0, parseRegion($0)) }
+        let hits = annotated.filter { _, info in
+            if let name = regionName,
+               (info["name"] as? String)?.caseInsensitiveCompare(name) != .orderedSame {
+                return false
+            }
+            if let bar = startBar, info["start_bar"] as? Int != bar { return false }
+            return true
+        }
+        guard hits.count == 1, let hit = hits.first else {
+            throw DemoError.parameterAmbiguous(
+                "region on '\(trackName)' (candidates: " + annotated.map { _, info in
+                    "\(info["name"] ?? "?")@bar\(info["start_bar"] ?? 0)"
+                }.joined(separator: ", ") + ")",
+                hits.count
+            )
+        }
+        if exclusive {
+            for otherRow in rows {
+                for region in otherRow.regions
+                where stringAttribute(region, "AXSelected") == "1" && !CFEqual(region, hit.0) {
+                    _ = AXUIElementSetAttributeValue(region, "AXSelected" as CFString, kCFBooleanFalse)
+                }
+            }
+        }
+        var stuck = false
+        for attempt in 0..<2 {
+            let status = AXUIElementSetAttributeValue(
+                hit.0, "AXSelected" as CFString, kCFBooleanTrue
+            )
+            guard status == .success else {
+                throw DemoError.writeFailed("AXSelected write returned AXError \(status.rawValue)")
+            }
+            Thread.sleep(forTimeInterval: 0.3)
+            if stringAttribute(hit.0, "AXSelected") == "1" { stuck = true; break }
+            if attempt == 0 { Thread.sleep(forTimeInterval: 0.5) } // stale-element transient
+        }
+        guard stuck else {
+            throw DemoError.verificationFailed(
+                requested: "region selected",
+                actual: "the region's AXSelected did not stick after a retry",
+                restored: false
+            )
+        }
+        var result = parseRegion(hit.0)
+        result["success"] = true
+        result["verified"] = true
+        result["track"] = row.track
+        result["exclusive"] = exclusive
+        return result
     }
 
     // MARK: - Tempo write (control bar slider, rapid-fire stepwise)
@@ -7057,6 +7222,19 @@ private final class MCPServer {
                     )
                 }
 
+            case "logic_list_regions":
+                payload = try logic.listRegions(
+                    trackName: arguments["track_name"] as? String
+                )
+
+            case "logic_select_region":
+                payload = try logic.selectRegion(
+                    trackName: requiredString("track_name", in: arguments),
+                    regionName: arguments["region_name"] as? String,
+                    startBar: arguments["start_bar"] as? Int,
+                    exclusive: arguments["exclusive"] as? Bool ?? true
+                )
+
             case "logic_set_tempo":
                 let bpm = (arguments["bpm"] as? Double)
                     ?? (arguments["bpm"] as? Int).map(Double.init)
@@ -7467,6 +7645,32 @@ private final class MCPServer {
                     "properties": [
                         "type": ["type": "string", "description": "'software_instrument' (default) or 'audio'."]
                     ],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "logic_list_regions",
+                "description": "The arrangement map: every region on every visible track row, with name, start/end bar (and beat when off the barline), type (midi/audio) and selection state — parsed from Logic's own accessibility descriptions. Read-only. Optionally filter to one track.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "track_name": ["type": "string", "description": "Optional: only this track's regions."]
+                    ],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "logic_select_region",
+                "description": "Select exactly one region (by track + region_name and/or start_bar; ambiguity is refused with candidates listed). exclusive (default true) clears all other region selections first, so a following edit key command (cut/copy/delete/nudge) touches only this region. Verified via the element's selection state.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "track_name": ["type": "string"],
+                        "region_name": ["type": "string"],
+                        "start_bar": ["type": "integer"],
+                        "exclusive": ["type": "boolean", "description": "Default true: clear other selections first."]
+                    ],
+                    "required": ["track_name"],
                     "additionalProperties": false
                 ]
             ],
