@@ -1,10 +1,11 @@
 import AppKit
 import ApplicationServices
+import LogicMCUBridge
 import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logic-mcp-demo"
-private let serverVersion = "0.26.0"
+private let serverVersion = "0.27.0"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -3744,17 +3745,12 @@ private enum MCUBridge {
     /// logic-mcu-bridge binary next to this executable.
     static func ensureRunning() {
         if (try? send(["cmd": "ping"]))?["ok"] as? Bool == true { return }
+        // The bridge daemon is this same binary launched with --bridge —
+        // one distributable artifact, no sibling files to install.
         let serverURL = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
-        let bridgeURL = serverURL.deletingLastPathComponent()
-            .appendingPathComponent("logic-mcu-bridge")
-        guard FileManager.default.isExecutableFile(atPath: bridgeURL.path) else {
-            FileHandle.standardError.write(Data(
-                "[logic-mcp-demo] bridge socket dead and no logic-mcu-bridge next to the server binary\n".utf8
-            ))
-            return
-        }
         let process = Process()
-        process.executableURL = bridgeURL
+        process.executableURL = serverURL
+        process.arguments = ["--bridge"]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         guard (try? process.run()) != nil else { return }
@@ -5636,7 +5632,7 @@ private final class MCPServer {
                 health["bridge_running"] = bridgeUp
                 health["mcu_connected"] = (bridge["received_events"] as? Int ?? 0) > 0
                 if !bridgeUp {
-                    health["bridge_fix"] = "logic-mcu-bridge could not be started; place it next to the server binary"
+                    health["bridge_fix"] = "the bridge subprocess could not be started (self-spawn with --bridge failed)"
                 } else if (bridge["received_events"] as? Int ?? 0) == 0 {
                     health["mcu_fix"] = "no MIDI from Logic yet: add a Mackie Control in Logic > Control Surfaces > Setup with ports 'Logic MCP MCU', or play something"
                 }
@@ -6970,5 +6966,8 @@ private final class MCPServer {
     }
 }
 
+if CommandLine.arguments.contains("--bridge") {
+    LogicMCUBridge.bridgeMain()
+}
 MCUBridge.ensureRunning()
 MCPServer().run()

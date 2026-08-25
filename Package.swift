@@ -8,18 +8,21 @@ let package = Package(
         .macOS(.v13)
     ],
     products: [
-        .executable(name: "logic-mcp-demo", targets: ["LogicMCPDemo"]),
-        .executable(name: "logic-mcu-bridge", targets: ["LogicMCUBridge"])
+        // Single distributable binary: the MCP server, which also runs the
+        // MCU bridge daemon when launched as `logic-mcp-demo --bridge`
+        // (the server spawns that itself; users never start a daemon).
+        .executable(name: "logic-mcp-demo", targets: ["LogicMCPDemo"])
     ],
     targets: [
         .executableTarget(
             name: "LogicMCPDemo",
+            dependencies: ["LogicMCUBridge"],
             linkerSettings: [
                 .linkedFramework("ApplicationServices"),
                 .linkedFramework("AppKit")
             ]
         ),
-        .executableTarget(
+        .target(
             name: "LogicMCUBridge",
             swiftSettings: [
                 .swiftLanguageMode(.v5) // thread safety handled manually with locks

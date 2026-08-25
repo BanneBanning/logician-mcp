@@ -282,8 +282,11 @@ func sendMIDIIn(_ bytes: [UInt8]) {
     MIDIReceived(midiInSource, &packetList)
 }
 
-var timebase = mach_timebase_info_data_t()
-_ = mach_timebase_info(&timebase)
+let timebase: mach_timebase_info_data_t = {
+    var info = mach_timebase_info_data_t()
+    mach_timebase_info(&info)
+    return info
+}()
 
 func hostTicks(fromMs ms: Double) -> UInt64 {
     UInt64(ms * 1_000_000 * Double(timebase.denom) / Double(timebase.numer))
@@ -570,26 +573,33 @@ func startSocketServer() {
 
 // MARK: - Main
 
-try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-guard setUpMIDI() else {
-    FileHandle.standardError.write(Data("failed to create virtual MIDI endpoints\n".utf8))
-    exit(1)
-}
-startSocketServer()
-FileHandle.standardError.write(Data("logic-mcu-bridge running; ports '\(portName)'\n".utf8))
+/// Runs the bridge daemon until killed. The MCP server calls this when
+/// launched with `--bridge`; the library form means one distributable binary.
+public func bridgeMain() -> Never {
+    try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    guard setUpMIDI() else {
+        FileHandle.standardError.write(Data("failed to create virtual MIDI endpoints\n".utf8))
+        exit(1)
+    }
+    startSocketServer()
+    FileHandle.standardError.write(Data("logic-mcu-bridge running; ports '\(portName)'\n".utf8))
 
-let timer = DispatchSource.makeTimerSource()
-timer.schedule(deadline: .now(), repeating: .milliseconds(150))
-timer.setEventHandler {
-    if state.isDirty, let json = state.snapshotJSON() {
+    let timer = DispatchSource.makeTimerSource()
+    timer.schedule(deadline: .now(), repeating: .milliseconds(150))
+    timer.setEventHandler {
+        if state.isDirty, let json = state.snapshotJSON() {
+            try? json.write(to: statePath, options: .atomic)
+        }
+    }
+    timer.resume()
+
+    // Also write an initial state so readers see the bridge even before Logic talks.
+    if let json = state.snapshotJSON() {
         try? json.write(to: statePath, options: .atomic)
     }
-}
-timer.resume()
 
-// Also write an initial state so readers see the bridge even before Logic talks.
-if let json = state.snapshotJSON() {
-    try? json.write(to: statePath, options: .atomic)
+    withExtendedLifetime(timer) {
+        RunLoop.main.run()
+    }
+    exit(0)
 }
-
-RunLoop.main.run()
