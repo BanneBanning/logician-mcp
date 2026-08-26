@@ -11,11 +11,11 @@ let package = Package(
         // Single distributable binary: the MCP server, which also runs the
         // MCU bridge daemon when launched as `logician --bridge`
         // (the server spawns that itself; users never start a daemon).
-        .executable(name: "logician", targets: ["LogicMCPDemo"])
+        .executable(name: "logician", targets: ["Logician"])
     ],
     targets: [
         .executableTarget(
-            name: "LogicMCPDemo",
+            name: "Logician",
             dependencies: ["LogicMCUBridge"],
             resources: [
                 .copy("Resources/EmptyProject.logicx")
