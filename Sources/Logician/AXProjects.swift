@@ -64,8 +64,7 @@ extension LogicAccessibility {
         for window in windows {
             var isPrompt = false
             var create: AXUIElement?
-            func walk(_ element: AXUIElement, _ depth: Int) {
-                guard depth < 8 else { return }
+            collect(from: window, maximumDepth: AXDepth.alertDialog) { element in
                 let role = stringAttribute(element, kAXRoleAttribute as String)
                 if role == "AXStaticText",
                    stringAttribute(element, kAXValueAttribute as String)
@@ -74,9 +73,7 @@ extension LogicAccessibility {
                    stringAttribute(element, kAXTitleAttribute as String) == "Create" {
                     create = element
                 }
-                for child in children(of: element) { walk(child, depth + 1) }
             }
-            walk(window, 0)
             if isPrompt, let button = create {
                 return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
             }
@@ -91,8 +88,7 @@ extension LogicAccessibility {
         for window in windows {
             var isPrompt = false
             var savedButton: AXUIElement?
-            func walk(_ element: AXUIElement, _ depth: Int) {
-                guard depth < 8 else { return }
+            collect(from: window, maximumDepth: AXDepth.alertDialog) { element in
                 let role = stringAttribute(element, kAXRoleAttribute as String)
                 if role == "AXStaticText",
                    stringAttribute(element, kAXValueAttribute as String)
@@ -101,9 +97,7 @@ extension LogicAccessibility {
                    stringAttribute(element, kAXTitleAttribute as String) == "Saved" {
                     savedButton = element
                 }
-                for child in children(of: element) { walk(child, depth + 1) }
             }
-            walk(window, 0)
             if isPrompt, let button = savedButton {
                 return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
             }
@@ -119,8 +113,7 @@ extension LogicAccessibility {
             var isPrompt = false
             var target: AXUIElement?
             let wanted = save ? "Save" : "Don’t Save"
-            func walk(_ element: AXUIElement, _ depth: Int) {
-                guard depth < 8 else { return }
+            collect(from: window, maximumDepth: AXDepth.alertDialog) { element in
                 let role = stringAttribute(element, kAXRoleAttribute as String)
                 if role == "AXStaticText",
                    stringAttribute(element, kAXValueAttribute as String)
@@ -129,9 +122,7 @@ extension LogicAccessibility {
                    stringAttribute(element, kAXTitleAttribute as String) == wanted {
                     target = element
                 }
-                for child in children(of: element) { walk(child, depth + 1) }
             }
-            walk(window, 0)
             if isPrompt, let button = target {
                 return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
             }

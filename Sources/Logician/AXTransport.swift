@@ -519,12 +519,9 @@ extension LogicAccessibility {
 
     func rulerArea() throws -> AXUIElement {
         let mainWindow = try projectWindow()
-        var ruler: AXUIElement?
-        collect(from: mainWindow, maximumDepth: 10) { element in
-            guard ruler == nil,
-                  stringAttribute(element, kAXRoleAttribute as String) == "AXLayoutArea",
-                  stringAttribute(element, kAXDescriptionAttribute as String) == "Tracks time ruler" else { return }
-            ruler = element
+        let ruler = firstDescendant(of: mainWindow, maximumDepth: AXDepth.timeRuler) { element in
+            stringAttribute(element, kAXRoleAttribute as String) == "AXLayoutArea"
+                && stringAttribute(element, kAXDescriptionAttribute as String) == "Tracks time ruler"
         }
         guard let area = ruler else {
             throw DemoError.windowNotFound("Tracks time ruler")
@@ -692,13 +689,10 @@ extension LogicAccessibility {
 
     func controlBarGroup() throws -> AXUIElement {
         let mainWindow = try projectWindow()
-        var bar: AXUIElement?
-        collect(from: mainWindow, maximumDepth: 6) { element in
-            guard bar == nil,
-                  stringAttribute(element, kAXRoleAttribute as String) == "AXGroup",
-                  stringAttribute(element, kAXDescriptionAttribute as String) == "Control Bar",
-                  stringAttribute(element, kAXHelpAttribute as String).hasPrefix("Control bar") else { return }
-            bar = element
+        let bar = firstDescendant(of: mainWindow, maximumDepth: AXDepth.controlBar) { element in
+            stringAttribute(element, kAXRoleAttribute as String) == "AXGroup"
+                && stringAttribute(element, kAXDescriptionAttribute as String) == "Control Bar"
+                && stringAttribute(element, kAXHelpAttribute as String).hasPrefix("Control bar")
         }
         guard let group = bar else {
             throw DemoError.windowNotFound("Control Bar group")

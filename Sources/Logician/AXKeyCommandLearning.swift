@@ -49,46 +49,42 @@ extension LogicAccessibility {
                 }
         }) else { throw DemoError.windowNotFound("Key Commands search field") }
 
-        func findOutline(_ element: AXUIElement, _ depth: Int) -> AXUIElement? {
-            guard depth < 5 else { return nil }
-            let role = stringAttribute(element, kAXRoleAttribute as String)
-            if role == "AXOutline" || role == "AXTable" { return element }
-            for child in children(of: element) {
-                if let found = findOutline(child, depth + 1) { return found }
+        func findOutline(_ element: AXUIElement) -> AXUIElement? {
+            firstDescendant(of: element, maximumDepth: AXDepth.keyCommandsOutline) {
+                let role = stringAttribute($0, kAXRoleAttribute as String)
+                return role == "AXOutline" || role == "AXTable"
             }
-            return nil
         }
         func rowTexts(_ row: AXUIElement) -> [String] {
             var texts: [String] = []
-            func collect(_ element: AXUIElement, _ depth: Int) {
-                guard depth < 4 else { return }
+            collect(from: row, maximumDepth: AXDepth.keyCommandsRowText) { element in
                 if stringAttribute(element, kAXRoleAttribute as String) == "AXStaticText" {
                     let value = stringAttribute(element, kAXValueAttribute as String)
                     if !value.isEmpty { texts.append(value) }
                 }
-                for child in children(of: element) { collect(child, depth + 1) }
             }
-            collect(row, 0)
             return texts
         }
-        func findIn(_ root: AXUIElement, _ depth: Int,
+        /// Searches the window but never descends INTO the command list: the
+        /// outline holds thousands of rows and nothing that is looked for
+        /// here. The outline/table itself is still returned when it matches.
+        func findIn(_ root: AXUIElement,
                     _ predicate: (AXUIElement) -> Bool) -> AXUIElement? {
-            guard depth < 8 else { return nil }
-            if predicate(root) { return root }
-            let role = stringAttribute(root, kAXRoleAttribute as String)
-            if role == "AXOutline" || role == "AXTable" { return nil }
-            for child in children(of: root) {
-                if let found = findIn(child, depth + 1, predicate) { return found }
+            var match: AXUIElement?
+            walk(from: root, maximumDepth: AXDepth.keyCommandsControl) { element in
+                if predicate(element) { match = element; return .stop }
+                let role = stringAttribute(element, kAXRoleAttribute as String)
+                if role == "AXOutline" || role == "AXTable" { return .skipChildren }
+                return .descend
             }
-            return nil
+            return match
         }
         func dismissConflictAlert() -> Bool {
             guard let windows = try? logicWindows() else { return false }
             for candidate in windows {
                 var isConflict = false
                 var cancel: AXUIElement?
-                func walk(_ element: AXUIElement, _ depth: Int) {
-                    guard depth < 7 else { return }
+                collect(from: candidate, maximumDepth: AXDepth.keyCommandsConflictAlert) { element in
                     let role = stringAttribute(element, kAXRoleAttribute as String)
                     if role == "AXStaticText",
                        stringAttribute(element, kAXValueAttribute as String)
@@ -97,9 +93,7 @@ extension LogicAccessibility {
                        stringAttribute(element, kAXTitleAttribute as String) == "Cancel" {
                         cancel = element
                     }
-                    for child in children(of: element) { walk(child, depth + 1) }
                 }
-                walk(candidate, 0)
                 if isConflict, let button = cancel {
                     _ = AXUIElementPerformAction(button, kAXPressAction as CFString)
                     Thread.sleep(forTimeInterval: 0.5)
@@ -109,7 +103,7 @@ extension LogicAccessibility {
             return false
         }
         func rowMatching(_ name: String) -> AXUIElement? {
-            guard let outline = findOutline(window, 0) else { return nil }
+            guard let outline = findOutline(window) else { return nil }
             for row in children(of: outline)
             where stringAttribute(row, kAXRoleAttribute as String) == "AXRow" {
                 if let first = rowTexts(row).first,
@@ -146,7 +140,7 @@ extension LogicAccessibility {
             }
             _ = AXUIElementSetAttributeValue(row, kAXSelectedAttribute as CFString, kCFBooleanTrue)
             Thread.sleep(forTimeInterval: 0.5)
-            guard let learn = findIn(window, 0, {
+            guard let learn = findIn(window, {
                 stringAttribute($0, kAXRoleAttribute as String) == "AXCheckBox"
                     && stringAttribute($0, kAXTitleAttribute as String) == "Learn New Assignment"
             }) else {
@@ -162,7 +156,7 @@ extension LogicAccessibility {
                 // Every delete re-renders the panel, so the table AND its rows
                 // must be re-found fresh on every iteration.
                 func assignmentRows() -> [AXUIElement] {
-                    guard let table = findIn(window, 0, {
+                    guard let table = findIn(window, {
                         stringAttribute($0, kAXRoleAttribute as String) == "AXTable"
                     }) else { return [] }
                     return children(of: table).filter {
@@ -176,7 +170,7 @@ extension LogicAccessibility {
                         staleRow, kAXSelectedAttribute as CFString, kCFBooleanTrue
                     )
                     Thread.sleep(forTimeInterval: 0.2)
-                    guard let deleteButton = findIn(window, 0, {
+                    guard let deleteButton = findIn(window, {
                         stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
                             && stringAttribute($0, kAXTitleAttribute as String) == "Delete Assignment"
                     }) else { break }
@@ -202,7 +196,7 @@ extension LogicAccessibility {
                               (target.preferredNote + 40) % 128] {
                 // re-find on every attempt: the wipe re-renders the panel and
                 // makes earlier element references silently inert
-                let freshLearn = findIn(window, 0, {
+                let freshLearn = findIn(window, {
                     stringAttribute($0, kAXRoleAttribute as String) == "AXCheckBox"
                         && stringAttribute($0, kAXTitleAttribute as String) == "Learn New Assignment"
                 }) ?? learn
@@ -242,7 +236,7 @@ extension LogicAccessibility {
                 results.append(["name": target.name, "status": "failed",
                                 "note": "all candidate notes collided or verification failed"])
             }
-            if let finalLearn = findIn(window, 0, {
+            if let finalLearn = findIn(window, {
                 stringAttribute($0, kAXRoleAttribute as String) == "AXCheckBox"
                     && stringAttribute($0, kAXTitleAttribute as String) == "Learn New Assignment"
             }) ?? Optional(learn),

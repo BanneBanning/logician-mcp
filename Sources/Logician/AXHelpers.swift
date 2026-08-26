@@ -10,14 +10,11 @@ extension LogicAccessibility {
     /// aux strips that are not selectable track headers.
     func anyInspectorStrip(named name: String) throws -> AXUIElement {
         let mainWindow = try projectWindow()
-        var match: AXUIElement?
-        collect(from: mainWindow, maximumDepth: 12) { element in
-            guard match == nil,
-                  stringAttribute(element, kAXRoleAttribute as String) == "AXLayoutItem",
-                  stringAttribute(element, kAXHelpAttribute as String)
-                      .localizedCaseInsensitiveContains("inspector channel strip"),
-                  stringAttribute(element, kAXDescriptionAttribute as String) == name else { return }
-            match = element
+        let match = firstDescendant(of: mainWindow, maximumDepth: AXDepth.inspectorStrip) { element in
+            stringAttribute(element, kAXRoleAttribute as String) == "AXLayoutItem"
+                && stringAttribute(element, kAXHelpAttribute as String)
+                    .localizedCaseInsensitiveContains("inspector channel strip")
+                && stringAttribute(element, kAXDescriptionAttribute as String) == name
         }
         guard let strip = match else {
             throw DemoError.trackNotExposed(
@@ -31,7 +28,7 @@ extension LogicAccessibility {
     func inspectorStrip(named trackName: String) throws -> AXUIElement {
         let mainWindow = try projectWindow()
         var strips: [(name: String, help: String, element: AXUIElement)] = []
-        collect(from: mainWindow, maximumDepth: 12) { element in
+        collect(from: mainWindow, maximumDepth: AXDepth.inspectorStrip) { element in
             guard stringAttribute(element, kAXRoleAttribute as String) == "AXLayoutItem" else { return }
             let help = stringAttribute(element, kAXHelpAttribute as String)
             guard help.localizedCaseInsensitiveContains("inspector channel strip") else { return }
@@ -136,12 +133,9 @@ extension LogicAccessibility {
 
     func trackHeaderGroup() throws -> AXUIElement {
         let mainWindow = try projectWindow()
-        var headerGroup: AXUIElement?
-        collect(from: mainWindow, maximumDepth: 12) { element in
-            guard headerGroup == nil,
-                  stringAttribute(element, kAXRoleAttribute as String) == "AXGroup",
-                  stringAttribute(element, kAXDescriptionAttribute as String) == "Tracks header" else { return }
-            headerGroup = element
+        let headerGroup = firstDescendant(of: mainWindow, maximumDepth: AXDepth.trackHeaderGroup) { element in
+            stringAttribute(element, kAXRoleAttribute as String) == "AXGroup"
+                && stringAttribute(element, kAXDescriptionAttribute as String) == "Tracks header"
         }
         guard let group = headerGroup else {
             throw DemoError.windowNotFound("Tracks header group")
@@ -294,19 +288,17 @@ extension LogicAccessibility {
         ]
     }
 
+    /// Visits `root` and every descendant down to `maximumDepth` (inclusive,
+    /// root counted as 0) in pre-order.
     func collect(
         from root: AXUIElement,
         maximumDepth: Int,
         visit: (AXUIElement) -> Void
     ) {
-        func walk(_ element: AXUIElement, depth: Int) {
-            guard depth <= maximumDepth else { return }
+        walk(from: root, maximumDepth: maximumDepth) { element in
             visit(element)
-            for child in children(of: element) {
-                walk(child, depth: depth + 1)
-            }
+            return .descend
         }
-        walk(root, depth: 0)
     }
 
     func listParameters(windowTitle: String) throws -> [[String: Any]] {
@@ -494,16 +486,19 @@ extension LogicAccessibility {
         return (text, Double(numericPrefix))
     }
 
-    func descendants(of root: AXUIElement, maximumDepth: Int = 20) -> [AXUIElement] {
+    /// Every descendant of `root` in pre-order, root itself EXCLUDED.
+    /// The cap is measured from each child of the root rather than from the
+    /// root — that is how the hand-rolled version counted, and changing it
+    /// would silently shorten every plugin-window walk — so this reaches one
+    /// level deeper than `collect(from:maximumDepth:)` with the same number.
+    func descendants(of root: AXUIElement, maximumDepth: Int = AXDepth.wholeWindow) -> [AXUIElement] {
         var result: [AXUIElement] = []
-        func walk(_ element: AXUIElement, depth: Int) {
-            guard depth <= maximumDepth else { return }
-            for child in children(of: element) {
-                result.append(child)
-                walk(child, depth: depth + 1)
+        for child in children(of: root) {
+            walk(from: child, maximumDepth: maximumDepth) { element in
+                result.append(element)
+                return .descend
             }
         }
-        walk(root, depth: 0)
         return result
     }
 
