@@ -8,7 +8,7 @@
 
 [![macOS](https://img.shields.io/badge/macOS-13%2B-black?logo=apple)](#requirements)
 [![Swift](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](Package.swift)
-[![MCP](https://img.shields.io/badge/MCP-59_tools-4be37a)](docs/AGENT-GUIDE.md)
+[![MCP](https://img.shields.io/badge/MCP-57_tools-4be37a)](docs/AGENT-GUIDE.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
 [Install](#install) · [What it can do](#what-it-can-do-measured) · [Agent guide](docs/AGENT-GUIDE.md) · [Architecture](docs/ARCHITECTURE.md)
@@ -89,7 +89,7 @@ Everything else is self-serve: the server spawns its own bridge daemon, `logic_h
 - Swift toolchain (to build from source)
 - One-time: Accessibility permission for your MCP client, and a Mackie Control device in Logic pointing at the `Logic MCP MCU` ports (Logic Pro → Control Surfaces → Setup → New → Mackie Control — `logic_health` walks you through it)
 
-## Tool overview (59 tools)
+## Tool overview (57 tools)
 
 - **Diagnostics** — `logic_health` (doctor with fixes), `logic_setup_key_commands` (incl. `relearn` repair)
 - **Project lifecycle** — open/close/save/duplicate projects; new projects from a bundled template
@@ -101,9 +101,8 @@ Everything else is self-serve: the server spawns its own bridge daemon, `logic_h
 - **Regions** — select, move, copy, delete; split/nudge via key commands
 - **Composition** — `logic_record_midi`: notes/CC/pitch-bend streamed with CoreMIDI timestamps while Logic records, render-verified
 - **Automation** — record volume/pan/send/plugin curves in any mode, playhead-chase verified
-- **Audio out & evaluation** — bounce, freeze render with bar slicing, `logic_evaluate_change` (four methods: realtime, bounce, render, solo_bounce), `logic_get_audio_clip`
+- **Audio out & evaluation** — bounce, freeze render with bar slicing, `logic_evaluate_change` (render / bounce / solo_bounce), `logic_get_audio_clip`
 - **Key commands** — trigger any learned Logic key command over MIDI
-- **Sensor (optional)** — a bundled Audio Unit for realtime RMS/peak and insert-point listening; no bounce/render tool needs it
 
 ## Architecture
 

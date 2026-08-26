@@ -86,11 +86,10 @@ Run `logic_health` first. It starts the bridge daemon, checks every setup requir
 - A rendered file that is honestly EMPTY (a track with no regions, or MIDI with no instrument) comes back with a `warning`, not fake success.
 - Modal dialogs freeze most operations; tools detect and answer their own dialogs, and `logic_health` flags Logic's state. If something looks stuck, check for a dialog in Logic.
 - The `logic_set_plugin_parameter` / `logic_list_plugin_parameters` (Accessibility window) variants exist for stock-plugin windows; PREFER the `logic_mcu_*` variants, which work for every plugin including custom-UI third-party ones.
-- The sensor tools require the optional LogicMCPSensor Audio Unit; every render/bounce tool works without it.
 
 ## Tool reference
 
-All 59 tools, generated from the live server schemas (v0.48.2). Every write is compare-and-set with readback; every failure names what was observed.
+All 57 tools, generated from the live server schemas (v0.49.0). Every write is compare-and-set with readback; every failure names what was observed.
 
 #### `logic_health`
 
@@ -126,7 +125,7 @@ Parameters:
 
 #### `logic_bounce_range`
 
-Offline-bounce a bar range of the master output to an audio file, many times faster than realtime playback. Drives Logic's bounce dialog and its XPC save panel entirely through verified accessibility (no playback, no sensor needed). Temporarily switches the bounce destination to Uncompressed and restores the user's selection afterwards. Returns the file path.
+Offline-bounce a bar range of the master output to an audio file, many times faster than realtime playback. Drives Logic's bounce dialog and its XPC save panel entirely through verified accessibility (no playback). Temporarily switches the bounce destination to Uncompressed and restores the user's selection afterwards. Returns the file path.
 
 Parameters:
 
@@ -137,7 +136,7 @@ Parameters:
 
 #### `logic_evaluate_change`
 
-Run one complete closed-loop mix evaluation around exactly one verified plugin-parameter change, on a bar range. Four methods: 'realtime' (default; loop playback + sensor windows, needs plugin_name + active sensor), 'bounce' (two offline MASTER renders via the bounce dialog, needs plugin_name), 'render' (two dialog-free freeze renders of the SINGLE track, compared on the sliced bar range — fastest and most isolated; needs insert_slot, the MCU physical slot, and works for all plugins including third-party), and 'solo_bounce' (two offline bounces with ONLY this track soloed, solo restored after; needs insert_slot like 'render' — use for tracks freeze refuses: stack subtracks and tracks sharing a channel strip). All methods roll the change back by default and return baseline/after audio paths, metrics and dB deltas.
+Run one complete closed-loop mix evaluation around exactly one verified plugin-parameter change, on a bar range. Three methods: 'render' (two dialog-free freeze renders of the SINGLE track, compared on the sliced bar range — fastest and most isolated; needs insert_slot, the MCU physical slot, and works for all plugins including third-party), 'bounce' (two offline MASTER renders via the bounce dialog, needs plugin_name), and 'solo_bounce' (two offline bounces with ONLY this track soloed, solo restored after; needs insert_slot like 'render' — use for tracks freeze refuses: stack subtracks and tracks sharing a channel strip). All methods roll the change back by default, return baseline/after audio paths, metrics and dB deltas, and CARRY both versions as audio content blocks.
 
 Parameters:
 
@@ -148,7 +147,7 @@ Parameters:
   - `insert_index` (integer)
   - `insert_slot` (integer): MCU physical insert slot 1-8; required for methods 'render' and 'solo_bounce' (list with logic_mcu_plugin_inserts).
   - `keep_change` (boolean): true keeps the change after measuring; default false rolls it back.
-  - `method` (string): 'realtime' (default), 'bounce' (offline master A/B), 'render' (dialog-free single-track freeze A/B on the sliced bar range) or 'solo_bounce' (soloed offline A/B for tracks freeze refuses: stack subtracks, shared-channel tracks).
+  - `method` (string): REQUIRED: 'render' (dialog-free single-track freeze A/B on the sliced bar range), 'bounce' (offline master A/B) or 'solo_bounce' (soloed offline A/B for tracks freeze refuses: stack subtracks, shared-channel tracks).
   - `parameter` (string) **(required)**
   - `plugin_name` (string): Plugin window title; required for methods 'realtime' and 'bounce'.
   - `settle_seconds` (number): Extra settle time after each phase, default 2.
@@ -501,23 +500,6 @@ Parameters:
   - `duration_seconds` (number): Clip length, default 8, max 20.
   - `path` (string) **(required)**: Absolute path to a local audio file (AIFF/WAV/etc).
   - `start_seconds` (number): Offset into the file, default 0.
-
-#### `logic_sensor_capture`
-
-OPTIONAL ADD-ON (requires the LogicMCPSensor AU; bounce/render tools do not). Bounce the most recent audio heard at each active LogicMCPSensor insert point to a 16-bit WAV file (up to 45 seconds back), so a human or an audio-capable model can LISTEN to the mix rather than only read meter values. Returns file paths. Read-only with respect to Logic.
-
-Parameters:
-
-  - `label` (string): Filename label, e.g. 'baseline'.
-  - `seconds` (number): How far back to capture, default 8, max 45.
-
-#### `logic_sensor_read`
-
-OPTIONAL ADD-ON (requires the LogicMCPSensor AU; bounce/render tools do not). Read live audio feature frames (peak/RMS in dBFS, host beat, tempo, transport state) published by LogicMCPSensor Audio Unit instances inserted in Logic. Returns the latest frame plus aggregates over window_seconds per sensor instance, with a stale flag when a sensor has stopped publishing. Read-only; requires the sensor AU to be inserted on a track, bus or output in Logic.
-
-Parameters:
-
-  - `window_seconds` (number): Aggregation window, default 3 seconds.
 
 #### `logic_get_transport`
 

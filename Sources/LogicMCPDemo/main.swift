@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.48.2"
+private let serverVersion = "0.49.0"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -557,7 +557,7 @@ private final class LogicAccessibility {
         }
         // Move the render into the captures directory under the label name.
         let capturesDirectory = home.appendingPathComponent(
-            "Library/Application Support/LogicMCPSensor/captures"
+            "Library/Application Support/Logician/captures"
         )
         try? FileManager.default.createDirectory(at: capturesDirectory, withIntermediateDirectories: true)
         let destination = capturesDirectory.appendingPathComponent(
@@ -898,7 +898,7 @@ private final class LogicAccessibility {
         ]
     }
 
-    /// Bounce-based A/B evaluation: no playback, no sensor — two offline
+    /// Bounce-based A/B evaluation: no playback — two offline
     /// renders around one verified parameter change, metrics from the files.
     func evaluateChangeBounced(
         trackName: String,
@@ -3907,219 +3907,6 @@ private final class LogicAccessibility {
         ]
     }
 
-    // MARK: - Closed-loop change evaluation
-
-    // swiftlint:disable:next function_body_length
-    func evaluateChange(
-        trackName: String,
-        pluginName: String,
-        insertIndex: Int?,
-        parameter: String,
-        expectedCurrentValue: String,
-        targetValue: String,
-        startBar: Int,
-        endBar: Int,
-        keepChange: Bool,
-        verifyRollback: Bool,
-        settleSeconds: Double,
-        expectedProjectPath: String?
-    ) throws -> [String: Any] {
-        try verifyProjectPath(expectedProjectPath)
-
-        // Preconditions: a live sensor and a readable transport.
-        let probe = SensorReader.readSensors(windowSeconds: 2)
-            .filter { ($0["frames_published"] as? UInt64 ?? 0) > 0 || ($0["frames_published"] as? Int ?? 0) > 0 }
-            .filter { !(($0["stale"] as? Bool) ?? true) }
-        guard !probe.isEmpty else {
-            throw DemoError.trackNotExposed(
-                requested: "an active LogicMCPSensor instance",
-                exposed: "no fresh sensor ring found; insert Audio Units > LMcp > LogicMCP: Sensor in Logic"
-            )
-        }
-        let transport = try getTransport()
-        let tempo = transport["tempo"] as? Double ?? 120
-        let beatsPerBar = Double((transport["time_signature"] as? String)?
-            .split(separator: "/").first.flatMap { Int($0) } ?? 4)
-        let passSeconds = Double(endBar - startBar) * beatsPerBar * 60.0 / tempo
-        let savedBar = transport["playhead_bar"] as? Int
-        let savedBeat = transport["playhead_beat"] as? Int
-        let savedCycle = transport["cycle"] as? Bool ?? false
-
-        // Setup: selected track, open plugin window, loop range, playback.
-        _ = try selectTrack(trackName: trackName, trackNumber: nil, expectedProjectPath: nil)
-        let openResult = try openPlugin(
-            trackName: trackName,
-            pluginName: pluginName,
-            insertIndex: insertIndex,
-            expectedProjectPath: nil
-        )
-        let openedByUs = (openResult["state"] as? String) == "opened"
-
-        var cleanupStatus: [String: Any] = [:]
-        func cleanUp() {
-            var stopped = false
-            for attempt in 0..<3 {
-                if attempt > 0 { Thread.sleep(forTimeInterval: 0.6) }
-                let result = (try? MCUController.setPlaying(false) ?? setPlaying(playing: false)) ?? nil
-                if (result?["state"] as? String)?.contains("stopped") == true {
-                    stopped = true
-                    break
-                }
-            }
-            cleanupStatus["transport"] = stopped ? "stopped" : "STILL_PLAYING_stop_failed"
-            let cycleResult = (try? MCUController.setCycle(savedCycle) ?? setCycle(enabled: savedCycle)) ?? nil
-            cleanupStatus["cycle"] = cycleResult != nil ? (savedCycle ? "on" : "off") : "restore_failed"
-            if let bar = savedBar {
-                cleanupStatus["playhead"] = (try? setPlayhead(barNumber: bar, beat: savedBeat)) != nil
-                    ? "bar \(bar)" : "restore_failed"
-            }
-            if openedByUs {
-                cleanupStatus["plugin_window"] = (try? closePlugin(
-                    trackName: trackName, pluginName: pluginName, insertIndex: insertIndex
-                )) != nil ? "closed" : "close_failed"
-            } else {
-                cleanupStatus["plugin_window"] = "left_as_found"
-            }
-        }
-
-        do {
-            _ = try setCycleRange(startBar: startBar, endBar: endBar, enabled: true)
-            _ = try setPlayhead(barNumber: startBar, beat: 1)
-            _ = try MCUController.setPlaying(true) ?? setPlaying(playing: true)
-
-            // Baseline over one full loop pass.
-            Thread.sleep(forTimeInterval: passSeconds + settleSeconds)
-            let baseline = try measurementWindows(passSeconds: passSeconds, label: "baseline")
-
-            // Apply exactly one bounded, verified change while the loop plays.
-            let change = try setParameter(
-                windowTitle: trackName,
-                parameterName: parameter,
-                expectedCurrentValue: expectedCurrentValue,
-                targetValue: targetValue
-            )
-
-            // After-window: every sample after the (persistent) change is
-            // post-change, and any window of exactly one pass length covers the
-            // same musical material once, so no loop-phase alignment is needed.
-            Thread.sleep(forTimeInterval: passSeconds + settleSeconds)
-            let after = try measurementWindows(passSeconds: passSeconds, label: "after")
-
-            var decision = "kept"
-            var control: [[String: Any]]?
-            if !keepChange {
-                _ = try setParameter(
-                    windowTitle: trackName,
-                    parameterName: parameter,
-                    expectedCurrentValue: targetValue,
-                    targetValue: expectedCurrentValue
-                )
-                decision = "rolled_back"
-                if verifyRollback {
-                    Thread.sleep(forTimeInterval: passSeconds + settleSeconds)
-                    control = try measurementWindows(passSeconds: passSeconds, label: "control")
-                }
-            }
-
-            cleanUp()
-
-            var report: [String: Any] = [
-                "success": true,
-                "verified": true,
-                "state": "evaluated",
-                "decision": decision,
-                "change": [
-                    "track": trackName,
-                    "plugin": pluginName,
-                    "parameter": parameter,
-                    "before": change["before"] ?? expectedCurrentValue,
-                    "applied": change["after"] ?? targetValue
-                ],
-                "loop": [
-                    "start_bar": startBar,
-                    "end_bar": endBar,
-                    "pass_seconds": round(passSeconds * 100) / 100,
-                    "tempo": tempo,
-                    "beats_per_bar": Int(beatsPerBar)
-                ],
-                "baseline": baseline,
-                "after": after,
-                "deltas": measurementDeltas(from: baseline, to: after)
-            ]
-            if let control = control {
-                report["control"] = control
-                report["rollback_residual"] = measurementDeltas(from: baseline, to: control)
-            }
-            cleanupStatus["parameter"] = decision == "rolled_back" ? "restored" : "kept_at_target"
-            report["restored"] = cleanupStatus
-            return report
-        } catch {
-            cleanUp()
-            throw error
-        }
-    }
-
-    private func measurementWindows(passSeconds: Double, label: String) throws -> [[String: Any]] {
-        let sensors = SensorReader.readSensors(windowSeconds: passSeconds)
-            .filter { !(($0["stale"] as? Bool) ?? true) }
-        guard !sensors.isEmpty else {
-            throw DemoError.openVerificationFailed("no fresh sensor data for the \(label) window")
-        }
-        let playing = sensors.contains {
-            (($0["latest"] as? [String: Any])?["transport"] as? String) == "playing"
-        }
-        guard playing else {
-            throw DemoError.openVerificationFailed(
-                "the sensor reports that the transport is not rolling during the \(label) window"
-            )
-        }
-        return sensors.map { sensor in
-            let window = sensor["window"] as? [String: Any] ?? [:]
-            let latest = sensor["latest"] as? [String: Any] ?? [:]
-            var entry: [String: Any] = [
-                "sensor": sensor["instance_id"] ?? "unknown",
-                "frames": window["frames"] ?? 0,
-                "rms_db": window["rms_db"] ?? [],
-                "max_peak_db": window["max_peak_db"] ?? [],
-                "beat": latest["beat"] ?? NSNull(),
-                "transport": latest["transport"] ?? "unknown"
-            ]
-            // Capture the just-measured window as listenable audio: the last
-            // pass-length of the rolling ring IS the measured window.
-            if let ringPath = sensor["ring_path"] as? String,
-               let capture = SensorReader.captureAudio(
-                   ringPath: ringPath, seconds: passSeconds, label: label
-               ) {
-                entry["audio"] = capture
-            }
-            return entry
-        }
-    }
-
-    private func measurementDeltas(
-        from reference: [[String: Any]],
-        to measurement: [[String: Any]]
-    ) -> [[String: Any]] {
-        measurement.compactMap { entry in
-            guard let id = entry["sensor"] as? String,
-                  let referenceEntry = reference.first(where: { ($0["sensor"] as? String) == id }),
-                  let referenceRMS = referenceEntry["rms_db"] as? [Double],
-                  let measuredRMS = entry["rms_db"] as? [Double],
-                  let referencePeak = referenceEntry["max_peak_db"] as? [Double],
-                  let measuredPeak = entry["max_peak_db"] as? [Double] else {
-                return nil
-            }
-            func delta(_ lhs: [Double], _ rhs: [Double]) -> [Double] {
-                zip(rhs, lhs).map { round(($0 - $1) * 100) / 100 }
-            }
-            return [
-                "sensor": id,
-                "rms_delta_db": delta(referenceRMS, measuredRMS),
-                "peak_delta_db": delta(referencePeak, measuredPeak)
-            ]
-        }
-    }
-
     // MARK: - Channel strip helpers
 
     /// Any inspector strip (left or right) whose name matches, for output and
@@ -4639,211 +4426,6 @@ private final class LogicAccessibility {
     }
 }
 
-/// Reads feature frames published by the LogicMCPSensor Audio Unit.
-/// Binary layout is locked by _Static_asserts in Sensor/LogicMCPSensor.c.
-private enum SensorReader {
-    private static let headerBytes = 128
-    private static let frameBytes = 80
-    private static let magic = "LMCPSNS1"
-    private static let audioMagic = "LMCPAUD1"
-
-    static func candidateDirectories() -> [URL] {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        return [
-            home.appendingPathComponent("Library/Containers/com.apple.logic10/Data/Library/Application Support/LogicMCPSensor"),
-            home.appendingPathComponent("Library/Application Support/LogicMCPSensor")
-        ]
-    }
-
-    static func readSensors(windowSeconds: Double) -> [[String: Any]] {
-        var sensors: [[String: Any]] = []
-        for directory in candidateDirectories() {
-            guard let entries = try? FileManager.default.contentsOfDirectory(
-                at: directory, includingPropertiesForKeys: nil
-            ) else { continue }
-            for file in entries where file.pathExtension == "ring" {
-                if let sensor = readRing(at: file, windowSeconds: windowSeconds) {
-                    sensors.append(sensor)
-                }
-            }
-        }
-        return sensors
-    }
-
-    private static func readRing(at url: URL, windowSeconds: Double) -> [String: Any]? {
-        guard let data = try? Data(contentsOf: url), data.count >= headerBytes else { return nil }
-        guard String(data: data.prefix(8), encoding: .ascii) == magic else { return nil }
-        let frameSize = Int(load(data, 12, UInt32.self))
-        let capacity = Int(load(data, 16, UInt32.self))
-        guard frameSize == frameBytes, capacity > 0,
-              data.count >= headerBytes + frameSize * capacity else { return nil }
-        let instanceID = String(
-            data: data.subdata(in: 24..<64), encoding: .ascii
-        )?.trimmingCharacters(in: CharacterSet(charactersIn: "\0")) ?? "unknown"
-        let cursor = Int(load(data, 64, UInt64.self))
-        guard cursor > 0 else {
-            return [
-                "instance_id": instanceID,
-                "ring_path": url.path,
-                "frames_published": 0,
-                "note": "sensor is instantiated but has published no frames yet"
-            ]
-        }
-
-        let now = Date().timeIntervalSince1970
-        let available = min(cursor, capacity)
-        var latest: [String: Any] = [:]
-        var sumRMS = [Double](repeating: 0, count: 2)
-        var maxPeak = [Float](repeating: 0, count: 2)
-        var counted = 0
-
-        for back in 0..<available {
-            let index = (cursor - 1 - back) % capacity
-            let offset = headerBytes + index * frameSize
-            let unixTime = load(data, offset + 8, Double.self)
-            if back > 0, now - unixTime > windowSeconds { break }
-            let channels = min(Int(load(data, offset + 24, UInt32.self)), 2)
-            var peaks: [Float] = []
-            var rmsValues: [Float] = []
-            for channel in 0..<channels {
-                peaks.append(load(data, offset + 32 + channel * 4, Float.self))
-                rmsValues.append(load(data, offset + 40 + channel * 4, Float.self))
-            }
-            if back == 0 {
-                let beat = load(data, offset + 48, Double.self)
-                let tempo = load(data, offset + 56, Double.self)
-                let transport = load(data, offset + 64, UInt32.self)
-                latest = [
-                    "age_seconds": round((now - unixTime) * 100) / 100,
-                    "sample_rate": load(data, offset + 16, Double.self),
-                    "channels": channels,
-                    "peak_db": peaks.map(decibels),
-                    "rms_db": rmsValues.map(decibels),
-                    "beat": beat < 0 ? NSNull() : beat,
-                    "tempo": tempo < 0 ? NSNull() : tempo,
-                    "transport": transport == 1 ? "playing" : (transport == 0 ? "stopped" : "unknown"),
-                    "bypassed": load(data, offset + 68, UInt32.self) == 1
-                ]
-            }
-            for channel in 0..<channels {
-                sumRMS[channel] += Double(rmsValues[channel]) * Double(rmsValues[channel])
-                maxPeak[channel] = max(maxPeak[channel], peaks[channel])
-            }
-            counted += 1
-        }
-
-        let channels = latest["channels"] as? Int ?? 2
-        let lastAge = latest["age_seconds"] as? Double ?? .infinity
-        return [
-            "instance_id": instanceID,
-            "ring_path": url.path,
-            "frames_published": cursor,
-            "stale": lastAge > 10,
-            "latest": latest,
-            "window": [
-                "seconds": windowSeconds,
-                "frames": counted,
-                "rms_db": (0..<channels).map { decibels(Float((sumRMS[$0] / Double(max(counted, 1))).squareRoot())) },
-                "max_peak_db": (0..<channels).map { decibels(maxPeak[$0]) }
-            ]
-        ]
-    }
-
-    /// Extracts the last `seconds` of audio from a sensor's rolling audio ring
-    /// and writes a 16-bit PCM WAV that a human or an audio-capable model can
-    /// listen to. Returns capture metadata, or nil when no audio is available.
-    static func captureAudio(ringPath: String, seconds: Double, label: String) -> [String: Any]? {
-        let audioPath = ringPath.replacingOccurrences(of: ".ring", with: ".audio")
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: audioPath)), data.count > 64,
-              String(data: data.prefix(8), encoding: .ascii) == audioMagic else { return nil }
-        let channels = Int(load(data, 12, UInt32.self))
-        let sampleRate = load(data, 16, Double.self)
-        let capacity = Int(load(data, 24, UInt64.self))
-        let cursor = Int(load(data, 32, UInt64.self))
-        guard channels > 0, channels <= 2, sampleRate > 0, capacity > 0, cursor > 0,
-              data.count >= 64 + capacity * channels * 4 else { return nil }
-
-        let requested = Int(seconds * sampleRate)
-        let frames = min(requested, capacity, cursor)
-        guard frames > Int(sampleRate / 10) else { return nil }
-        let start = cursor - frames
-
-        var samples = [Int16](repeating: 0, count: frames * channels)
-        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            let base = raw.baseAddress!.advanced(by: 64)
-            for frame in 0..<frames {
-                let slot = (start + frame) % capacity
-                for channel in 0..<channels {
-                    let value = base.loadUnaligned(
-                        fromByteOffset: (slot * channels + channel) * 4, as: Float.self
-                    )
-                    let clamped = max(-1, min(1, value))
-                    samples[frame * channels + channel] = Int16(clamped * 32767)
-                }
-            }
-        }
-
-        let directory = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/LogicMCPSensor/captures")
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let shortID = String(ringPath.split(separator: "-").last?.prefix(8) ?? "sensor")
-        let fileURL = directory.appendingPathComponent(
-            "\(formatter.string(from: Date()))-\(label)-\(shortID).wav"
-        )
-        do {
-            try writeWAV(samples: samples, channels: channels, sampleRate: Int(sampleRate), to: fileURL)
-        } catch {
-            return nil
-        }
-        return [
-            "label": label,
-            "path": fileURL.path,
-            "seconds": round(Double(frames) / sampleRate * 100) / 100,
-            "sample_rate": sampleRate,
-            "channels": channels,
-            "format": "wav_pcm16",
-            "clipped_to_available": frames < requested
-        ]
-    }
-
-    private static func writeWAV(samples: [Int16], channels: Int, sampleRate: Int, to url: URL) throws {
-        var out = Data()
-        let dataBytes = samples.count * 2
-        func append(_ value: UInt32) { withUnsafeBytes(of: value.littleEndian) { out.append(contentsOf: $0) } }
-        func append16(_ value: UInt16) { withUnsafeBytes(of: value.littleEndian) { out.append(contentsOf: $0) } }
-        out.append("RIFF".data(using: .ascii)!)
-        append(UInt32(36 + dataBytes))
-        out.append("WAVE".data(using: .ascii)!)
-        out.append("fmt ".data(using: .ascii)!)
-        append(16)
-        append16(1) // PCM
-        append16(UInt16(channels))
-        append(UInt32(sampleRate))
-        append(UInt32(sampleRate * channels * 2))
-        append16(UInt16(channels * 2))
-        append16(16)
-        out.append("data".data(using: .ascii)!)
-        append(UInt32(dataBytes))
-        samples.withUnsafeBytes { out.append(contentsOf: $0) }
-        try out.write(to: url)
-    }
-
-    private static func decibels(_ linear: Float) -> Double {
-        guard linear > 1e-6 else { return -120 }
-        return round(20 * log10(Double(linear)) * 100) / 100
-    }
-
-    private static func load<T>(_ data: Data, _ offset: Int, _ type: T.Type) -> T {
-        data.subdata(in: offset..<(offset + MemoryLayout<T>.size)).withUnsafeBytes {
-            $0.loadUnaligned(as: T.self)
-        }
-    }
-}
-
-/// Talks to the logic-mcu-bridge daemon: reads its mirrored Mackie Control
-/// state file and sends commands over its unix socket.
 private enum MCUBridge {
     static var directory: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -5754,7 +5336,7 @@ extension MCUController {
 
         // Copy out before unfreezing (unfreeze deletes the file).
         let captures = manager.homeDirectoryForCurrentUser.appendingPathComponent(
-            "Library/Application Support/LogicMCPSensor/captures"
+            "Library/Application Support/Logician/captures"
         )
         try? manager.createDirectory(at: captures, withIntermediateDirectories: true)
         let stamp = Int(Date().timeIntervalSince1970)
@@ -7987,7 +7569,7 @@ private final class MCPServer {
                 "protocolVersion": negotiated,
                 "capabilities": ["tools": ["listChanged": false]],
                 "serverInfo": ["name": serverName, "version": serverVersion],
-                "instructions": "Controls Logic Pro on this Mac through its control-surface protocol (no UI clicking). Requires: Logic running with a project open, Accessibility granted, and a Mackie Control configured with ports 'Logic MCP MCU' (one-time). Full agent guide with workflows and the complete tool reference: docs/AGENT-GUIDE.md in the Logician repository. Run logic_health FIRST — it starts the bridge daemon, verifies every setup step, and tells you the fix for anything missing. Run logic_setup_key_commands ONCE during onboarding — it opens Logic's Key Commands window briefly and binds all needed commands; skipping it means the same window flashes unannounced the first time a tool needs a missing command (lazy learning). Writes are compare-and-set with readback: pass expected_current_value and read values before changing them. The sensor AU is an optional add-on for realtime listening; bounce/render tools work without it. English Logic UI assumed (v1). LISTENING PROTOCOL: to hear audio, open the preview_path/clip_path files with your client's FILE VIEWER (real multimodal audio in most clients), or logic_get_audio_clip when your client forwards MCP audio blocks - if its result reaches you without an audio block, your client drops them: use the file viewer, and never claim to have heard something you did not receive. NEVER read audio files as text/bash. HONESTY: results carry metrics and warnings (silent file, soloed tracks) - trust them over expectations, act on warnings before proceeding, and report blocked steps instead of improvising. MIX BY EAR: fader and parameter VALUES are not loudness or quality - recordings and plugins differ, so a lower fader can still be the louder track. Diagnose by listening BEFORE changing, judge by listening AFTER changing; use numbers only to verify what your ears found."
+                "instructions": "Controls Logic Pro on this Mac through its control-surface protocol (no UI clicking). Requires: Logic running with a project open, Accessibility granted, and a Mackie Control configured with ports 'Logic MCP MCU' (one-time). Full agent guide with workflows and the complete tool reference: docs/AGENT-GUIDE.md in the Logician repository. Run logic_health FIRST — it starts the bridge daemon, verifies every setup step, and tells you the fix for anything missing. Run logic_setup_key_commands ONCE during onboarding — it opens Logic's Key Commands window briefly and binds all needed commands; skipping it means the same window flashes unannounced the first time a tool needs a missing command (lazy learning). Writes are compare-and-set with readback: pass expected_current_value and read values before changing them. English Logic UI assumed (v1). LISTENING PROTOCOL: to hear audio, open the preview_path/clip_path files with your client's FILE VIEWER (real multimodal audio in most clients), or logic_get_audio_clip when your client forwards MCP audio blocks - if its result reaches you without an audio block, your client drops them: use the file viewer, and never claim to have heard something you did not receive. NEVER read audio files as text/bash. HONESTY: results carry metrics and warnings (silent file, soloed tracks) - trust them over expectations, act on warnings before proceeding, and report blocked steps instead of improvising. MIX BY EAR: fader and parameter VALUES are not loudness or quality - recordings and plugins differ, so a lower fader can still be the louder track. Diagnose by listening BEFORE changing, judge by listening AFTER changing; use numbers only to verify what your ears found."
             ])
 
         case "notifications/initialized", "initialized":
@@ -8038,12 +7620,6 @@ private final class MCPServer {
                 if health["accessibility_trusted"] as? Bool != true {
                     health["accessibility_fix"] = "grant Accessibility in System Settings: x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
                 }
-                let sensors = SensorReader.readSensors(windowSeconds: 3)
-                    .filter { !(($0["stale"] as? Bool) ?? true) }
-                health["sensor"] = [
-                    "active_instances": sensors.count,
-                    "note": "OPTIONAL add-on for realtime listening; bounce- and render-based tools do not need it"
-                ]
                 payload = health
 
             case "logic_list_windows":
@@ -8142,19 +7718,10 @@ private final class MCPServer {
                     }
                     break
                 }
-                payload = try logic.evaluateChange(
-                    trackName: requiredString("track_name", in: arguments),
-                    pluginName: requiredString("plugin_name", in: arguments),
-                    insertIndex: arguments["insert_index"] as? Int,
-                    parameter: requiredString("parameter", in: arguments),
-                    expectedCurrentValue: requiredString("expected_current_value", in: arguments),
-                    targetValue: requiredString("target_value", in: arguments),
-                    startBar: startBar,
-                    endBar: endBar,
-                    keepChange: arguments["keep_change"] as? Bool ?? false,
-                    verifyRollback: arguments["verify_rollback"] as? Bool ?? false,
-                    settleSeconds: arguments["settle_seconds"] as? Double ?? 2.0,
-                    expectedProjectPath: arguments["expected_project_path"] as? String
+                throw DemoError.invalidArguments(
+                    "method must be one of 'render' (single-track freeze A/B, needs insert_slot), "
+                        + "'bounce' (master A/B, needs plugin_name) or 'solo_bounce' "
+                        + "(soloed master A/B for tracks freeze refuses, needs insert_slot)"
                 )
 
             case "logic_mcu_plugin_inserts":
@@ -8981,7 +8548,7 @@ private final class MCPServer {
                 // The encoded clip is kept on disk: clients that drop MCP
                 // audio blocks need a FILE their viewer can hand to the model.
                 let clipsDirectory = FileManager.default.homeDirectoryForCurrentUser
-                    .appendingPathComponent("Library/Application Support/LogicMCPSensor/captures")
+                    .appendingPathComponent("Library/Application Support/Logician/captures")
                 try? FileManager.default.createDirectory(at: clipsDirectory, withIntermediateDirectories: true)
                 let scratch = clipsDirectory.appendingPathComponent(
                     "clip-\(Int(Date().timeIntervalSince1970))-\(URL(fileURLWithPath: clipPath).deletingPathExtension().lastPathComponent.suffix(24)).m4a"
@@ -9026,38 +8593,6 @@ private final class MCPServer {
                     "clip_path": scratch.path,
                     "note": "An MCP AUDIO content block accompanies this text (mono AAC). SELF-CHECK: if no audio block reached you, your client DROPS them - do not pretend to hear; instead open clip_path with your client's file viewer (many viewers pass audio files to the model as real multimodal input; verified in Antigravity). NEVER read audio files as text/bash.",
                     "_audio": ["data": clipData.base64EncodedString(), "mimeType": "audio/mp4"]
-                ]
-
-            case "logic_sensor_capture":
-                let seconds = (arguments["seconds"] as? Double)
-                    ?? (arguments["seconds"] as? Int).map(Double.init)
-                    ?? 8.0
-                let label = (arguments["label"] as? String) ?? "capture"
-                let captures = SensorReader.readSensors(windowSeconds: 2)
-                    .filter { !(($0["stale"] as? Bool) ?? true) }
-                    .compactMap { sensor -> [String: Any]? in
-                        guard let path = sensor["ring_path"] as? String,
-                              var capture = SensorReader.captureAudio(
-                                  ringPath: path, seconds: seconds, label: label
-                              ) else { return nil }
-                        capture["sensor"] = sensor["instance_id"]
-                        return capture
-                    }
-                payload = [
-                    "success": !captures.isEmpty,
-                    "captures": captures,
-                    "note": captures.isEmpty
-                        ? "no fresh sensor with audio available; is LogicMCPSensor inserted and Logic rendering?"
-                        : "wav files contain the most recent audio heard at each sensor's insert point"
-                ]
-
-            case "logic_sensor_read":
-                let window = (arguments["window_seconds"] as? Double)
-                    ?? (arguments["window_seconds"] as? Int).map(Double.init)
-                    ?? 3.0
-                payload = [
-                    "sensors": SensorReader.readSensors(windowSeconds: window),
-                    "searched_directories": SensorReader.candidateDirectories().map(\.path)
                 ]
 
             case "logic_get_transport":
@@ -9481,7 +9016,7 @@ private final class MCPServer {
             ],
             [
                 "name": "logic_bounce_range",
-                "description": "Offline-bounce a bar range of the master output to an audio file, many times faster than realtime playback. Drives Logic's bounce dialog and its XPC save panel entirely through verified accessibility (no playback, no sensor needed). Temporarily switches the bounce destination to Uncompressed and restores the user's selection afterwards. Returns the file path.",
+                "description": "Offline-bounce a bar range of the master output to an audio file, many times faster than realtime playback. Drives Logic's bounce dialog and its XPC save panel entirely through verified accessibility (no playback). Temporarily switches the bounce destination to Uncompressed and restores the user's selection afterwards. Returns the file path.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
@@ -9496,7 +9031,7 @@ private final class MCPServer {
             ],
             [
                 "name": "logic_evaluate_change",
-                "description": "Run one complete closed-loop mix evaluation around exactly one verified plugin-parameter change, on a bar range. Four methods: 'realtime' (default; loop playback + sensor windows, needs plugin_name + active sensor), 'bounce' (two offline MASTER renders via the bounce dialog, needs plugin_name), 'render' (two dialog-free freeze renders of the SINGLE track, compared on the sliced bar range — fastest and most isolated; needs insert_slot, the MCU physical slot, and works for all plugins including third-party), and 'solo_bounce' (two offline bounces with ONLY this track soloed, solo restored after; needs insert_slot like 'render' — use for tracks freeze refuses: stack subtracks and tracks sharing a channel strip). All methods roll the change back by default and return baseline/after audio paths, metrics and dB deltas.",
+                "description": "Run one complete closed-loop mix evaluation around exactly one verified plugin-parameter change, on a bar range. Three methods: 'render' (two dialog-free freeze renders of the SINGLE track, compared on the sliced bar range — fastest and most isolated; needs insert_slot, the MCU physical slot, and works for all plugins including third-party), 'bounce' (two offline MASTER renders via the bounce dialog, needs plugin_name), and 'solo_bounce' (two offline bounces with ONLY this track soloed, solo restored after; needs insert_slot like 'render' — use for tracks freeze refuses: stack subtracks and tracks sharing a channel strip). All methods roll the change back by default, return baseline/after audio paths, metrics and dB deltas, and CARRY both versions as audio content blocks.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
@@ -9509,7 +9044,7 @@ private final class MCPServer {
                         "target_value": ["type": "string"],
                         "start_bar": ["type": "integer"],
                         "end_bar": ["type": "integer", "description": "Exclusive: the range ends where this bar begins."],
-                        "method": ["type": "string", "description": "'realtime' (default), 'bounce' (offline master A/B), 'render' (dialog-free single-track freeze A/B on the sliced bar range) or 'solo_bounce' (soloed offline A/B for tracks freeze refuses: stack subtracks, shared-channel tracks)."],
+                        "method": ["type": "string", "description": "REQUIRED: 'render' (dialog-free single-track freeze A/B on the sliced bar range), 'bounce' (offline master A/B) or 'solo_bounce' (soloed offline A/B for tracks freeze refuses: stack subtracks, shared-channel tracks)."],
                         "tempo": ["type": "number", "description": "Override BPM for bar math (method 'render'); default reads the control bar. Constant tempo assumed."],
                         "beats_per_bar": ["type": "number", "description": "Override meter for bar math; default reads the control bar's time signature."],
                         "keep_change": ["type": "boolean", "description": "true keeps the change after measuring; default false rolls it back."],
@@ -10030,29 +9565,6 @@ private final class MCPServer {
                         "duration_seconds": ["type": "number", "description": "Clip length, default 8, max 20."]
                     ],
                     "required": ["path"],
-                    "additionalProperties": false
-                ]
-            ],
-            [
-                "name": "logic_sensor_capture",
-                "description": "OPTIONAL ADD-ON (requires the LogicMCPSensor AU; bounce/render tools do not). Bounce the most recent audio heard at each active LogicMCPSensor insert point to a 16-bit WAV file (up to 45 seconds back), so a human or an audio-capable model can LISTEN to the mix rather than only read meter values. Returns file paths. Read-only with respect to Logic.",
-                "inputSchema": [
-                    "type": "object",
-                    "properties": [
-                        "seconds": ["type": "number", "description": "How far back to capture, default 8, max 45."],
-                        "label": ["type": "string", "description": "Filename label, e.g. 'baseline'."]
-                    ],
-                    "additionalProperties": false
-                ]
-            ],
-            [
-                "name": "logic_sensor_read",
-                "description": "OPTIONAL ADD-ON (requires the LogicMCPSensor AU; bounce/render tools do not). Read live audio feature frames (peak/RMS in dBFS, host beat, tempo, transport state) published by LogicMCPSensor Audio Unit instances inserted in Logic. Returns the latest frame plus aggregates over window_seconds per sensor instance, with a stale flag when a sensor has stopped publishing. Read-only; requires the sensor AU to be inserted on a track, bus or output in Logic.",
-                "inputSchema": [
-                    "type": "object",
-                    "properties": [
-                        "window_seconds": ["type": "number", "description": "Aggregation window, default 3 seconds."]
-                    ],
                     "additionalProperties": false
                 ]
             ],
