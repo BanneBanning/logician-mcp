@@ -1,0 +1,95 @@
+# Logician — Architecture
+
+How you control a DAW that has no automation API, and how you make that control trustworthy enough to hand to an AI agent. This is the English distillation of the full research log ([FINDINGS.md](FINDINGS.md), Swedish, versioned per discovery).
+
+## Design philosophy
+
+Three rules shaped every mechanism in this codebase:
+
+1. **Data plane over UI.** Logic Pro exposes no scripting API, but it *does* implement Mackie Control — a documented, bidirectional control-surface protocol. A control surface is a first-class citizen: Logic echoes every state change back to it (LCD text, LED states, motorized fader positions). Speak that protocol and you get machine-readable ground truth; scrape the UI and you get pixels and race conditions. UI automation is the last resort, and when used it is always *semantic* (Accessibility elements addressed by role and description) — never coordinates, never synthetic keystrokes into windows, never the user's mouse.
+
+2. **Compare-and-set with readback.** Every write reads the current value first, refuses on mismatch (`precondition_failed`), converges toward the target, then reads Logic's echo back. The reported "after" value *is* Logic's own feedback, not the intention. Failed operations roll back and say so (`restored: true/false`).
+
+3. **Assume the agent is fallible.** Results that produce sound carry the sound (MCP audio content blocks). Silent bounces warn. Leftover solos are named. Every sound-changing write returns a standing instruction to judge by ear, not by parameter value. A blocked step must be reportable as blocked — so error messages name what was observed and what the working alternative is.
+
+## Process model
+
+```
+MCP client ── stdio/JSON-RPC ── logician (server process)
+                                   │ spawns & health-checks
+                                   ▼
+                                logician --bridge (daemon, single instance)
+                                   │ unix socket: ~/Library/Application Support/LogicMCPMCU/command.sock
+                                   │
+                                   ├─ virtual CoreMIDI ports (FIXED unique IDs 'LMC0'–'LMC3'):
+                                   │    "Logic MCP MCU"       Mackie Control ⇄ Logic
+                                   │    "Logic MCP Commands"  key commands → Logic
+                                   │    "Logic MCP MIDI In"   performance MIDI → Logic
+                                   └─ state mirror: LCD text, LEDs, 14-bit fader echoes,
+                                      timecode, event counter (3 ms poll loop)
+```
+
+One distributable binary. The MCP server self-spawns the bridge daemon; users never start anything. The bridge holds the virtual MIDI ports and mirrors Logic's control-surface output continuously; the server talks to it over a line-delimited JSON unix socket. A `bridge_protocol` version in the ping lets a newer server detect and replace an outdated running daemon.
+
+**Fixed MIDI unique IDs matter more than they look.** CoreMIDI assigns random unique IDs by default, and *two* things bind to port identity, not port name: Logic's control-surface device setup, and — much less obviously — every key-command MIDI assignment. Recreating ports with new IDs silently orphans all of them (they still *display* in Logic's UI but never fire). Fixed IDs (`'LMC0'`–`'LMC3'` as `kMIDIPropertyUniqueID`) make port identity survive restarts; `logic_setup_key_commands {relearn: true}` repairs installations that predate the fix (it wipes each command's stale controller assignments via the Key Commands window before re-learning — repeated repairs never stack duplicates).
+
+## Control plane 1: Mackie Control (the workhorse)
+
+Logic's MCU implementation multiplexes everything through 8 channel strips, a 2×56-character LCD, vpots (rotary encoders), and motorized faders. The bridge mirrors all of it; the server drives it by pressing (virtual) buttons and turning (virtual) encoders, then reading the mirrored echo.
+
+**Views.** The assignment buttons switch the strip into views, each with its own LCD grammar:
+- `PN` (pan) — top line shows track names: the neutral home view and the track-bank map.
+- `CS` (channel strip) — volume on vpots.
+- `PL` — the selected track's insert list (`Ins1Pl`, `Ins2Pl`, …); pressing a vpot enters a plugin's parameter pages.
+- `SE` — sends for the selected track, four fields per send (destination, level, position, mute).
+- `IN` — instrument parameters.
+- Multi-channel plugin views exist (each vpot = one *channel's* insert N) and are dangerous — a write in the wrong view edits eight different tracks' plugins. View state is always verified from the LCD before writing.
+
+**Convergence.** Vpot parameters have no absolute-position protocol — only relative ticks, with per-parameter, per-plugin step sizes. The bridge implements an in-process `converge` command: an adaptive tick-ratio loop that measures value-change per tick from the LCD echo (3 ms polls) and homes in on the target. Volume is the exception: motorized faders echo 14-bit absolute positions, so dB targets go through a calibrated dB→14-bit curve and land exactly.
+
+**Hot views.** Entering a plugin's parameter pages costs over a second (view switch, page search). Consecutive writes to the same plugin keep the view "hot" and skip setup — with the page-cache key carried along, since losing it silently degrades to a per-page linear search. The server exits to the neutral pan view when the client disconnects: a leaked hot plugin view makes Logic auto-open plugin windows on every later track selection.
+
+**Plugin add/remove without a mouse.** Turning a vpot on an *empty* insert slot in `PL` view steps through Logic's plugin list (one entry per two ticks); pressing instantiates. The `--` boundary entry removes. Drift is corrected by settle-and-reverify with back-steps, and a named-track Accessibility cross-check protects against wrong-channel edits. (An Accessibility-driven chooser exists as a fallback but is gated behind `allow_mouse: true`, off by default.)
+
+## Control plane 2: key commands over MIDI
+
+Logic can bind any key command to an incoming MIDI event. Logician maintains a registry (`~/Library/Application Support/LogicMCPMCU/keycmd-registry.json`) of note-number assignments on a dedicated port, learned **through Logic's own Key Commands window** via Accessibility: search the command, select the row, toggle *Learn New Assignment*, send the note, verify the row now shows it. Collisions get alternate notes automatically. Learning is lazy (first tool that needs a missing command learns it, with a one-time disclosure) or batched via `logic_setup_key_commands`.
+
+Hard-won details of that window: deletions re-render the panel and silently invalidate every previously fetched element reference *and* drop the command row's selection (learning then assigns to nothing); some notes display symbolically (e.g. note 109 shows as `F2 (Modifiers ▶︎ Cmd/Alt)` because it maps to a named MCU control), so verification accepts "the row's assignment display changed", not just the literal `Note N`.
+
+This plane carries: Save, Undo/Redo, Cut/Copy/Paste/Delete, nudges, track create/duplicate/delete/rename, Toggle Track Freeze, split, markers, plugin preset stepping.
+
+## Control plane 3: Accessibility (semantic reads, surgical writes)
+
+Used where the surface protocol has no vocabulary — always element-addressed:
+
+- **Track headers** are `AXLayoutArea`s described `Track N "Name"`, with checkboxes (Mute/Solo/Freeze/…) as children. Selection is written via `AXSelectedChildren` with a Has-Focus-button fallback.
+- **Regions** are `AXLayoutItem`s whose `AXHelp` string carries their musical position ("Region starts at X bars … and ends at Y bars, MIDI region"). `AXSelected` is writable, but deletion silently no-ops unless `AXFocused` is also set — and with duplicate region names, verification counts name *occurrences*, never absence.
+- **The bounce dialog**'s Start/End fields are groups of four `AXSlider`s mirroring one raw tick value (16,492,674,416,640 ticks/bar). Writing a value steps the field *one unit toward it* per write. Crucially, the field **clamps exactly to its minimum**, which erases any sub-bar remainder — a position carrying beats/divisions/fractional ticks can never reach a bar-aligned target by bar-stepping (it oscillates around it forever), so the algorithm is: bar-aligned values step straight to the target; anything else is clamped down to `1 1 1 1` first, then stepped up exactly.
+- **Modal dialogs freeze everything** (the MCU mirror included, visible as `ALERT` in the timecode), so every dialog-opening path cancels its dialog on every error branch.
+
+## Audio pipeline
+
+**Dialog-free track export** rides on Track Freeze: arm freeze (key command), verify the header checkbox flipped *before* pressing play (arming is instant; a refusal means the track structurally can't freeze — stacks, buses, shared channel strips — and fails in ~2 s with the alternative named), play, watch `Media/Freeze Files` for the lock file to disappear, copy the render out, un-freeze. Bar-range slicing is done by Logician's own PCM slicer (afconvert has no offset support).
+
+**Master export** drives the bounce dialog (offline). `solo_bounce` covers what freeze refuses: solo the track (Accessibility strip toggle is authoritative when a track number is given — duplicate names make MCU name-matching ambiguous), bounce A, apply the verified change, bounce B, roll back, un-solo — with solo restoration on every error path.
+
+**The agent hears its work.** Every bounce/render result attaches the rendered audio as an MCP audio content block (stereo AAC 64 kbps — forcing mono via `afconvert -c 1` fails on AIFFs with explicit stereo layouts). Evaluations attach *both* versions in order (first = baseline, second = after). Clients that drop audio blocks (verified: Antigravity CLI) are redirected by the result text to a persisted preview file their file viewer can pass to the model as native audio — the result self-diagnoses at exactly the moment it matters. RMS/peak metrics are computed straight from the PCM on disk; a silent file or a leftover solo produces a `warning` in the result.
+
+**MIDI composition** streams note/CC/pitch-bend events with CoreMIDI host-time stamps through the performance port while Logic records: beat-edge synchronization, count-in roll detection, and a measured ~45 ms sync compensation put notes on the grid (quantization-friendly but not required). An opt-in speed mode records at up to 8× by converging the tempo slider around the take.
+
+**Automation recording** presses the MCU automation-mode buttons (Read/Write/Touch/Latch, verified from the strip's Accessibility label), schedules parameter movements against the rolling transport (roll-start anchoring, first-point lead time, touch wiggle), and verifies by *playhead chase*: park the playhead across the lane in Read mode and read back what Logic reports — exact for faders and plugin parameters, ±0.2 dB for sends.
+
+## Logic quirks catalog (the expensive lessons)
+
+- AppleScript's standard suite mostly works (documents, names, paths, `close saving yes/no`) — but `save` is a stub that times out, and `make new document` creates windowless ghosts. Save goes through the key command, verified by the modified flag clearing *or* the project package's `ProjectData` mtime advancing (Logic sometimes keeps a dirty flag for view-only state).
+- Key-command MIDI bindings are scoped to the *port's unique identity*. They survive in the UI and die silently when ports are recreated. (See fixed IDs above.)
+- A strict JSON-RPC client (Antigravity's Go MCP layer) closes the connection if the server responds to a *notification* — even with a well-formed error. Notifications get silence; unknown *requests* get `-32601`; `initialize` echoes the client's protocol version when it is a known one.
+- New-project templates must not contain `Alternatives/*/Autosave` or Logic shows a recovery prompt on open. Project duplication strips them.
+- File names arrive NFD from the filesystem/AppleScript and NFC from JSON clients; every comparison normalizes.
+- Bounce settings persist between invocations — including the destination-format checkboxes and the position fields, which is why position writes must handle arbitrary leftover states.
+- Freeze arming can be structurally refused with the checkbox present but inert (tracks sharing a channel strip). Only the pre-play arming check catches this cheaply.
+
+## Error taxonomy
+
+Uniform across all 59 tools: `not_found` / `not_exposed` (with what *is* visible), `precondition_failed` (your expected value didn't match; nothing written), `ambiguous` (candidates listed; disambiguate), `verification_failed` (write happened, echo didn't confirm; restoration state reported), `invalid_arguments`. Messages are written for agents: they name the observed state and the concrete next step.

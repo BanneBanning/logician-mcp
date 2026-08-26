@@ -108,7 +108,7 @@ logician  ──spawns──▶  logician --bridge (daemon)
       region editing, dialogs) — semantic, never coordinates
 ```
 
-Safety model: read before write, abort on ambiguity, verify by readback, roll back on mismatch, never save without being asked, duplicate before destructive experiments. See [docs/FINDINGS.md](docs/FINDINGS.md) for the full research log (Swedish) — every mechanism above was empirically verified and versioned there.
+Safety model: read before write, abort on ambiguity, verify by readback, roll back on mismatch, never save without being asked, duplicate before destructive experiments. **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** explains how every mechanism works — the MCU convergence loops, the key-command learning, the bounce-dialog semantics, and the Logic quirks catalog. [docs/FINDINGS.md](docs/FINDINGS.md) is the full research log (Swedish), versioned per discovery.
 
 ## Known limitations & roadmap
 
