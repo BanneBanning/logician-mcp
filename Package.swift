@@ -33,6 +33,21 @@ let package = Package(
             linkerSettings: [
                 .linkedFramework("CoreMIDI")
             ]
+        ),
+        // Tests cover the PURE logic only — the parts that are expensive to
+        // get wrong and cheap to check: LCD field parsing, the value/dB
+        // parsers, filename sanitisation, socket framing, and the MIDI
+        // running-status parser. Nothing here needs Logic Pro running.
+        .testTarget(
+            name: "LogicianTests",
+            dependencies: ["Logician", "LogicMCUBridge"]
+        ),
+        .testTarget(
+            name: "LogicMCUBridgeTests",
+            dependencies: ["LogicMCUBridge"],
+            swiftSettings: [
+                .swiftLanguageMode(.v5)
+            ]
         )
     ]
 )
