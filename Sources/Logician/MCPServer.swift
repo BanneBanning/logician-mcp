@@ -113,4 +113,31 @@ final class MCPServer {
         return result
     }
 
+    func response(id: Any, result: Any) -> [String: Any] {
+        ["jsonrpc": "2.0", "id": id, "result": result]
+    }
+
+    func jsonRPCError(id: Any, code: Int, message: String) -> [String: Any] {
+        [
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": ["code": code, "message": message]
+        ]
+    }
+
+    func write(_ object: [String: Any]) {
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+              var line = String(data: data, encoding: .utf8) else {
+            log("failed to serialize response")
+            return
+        }
+        line.append("\n")
+        FileHandle.standardOutput.write(Data(line.utf8))
+    }
+
+    func log(_ message: String) {
+        let line = "[\(serverName)] \(message)\n"
+        FileHandle.standardError.write(Data(line.utf8))
+    }
 }
