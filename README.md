@@ -1,33 +1,42 @@
 # Logician
 
-**Control Logic Pro from AI agents — through the data plane, not the UI.**
+**Give your AI agent hands and ears in Logic Pro.**
 
-An MCP (Model Context Protocol) server that gives Claude, Cursor, and other MCP clients real, verified control over Logic Pro on macOS: transport, mixing, every plugin parameter (third-party included), dialog-free audio export, closed-loop A/B evaluation of mix changes, and MIDI composition recorded straight onto your tracks.
+An MCP server that gives Claude, Gemini, Cursor — any MCP client — real, verified control over Logic Pro on macOS: every plugin parameter (third-party included), mixing, MIDI composition, arrangement editing, automation, and dialog-free audio export. Results that produce sound **carry the sound**: bounces and A/B evaluations return the audio itself, so a multimodal agent hears what it just did in the same reply it decides from.
 
-> **Logician** = Logic + musician (+ a reasoning logician). MIT licensed. Currently a private repo — build from source.
+`macOS 13+` · `Swift 6` · `MIT` · `59 tools` · no UI scripting, no mouse takeover
 
 ## Why this one is different
 
-Logic Pro has no automation API. Every other Logic MCP drives the UI: synthetic keypresses, dialog clicking, window scraping. This server instead speaks **Mackie Control** — Logic's documented, bidirectional control-surface protocol — over virtual MIDI ports, and reads Logic's own LCD/LED/fader echoes back as verification. Where the surface protocol ends, it uses macOS Accessibility semantics (element-addressed, never coordinate clicking), and a dedicated MIDI port bound to Logic key commands.
+Logic Pro has no automation API. Every other Logic MCP drives the UI: synthetic keypresses, dialog clicking, coordinate mouse moves, window scraping. Logician instead speaks **Mackie Control** — Logic's documented, bidirectional control-surface protocol — over virtual MIDI ports, and reads Logic's own LCD/LED/fader echoes back as verification. Where the surface protocol ends it uses macOS Accessibility *semantics* (element-addressed, never coordinates) and a dedicated MIDI port bound to Logic key commands.
 
-What that buys, measured on a real project:
+That buys three things UI automation can't give you:
+
+1. **Universal plugin control.** Third-party plugins with fully custom UIs (Trilian, Decapitator, …) expose nothing to Accessibility — but everything to the control-surface host automation layer. Logician reads and writes any parameter of any plugin.
+2. **Hardware-level ground truth.** Every write is compare-and-set: read the current value, refuse on mismatch, converge to the target, read Logic's echo back, report exactly what happened. The agent cannot hallucinate a parameter value — the LCD echo is the value.
+3. **Your mouse stays yours.** Nothing moves the pointer, nothing types into your windows, no dialog-clicking races. You can keep working while the agent mixes.
+
+## Built for agents that lie (so they can't)
+
+Logician assumes the model on the other end is fallible and designs for it:
+
+- **Results carry their audio.** `logic_bounce_range` and `logic_render_track` attach the rendered sound as an MCP audio content block. `logic_evaluate_change` attaches **both** versions — first block baseline, second after — so the A/B is heard in the same result the keep/rollback decision is made from. Clients that drop audio blocks are redirected to a file the model's file viewer can play.
+- **Honesty guards.** A bounce that comes out silent says so (`warning`, measured from the file). Tracks left soloed are named. A freeze that refuses to arm fails in 2 seconds with the structural cause and the working alternative.
+- **Mix by ear, verify by numbers.** Every sound-changing write returns a standing instruction to judge the result by listening — a fader value is not loudness. Arrangement edits warn about the classic groove-displacement failure that model ears miss.
+- **Self-repair.** Key-command bindings orphaned by MIDI-port changes are detected and re-learned (`logic_setup_key_commands {relearn: true}`), with duplicate-assignment cleanup. `logic_health` is a doctor that names the concrete fix for every broken setup step.
+
+## What it can do, measured
 
 | Capability | Measured |
 |---|---|
-| Export one track to a file, **zero dialogs** (via Track Freeze) | ~6 s for 2 min of audio |
-| A/B a plugin-parameter change on one track, metrics from files, auto-rollback | ~15 s |
-| A/B against the master bus (offline bounce) | ~20 s |
-| Set any plugin parameter, verified via LCD echo, incl. third-party (Trilian, Decapitator…) | ~1.5–2.5 s |
-| Compose MIDI notes and record them through the track's instrument, render-verified | ~16 s for a 6-note phrase |
-| Play/stop, faders, mute/solo, sends — all with hardware-level feedback | ~0.1–2 s |
-
-Every write is **compare-and-set**: the tool reads the current value, refuses on mismatch, converges toward the target, reads the echo back, and reports exactly what happened. Failed operations roll back and say so.
-
-## Requirements
-
-- macOS 13+, Logic Pro (tested on 12.x, English UI — v1 assumption)
-- Swift toolchain (to build from source)
-- One-time: Accessibility permission for your MCP client, and a Mackie Control device in Logic pointing at the ports `Logic MCP MCU` (Logic Pro → Control Surfaces → Setup → New → Mackie Control)
+| Bounce any bar range of the master, zero dialogs, audio attached | ~7 s |
+| Render one track to a file via Track Freeze, sliced to bars | ~8–15 s |
+| A/B a parameter change on one track, metrics + both audio versions, auto-rollback | ~15 s |
+| A/B on tracks freeze refuses (stack subtracks, shared channels) via `solo_bounce` | ~50 s |
+| Set any plugin parameter, verified via LCD echo, incl. third-party | ~1.5–2.5 s |
+| Compose MIDI (notes, CC, pitch bend) recorded through the track's instrument, render-verified | real time + ~8 s |
+| Automation curves (volume/pan/sends/plugin params, all modes), playhead-chase verified | ~10–30 s |
+| Duplicate the project to a safe sandbox copy | ~2 s |
 
 ## Install
 
@@ -35,21 +44,21 @@ Every write is **compare-and-set**: the tool reads the current value, refuses on
 swift build -c release
 ```
 
-Then register the single binary with your MCP client.
+Then register the single binary with your MCP client:
 
-**Claude Code:**
+**Claude Code**
 
 ```bash
-claude mcp add logic -- /path/to/.build/release/logician
+claude mcp add logician -- /path/to/.build/release/logician
 ```
 
-**Antigravity CLI** — use the CLI's own registration command (recommended; editing `settings.json` by hand is not picked up reliably):
+**Antigravity CLI** — use the CLI's own registration (hand-editing settings.json is not picked up reliably):
 
 ```bash
 agy mcp add logician /path/to/.build/release/logician
 ```
 
-Then restart the session (MCP servers load at session start) and verify with `agy mcp list` — logician should show as `enabled`. Have the agent confirm it sees the `logic_*` tools natively before starting work: an agent whose runtime lacks the tools may improvise instead of reporting the gap.
+Restart the session (MCP servers load at session start) and verify with `agy mcp list`. Have the agent confirm it sees the `logic_*` tools before starting work.
 
 **Gemini CLI** — add to `~/.gemini/settings.json`:
 
@@ -57,44 +66,53 @@ Then restart the session (MCP servers load at session start) and verify with `ag
 { "mcpServers": { "logician": { "command": "/path/to/.build/release/logician" } } }
 ```
 
-**Other MCP clients:** the same `mcpServers` JSON shape in the client's MCP configuration, or the client's own `mcp add` command where one exists (prefer it — some clients only load servers registered through their CLI).
+**Other MCP clients:** the same `mcpServers` JSON shape, or the client's own `mcp add` command where one exists (prefer it).
 
-**For the agent:** point it at [docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md) — core concepts, workflows, error taxonomy, and the complete tool reference generated from the live schemas.
+Everything else is self-serve: the server spawns its own bridge daemon, `logic_health` diagnoses every setup step with a concrete fix, and the Logic key commands the tools rely on are learned into your Logic automatically on first use — additively, removable in the Key Commands window, with collision handling.
 
-Everything else is self-serve: the server starts its own bridge daemon, `logic_health` diagnoses every setup step with a concrete fix, and the Logic key commands the tools rely on (freeze render, undo, …) are learned into your Logic automatically on first use — additively, removable in the Key Commands window, with collision handling.
+**Point the agent at [docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md)** — core concepts, workflows, error taxonomy, and the complete tool reference generated from the live schemas.
 
-## Tool overview (40 tools)
+## Requirements
 
-- **Diagnostics** — `logic_health` (doctor: checks and fixes for every setup step), `logic_setup_key_commands`
-- **Project reading** — tracks, windows, inserts, plugin parameter survey
-- **Transport** — play/stop, playhead, cycle range, all verified via MCU LEDs and timecode
-- **Mixing** — volume (dB-converged), pan, mute, solo, **sends** (level per send slot, read + write)
-- **Plugins** — add/remove, open/close windows, read/write **any** parameter via MCU host automation (works for custom-UI third-party plugins that expose nothing to Accessibility)
-- **Audio out** — `logic_render_track` (dialog-free freeze render with bar-range slicing to WAV), `logic_bounce_range` (offline master bounce)
-- **Evaluation** — `logic_evaluate_change` with three methods: `render` (single-track A/B, fastest), `bounce` (master A/B), `realtime` (loop playback with the optional sensor)
-- **Composition** — `logic_record_midi`: notes (names or MIDI numbers, bars/beats/durations/velocities) streamed over a virtual MIDI port with CoreMIDI timestamps while Logic records; verified by rendering the recorded bars
-- **Key commands** — trigger any learned Logic key command (Undo, Redo, Flashback Capture, Split, Create Marker, …) over MIDI
-- **Sensor (optional add-on)** — a bundled Audio Unit that publishes live RMS/peak and captures listenable WAV of what any insert point hears; not required by any bounce/render tool
+- macOS 13+, Logic Pro (tested on 12.x, English UI — v1 assumption)
+- Swift toolchain (to build from source)
+- One-time: Accessibility permission for your MCP client, and a Mackie Control device in Logic pointing at the `Logic MCP MCU` ports (Logic Pro → Control Surfaces → Setup → New → Mackie Control — `logic_health` walks you through it)
+
+## Tool overview (59 tools)
+
+- **Diagnostics** — `logic_health` (doctor with fixes), `logic_setup_key_commands` (incl. `relearn` repair)
+- **Project lifecycle** — open/close/save/duplicate projects; new projects from a bundled template
+- **Reading** — tracks, regions, windows, inserts, sends, plugin parameter survey (third-party included)
+- **Transport** — play/stop, playhead, cycle range, verified via MCU LEDs and timecode
+- **Mixing** — volume (dB-converged), pan, mute, solo, sends (level + destination)
+- **Plugins** — add/remove (data-driven, no mouse), open/close windows, read/write **any** parameter, preset stepping
+- **Tracks** — create, rename, duplicate, delete, stacks
+- **Regions** — select, move, copy, delete; split/nudge via key commands
+- **Composition** — `logic_record_midi`: notes/CC/pitch-bend streamed with CoreMIDI timestamps while Logic records, render-verified
+- **Automation** — record volume/pan/send/plugin curves in any mode, playhead-chase verified
+- **Audio out & evaluation** — bounce, freeze render with bar slicing, `logic_evaluate_change` (four methods: realtime, bounce, render, solo_bounce), `logic_get_audio_clip`
+- **Key commands** — trigger any learned Logic key command over MIDI
+- **Sensor (optional)** — a bundled Audio Unit for realtime RMS/peak and insert-point listening; no bounce/render tool needs it
 
 ## Architecture
 
 ```
-MCP client (Claude, Cursor, …)
-        │ stdio / JSON-RPC
+MCP client (Claude, Gemini, Cursor, …)
+        │ stdio / JSON-RPC (results carry audio content blocks)
 logician  ──spawns──▶  logician --bridge (daemon)
-   │        │                    │  virtual CoreMIDI ports:
+   │        │                    │  virtual CoreMIDI ports (fixed IDs):
    │        │ unix socket        │   "Logic MCP MCU"      (Mackie Control ⇄ Logic)
    │        └────────────────────┤   "Logic MCP Commands" (key commands → Logic)
    │                             │   "Logic MCP MIDI In"  (performance MIDI → Logic)
    └─ macOS Accessibility (element-addressed reads, track selection,
-      freeze-state checkboxes, dialogs) — fallback, never coordinates
+      region editing, dialogs) — semantic, never coordinates
 ```
 
-Safety model: read before write, abort on ambiguity, verify by readback, roll back on mismatch, never save the project, ask before destructive operations. See [docs/FINDINGS.md](docs/FINDINGS.md) for the full research log (Swedish) — every mechanism above was empirically verified and versioned there.
+Safety model: read before write, abort on ambiguity, verify by readback, roll back on mismatch, never save without being asked, duplicate before destructive experiments. See [docs/FINDINGS.md](docs/FINDINGS.md) for the full research log (Swedish) — every mechanism above was empirically verified and versioned there.
 
-## Known limitations
+## Known limitations & roadmap
 
 - English Logic UI assumed (Accessibility string matching; locale tables are future work)
-- The Mackie Control device in Logic is a one-time manual setup (guided by `logic_health`)
-- MIDI recording takes real time (bars × beats × 60/BPM); constant tempo assumed for bar math
-- Track stacks cannot be freeze-rendered (Logic limitation; the tools refuse cleanly)
+- Constant tempo assumed for bar math; MIDI recording takes real time
+- Track stacks cannot be freeze-rendered (Logic limitation — `solo_bounce` covers their subtracks)
+- Roadmap: Stereo Out / master-chain addressing, plugin preset browsing via vpot, Homebrew packaging, localization
