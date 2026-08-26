@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.47.1"
+private let serverVersion = "0.48.0"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -7926,7 +7926,7 @@ private final class MCPServer {
                 "protocolVersion": negotiated,
                 "capabilities": ["tools": ["listChanged": false]],
                 "serverInfo": ["name": serverName, "version": serverVersion],
-                "instructions": "Controls Logic Pro on this Mac through its control-surface protocol (no UI clicking). Requires: Logic running with a project open, Accessibility granted, and a Mackie Control configured with ports 'Logic MCP MCU' (one-time). Full agent guide with workflows and the complete tool reference: docs/AGENT-GUIDE.md in the Logician repository. Run logic_health FIRST — it starts the bridge daemon, verifies every setup step, and tells you the fix for anything missing. Run logic_setup_key_commands ONCE during onboarding — it opens Logic's Key Commands window briefly and binds all needed commands; skipping it means the same window flashes unannounced the first time a tool needs a missing command (lazy learning). Writes are compare-and-set with readback: pass expected_current_value and read values before changing them. The sensor AU is an optional add-on for realtime listening; bounce/render tools work without it. English Logic UI assumed (v1). LISTENING PROTOCOL: to hear audio, open the preview_path/clip_path files with your client's FILE VIEWER (real multimodal audio in most clients), or logic_get_audio_clip when your client forwards MCP audio blocks - if its result reaches you without an audio block, your client drops them: use the file viewer, and never claim to have heard something you did not receive. NEVER read audio files as text/bash. HONESTY: results carry metrics and warnings (silent file, soloed tracks) - trust them over expectations, act on warnings before proceeding, and report blocked steps instead of improvising."
+                "instructions": "Controls Logic Pro on this Mac through its control-surface protocol (no UI clicking). Requires: Logic running with a project open, Accessibility granted, and a Mackie Control configured with ports 'Logic MCP MCU' (one-time). Full agent guide with workflows and the complete tool reference: docs/AGENT-GUIDE.md in the Logician repository. Run logic_health FIRST — it starts the bridge daemon, verifies every setup step, and tells you the fix for anything missing. Run logic_setup_key_commands ONCE during onboarding — it opens Logic's Key Commands window briefly and binds all needed commands; skipping it means the same window flashes unannounced the first time a tool needs a missing command (lazy learning). Writes are compare-and-set with readback: pass expected_current_value and read values before changing them. The sensor AU is an optional add-on for realtime listening; bounce/render tools work without it. English Logic UI assumed (v1). LISTENING PROTOCOL: to hear audio, open the preview_path/clip_path files with your client's FILE VIEWER (real multimodal audio in most clients), or logic_get_audio_clip when your client forwards MCP audio blocks - if its result reaches you without an audio block, your client drops them: use the file viewer, and never claim to have heard something you did not receive. NEVER read audio files as text/bash. HONESTY: results carry metrics and warnings (silent file, soloed tracks) - trust them over expectations, act on warnings before proceeding, and report blocked steps instead of improvising. MIX BY EAR: fader and parameter VALUES are not loudness or quality - recordings and plugins differ, so a lower fader can still be the louder track. Diagnose by listening BEFORE changing, judge by listening AFTER changing; use numbers only to verify what your ears found."
             ])
 
         case "notifications/initialized", "initialized":
@@ -9259,6 +9259,26 @@ private final class MCPServer {
 
             default:
                 throw DemoError.invalidArguments("unknown tool: \(name)")
+            }
+            // Every write that changes how the song SOUNDS carries a standing
+            // instruction to judge it by ear. Parameter and fader numbers say
+            // nothing about how loud or good something IS (recordings differ,
+            // plugins differ) - only listening does. This lives in the result
+            // so every future agent gets it at exactly the right moment.
+            let soundChangingTools: Set<String> = [
+                "logic_set_track_volume", "logic_set_track_pan",
+                "logic_set_track_mute", "logic_set_track_solo",
+                "logic_mcu_set_plugin_parameter", "logic_mcu_set_instrument_parameter",
+                "logic_mcu_set_send", "logic_evaluate_change"
+            ]
+            if soundChangingTools.contains(name),
+               var successPayload = payload as? [String: Any],
+               successPayload["success"] as? Bool == true,
+               successPayload["listen_note"] == nil {
+                successPayload["listen_note"] = name == "logic_evaluate_change"
+                    ? "Do not decide keep/rollback from the numbers alone: LISTEN to baseline_audio and after_audio (open the preview/clip files with your client's file viewer) before judging."
+                    : "You changed how the song SOUNDS. Judge the result by LISTENING (bounce the section, open the preview with your client's file viewer) - a fader or parameter value is not loudness; recordings and plugins differ."
+                return toolResult(payload: successPayload, isError: false)
             }
             return toolResult(payload: payload, isError: false)
         } catch {
