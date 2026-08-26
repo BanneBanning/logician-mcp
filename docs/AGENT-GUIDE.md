@@ -61,6 +61,8 @@ Run `logic_health` first. It starts the bridge daemon, checks every setup requir
 
 ## Listening to audio (IMPORTANT)
 
+**First-run listening handshake** — do this ONCE before trusting your ears: call `logic_get_audio_clip` on any rendered file. If an MCP audio content block reached you, that route works. If the result arrived as text only, your client drops audio blocks — from then on, listen by opening the returned `clip_path`/`preview_path` files with your client's FILE VIEWER (read-file capability), which most clients pass to the model as real multimodal audio (verified in Antigravity CLI). Never claim to have heard something you did not receive.
+
 **NEVER read an audio file with a text/file tool.** Render and bounce results return file paths to multi-megabyte binary files; reading one into your context will overflow it and can crash your client outright. Instead:
 
 - Judge objectively with the returned `metrics` (RMS/peak per channel) and `deltas` from `logic_evaluate_change`.

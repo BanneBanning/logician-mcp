@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.47.0"
+private let serverVersion = "0.47.1"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -5761,7 +5761,7 @@ extension MCUController {
         ]
         if let preview = LogicAccessibility.makeAACPreview(sourcePath: destination.path) {
             result["preview_path"] = preview
-            result["preview_note"] = "Compressed stereo AAC copy - playable/attachable in agent clients; use logic_get_audio_clip for an in-protocol audio block."
+            result["preview_note"] = "Compressed stereo AAC copy. To LISTEN: open preview_path with your client's FILE VIEWER (passes as real audio in most clients, even those that drop MCP audio blocks), or logic_get_audio_clip if your client forwards audio blocks. NEVER read audio files as text/bash."
         }
         if let metrics = LogicAccessibility.audioFileMetrics(path: destination.path),
            (metrics["frames"] as? Int ?? 0) > 0 {
@@ -7926,7 +7926,7 @@ private final class MCPServer {
                 "protocolVersion": negotiated,
                 "capabilities": ["tools": ["listChanged": false]],
                 "serverInfo": ["name": serverName, "version": serverVersion],
-                "instructions": "Controls Logic Pro on this Mac through its control-surface protocol (no UI clicking). Requires: Logic running with a project open, Accessibility granted, and a Mackie Control configured with ports 'Logic MCP MCU' (one-time). Full agent guide with workflows and the complete tool reference: docs/AGENT-GUIDE.md in the Logician repository. Run logic_health FIRST — it starts the bridge daemon, verifies every setup step, and tells you the fix for anything missing. Run logic_setup_key_commands ONCE during onboarding — it opens Logic's Key Commands window briefly and binds all needed commands; skipping it means the same window flashes unannounced the first time a tool needs a missing command (lazy learning). Writes are compare-and-set with readback: pass expected_current_value and read values before changing them. The sensor AU is an optional add-on for realtime listening; bounce/render tools work without it. English Logic UI assumed (v1)."
+                "instructions": "Controls Logic Pro on this Mac through its control-surface protocol (no UI clicking). Requires: Logic running with a project open, Accessibility granted, and a Mackie Control configured with ports 'Logic MCP MCU' (one-time). Full agent guide with workflows and the complete tool reference: docs/AGENT-GUIDE.md in the Logician repository. Run logic_health FIRST — it starts the bridge daemon, verifies every setup step, and tells you the fix for anything missing. Run logic_setup_key_commands ONCE during onboarding — it opens Logic's Key Commands window briefly and binds all needed commands; skipping it means the same window flashes unannounced the first time a tool needs a missing command (lazy learning). Writes are compare-and-set with readback: pass expected_current_value and read values before changing them. The sensor AU is an optional add-on for realtime listening; bounce/render tools work without it. English Logic UI assumed (v1). LISTENING PROTOCOL: to hear audio, open the preview_path/clip_path files with your client's FILE VIEWER (real multimodal audio in most clients), or logic_get_audio_clip when your client forwards MCP audio blocks - if its result reaches you without an audio block, your client drops them: use the file viewer, and never claim to have heard something you did not receive. NEVER read audio files as text/bash. HONESTY: results carry metrics and warnings (silent file, soloed tracks) - trust them over expectations, act on warnings before proceeding, and report blocked steps instead of improvising."
             ])
 
         case "notifications/initialized", "initialized":
@@ -8917,10 +8917,16 @@ private final class MCPServer {
                 let scratchBase = FileManager.default.temporaryDirectory
                     .appendingPathComponent("logician-clip-\(UUID().uuidString)")
                 let trimmed = scratchBase.appendingPathExtension("wav")
-                let scratch = scratchBase.appendingPathExtension("m4a")
+                // The encoded clip is kept on disk: clients that drop MCP
+                // audio blocks need a FILE their viewer can hand to the model.
+                let clipsDirectory = FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent("Library/Application Support/LogicMCPSensor/captures")
+                try? FileManager.default.createDirectory(at: clipsDirectory, withIntermediateDirectories: true)
+                let scratch = clipsDirectory.appendingPathComponent(
+                    "clip-\(Int(Date().timeIntervalSince1970))-\(URL(fileURLWithPath: clipPath).deletingPathExtension().lastPathComponent.suffix(24)).m4a"
+                )
                 defer {
                     try? FileManager.default.removeItem(at: trimmed)
-                    try? FileManager.default.removeItem(at: scratch)
                 }
                 // Trim with our own slicer (afconvert has no offset support),
                 // then compress: mono AAC 64 kbps keeps a clip tiny.
@@ -8956,7 +8962,8 @@ private final class MCPServer {
                     "start_seconds": clipStart,
                     "duration_seconds": clipDuration,
                     "encoded_bytes": clipData.count,
-                    "note": "The audio content block accompanies this result (mono AAC). NEVER read raw audio files as text - they will overflow the model context.",
+                    "clip_path": scratch.path,
+                    "note": "An MCP AUDIO content block accompanies this text (mono AAC). SELF-CHECK: if no audio block reached you, your client DROPS them - do not pretend to hear; instead open clip_path with your client's file viewer (many viewers pass audio files to the model as real multimodal input; verified in Antigravity). NEVER read audio files as text/bash.",
                     "_audio": ["data": clipData.base64EncodedString(), "mimeType": "audio/mp4"]
                 ]
 
@@ -9917,7 +9924,7 @@ private final class MCPServer {
             ],
             [
                 "name": "logic_get_audio_clip",
-                "description": "LISTEN to rendered audio: returns a short clip (default 8 s, max 20 s) of a local audio file as an MCP audio content block (mono AAC, roughly 64 KB per 8 s) that multimodal models can hear. Use this on the file paths returned by logic_render_track / logic_bounce_range / logic_evaluate_change. NEVER read raw audio files with a text/file tool - megabytes of binary will overflow the model context and can crash the client.",
+                "description": "LISTEN to rendered audio: returns a short clip (default 8 s, max 20 s) of a local audio file as an MCP audio content block (mono AAC, roughly 64 KB per 8 s) that multimodal models can hear. Use this on the file paths returned by logic_render_track / logic_bounce_range / logic_evaluate_change. NEVER read raw audio files with a text/file tool - megabytes of binary will overflow the model context and can crash the client. Also writes the clip to disk (clip_path in the result): if the audio block does NOT reach you, your client drops MCP audio - open clip_path with your client's file viewer instead, which most clients pass to the model as real audio.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
