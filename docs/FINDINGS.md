@@ -1,6 +1,6 @@
 # Logic MCP — verifierade fynd och teknisk handoff
 
-Senast uppdaterad: 2026-08-24
+Senast uppdaterad: 2026-08-26
 
 ## Syfte
 
@@ -1525,3 +1525,15 @@ Användarens Gemini-session kraschade hårt ("Agent execution terminated") efter
 ### logic_duplicate_project (2026-08-26, v0.44.0)
 
 Agent-sandlådan: kopierar det öppna projektet på disk (Autosave-mapparna rensas ur kopian — annars recovery-dialog vid öppning) och öppnar kopian som aktivt projekt. `save_first` bakar in osparade ändringar; varning i resultatet när diskbilden saknar dem. Verifierat: 2,0 s, kopian aktiv via project_document, original orört. Guiden instruerar agenter att duplicera FÖRST inför icke-godkända ändringar.
+
+### Geminis femfelsrapport: rotorsaken var portidentiteten (2026-08-26, v0.45.0)
+
+Geminis diagnos ("save-timeout", "bounce-dialog kvar", "end-bar readback-mismatch", "freeze aktiverades aldrig", "NFC/NFD") ledde till ett viktigare fynd än de fem symptomen: **Logic scope:ar key command-MIDI-bindningar till portens unika identitet.** När bryggan bytte till fasta kMIDIPropertyUniqueID ('LMC0'–'LMC3') blev ALLA tidigare inlärda bindningar föräldralösa — de VISAS fortfarande i Key Commands-fönstret ("Note 105") men matchar aldrig inkommande MIDI. Save, freeze (= render), cut/copy/paste — allt keycmd-baserat dog tyst samtidigt. Symptom 1 och 4 var samma fel.
+
+Reparationen: `logic_setup_key_commands {relearn: true}` — raderar först kommandots befintliga controller-tilldelningar (Delete Assignment-knappen i Key Commands-fönstret, per rad) och lär sedan om en enda fräsch bindning. Tre AX-fällor upptäcktes på vägen: (1) varje radering re-renderar panelen så tabell/checkbox-referenser blir tysta nop:ar — allt måste hämtas färskt per iteration; (2) raderingarna släpper KOMMANDORADENS markering, så Learn tilldelar till ingenting om raden inte väljs om; (3) verifieringen får inte kräva texten "Note N" — Logic visar vissa noter symboliskt (109 → "F2 (Modifiers ▶︎ Cmd/Alt)" eftersom noten mappar till en namngiven MCU-kontroll), så "raden ändrades" är rätt kriterium.
+
+**Bounce-dialogens positionsfält knäckta på riktigt:** gruppens fyra AXSliders speglar samma råtick-värde men stegar i VAR SIN enhet mot ett skrivet värde — segment 0 = takter, 1 = slag, 2 = divisioner, 3 = ticks. Kaskadkonvergering (segment för segment tills exakt träff) når varje position, inklusive från Logics icke-taktjusterade default (projektslutet, t.ex. "44 2 3 1") som ren taktstegning aldrig kan lämna — det var Geminis mismatch. Verifierat: bounce 41–45 grön, 25,6 s inkl. AAC-preview.
+
+Övriga fixar: save verifieras nu även via ProjectData-mtime (dirty-flaggan kan vara view-only); bounce-dialogen avbryts alltid på felvägar (modal dialog = total lockout annars); duplicate_project degraderar save_first-fel till diskkopia-med-varning; NFC-normalisering på AppleScript-dokumentnamn; freeze-felmeddelandet nämner Track Header-konfig och relearn-reparationen.
+
+**Het vy-läcka fixad:** när servern dör med ytan kvar i plugin/instrument-vy auto-öppnar Logic pluginfönster vid varje spårval (Trilian poppade upp mitt i freeze-testet). Servern skickar nu exitToPan när stdin stängs — verifierat via LCD-spegeln (PL-vy → Pan-namn).

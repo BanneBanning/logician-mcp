@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.44.0"
+private let serverVersion = "0.45.0"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -274,40 +274,62 @@ private final class LogicAccessibility {
         return nil
     }
 
-    /// The bounce dialog's Start/End fields step one unit toward a written
-    /// value per write (verified 2026-08-25); converge on the computed tick
-    /// position: value(bar) = min + (bar-1) * ticksPerBar.
+    /// The bounce dialog's Start/End position groups hold four AXSliders that
+    /// mirror the same raw tick value but step in DIFFERENT units toward a
+    /// written value: segment 0 = bars, 1 = beats, 2 = divisions, 3 = ticks
+    /// (verified 2026-08-26). Converging the segments in cascade reaches any
+    /// exact position — including from Logic's non-bar-aligned defaults like
+    /// "44 2 3 1" (project end), which pure bar-stepping can never leave.
     private func setBouncePosition(group: AXUIElement, bar: Int) throws {
-        guard let segment = children(of: group).first else {
-            throw DemoError.valueNotWritable("bounce position group has no segments")
-        }
-        guard let minimum = Int64(stringAttribute(segment, kAXMinValueAttribute as String)) else {
-            throw DemoError.valueNotWritable("bounce position minimum unreadable")
+        let segments = children(of: group)
+        guard let first = segments.first,
+              let minimum = Int64(stringAttribute(first, kAXMinValueAttribute as String)) else {
+            throw DemoError.valueNotWritable("bounce position group has no readable segments")
         }
         let ticksPerBar: Int64 = 16_492_674_416_640
         let target = minimum + Int64(bar - 1) * ticksPerBar
-        if Int64(stringAttribute(segment, kAXValueAttribute as String)) == target { return }
-        var last: Int64 = -1
-        for _ in 0..<128 {
-            guard let current = Int64(stringAttribute(segment, kAXValueAttribute as String)) else { break }
-            if current == target { return }
-            if current == last, current != target {
-                throw DemoError.verificationFailed(
-                    requested: "bounce position bar \(bar)",
-                    actual: "stuck at raw \(current)",
-                    restored: false
-                )
+        for segment in segments {
+            if Int64(stringAttribute(first, kAXValueAttribute as String)) == target { return }
+            var stall = 0
+            for _ in 0..<160 {
+                guard let current = Int64(stringAttribute(segment, kAXValueAttribute as String)) else { break }
+                if current == target { return }
+                _ = AXUIElementSetAttributeValue(segment, kAXValueAttribute as CFString, NSNumber(value: target))
+                Thread.sleep(forTimeInterval: 0.05)
+                if Int64(stringAttribute(segment, kAXValueAttribute as String)) == current {
+                    stall += 1
+                    if stall >= 3 { break } // this unit can't get closer; next segment
+                } else {
+                    stall = 0
+                }
             }
-            last = current
-            _ = AXUIElementSetAttributeValue(segment, kAXValueAttribute as CFString, NSNumber(value: target))
-            Thread.sleep(forTimeInterval: 0.06)
         }
-        guard Int64(stringAttribute(segment, kAXValueAttribute as String)) == target else {
+        guard Int64(stringAttribute(first, kAXValueAttribute as String)) == target else {
             throw DemoError.verificationFailed(
                 requested: "bounce position bar \(bar)",
-                actual: stringAttribute(group, kAXValueAttribute as String),
+                actual: stringAttribute(group, kAXValueAttribute as String)
+                    .replacingOccurrences(of: "\t", with: " ")
+                    .trimmingCharacters(in: .whitespaces),
                 restored: false
             )
+        }
+    }
+
+    /// Cancels an open Bounce dialog (modal — it freezes MCU and most AX
+    /// operations, so it must NEVER be left up on an error path).
+    func cancelBounceDialog() {
+        guard let windows = try? logicWindows() else { return }
+        for window in windows
+        where stringAttribute(window, kAXTitleAttribute as String).contains("Bounce")
+            || stringAttribute(window, kAXSubroleAttribute as String) == "AXDialog" {
+            if let cancel = findDescendant(of: window, where: {
+                stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
+                    && stringAttribute($0, kAXTitleAttribute as String) == "Cancel"
+            }) {
+                _ = AXUIElementPerformAction(cancel, kAXPressAction as CFString)
+                Thread.sleep(forTimeInterval: 0.4)
+                return
+            }
         }
     }
 
@@ -1424,7 +1446,11 @@ private final class LogicAccessibility {
         return raw.split(separator: "\u{1E}").compactMap { entry in
             let parts = entry.components(separatedBy: "\u{1F}")
             guard parts.count == 3 else { return nil }
-            return (parts[0], parts[1].isEmpty ? nil : parts[1], parts[2] == "true")
+            // NFC-normalize: the filesystem/AppleScript return decomposed
+            // Unicode (Sma¨llare) while JSON clients send precomposed (Smä).
+            return (parts[0].precomposedStringWithCanonicalMapping,
+                    parts[1].isEmpty ? nil : parts[1].precomposedStringWithCanonicalMapping,
+                    parts[2] == "true")
         }
     }
 
@@ -1538,6 +1564,13 @@ private final class LogicAccessibility {
                 "project": document.name, "path": path
             ]
         }
+        // Two independent success signals: the modified flag clearing, OR the
+        // project file actually being rewritten (mtime) — Logic sometimes
+        // keeps the dirty flag for view-only state that Cmd-S does not touch.
+        let projectData = URL(fileURLWithPath: path)
+            .appendingPathComponent("Alternatives/000/ProjectData").path
+        let mtimeBefore = (try? FileManager.default.attributesOfItem(atPath: projectData)[.modificationDate] as? Date)
+            .flatMap { $0 }
         let save = try MCUController.resolveKeyCommand(named: "Save", logic: self)
         _ = try MCUController.triggerKeyCommand(note: save.note, channel: save.channel)
         for _ in 0..<40 {
@@ -1549,10 +1582,23 @@ private final class LogicAccessibility {
                     "write_route": "midi_key_command_save"
                 ]
             }
+            if let before = mtimeBefore,
+               let after = (try? FileManager.default.attributesOfItem(atPath: projectData)[.modificationDate] as? Date).flatMap({ $0 }),
+               after > before {
+                return [
+                    "success": true, "verified": true, "state": "saved",
+                    "project": document.name, "path": path,
+                    "write_route": "midi_key_command_save",
+                    "note": "Verified via the project file being rewritten; Logic kept the modified flag (view-only state does that)."
+                ]
+            }
         }
         throw DemoError.verificationFailed(
             requested: "save of '\(document.name)'",
-            actual: "the modified flag never cleared within 10 s",
+            actual: "neither the modified flag cleared nor the project file changed within 10 s. "
+                + "If saves keep failing, the key-command MIDI binding may be orphaned "
+                + "(happens when the MIDI ports are recreated) - run logic_setup_key_commands "
+                + "with relearn: true to repair all bindings",
             restored: false
         )
     }
@@ -1654,9 +1700,16 @@ private final class LogicAccessibility {
             )
         }
         var savedBeforeCopy = false
+        var saveWarning: String?
         if saveFirst, document.modified {
-            _ = try saveProject(expectedProjectPath: sourcePath)
-            savedBeforeCopy = true
+            do {
+                _ = try saveProject(expectedProjectPath: sourcePath)
+                savedBeforeCopy = true
+            } catch {
+                // Copy the disk state anyway — a failed save must not block
+                // the duplication; the caller is told what the copy contains.
+                saveWarning = "save_first failed (\(error.localizedDescription)); the copy is the last saved disk state"
+            }
         }
         let source = URL(fileURLWithPath: sourcePath)
         let destination: URL
@@ -1693,6 +1746,7 @@ private final class LogicAccessibility {
             "copy": destination.path,
             "saved_before_copy": savedBeforeCopy
         ]
+        if let saveWarning { result["warning"] = saveWarning }
         if document.modified && !saveFirst {
             result["warning"] =
                 "the open project has unsaved changes that are NOT in the copy (disk state was copied); pass save_first: true to include them"
@@ -1775,7 +1829,8 @@ private final class LogicAccessibility {
     /// registry. This MODIFIES the user's active key command set — additive
     /// only, removable via the same window's Delete Assignment.
     func setupKeyCommands(
-        _ targets: [(search: String, name: String, preferredNote: Int)]
+        _ targets: [(search: String, name: String, preferredNote: Int)],
+        forceRelearn: Bool = false
     ) throws -> [[String: Any]] {
         let window = try keyCommandsWindow()
         defer { closeKeyCommandsWindow() }
@@ -1872,7 +1927,7 @@ private final class LogicAccessibility {
                 continue
             }
             let pre = rowTexts(row).joined(separator: " ")
-            if pre.contains("Note \(target.preferredNote)") {
+            if !forceRelearn, pre.contains("Note \(target.preferredNote)") {
                 results.append(["name": target.name, "status": "already_learned",
                                 "midi_note": target.preferredNote])
                 KeyCommandRegistry.register(
@@ -1890,11 +1945,61 @@ private final class LogicAccessibility {
                 results.append(["name": target.name, "status": "no_learn_checkbox"])
                 continue
             }
+            var deletedStale = 0
+            if forceRelearn {
+                // Wipe the command's existing controller assignments first —
+                // repeated learning otherwise stacks duplicates, and bindings
+                // referencing removed control-surface devices never fire. The
+                // keyboard shortcut is untouched (separate Key section).
+                // Every delete re-renders the panel, so the table AND its rows
+                // must be re-found fresh on every iteration.
+                func assignmentRows() -> [AXUIElement] {
+                    guard let table = findIn(window, 0, {
+                        stringAttribute($0, kAXRoleAttribute as String) == "AXTable"
+                    }) else { return [] }
+                    return children(of: table).filter {
+                        stringAttribute($0, kAXRoleAttribute as String) == "AXRow"
+                    }
+                }
+                let initialCount = assignmentRows().count
+                for _ in 0..<24 {
+                    guard let staleRow = assignmentRows().first else { break }
+                    _ = AXUIElementSetAttributeValue(
+                        staleRow, kAXSelectedAttribute as CFString, kCFBooleanTrue
+                    )
+                    Thread.sleep(forTimeInterval: 0.2)
+                    guard let deleteButton = findIn(window, 0, {
+                        stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
+                            && stringAttribute($0, kAXTitleAttribute as String) == "Delete Assignment"
+                    }) else { break }
+                    _ = AXUIElementPerformAction(deleteButton, kAXPressAction as CFString)
+                    Thread.sleep(forTimeInterval: 0.4)
+                }
+                deletedStale = max(0, initialCount - assignmentRows().count)
+                if deletedStale > 0 {
+                    // The deletions re-render the whole panel and DROP the
+                    // command row's selection — re-select it or the learn
+                    // assigns to nothing and silently fails.
+                    if let freshRow = rowMatching(target.name) {
+                        _ = AXUIElementSetAttributeValue(
+                            freshRow, kAXSelectedAttribute as CFString, kCFBooleanTrue
+                        )
+                        Thread.sleep(forTimeInterval: 0.5)
+                    }
+                }
+            }
             var learned: Int?
-            for candidate in [target.preferredNote, target.preferredNote + 20,
+            let preLearnText = rowMatching(target.name).map { rowTexts($0).joined(separator: " ") } ?? pre
+            for candidate in [target.preferredNote, (target.preferredNote + 20) % 128,
                               (target.preferredNote + 40) % 128] {
-                if stringAttribute(learn, kAXValueAttribute as String) != "1" {
-                    _ = AXUIElementPerformAction(learn, kAXPressAction as CFString)
+                // re-find on every attempt: the wipe re-renders the panel and
+                // makes earlier element references silently inert
+                let freshLearn = findIn(window, 0, {
+                    stringAttribute($0, kAXRoleAttribute as String) == "AXCheckBox"
+                        && stringAttribute($0, kAXTitleAttribute as String) == "Learn New Assignment"
+                }) ?? learn
+                if stringAttribute(freshLearn, kAXValueAttribute as String) != "1" {
+                    _ = AXUIElementPerformAction(freshLearn, kAXPressAction as CFString)
                     Thread.sleep(forTimeInterval: 0.4)
                 }
                 _ = try? MCUBridge.send(["cmd": "keycmd", "note": candidate, "channel": 16])
@@ -1902,10 +2007,16 @@ private final class LogicAccessibility {
                 if dismissConflictAlert() { continue } // collision: next candidate
                 var verified = false
                 for _ in 0..<4 {
-                    if let fresh = rowMatching(target.name),
-                       rowTexts(fresh).joined(separator: " ").contains("Note \(candidate)") {
-                        verified = true
-                        break
+                    if let fresh = rowMatching(target.name) {
+                        let text = rowTexts(fresh).joined(separator: " ")
+                        // Logic displays some notes symbolically (e.g. note 109
+                        // on the MCU device shows as "F2 (Modifiers ...)"), so
+                        // "Note N" is not always present — any change in the
+                        // row's assignment display counts as the learn landing.
+                        if text.contains("Note \(candidate)") || text != preLearnText {
+                            verified = true
+                            break
+                        }
                     }
                     Thread.sleep(forTimeInterval: 0.5)
                 }
@@ -1916,13 +2027,19 @@ private final class LogicAccessibility {
                     note: note, channel: 16, name: target.name,
                     notes: "learned automatically by logic_setup_key_commands"
                 )
-                results.append(["name": target.name, "status": "learned", "midi_note": note])
+                var entry: [String: Any] = ["name": target.name, "status": "learned", "midi_note": note]
+                if deletedStale > 0 { entry["stale_assignments_deleted"] = deletedStale }
+                results.append(entry)
             } else {
                 results.append(["name": target.name, "status": "failed",
                                 "note": "all candidate notes collided or verification failed"])
             }
-            if stringAttribute(learn, kAXValueAttribute as String) == "1" {
-                _ = AXUIElementPerformAction(learn, kAXPressAction as CFString)
+            if let finalLearn = findIn(window, 0, {
+                stringAttribute($0, kAXRoleAttribute as String) == "AXCheckBox"
+                    && stringAttribute($0, kAXTitleAttribute as String) == "Learn New Assignment"
+            }) ?? Optional(learn),
+               stringAttribute(finalLearn, kAXValueAttribute as String) == "1" {
+                _ = AXUIElementPerformAction(finalLearn, kAXPressAction as CFString)
             }
         }
         _ = AXUIElementSetAttributeValue(search, kAXValueAttribute as CFString, "" as CFString)
@@ -5480,7 +5597,7 @@ extension MCUController {
             throw DemoError.openVerificationFailed(
                 renderStarted
                     ? "freeze render started but no finished file appeared within 180 s"
-                    : "freeze never engaged within 10 s of play — the track is likely a track stack or bus (not freezable), or has nothing to render"
+                    : "freeze never engaged within 10 s of play. Likely causes: the track is a stack or bus (not freezable), it has nothing to render, the Freeze button is not enabled in the track header (Logic: Track > Configure Track Header > Freeze), or the Toggle Track Freeze key-command binding is orphaned - run logic_setup_key_commands with relearn: true to repair"
             )
         }
 
@@ -7540,6 +7657,11 @@ private final class MCPServer {
                 write(jsonRPCError(id: NSNull(), code: -32700, message: error.localizedDescription))
             }
         }
+        // stdin closed: the client is gone. Leave the control surface in the
+        // neutral Pan view — a leaked hot plugin/instrument view otherwise
+        // makes Logic auto-open plugin windows on every later track selection.
+        MCUController.exitToPan()
+        log("stdin closed; surface returned to Pan view")
     }
 
     private func handle(_ request: [String: Any]) throws -> [String: Any]? {
@@ -7597,7 +7719,7 @@ private final class MCPServer {
                     ["name": command.name, "registered": registered.contains(command.name)]
                 }
                 if !KeyCommandRegistry.standardCommands.allSatisfy({ registered.contains($0.name) }) {
-                    health["key_commands_fix"] = "run logic_setup_key_commands (or let the first tool that needs one learn it automatically)"
+                    health["key_commands_fix"] = "run logic_setup_key_commands (or let the first tool that needs one learn it automatically); if commands are listed as registered but never fire, run it with relearn: true - port recreation orphans the bindings in Logic"
                 }
                 if health["accessibility_trusted"] as? Bool != true {
                     health["accessibility_fix"] = "grant Accessibility in System Settings: x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
@@ -7624,12 +7746,19 @@ private final class MCPServer {
                       let endBar = arguments["end_bar"] as? Int else {
                     throw DemoError.invalidArguments("missing integers: start_bar, end_bar")
                 }
-                payload = try logic.bounceRange(
-                    startBar: startBar,
-                    endBar: endBar,
-                    label: (arguments["label"] as? String) ?? "bounce",
-                    expectedProjectPath: arguments["expected_project_path"] as? String
-                )
+                do {
+                    payload = try logic.bounceRange(
+                        startBar: startBar,
+                        endBar: endBar,
+                        label: (arguments["label"] as? String) ?? "bounce",
+                        expectedProjectPath: arguments["expected_project_path"] as? String
+                    )
+                } catch {
+                    // A modal Bounce dialog left open freezes EVERYTHING —
+                    // always cancel it before surfacing the error.
+                    logic.cancelBounceDialog()
+                    throw error
+                }
 
             case "logic_evaluate_change":
                 guard let startBar = arguments["start_bar"] as? Int,
@@ -7661,7 +7790,8 @@ private final class MCPServer {
                     break
                 }
                 if (arguments["method"] as? String) == "bounce" {
-                    payload = try logic.evaluateChangeBounced(
+                    do {
+                        payload = try logic.evaluateChangeBounced(
                         trackName: requiredString("track_name", in: arguments),
                         pluginName: requiredString("plugin_name", in: arguments),
                         insertIndex: arguments["insert_index"] as? Int,
@@ -7673,6 +7803,10 @@ private final class MCPServer {
                         keepChange: arguments["keep_change"] as? Bool ?? false,
                         expectedProjectPath: arguments["expected_project_path"] as? String
                     )
+                    } catch {
+                        logic.cancelBounceDialog()
+                        throw error
+                    }
                     break
                 }
                 payload = try logic.evaluateChange(
@@ -8407,7 +8541,18 @@ private final class MCPServer {
                 ]
 
             case "logic_setup_key_commands":
-                let results = try logic.setupKeyCommands(KeyCommandRegistry.standardCommands)
+                let relearn = (arguments["relearn"] as? Bool) ?? false
+                var targets = KeyCommandRegistry.standardCommands
+                if let onlyNames = arguments["commands"] as? [String], !onlyNames.isEmpty {
+                    targets = targets.filter { onlyNames.contains($0.name) }
+                    guard !targets.isEmpty else {
+                        throw DemoError.invalidArguments(
+                            "no standard command matches; valid names: "
+                                + KeyCommandRegistry.standardCommands.map(\.name).joined(separator: ", ")
+                        )
+                    }
+                }
+                let results = try logic.setupKeyCommands(targets, forceRelearn: relearn)
                 payload = [
                     "results": results,
                     "note": "Assignments were added to the user's active key command set (additive; removable in the Key Commands window). The registry file records the final note numbers."
@@ -9437,8 +9582,15 @@ private final class MCPServer {
             ],
             [
                 "name": "logic_setup_key_commands",
-                "description": "One-time onboarding: learn MIDI-note assignments for all standard key commands (Toggle Track Freeze, Undo, Redo, Flashback Capture as Recording, Split at Playhead, Create Marker) into the user's Logic via the Key Commands window automation. Additive to the user's key command set and removable there; collisions with existing assignments get alternate notes automatically. Idempotent — already-learned commands are verified and skipped. Runs automatically the first time a tool needs a missing command, so calling this explicitly is optional.",
-                "inputSchema": ["type": "object", "properties": [:], "additionalProperties": false]
+                "description": "One-time onboarding: learn MIDI-note assignments for all standard key commands (Toggle Track Freeze, Undo, Redo, Flashback Capture as Recording, Split at Playhead, Create Marker) into the user's Logic via the Key Commands window automation. Additive to the user's key command set and removable there; collisions with existing assignments get alternate notes automatically. Idempotent — already-learned commands are verified and skipped. Runs automatically the first time a tool needs a missing command, so calling this explicitly is optional. Pass relearn: true to force re-learning even for commands that look bound — the repair when key commands silently stopped firing (e.g. after the MIDI ports were recreated: Logic scopes the assignments to the port identity).",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "relearn": ["type": "boolean", "description": "Force re-learning of every standard command even when an assignment is already shown. Repairs bindings orphaned by MIDI-port changes. Default false."],
+                        "commands": ["type": "array", "items": ["type": "string"], "description": "Limit to these standard command names (default: all)."]
+                    ],
+                    "additionalProperties": false
+                ]
             ],
             [
                 "name": "logic_trigger_key_command",

@@ -97,11 +97,12 @@ Parameters:
 
 #### `logic_setup_key_commands`
 
-One-time onboarding: learn MIDI-note assignments for all standard key commands (Toggle Track Freeze, Undo, Redo, Flashback Capture as Recording, Split at Playhead, Create Marker) into the user's Logic via the Key Commands window automation. Additive to the user's key command set and removable there; collisions with existing assignments get alternate notes automatically. Idempotent — already-learned commands are verified and skipped. Runs automatically the first time a tool needs a missing command, so calling this explicitly is optional.
+One-time onboarding: learn MIDI-note assignments for all standard key commands (Toggle Track Freeze, Undo, Redo, Flashback Capture as Recording, Split at Playhead, Create Marker) into the user's Logic via the Key Commands window automation. Additive to the user's key command set and removable there; collisions with existing assignments get alternate notes automatically. Idempotent — already-learned commands are verified and skipped. Runs automatically the first time a tool needs a missing command, so calling this explicitly is optional. Pass `relearn: true` to force re-learning even for commands that look bound — this is the repair when key commands silently stop firing (Logic scopes the bindings to the MIDI port identity, so recreated ports orphan them); it first deletes the command's existing controller assignments, so repeated repairs never stack duplicates.
 
 Parameters:
 
-  - (no parameters)
+  - `relearn` (boolean): Force re-learning of every standard command even when an assignment is already shown. Repairs bindings orphaned by MIDI-port changes. Default false.
+  - `commands` (array of string): Limit to these standard command names (default: all).
 
 #### `logic_mcu_status`
 
