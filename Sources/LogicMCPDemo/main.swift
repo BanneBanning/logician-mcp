@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.46.0"
+private let serverVersion = "0.46.1"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -274,37 +274,70 @@ private final class LogicAccessibility {
         return nil
     }
 
-    /// The bounce dialog's Start/End position groups hold four AXSliders that
-    /// mirror the same raw tick value but step in DIFFERENT units toward a
-    /// written value: segment 0 = bars, 1 = beats, 2 = divisions, 3 = ticks
-    /// (verified 2026-08-26). Converging the segments in cascade reaches any
-    /// exact position — including from Logic's non-bar-aligned defaults like
-    /// "44 2 3 1" (project end), which pure bar-stepping can never leave.
+    /// The bounce dialog's Start/End position fields step one unit toward a
+    /// written value per write, and clamp EXACTLY to the field minimum -
+    /// which erases any sub-bar remainder (beats/divisions/fractional ticks,
+    /// verified 2026-08-26). A value with a remainder can never reach a
+    /// bar-aligned target by bar-stepping (it oscillates around it forever),
+    /// so: bar-aligned values step straight to the target; anything else is
+    /// first clamped down to the minimum (1 1 1 1), then stepped up exactly.
     private func setBouncePosition(group: AXUIElement, bar: Int) throws {
-        let segments = children(of: group)
-        guard let first = segments.first,
-              let minimum = Int64(stringAttribute(first, kAXMinValueAttribute as String)) else {
+        guard let segment = children(of: group).first,
+              let minimum = Int64(stringAttribute(segment, kAXMinValueAttribute as String)) else {
             throw DemoError.valueNotWritable("bounce position group has no readable segments")
         }
         let ticksPerBar: Int64 = 16_492_674_416_640
         let target = minimum + Int64(bar - 1) * ticksPerBar
-        for segment in segments {
-            if Int64(stringAttribute(first, kAXValueAttribute as String)) == target { return }
+
+        func read() -> Int64? { Int64(stringAttribute(segment, kAXValueAttribute as String)) }
+
+        /// Repeatedly write `value` until the field settles on it (or stops
+        /// moving). Returns the settled value.
+        func stepTo(_ value: Int64, maxWrites: Int) -> Int64? {
+            var last: Int64 = -1
+            var previous: Int64 = -2
             var stall = 0
-            for _ in 0..<160 {
-                guard let current = Int64(stringAttribute(segment, kAXValueAttribute as String)) else { break }
-                if current == target { return }
-                _ = AXUIElementSetAttributeValue(segment, kAXValueAttribute as CFString, NSNumber(value: target))
-                Thread.sleep(forTimeInterval: 0.05)
-                if Int64(stringAttribute(segment, kAXValueAttribute as String)) == current {
+            for _ in 0..<maxWrites {
+                guard let current = read() else { return nil }
+                if current == value { return current }
+                if current == previous {
+                    return current // oscillating around the target: bail out
+                }
+                _ = AXUIElementSetAttributeValue(segment, kAXValueAttribute as CFString, NSNumber(value: value))
+                Thread.sleep(forTimeInterval: 0.03)
+                guard let now = read() else { return nil }
+                if now == current {
                     stall += 1
-                    if stall >= 3 { break } // this unit can't get closer; next segment
+                    if stall >= 3 { return now }
+                    Thread.sleep(forTimeInterval: 0.12)
                 } else {
                     stall = 0
                 }
+                previous = last
+                last = now
             }
+            return read()
         }
-        guard Int64(stringAttribute(first, kAXValueAttribute as String)) == target else {
+
+        guard var current = read() else {
+            throw DemoError.valueNotWritable("bounce position value unreadable")
+        }
+        if current == target { return }
+        if (current - minimum) % ticksPerBar != 0 {
+            // Sub-bar remainder: clamp to the minimum first to erase it.
+            guard stepTo(minimum, maxWrites: 200) == minimum else {
+                throw DemoError.verificationFailed(
+                    requested: "bounce position bar \(bar)",
+                    actual: "could not clear the sub-bar offset (stuck at '"
+                        + stringAttribute(group, kAXValueAttribute as String)
+                            .replacingOccurrences(of: "\t", with: " ")
+                            .trimmingCharacters(in: .whitespaces) + "')",
+                    restored: false
+                )
+            }
+            current = minimum
+        }
+        if stepTo(target, maxWrites: 200) != target {
             throw DemoError.verificationFailed(
                 requested: "bounce position bar \(bar)",
                 actual: stringAttribute(group, kAXValueAttribute as String)

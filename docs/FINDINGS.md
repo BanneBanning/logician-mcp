@@ -1543,3 +1543,9 @@ Reparationen: `logic_setup_key_commands {relearn: true}` — raderar först komm
 Uppföljning på Ivan Vocals-fyndet: spår som Logic vägrar frysa (subspår i stackar, spår som delar kanalremsa) hade ingen spårnivå-A/B alls. Ny metod i logic_evaluate_change: solo på (AX-strippen är auktoritativ när track_number ges — dubblettnamn gör MCU-namnmatchning tvetydig) → offline-bounce A → verifierad MCU-parameterändring → bounce B → rollback → solo av. Solo-återställningen körs på ALLA felvägar; solo_restored rapporteras separat i payloaden. Master-kedjan ligger kvar i signalvägen (inneboende i solo-bounce) men träffar både A och B, så deltan är ärliga.
 
 Verifierat på exakt det spår Gemini gick bet på: Ivan Vocals #21, Channel EQ Pea4Ga +1,0→+2,8 dB, bounce 41–45: rolled_back, solo_restored, RMS-delta +0,09 dB. 157 s totalt — långsammare än freeze-render (15 s) men täcker spåren render inte kan. Guiden pekar dit från freeze-felmeddelandet.
+
+### Bounce-positionens oscillation + min-klampningen (2026-08-26, v0.46.1)
+
+Användaren filmade dialogen hoppandes 40↔41 i evighet: när fältet bär en subtakts-rest MED bråkdels-ticks ("41 1 4 240.") oscillerar taktstegningen runt målet (−1 takt under, +1 takt över, om och om) — och stall-detektorn triggade aldrig eftersom värdet ändras varje skrivning. Tick-segmentet hade dessutom behövt 240+ steg och kan aldrig träffa en bråkdelsrest exakt.
+
+Nyckelfyndet: **fältet klampar EXAKT till sitt minimum** — en nedvandring till min raderar hela resten (verifierat: "14 4 4 240." → 16 skrivningar → "1 1 1 1", raw == min). Ny strategi: taktjusterat värde stegar direkt mot målet (snabba vägen); värde med rest klampas först till min och stegas sedan upp exakt. Plus oscillationsvakt (värde == näst-föregående → avbryt). Kaskad-segmenten från v0.45 behövs inte längre. Resultat: bounce 41–45 på 7,1 s och 9–13 på 6,4 s (var ~25 s); solo_bounce-A/B:t sjunker därmed från ~157 s till uppskattningsvis ~50 s.
