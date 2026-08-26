@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.46.1"
+private let serverVersion = "0.46.2"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -7878,11 +7878,20 @@ private final class MCPServer {
     private func handle(_ request: [String: Any]) throws -> [String: Any]? {
         let method = request["method"] as? String ?? ""
         let id = request["id"] ?? NSNull()
+        // A notification (no id) must NEVER get a response - answering one,
+        // even with an error, is invalid JSON-RPC and strict clients
+        // (Antigravity's Go MCP layer) close the connection over it.
+        let isNotification = request["id"] == nil
 
         switch method {
         case "initialize":
+            // Echo the client's protocol version when we know it - strict
+            // clients disconnect on a version they did not offer.
+            let requested = (request["params"] as? [String: Any])?["protocolVersion"] as? String
+            let known = ["2024-11-05", "2025-03-26", protocolVersion]
+            let negotiated = (requested.flatMap { known.contains($0) ? $0 : nil }) ?? protocolVersion
             return response(id: id, result: [
-                "protocolVersion": protocolVersion,
+                "protocolVersion": negotiated,
                 "capabilities": ["tools": ["listChanged": false]],
                 "serverInfo": ["name": serverName, "version": serverVersion],
                 "instructions": "Controls Logic Pro on this Mac through its control-surface protocol (no UI clicking). Requires: Logic running with a project open, Accessibility granted, and a Mackie Control configured with ports 'Logic MCP MCU' (one-time). Full agent guide with workflows and the complete tool reference: docs/AGENT-GUIDE.md in the Logician repository. Run logic_health FIRST — it starts the bridge daemon, verifies every setup step, and tells you the fix for anything missing. Run logic_setup_key_commands ONCE during onboarding — it opens Logic's Key Commands window briefly and binds all needed commands; skipping it means the same window flashes unannounced the first time a tool needs a missing command (lazy learning). Writes are compare-and-set with readback: pass expected_current_value and read values before changing them. The sensor AU is an optional add-on for realtime listening; bounce/render tools work without it. English Logic UI assumed (v1)."
@@ -7904,6 +7913,7 @@ private final class MCPServer {
             return response(id: id, result: callTool(name: toolName, arguments: arguments))
 
         default:
+            if isNotification || method.hasPrefix("notifications/") { return nil }
             return jsonRPCError(id: id, code: -32601, message: "Method not found: \(method)")
         }
     }
