@@ -41,6 +41,20 @@ extension MCPServer {
                 } else if (bridge["received_events"] as? Int ?? 0) == 0 {
                     health["mcu_fix"] = "no MIDI from Logic yet. If this is a FRESH setup: add a Mackie Control in Logic > Control Surfaces > Setup with ports 'Logic MCP MCU'. If it worked before and the bridge was restarted: Logic does not reopen the port by itself - open Control Surfaces > Setup and re-pick 'Logic MCP MCU' in Input/Output Port (or restart Logic). Tools fall back to Accessibility meanwhile, slower and less complete."
                 }
+                // Orphaned twin ports are the single most confusing failure
+                // in this system: everything looks connected while key
+                // commands fire into a dead endpoint.
+                let orphans = orphanedPortNames()
+                if !orphans.isEmpty {
+                    health["duplicate_ports"] = orphans
+                    health["duplicate_ports_fix"] = "Logic's port list shows TWO of these; the extras are "
+                        + "orphans from a bridge that died without cleaning up, and Logic binds key "
+                        + "commands to a port's unique ID - so picking the wrong twin makes every key "
+                        + "command silently stop firing. Fix: quit this MCP client, run 'killall "
+                        + "MIDIServer' in a terminal, start the client again, re-pick 'Logic MCP MCU' "
+                        + "in Logic > Control Surfaces > Setup, then run logic_setup_key_commands "
+                        + "with relearn: true."
+                }
                 let registered = Set(KeyCommandRegistry.commands().compactMap { $0["name"] as? String })
                 health["key_commands"] = KeyCommandRegistry.standardCommands.map { command in
                     ["name": command.name, "registered": registered.contains(command.name)]
