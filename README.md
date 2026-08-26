@@ -43,13 +43,21 @@ Then register the single binary with your MCP client.
 claude mcp add logic -- /path/to/.build/release/logician
 ```
 
+**Antigravity CLI** — use the CLI's own registration command (recommended; editing `settings.json` by hand is not picked up reliably):
+
+```bash
+agy mcp add logician /path/to/.build/release/logician
+```
+
+Then restart the session (MCP servers load at session start) and verify with `agy mcp list` — logician should show as `enabled`. Have the agent confirm it sees the `logic_*` tools natively before starting work: an agent whose runtime lacks the tools may improvise instead of reporting the gap.
+
 **Gemini CLI** — add to `~/.gemini/settings.json`:
 
 ```json
 { "mcpServers": { "logician": { "command": "/path/to/.build/release/logician" } } }
 ```
 
-**Antigravity / other MCP clients:** the same `mcpServers` JSON shape in the client's MCP configuration.
+**Other MCP clients:** the same `mcpServers` JSON shape in the client's MCP configuration, or the client's own `mcp add` command where one exists (prefer it — some clients only load servers registered through their CLI).
 
 **For the agent:** point it at [docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md) — core concepts, workflows, error taxonomy, and the complete tool reference generated from the live schemas.
 
