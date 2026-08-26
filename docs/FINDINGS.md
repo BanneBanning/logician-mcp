@@ -1577,3 +1577,17 @@ Två tysta felkällor som två oberoende Opus-granskare var för sig flaggade, f
 (2) Ingen singelinstans-vakt: `unlink(socketPath)` + bind utan lås gjorde att två klienter som startar samtidigt båda spawnar en daemon; nummer två stjäl socketen medan dess MIDI-endpoints inte kan ta de fasta unique-ID:na — och de MIDIObjectSetIntegerProperty-anropen ignorerade sin OSStatus, så förloraren körde vidare med slumpade ID:n och alla Logic-bindningar slutade tyst matcha. Exakt den orphaning-katastrof fasta ID:n finns för att förhindra. Nu: flock innan unlink/bind, och OSStatus kontrolleras — daemonen vägrar köra med fel identitet i stället för att se frisk ut.
 
 Sidofynd (förelåg redan, verifierat mot föregående build): startar man om daemonen medan Logic kör återöppnar Logic INTE kontrollyteporten av sig själv — den måste väljas om i Control Surfaces > Setup, eller Logic startas om. logic_health skiljer nu på "färsk setup" och "bryggan startades om".
+
+### Utomstående granskning: fyra Opus-agenter, och vad de hittade (2026-08-27, v0.50.x)
+
+Fyra parallella granskare utan projekthistorik (arkitektur, korrekthet, MCP/API, säkerhet) läste kodbasen. Utfallet motiverade övningen flera gånger om:
+
+**Säkerhet — en RCE.** `closeProject` interpolerade dokumentnamnet rakt in i osascript-källan, och namnet är ett filnamn agenten själv väljer: ett projekt döpt med citattecken + radbrytning + `do shell script` bröt sig ut och körde godtycklig shell som användaren. Fixat via argv (värden kan aldrig bli kod), verifierat inert med exakt payloaden. Plus path traversal via labels, en förbigången consent-grind i `logic_mcu_command`, socket 0600 och en `pkill -f` som kunde träffa orelaterade processer.
+
+**Korrekthet.** `insert_slot` utanför 1–8 indexerade LCD-fält före sin egen bounds-kontroll → serverkrasch (en agent som läser slot 9 från AX-ordinalerna dödade sessionen). `solo_bounce` lämnade spåret solat när parameterskrivningen kastade — vanligaste agentmisstaget, och varje efterföljande bounce blev tyst. Bounce-metodens A/B lämnade ändringen kvar vid misslyckad B-render.
+
+**Arkitektur.** Två oberoende granskare flaggade socket-framingen och avsaknaden av singelinstans-lås. Dessutom: filsplitten hade strandsatt fyra doc-kommentarer på fel deklarationer — en av dem (`hotPluginView`) beskrev en invariant som inte gällde. Inga tester alls trots att MIDI-parsern, dB-kurvan och LCD-parsningen är rena funktioner.
+
+**Efterarbetet.** Testtarget (50 tester, 0,04 s, ingen Logic). Tool-descriptor-registry: `callTool` 1330 → 35 rader, honesty guards blev flaggor i stället för handhållna namnlistor, verifierat beteendeneutralt via identisk sha256 på schemadumpen. Cache-scoping som också avslöjade att fält 6–7 aldrig validerades (de gömmer sig bakom "Page x/y"-indikatorn), så en plugin-uppdatering kunde para cachade namn med fel värden.
+
+**En egen läxa:** mina nya framing-tester hängde 10 minuter hos en subagent. Orsaken var min testkod, inte framingen — skrivaren låg på en GCD-kö medan huvudtråden blockerade i `read()`, och med mättad trådpool schemaläggs skrivaren aldrig. En tråd som blockerar i ett syscall kan inte ge efter. Riktiga OS-trådar + läs-timeout; verifierat med tre parallella sviter under full CPU-last (1 s).

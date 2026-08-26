@@ -29,7 +29,11 @@ MCP client ── stdio/JSON-RPC ── logician (server process)
                                       timecode, event counter (3 ms poll loop)
 ```
 
-One distributable binary. The MCP server self-spawns the bridge daemon; users never start anything. The bridge holds the virtual MIDI ports and mirrors Logic's control-surface output continuously; the server talks to it over a line-delimited JSON unix socket. A `bridge_protocol` version in the ping lets a newer server detect and replace an outdated running daemon.
+One distributable binary. The MCP server self-spawns the bridge daemon; users never start anything. The bridge holds the virtual MIDI ports and mirrors Logic's control-surface output continuously.
+
+**Socket framing.** One JSON command per connection: the client writes it in full and half-closes (`shutdown(SHUT_WR)`), the bridge reads to EOF, replies, and closes — so "read until the peer is done" is well-defined in both directions and needs no length prefix. Both sides use the same `writeAll`/`readToEOF` implementation, which lives in the shared module precisely so there is one of it. This matters more than it sounds: the original code did a single `write()` and a single `read()` of a 64 KB buffer with the return values discarded, and macOS gives a unix socket an 8 KB receive buffer — so every command past that was silently truncated, parsed as a prefix, and answered "invalid JSON". `logic_record_midi` failed above roughly 130 notes with an error that pointed at nothing.
+
+**One daemon, or none.** The daemon takes an exclusive `flock` before it unlinks and rebinds the socket, and it verifies every `kMIDIPropertyUniqueID` write. Without both, two MCP clients starting at once (which the README invites) each spawned a daemon: the second stole the socket while its endpoints silently kept CoreMIDI's random IDs — the exact orphaning failure the fixed IDs exist to prevent, with everything still looking connected. A bridge that cannot claim its identity now refuses to run. A `bridge_protocol` version in the ping (defined once, in the shared module) lets a newer server detect and replace an outdated daemon.
 
 **Fixed MIDI unique IDs matter more than they look.** CoreMIDI assigns random unique IDs by default, and *two* things bind to port identity, not port name: Logic's control-surface device setup, and — much less obviously — every key-command MIDI assignment. Recreating ports with new IDs silently orphans all of them (they still *display* in Logic's UI but never fire). Fixed IDs (`'LMC0'`–`'LMC3'` as `kMIDIPropertyUniqueID`) make port identity survive restarts; `logic_setup_key_commands {relearn: true}` repairs installations that predate the fix (it wipes each command's stale controller assignments via the Key Commands window before re-learning — repeated repairs never stack duplicates).
 
@@ -89,6 +93,22 @@ Used where the surface protocol has no vocabulary — always element-addressed:
 - File names arrive NFD from the filesystem/AppleScript and NFC from JSON clients; every comparison normalizes.
 - Bounce settings persist between invocations — including the destination-format checkboxes and the position fields, which is why position writes must handle arbitrary leftover states.
 - Freeze arming can be structurally refused with the checkbox present but inert (tracks sharing a channel strip). Only the pre-play arming check catches this cheaply.
+
+## Code structure
+
+`Sources/Logician/` is organised by control plane, so a file's prefix tells you which mechanism it speaks:
+
+- `Support.swift` — errors, shared types, version constants, the scoped-cache envelope, filename sanitisation
+- `LogicAccessibility.swift` + `AX*.swift` — the Accessibility plane (bounce dialog, regions, projects, tracks, transport, plugins, freeze, key-command learning)
+- `MCUController.swift` + `MCU*.swift` — the Mackie Control plane (transport/LCD, mixing, sends, render, plugin browser, automation, MIDI recording, parameters, instrument)
+- `MCUBridgeClient.swift`, `KeyCommandRegistry.swift` — the daemon client and the key-command consent record
+- `MCPServer.swift`, `Tool.swift`, `ToolRegistry.swift`, `ToolHandlers*.swift` — the MCP plane
+
+**Tools are descriptors, not switch cases.** Each tool declares its name, schema, handler, and whether it changes sound or arrangement, in one array that both `tools/list` and dispatch read. A `Tool` cannot be constructed without a handler, so the schema/handler correspondence is a compile-time property. The `listen_note` honesty guards read those flags — they were once two hand-maintained sets of tool names, which meant adding a sound-changing tool could silently lose the guard.
+
+**Caches are scoped or absent.** `bank-cache.json` and `param-names-cache.json` carry a stamp of the build version and the project path; a file that does not match reads as absent rather than as data, and a cache is not written at all when the scope cannot be established. The parameter-name cache additionally verifies one live page against the cached row before any cheap read is trusted — it pairs cached names with fresh values positionally, so a plugin update that inserts a parameter would otherwise produce confidently wrong pairs.
+
+**Tests** (`swift test`, ~0.04 s, no Logic required) cover the pure logic: socket framing under real concurrency, the MIDI running-status parser including malformed and pseudorandom input, LCD field slicing, the dB parser, filename sanitisation, cache scoping, and formatted-value comparison. Everything else needs Logic running and is verified by hand against a real project.
 
 ## Error taxonomy
 
