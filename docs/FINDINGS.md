@@ -1549,3 +1549,9 @@ Verifierat på exakt det spår Gemini gick bet på: Ivan Vocals #21, Channel EQ 
 Användaren filmade dialogen hoppandes 40↔41 i evighet: när fältet bär en subtakts-rest MED bråkdels-ticks ("41 1 4 240.") oscillerar taktstegningen runt målet (−1 takt under, +1 takt över, om och om) — och stall-detektorn triggade aldrig eftersom värdet ändras varje skrivning. Tick-segmentet hade dessutom behövt 240+ steg och kan aldrig träffa en bråkdelsrest exakt.
 
 Nyckelfyndet: **fältet klampar EXAKT till sitt minimum** — en nedvandring till min raderar hela resten (verifierat: "14 4 4 240." → 16 skrivningar → "1 1 1 1", raw == min). Ny strategi: taktjusterat värde stegar direkt mot målet (snabba vägen); värde med rest klampas först till min och stegas sedan upp exakt. Plus oscillationsvakt (värde == näst-föregående → avbryt). Kaskad-segmenten från v0.45 behövs inte längre. Resultat: bounce 41–45 på 7,1 s och 9–13 på 6,4 s (var ~25 s); solo_bounce-A/B:t sjunker därmed från ~157 s till uppskattningsvis ~50 s.
+
+### Riktiga öron i Antigravity + tysta bounce-vakter (2026-08-26, v0.47.0)
+
+Empiriskt testat med `agy --print`: Antigravity binder nu logic_*-verktygen nativt (v0.46.2-handskakningen), men **släpper INTE igenom MCP-audioblock** — logic_get_audio_clip når modellen som enbart text. Däremot skickar Antigravitys **filläsare (read_file) ljudfiler som äkta multimodal audio**: Gemini beskrev guard-test-bouncen korrekt (svensk drill, glidande 808:or, ~140 BPM halvtempo). Lyssningsvägen i Antigravity är alltså: bounce → öppna preview_path (.m4a) med filläsaren. Guiden och bounce-notisen uppdaterade.
+
+Upptäcktes via att Geminis "final"-bouncar var tysta (AAC ~2 kbps = tystnad): spår 4 "Inst 2" stod kvar med Solo=1 från dess session, så varje master-bounce innehöll bara det tysta spåret — och Gemini "lyssnade" ändå. Två ärlighetsvakter i bounceRange: `metrics` alltid med + `warning` när filen är tyst (RMS ≤ −65 dB) eller när spår står solade (namnges).

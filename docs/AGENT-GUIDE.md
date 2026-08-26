@@ -64,8 +64,9 @@ Run `logic_health` first. It starts the bridge daemon, checks every setup requir
 **NEVER read an audio file with a text/file tool.** Render and bounce results return file paths to multi-megabyte binary files; reading one into your context will overflow it and can crash your client outright. Instead:
 
 - Judge objectively with the returned `metrics` (RMS/peak per channel) and `deltas` from `logic_evaluate_change`.
-- To actually HEAR audio, call `logic_get_audio_clip {path, start_seconds?, duration_seconds?}` — it returns a short mono AAC clip (~8 KB/s) as a native MCP audio content block your multimodal model can listen to. Pick the interesting window (e.g. where the regions are) rather than second 0, which may be silence.
-- Render/bounce results also include `preview_path` — a compressed stereo `.m4a` sibling that agent clients can attach/play natively (the full-quality AIFF/WAV often cannot be).
+- **To actually HEAR audio, the reliable route is your client's FILE VIEWER on the `preview_path`** — the compressed stereo `.m4a` sibling every render/bounce result includes. Many client harnesses (verified: Antigravity CLI) pass a viewed audio file to the model as real multimodal audio even though they DROP MCP audio content blocks. Use the viewer/read-file capability, never bash/cat.
+- `logic_get_audio_clip {path, start_seconds?, duration_seconds?}` returns a short mono AAC clip as a native MCP audio content block — use it when your client forwards audio blocks (test once: if the tool result reaches you as text only, your client drops them; switch to the file-viewer route). Pick the interesting window (e.g. where the regions are) rather than second 0, which may be silence.
+- **Sanity-check what you hear against the numbers**: bounce results now include `metrics` and a `warning` when the file is SILENT or when tracks are left SOLOED. A leftover solo silently empties every master bounce — if the warning names soloed tracks, unsolo before trusting any bounce.
 
 ## Error taxonomy
 

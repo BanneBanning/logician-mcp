@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.46.2"
+private let serverVersion = "0.47.0"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -573,7 +573,7 @@ private final class LogicAccessibility {
         }
 
         let bouncePreview = LogicAccessibility.makeAACPreview(sourcePath: finalPath)
-        return [
+        var result: [String: Any] = [
             "success": true,
             "verified": true,
             "state": "bounced",
@@ -583,8 +583,40 @@ private final class LogicAccessibility {
             "end_bar": endBar,
             "bytes": Int(lastSize),
             "write_route": "bounce_dialog_offline",
-            "note": "Offline render of the master output; destination settings restored. To LISTEN, use logic_get_audio_clip on the path - never read audio files as text."
+            "note": "Offline render of the master output; destination settings restored. To LISTEN: open preview_path with your client FILE VIEWER (many clients pass files to the model as real audio even when they drop MCP audio blocks - verified in Antigravity), or use logic_get_audio_clip if your client forwards MCP audio content. NEVER read audio files as text/bash."
         ]
+        // Two honesty guards, born from a session where an agent "listened"
+        // to silent bounces for an hour: name any soloed tracks (a leftover
+        // solo silently empties every master bounce), and measure the file.
+        if let metrics = LogicAccessibility.audioFileMetrics(path: finalPath) {
+            result["metrics"] = metrics
+            if let rms = metrics["rms_db"] as? [Double], rms.allSatisfy({ $0 <= -65 }) {
+                result["warning"] = "THE BOUNCE IS SILENT (rms \(rms) dB). A leftover solo on a quiet track, or an empty bar range, produces exactly this - fix the cause and bounce again; do not analyze this file."
+            }
+        }
+        let soloed = (try? soloedTrackNames()) ?? []
+        if !soloed.isEmpty {
+            result["soloed_tracks"] = soloed
+            if result["warning"] == nil {
+                result["warning"] = "Tracks currently SOLOED: \(soloed.joined(separator: ", ")). This bounce contains ONLY those tracks - unsolo first if you meant to bounce the full mix."
+            }
+        }
+        return result
+    }
+
+    /// Names of all tracks whose header Solo checkbox is lit.
+    func soloedTrackNames() throws -> [String] {
+        let headers = try parsedTrackHeaders()
+        var names: [String] = []
+        for header in headers {
+            for child in children(of: header.item)
+            where stringAttribute(child, kAXRoleAttribute as String) == "AXCheckBox"
+                && stringAttribute(child, kAXDescriptionAttribute as String) == "Solo" {
+                let value = stringAttribute(child, kAXValueAttribute as String)
+                if value == "1" || value == "on" { names.append(header.name) }
+            }
+        }
+        return names
     }
 
     /// RMS/peak per channel from a bounced AIFF (big-endian PCM) or WAV file —
