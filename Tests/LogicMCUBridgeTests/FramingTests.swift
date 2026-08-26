@@ -6,11 +6,29 @@ import XCTest
 /// 130 notes with a misleading "invalid JSON".
 final class FramingTests: XCTestCase {
     /// Creates a connected socket pair; returns (a, b).
-    private func makeSocketPair() throws -> (Int32, Int32) {
+    ///
+    /// The reader gets a receive timeout. These tests block the calling
+    /// thread inside readToEOF by design, so without it a bug (or a writer
+    /// that never runs) hangs the whole suite instead of failing it.
+    private func makeSocketPair(readTimeoutSeconds: Int = 20) throws -> (Int32, Int32) {
         var fds: [Int32] = [0, 0]
         let result = socketpair(AF_UNIX, SOCK_STREAM, 0, &fds)
         try XCTSkipIf(result != 0, "socketpair unavailable")
+        var timeout = timeval(tv_sec: readTimeoutSeconds, tv_usec: 0)
+        setsockopt(fds[1], SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
         return (fds[0], fds[1])
+    }
+
+    /// Runs `work` on a REAL OS thread, not a GCD queue.
+    ///
+    /// These tests block the main thread in a read() while a second thread
+    /// writes. Dispatching the writer onto a concurrent queue makes that a
+    /// thread-starvation deadlock whenever the pool is saturated (parallel
+    /// builds, a second `swift test`): the block never gets scheduled, and
+    /// the blocked reader cannot yield to let it. Thread.detachNewThread is
+    /// scheduled by the OS immediately and cannot starve this way.
+    private func onSeparateThread(_ work: @escaping () -> Void) {
+        Thread.detachNewThread(work)
     }
 
     func testRoundTripsPayloadLargerThanTheSocketBuffer() throws {
@@ -21,8 +39,7 @@ final class FramingTests: XCTestCase {
         // 140 KB real-world midi_stream case that motivated the fix.
         let payload = Data(repeating: UInt8(ascii: "x"), count: 512 * 1024)
 
-        let writeQueue = DispatchQueue(label: "framing.write")
-        writeQueue.async {
+        onSeparateThread {
             XCTAssertTrue(writeAll(writer, payload))
             shutdown(writer, SHUT_WR)
         }
@@ -39,7 +56,7 @@ final class FramingTests: XCTestCase {
         let chunks = (0..<40).map { index in
             Data("chunk-\(index);".utf8)
         }
-        DispatchQueue(label: "framing.chunks").async {
+        onSeparateThread {
             for chunk in chunks {
                 XCTAssertTrue(writeAll(writer, chunk))
                 usleep(200) // force separate reads on the other side
@@ -83,7 +100,7 @@ final class FramingTests: XCTestCase {
         let payload = try JSONSerialization.data(withJSONObject: command)
         XCTAssertGreaterThan(payload.count, 64 * 1024, "test should exceed the old single-read buffer")
 
-        DispatchQueue(label: "framing.json").async {
+        onSeparateThread {
             XCTAssertTrue(writeAll(writer, payload))
             shutdown(writer, SHUT_WR)
         }
