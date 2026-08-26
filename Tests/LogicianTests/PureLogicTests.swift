@@ -120,6 +120,125 @@ final class PureLogicTests: XCTestCase {
         XCTAssertLessThanOrEqual(sanitizedFilenameComponent(String(repeating: "a", count: 500)).count, 64)
     }
 
+    // MARK: - On-disk cache scoping (build + project)
+
+    func testCacheScopeTokenCarriesBothTheBuildAndTheProject() {
+        let token = cacheScopeToken(projectPath: "/Music/Song.logicx")
+        XCTAssertTrue(token.contains(cacheSchemaVersion))
+        XCTAssertTrue(token.contains("/Music/Song.logicx"))
+    }
+
+    func testCacheScopeTokenSeparatesProjectsAndBuilds() {
+        XCTAssertNotEqual(
+            cacheScopeToken(projectPath: "/Music/A.logicx"),
+            cacheScopeToken(projectPath: "/Music/B.logicx")
+        )
+        // The schema version rides on serverVersion so a new build retires
+        // every measurement the previous one wrote.
+        XCTAssertEqual(cacheSchemaVersion, serverVersion)
+    }
+
+    func testScopedCacheRoundTripsWithinTheSameProject() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("scoped-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        saveScopedCache(["bank0", "bank1"], to: url, projectPath: "/Music/A.logicx")
+        XCTAssertEqual(
+            loadScopedCache(url, projectPath: "/Music/A.logicx", as: [String].self),
+            ["bank0", "bank1"]
+        )
+    }
+
+    func testScopedCacheIsInvisibleToAnotherProject() {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("scoped-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        saveScopedCache(["bank0"], to: url, projectPath: "/Music/A.logicx")
+        // The whole point: a bank map from another song is not stale, it is
+        // wrong, and must read as absent rather than be trusted.
+        XCTAssertNil(loadScopedCache(url, projectPath: "/Music/B.logicx", as: [String].self))
+    }
+
+    func testScopedCacheIsUnreadableAndUnwritableWithoutAProject() {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("scoped-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        saveScopedCache(["bank0"], to: url, projectPath: nil)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path),
+                       "an unstamped file could never be validated on the way back in")
+        saveScopedCache(["bank0"], to: url, projectPath: "/Music/A.logicx")
+        XCTAssertNil(loadScopedCache(url, projectPath: nil, as: [String].self))
+    }
+
+    func testScopedCacheRejectsPreScopeFilesFromOlderBuilds() {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("scoped-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        // The 0.50.0 bank cache was a bare JSON array with no stamp at all.
+        try? Data(#"["bank0","bank1"]"#.utf8).write(to: url)
+        XCTAssertNil(loadScopedCache(url, projectPath: "/Music/A.logicx", as: [String].self))
+    }
+
+    func testScopedCacheSurvivesADictionaryPayload() {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("scoped-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let names: [String: [[String]]] = ["Channe": [["Gain", "Freq", "Q", "", "", "", "", ""]]]
+        saveScopedCache(names, to: url, projectPath: "/Music/A.logicx")
+        XCTAssertEqual(
+            loadScopedCache(url, projectPath: "/Music/A.logicx", as: [String: [[String]]].self),
+            names
+        )
+    }
+
+    // MARK: - Cached parameter-name verification (anti-hallucination)
+
+    private static let eightNames =
+        ["Gain", "Freq", "Q", "Slope", "Mode", "Out", "Mix", "Bypass"]
+
+    func testCachedNameRowAcceptsAnIdenticalSettledRow() {
+        XCTAssertTrue(MCUController.cachedNameRowMatches(
+            cached: Self.eightNames, live: Self.eightNames
+        ))
+    }
+
+    func testCachedNameRowRejectsAnInsertedParameter() {
+        // A plugin update that inserts one parameter shifts every field after
+        // it; pairing these names with live values would mislabel six of them.
+        var shifted = Self.eightNames
+        shifted.insert("Drive", at: 2)
+        XCTAssertFalse(MCUController.cachedNameRowMatches(
+            cached: Self.eightNames, live: Array(shifted.prefix(8))
+        ))
+    }
+
+    func testCachedNameRowRejectsAChangeInTheHiddenTailFields() {
+        // Fields 6-7 are exactly the ones the cheap per-page check cannot see,
+        // which is why this comparison exists at all.
+        var tailChanged = Self.eightNames
+        tailChanged[7] = "Trim"
+        XCTAssertFalse(MCUController.cachedNameRowMatches(
+            cached: Self.eightNames, live: tailChanged
+        ))
+    }
+
+    func testCachedNameRowRefusesARowStillShowingThePageIndicator() {
+        var unsettled = Self.eightNames
+        unsettled[6] = "Page 1"
+        unsettled[7] = "1/4"
+        XCTAssertFalse(
+            MCUController.cachedNameRowMatches(cached: Self.eightNames, live: unsettled),
+            "a half-repainted row proves nothing and must not count as agreement"
+        )
+    }
+
+    func testCachedNameRowRefusesRowsThatAreNotEightFields() {
+        XCTAssertFalse(MCUController.cachedNameRowMatches(cached: [], live: Self.eightNames))
+        XCTAssertFalse(MCUController.cachedNameRowMatches(
+            cached: Array(Self.eightNames.prefix(7)), live: Self.eightNames
+        ))
+    }
+
     // MARK: - Formatted-value comparison (compare-and-set)
 
     func testEquivalentValuesAcceptFormattingDifferences() {

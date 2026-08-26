@@ -7,6 +7,55 @@ let protocolVersion = "2025-06-18"
 let serverName = "logician"
 let serverVersion = "0.50.0"
 
+/// Schema version stamped into every on-disk cache. Deliberately tied to
+/// `serverVersion`: these files hold measurements of Logic's MCU LCD, and a
+/// build that changes how the LCD is read, sliced or settled must not inherit
+/// the previous build's map. Bumping the server version therefore retires
+/// every cache automatically - no separate constant to forget.
+let cacheSchemaVersion = serverVersion
+
+/// Identity an on-disk cache is valid for. The maps in these files describe
+/// ONE open project as read by ONE build; a file that merely *decodes* in
+/// another context is not stale, it is WRONG - and a confidently wrong answer
+/// is the single failure mode this server exists to prevent.
+func cacheScopeToken(projectPath: String) -> String {
+    "v\(cacheSchemaVersion)|\(projectPath)"
+}
+
+/// A cache payload stamped with the scope it was measured in.
+struct ScopedCache<Payload: Codable>: Codable {
+    let scope: String
+    let payload: Payload
+}
+
+/// Reads `url` only when its stamp matches this build and this project.
+/// A nil `projectPath` means the scope cannot be established at all (Logic
+/// closed, no Accessibility trust, no document window), and an unscopable
+/// cache is treated as absent rather than guessed at. Pre-scope files from
+/// older builds simply fail to decode, which is the same answer.
+func loadScopedCache<Payload: Codable>(
+    _ url: URL, projectPath: String?, as: Payload.Type = Payload.self
+) -> Payload? {
+    guard let projectPath,
+          let data = try? Data(contentsOf: url),
+          let decoded = try? JSONDecoder().decode(ScopedCache<Payload>.self, from: data),
+          decoded.scope == cacheScopeToken(projectPath: projectPath) else { return nil }
+    return decoded.payload
+}
+
+/// Writes `payload` stamped with the current scope. A no-op without a project
+/// path: an unstamped file could never be validated on the way back in, so it
+/// would be a trap for the next run rather than a cache.
+func saveScopedCache<Payload: Codable>(
+    _ payload: Payload, to url: URL, projectPath: String?
+) {
+    guard let projectPath,
+          let data = try? JSONEncoder().encode(
+              ScopedCache(scope: cacheScopeToken(projectPath: projectPath), payload: payload)
+          ) else { return }
+    try? data.write(to: url)
+}
+
 /// Reduces an agent-supplied string to a safe single filename component:
 /// keeps `[A-Za-z0-9._-]`, collapses everything else (including `/` and `..`
 /// path separators) to `-`, and caps the length. Used for every tool label
