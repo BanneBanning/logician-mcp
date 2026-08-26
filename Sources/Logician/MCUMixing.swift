@@ -60,13 +60,32 @@ extension MCUController {
         targetDb: Double,
         toleranceDb: Double
     ) throws -> [String: Any]? {
-        guard freshStatus() != nil else { return nil }
-        guard let channel = try findChannel(trackName: trackName) else { return nil }
-        guard let modeStatus = try ensureAssignment("CS", button: "assign_track"),
-              (modeStatus["lcd_top"] as? String)?.contains("Volume") == true else {
+        guard freshStatus() != nil else { debugLog("setVolume: no bridge status"); return nil }
+        guard let channel = try findChannel(trackName: trackName) else {
+            debugLog("setVolume: findChannel nil for '\(trackName)'")
+            return nil
+        }
+        // Enter the multi-channel volume view. The assignment 7-segment code
+        // is NOT a reliable indicator (submodes show other codes while the
+        // view is functionally right, and the button TOGGLES submodes on
+        // repeated presses) - the LCD label is the functional truth.
+        func volumeViewShowing() -> Bool {
+            guard let status = freshStatus(), let top = status["lcd_top"] as? String else { return false }
+            return top.contains("Channel Strip parameter: Volume")
+        }
+        var csReady = volumeViewShowing()
+        for _ in 0..<3 where !csReady {
+            try press("assign_track")
+            csReady = waitFor(seconds: 1.2, { status in
+                (status["lcd_top"] as? String)?.contains("Channel Strip parameter: Volume") == true
+            }) != nil
+        }
+        guard csReady else {
+            debugLog("setVolume: volume view not reached (top: \(freshStatus()?["lcd_top"] as? String ?? "?"))")
             _ = try? ensurePanNames()
             return nil
         }
+        debugLog("setVolume: channel \(channel), volume view ok")
         defer { _ = try? ensurePanNames() }
 
         func currentDb() -> Double? {
@@ -75,7 +94,7 @@ extension MCUController {
             }
             return parseDb(lcdFields(bottom)[channel])
         }
-        guard let startDb = currentDb() else { return nil }
+        guard let startDb = currentDb() else { debugLog("setVolume: no dB readback for channel \(channel)"); return nil }
         if let fast = fastConverge(index: channel, target: targetDb,
                                    tolerance: toleranceDb, maxMs: 3000, seedRatio: 2.5) {
             _ = fast

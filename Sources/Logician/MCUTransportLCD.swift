@@ -96,18 +96,58 @@ extension MCUController {
     /// the assignment display reads "PN" in both — so the mode must be verified
     /// by LCD content, never by blind presses.
     static func ensurePanNames() throws -> Bool {
-        for _ in 0..<5 {
-            guard let status = freshStatus(), let top = status["lcd_top"] as? String else { return false }
-            let assignment = status["assignment"] as? String
-            let fields = lcdFields(top)
-            let dashes = fields.filter { $0 == "-" }.count
-            if assignment == "PN" && dashes < 4 { return true }
+        // The PAN assignment button TOGGLES between the multi-channel names
+        // view and a single-channel pan view - and the transition into the
+        // single view repaints through frames that LOOK like the names view
+        // (names first, then the "Pan/Surround parameter:" label overwrites
+        // the right half). Deciding on a transient frame makes the loop
+        // fight its own toggles, so: wait for a STABLE display, classify,
+        // only then press.
+        func stableState() -> (top: String, assignment: String)? {
+            // A full second of silence: the transition through the mode
+            // banner ("Pan/Surround parameter: ...") contains sub-second
+            // paint pauses that fool shorter windows into classifying a
+            // frame that is still on its way somewhere else.
+            let deadline = Date().addingTimeInterval(5.0)
+            var lastTop: String?
+            while Date() < deadline {
+                guard let status = freshStatus(), let top = status["lcd_top"] as? String else { return nil }
+                let events = status["received_events"] as? Int ?? -1
+                if top == lastTop,
+                   let after = awaitEvents(since: events, timeoutMs: 1000),
+                   after["timed_out"] as? Bool == true,
+                   let fresh = freshStatus(), (fresh["lcd_top"] as? String) == top {
+                    return (top, status["assignment"] as? String ?? "")
+                }
+                lastTop = top
+                _ = awaitEvents(since: events, timeoutMs: 200)
+            }
+            return nil
+        }
+        func fullNames(_ status: [String: Any]) -> Bool {
+            guard let top = status["lcd_top"] as? String else { return false }
+            return (status["assignment"] as? String) == "PN"
+                && !top.contains("parameter:")
+                && lcdFields(top).filter({ $0 == "-" }).count < 4
+        }
+        for iteration in 0..<6 {
+            guard let state = stableState() else { debugLog("ensurePanNames[\(iteration)]: no stable state"); return false }
+            debugLog("ensurePanNames[\(iteration)]: asgn='\(state.assignment)' top='\(state.top.prefix(48))'")
+            if fullNames(["lcd_top": state.top, "assignment": state.assignment]) { return true }
+            if state.top.contains("parameter:") && state.assignment == "PN" {
+                // Names view with Logic's mode BANNER ("Pan/Surround
+                // parameter: Pan") still covering the right half - it fades
+                // on its own; pressing now would toggle AWAY from the
+                // correct view, so wait it out.
+                debugLog("ensurePanNames[\(iteration)]: waiting out mode banner")
+                if waitFor(seconds: 5.0, fullNames) != nil { return true }
+                continue
+            }
+            // Any other stable state (single-channel pan, the channel-strip
+            // overview, a plugin view, ...) - press toward the names view.
+            let before = freshStatus()?["received_events"] as? Int ?? -1
             try press("assign_pan")
-            if waitFor(seconds: 1.2, { status in
-                guard let top = status["lcd_top"] as? String else { return false }
-                return (status["assignment"] as? String) == "PN"
-                    && lcdFields(top).filter({ $0 == "-" }).count < 4
-            }) != nil { return true }
+            _ = awaitEvents(since: before, timeoutMs: 800)
         }
         return false
     }
@@ -158,7 +198,9 @@ extension MCUController {
             try press("bank_right")
             _ = awaitEvents(since: before, timeoutMs: 250)
         }
-        return waitFor(seconds: 1.5, { ($0["lcd_top"] as? String) == expectedTop }) != nil
+        if waitFor(seconds: 1.5, { ($0["lcd_top"] as? String) == expectedTop }) != nil { return true }
+        debugLog("navigateToBank(\(index)): expected '\(expectedTop)' actual '\(freshStatus()?["lcd_top"] as? String ?? "?")'")
+        return false
     }
 
     static func findChannel(trackName: String, retryOnEmpty: Bool = true) throws -> Int? {
@@ -200,7 +242,17 @@ extension MCUController {
         }
 
         try resetToLeftmostBank()
-        guard var top = try settledTop() else { debugLog("no settled top after reset"); return nil }
+        // The single-channel Pan view ("Pan    -      -   ...") looks like a
+        // transient display to settledTop (>= 4 dash fields) and would time
+        // out the whole scan - re-enter the multi-channel names view and
+        // retry once before giving up.
+        var settled = try settledTop()
+        if settled == nil {
+            debugLog("no settled top after reset; re-entering pan names")
+            _ = try ensurePanNames()
+            settled = try settledTop()
+        }
+        guard var top = settled else { debugLog("no settled top after reset"); return nil }
         var bankTops: [String] = []
         var matches: [(bank: Int, channel: Int)] = []
         for bank in 0..<10 {
@@ -227,14 +279,11 @@ extension MCUController {
             return try findChannel(trackName: trackName, retryOnEmpty: false)
         }
         guard matches.count == 1, let match = matches.first else { debugLog("match count \(matches.count)"); return nil }
-        // Navigate back: we are at bank bankTops.count-1 (or the repeat point).
-        let currentBank = bankTops.count - 1
-        for _ in 0..<(currentBank - match.bank) {
-            let before = freshStatus()?["received_events"] as? Int ?? -1
-            try press("bank_left")
-            _ = awaitEvents(since: before, timeoutMs: 250)
-        }
-        if waitFor(seconds: 2.0, { ($0["lcd_top"] as? String) == bankTops[match.bank] }) != nil {
+        // Navigate back from the left edge, never relatively: when the track
+        // count is not a multiple of 8 the rightmost bank CLAMPS (shows the
+        // last 8 tracks), so stepping left from there walks a SHIFTED grid
+        // and the expected bank content never reappears.
+        if try navigateToBank(match.bank, expecting: bankTops[match.bank]) {
             return match.channel
         }
         debugLog("navigate-back verify failed")
@@ -251,7 +300,11 @@ extension MCUController {
         while Date() < deadline {
             guard let status = freshStatus(), let top = status["lcd_top"] as? String else { return nil }
             let events = status["received_events"] as? Int ?? -1
+            // ">= 4 dash fields" = the display is being cleared; "parameter:"
+            // = a single-channel view label (or a half-repainted hybrid of
+            // one) - neither is ever part of the multi-channel names row.
             let transient = lcdFields(top).filter { $0 == "-" }.count >= 4
+                || top.contains("parameter:")
             if !transient {
                 if previous == nil || top != previous {
                     // stable = 120 ms without new MIDI from Logic
