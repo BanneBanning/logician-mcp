@@ -175,10 +175,14 @@ extension MCUController {
         MCUBridge.directory.appendingPathComponent("bank-cache.json")
     }
 
-    static func loadBankCache() -> [String]? {
-        guard let data = try? Data(contentsOf: bankCacheURL),
-              let tops = try? JSONDecoder().decode([String].self, from: data) else { return nil }
-        return tops
+    /// The bank map is a picture of THIS project's track order as read by THIS
+    /// build. Opening another project does not make it stale, it makes it
+    /// wrong - every lookup would point at whatever track happens to sit in
+    /// that slot instead - so the project path and schema version are part of
+    /// the file. Returns nil for "no usable cache", which callers answer with
+    /// a full scan, never a guess.
+    static func loadBankCache(projectPath: String?) -> [String]? {
+        loadScopedCache(bankCacheURL, projectPath: projectPath, as: [String].self)
     }
 
     static func resetToLeftmostBank() throws {
@@ -206,9 +210,14 @@ extension MCUController {
     static func findChannel(trackName: String, retryOnEmpty: Bool = true) throws -> Int? {
         guard try ensurePanNames() else { debugLog("pan multi-channel view failed"); return nil }
 
+        // Resolve the project ONCE: both cache reads below and the write at
+        // the end of the scan must agree on which project the map belongs to,
+        // and re-asking mid-scan could straddle a project switch.
+        let projectPath = currentProjectPath()
+
         // Fastest path: the track is unique on the bank already showing.
         if let status = freshStatus(), let top = status["lcd_top"] as? String,
-           let cachedTops = loadBankCache(), cachedTops.contains(top) {
+           let cachedTops = loadBankCache(projectPath: projectPath), cachedTops.contains(top) {
             let allMatches = cachedTops.flatMap { cachedTop in
                 lcdFields(cachedTop).enumerated().filter {
                     lcdNameMatches(track: trackName, lcd: $0.element)
@@ -225,7 +234,7 @@ extension MCUController {
         }
 
         // Fast path: the cached bank map from the previous full scan.
-        if let cachedTops = loadBankCache() {
+        if let cachedTops = loadBankCache(projectPath: projectPath) {
             var cachedMatches: [(bank: Int, channel: Int)] = []
             for (bank, cachedTop) in cachedTops.enumerated() {
                 for (channel, name) in lcdFields(cachedTop).enumerated()
@@ -266,9 +275,7 @@ extension MCUController {
             guard let next = try settledTop(previous: top) else { debugLog("no settled top in scan"); return nil }
             top = next
         }
-        if let encoded = try? JSONEncoder().encode(bankTops) {
-            try? encoded.write(to: bankCacheURL)
-        }
+        saveScopedCache(bankTops, to: bankCacheURL, projectPath: projectPath)
         // Right after a project switch Logic rebuilds the control surface for
         // a few seconds and a full scan can come up empty — settle and rescan
         // once before giving up.

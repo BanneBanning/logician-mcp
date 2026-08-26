@@ -69,15 +69,33 @@ extension MCUController {
     /// Page read for searching: cached names + instant value row when the
     /// cache matches this plugin, otherwise the fade-waiting settled read.
     static func pageForSearch(
-        cacheKey: String?, pageNumber: Int, totalPages: Int
+        cacheKey: String?, projectPath: String?, pageNumber: Int, totalPages: Int
     ) -> [(name: String, value: String)]? {
         if let key = cacheKey {
-            let cached = loadNameCache()[key]
+            let cached = loadNameCache(projectPath: projectPath)[key]
             if let names = cached, names.count == max(totalPages, 1),
                pageNumber <= names.count, names[pageNumber - 1].count == 8 {
                 _ = quiescentStatus()
-                if let status = freshStatus(), let bottom = status["lcd_bottom"] as? String {
-                    return zip(names[pageNumber - 1], lcdFields(bottom)).map { ($0, $1) }
+                if let status = freshStatus(), let bottom = status["lcd_bottom"] as? String,
+                   let top = status["lcd_top"] as? String {
+                    // Fields 0-5 are already repainted while the "Page x/y"
+                    // indicator still covers 6-7, so they cost nothing to
+                    // check - and this row is about to be paired with LIVE
+                    // values and then WRITTEN to by vpot index. A shifted
+                    // layout must fall back to the honest read, not aim the
+                    // encoder at whatever now sits in that position.
+                    let names = names[pageNumber - 1]
+                    let liveNames = lcdFields(top)
+                    let shifted = (0..<6).contains { index in
+                        liveNames[index] != names[index]
+                            && liveNames[index].range(
+                                of: #"Page +\d+"#, options: .regularExpression
+                            ) == nil
+                    }
+                    if !shifted {
+                        return zip(names, lcdFields(bottom)).map { ($0, $1) }
+                    }
+                    dropNameCache(key: key, projectPath: projectPath)
                 }
             }
         }
@@ -93,12 +111,34 @@ extension MCUController {
     ) throws -> [String: Any]? {
         // Search all parameter pages; remember where the match lives.
         let totalPages = try normalizeToPageOne()
+        // This function does not merely REPORT cached names, it picks a vpot
+        // index from them and turns it. Spot-check the cache against the live
+        // LCD once, up front, before a single cached row is trusted: page 1
+        // read the slow way and compared in full, including the two fields the
+        // per-page check inside pageForSearch can never see. On disagreement
+        // the entry is dropped and the whole search runs on live reads.
+        let projectPath = currentProjectPath()
+        var trustedKey = cacheKey
+        var verifiedPageOne: [(name: String, value: String)]?
+        if let key = cacheKey, let cachedNames = loadNameCache(projectPath: projectPath)[key],
+           cachedNames.count == max(totalPages, 1) {
+            verifiedPageOne = verifiedFirstPage(cachedNames: cachedNames)
+            if verifiedPageOne == nil {
+                debugLog("param name cache contradicted by LCD for '\(key)'; rescanning live")
+                dropNameCache(key: key, projectPath: projectPath)
+                trustedKey = nil
+            }
+        }
         var found: (page: Int, index: Int, name: String, value: String)?
         var duplicates = 0
         var allNames: [String] = []
         for pageNumber in 1...max(totalPages, 1) {
-            guard let raw = pageForSearch(
-                cacheKey: cacheKey, pageNumber: pageNumber, totalPages: totalPages
+            // Page 1 was already read (and verified) above - reuse it rather
+            // than paying the indicator fade a second time.
+            let reusable = pageNumber == 1 ? verifiedPageOne : nil
+            guard let raw = reusable ?? pageForSearch(
+                cacheKey: trustedKey, projectPath: projectPath,
+                pageNumber: pageNumber, totalPages: totalPages
             ) else { return nil }
             for (index, entry) in raw.enumerated() where !entry.name.isEmpty {
                 allNames.append(entry.name)
@@ -131,7 +171,8 @@ extension MCUController {
             Thread.sleep(forTimeInterval: 0.25)
         }
         guard let landed = pageForSearch(
-                  cacheKey: cacheKey, pageNumber: match.page, totalPages: totalPages
+                  cacheKey: trustedKey, projectPath: projectPath,
+                  pageNumber: match.page, totalPages: totalPages
               ),
               landed.indices.contains(match.index),
               landed[match.index].name == match.name else {

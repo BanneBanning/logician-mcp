@@ -9,6 +9,15 @@ enum MCUController {
     /// view-switch choreography. Cleared by anything that changes views.
     nonisolated(unsafe) static var hotPluginView: (track: String, slot: Int, cacheKey: String?)? // single-threaded server loop
 
+    /// The open project's document path - the identity every on-disk cache is
+    /// scoped to. Costs one Accessibility window scan, so callers resolve it
+    /// ONCE per operation and pass it down rather than per page or per bank.
+    /// nil (Logic closed, no AX trust, no document window) means the scope
+    /// cannot be established, and every cache then reads as absent.
+    static func currentProjectPath() -> String? {
+        try? LogicAccessibility().projectDocumentPath()
+    }
+
     static func freshStatus() -> [String: Any]? {
         // In-memory status straight from the bridge socket (no file throttle);
         // fall back to the state file if the socket round trip fails.
