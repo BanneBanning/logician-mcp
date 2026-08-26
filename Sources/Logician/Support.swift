@@ -5,7 +5,7 @@ import LogicMCUBridge
 
 let protocolVersion = "2025-06-18"
 let serverName = "logician"
-let serverVersion = "0.49.1"
+let serverVersion = "0.49.2"
 
 enum DemoError: LocalizedError {
     case accessibilityNotTrusted
