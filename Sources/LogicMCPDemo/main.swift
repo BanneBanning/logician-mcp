@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.45.0"
+private let serverVersion = "0.45.1"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -5549,6 +5549,35 @@ extension MCUController {
         let baseline = freezeFiles()
 
         _ = try triggerKeyCommand(note: freeze.note, channel: freeze.channel)
+
+        // Freeze arms instantly (the header checkbox flips before any render
+        // starts). If it refuses to arm there is no point pressing play and
+        // waiting out the long timeout - fail fast with the structural cause.
+        if let logic, let trackName {
+            var armed = false
+            var checkboxSeen = false
+            for _ in 0..<8 {
+                if let state = logic.trackFreezeState(trackName: trackName) {
+                    checkboxSeen = true
+                    if state { armed = true; break }
+                }
+                Thread.sleep(forTimeInterval: 0.25)
+            }
+            if !armed {
+                throw DemoError.openVerificationFailed(checkboxSeen
+                    ? "Logic refuses to arm Freeze on this track: the header checkbox exists "
+                        + "but stays off (verified via Accessibility). Common causes: the track "
+                        + "shares its channel strip with another track (e.g. a duplicated track "
+                        + "for the same channel), or it has nothing to render. Use "
+                        + "logic_evaluate_change with method 'bounce', or logic_bounce_range "
+                        + "with the track soloed, instead."
+                    : "this track has no Freeze button in its header (track stacks and buses "
+                        + "cannot be frozen; or the Freeze header component is hidden: "
+                        + "Track > Configure Track Header > Freeze). Use method 'bounce' instead. "
+                        + "If freeze recently worked on other tracks, run "
+                        + "logic_setup_key_commands with relearn: true to repair the binding.")
+            }
+        }
         _ = try? setPlaying(true)
 
         // The render announces itself with FreezeInProgress.lock plus the
