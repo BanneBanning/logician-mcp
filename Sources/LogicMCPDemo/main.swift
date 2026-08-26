@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.48.0"
+private let serverVersion = "0.48.1"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -573,6 +573,7 @@ private final class LogicAccessibility {
         }
 
         let bouncePreview = LogicAccessibility.makeAACPreview(sourcePath: finalPath)
+        let earCopy = LogicAccessibility.encodeEarCopy(path: finalPath)
         var result: [String: Any] = [
             "success": true,
             "verified": true,
@@ -583,8 +584,13 @@ private final class LogicAccessibility {
             "end_bar": endBar,
             "bytes": Int(lastSize),
             "write_route": "bounce_dialog_offline",
-            "note": "Offline render of the master output; destination settings restored. To LISTEN: open preview_path with your client FILE VIEWER (many clients pass files to the model as real audio even when they drop MCP audio blocks - verified in Antigravity), or use logic_get_audio_clip if your client forwards MCP audio content. NEVER read audio files as text/bash."
+            "note": earCopy != nil
+                ? "This result CARRIES the bounce as an MCP audio content block - listen to it now. If no audio block reached you, your client drops them: open preview_path with your client's FILE VIEWER instead (passes as real audio in most clients). NEVER read audio files as text/bash."
+                : "Offline render of the master output. To LISTEN: open preview_path with your client's FILE VIEWER (real audio in most clients), or logic_get_audio_clip for a windowed clip. NEVER read audio files as text/bash."
         ]
+        if let earCopy {
+            result["_audio"] = ["data": earCopy.base64EncodedString(), "mimeType": "audio/mp4"]
+        }
         // Two honesty guards, born from a session where an agent "listened"
         // to silent bounces for an hour: name any soloed tracks (a leftover
         // solo silently empties every master bounce), and measure the file.
@@ -617,6 +623,28 @@ private final class LogicAccessibility {
             }
         }
         return names
+    }
+
+    /// Encodes a file as a small mono AAC "ear copy" suitable for an MCP
+    /// audio content block (nil when encoding fails or the result exceeds
+    /// the safe attachment size). This is what lets bounce/render results
+    /// CARRY their own sound instead of just naming a file.
+    static func encodeEarCopy(path: String, maxBytes: Int = 400_000) -> Data? {
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("logician-ear-\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let convert = Process()
+        convert.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
+        // No "-c 1": forcing mono fails on AIFFs with an explicit stereo
+        // channel layout ('cclo' -66564); stereo 64 kbps stays small enough.
+        convert.arguments = [path, scratch.path, "-f", "m4af", "-d", "aac", "-b", "64000"]
+        convert.standardError = FileHandle.nullDevice
+        try? convert.run()
+        convert.waitUntilExit()
+        guard convert.terminationStatus == 0,
+              let data = try? Data(contentsOf: scratch),
+              !data.isEmpty, data.count <= maxBytes else { return nil }
+        return data
     }
 
     /// RMS/peak per channel from a bounced AIFF (big-endian PCM) or WAV file —
@@ -928,7 +956,7 @@ private final class LogicAccessibility {
             deltas["peak_delta_db"] = zip(a, b).map { (($1 - $0) * 100).rounded() / 100 }
         }
 
-        return [
+        var evalResult: [String: Any] = [
             "success": true,
             "verified": true,
             "state": "evaluated",
@@ -947,6 +975,8 @@ private final class LogicAccessibility {
             "deltas": deltas,
             "note": "Offline 24-bit master renders; no playback occurred. Metrics computed from the files."
         ]
+        evalResult = MCUController.attachABAudio(to: evalResult, baselinePath: pathA, afterPath: pathB)
+        return evalResult
     }
 
     // MARK: - Regions (Tracks-area layout items)
@@ -5784,6 +5814,13 @@ extension MCUController {
                     "slicing failed — the requested range may lie beyond the rendered audio"
             }
         }
+        // The rendered sound rides along as an MCP audio block (the sliced
+        // bar range when one was requested, else the whole render).
+        let earSource = ((result["slice"] as? [String: Any])?["path"] as? String) ?? destination.path
+        if let earCopy = LogicAccessibility.encodeEarCopy(path: earSource) {
+            result["_audio"] = ["data": earCopy.base64EncodedString(), "mimeType": "audio/mp4"]
+            result["listen_note"] = "This result CARRIES the rendered audio as an MCP audio block - listen now. If no audio block reached you, open preview_path with your client's file viewer instead."
+        }
         return result
     }
 
@@ -7094,7 +7131,7 @@ extension MCUController {
             deltas["peak_delta_db"] = zip(a, b).map { (($1 - $0) * 100).rounded() / 100 }
         }
 
-        return [
+        var evalResult: [String: Any] = [
             "success": true,
             "verified": restored || keepChange,
             "state": "evaluated",
@@ -7114,6 +7151,28 @@ extension MCUController {
             "deltas": deltas,
             "note": "Two dialog-free freeze renders of this single track, compared on the sliced bar range only. No playback occurred."
         ]
+        evalResult = attachABAudio(
+            to: evalResult,
+            baselinePath: ((renderA["slice"] as? [String: Any])?["path"] as? String) ?? (renderA["path"] as? String),
+            afterPath: ((renderB["slice"] as? [String: Any])?["path"] as? String) ?? (renderB["path"] as? String)
+        )
+        return evalResult
+    }
+
+    /// Attaches baseline+after ear copies as ordered MCP audio blocks so the
+    /// A/B can be HEARD in the same result the keep/rollback decision is
+    /// made from. First audio block = baseline (A), second = after (B).
+    static func attachABAudio(to result: [String: Any], baselinePath: String?, afterPath: String?) -> [String: Any] {
+        var result = result
+        guard let baselinePath, let afterPath,
+              let a = LogicAccessibility.encodeEarCopy(path: baselinePath, maxBytes: 300_000),
+              let b = LogicAccessibility.encodeEarCopy(path: afterPath, maxBytes: 300_000) else { return result }
+        result["_audio_list"] = [
+            ["data": a.base64EncodedString(), "mimeType": "audio/mp4"],
+            ["data": b.base64EncodedString(), "mimeType": "audio/mp4"]
+        ]
+        result["listen_note"] = "This result CARRIES both versions as MCP audio blocks - the FIRST is the baseline (A), the SECOND is after the change (B). Listen to both before deciding. If no audio reached you, open the baseline_audio/after_audio preview files with your client's file viewer."
+        return result
     }
 
     /// Track-level A/B for tracks that cannot be frozen (stack subtracks,
@@ -7242,7 +7301,7 @@ extension MCUController {
             deltas["peak_delta_db"] = zip(a, b).map { (($1 - $0) * 100).rounded() / 100 }
         }
 
-        return [
+        var evalResult: [String: Any] = [
             "success": true,
             "verified": (restored || keepChange) && (soloRestored || wasAlreadySoloed),
             "state": "evaluated",
@@ -7263,6 +7322,8 @@ extension MCUController {
             "deltas": deltas,
             "note": "Two offline master bounces with only this track soloed - works on stack subtracks and shared-channel tracks that freeze refuses. Master-bus processing applies to both A and B. No playback occurred."
         ]
+        evalResult = attachABAudio(to: evalResult, baselinePath: pathA, afterPath: pathB)
+        return evalResult
     }
 
     /// The selected track's insert slots as shown on the MCU (physical slot
@@ -9344,12 +9405,20 @@ private final class MCPServer {
         // content block so multimodal clients can LISTEN instead of being
         // tempted to read raw audio files into their context.
         var textPayload = payload
-        var audioBlock: [String: Any]?
-        if var object = payload as? [String: Any],
-           let audio = object["_audio"] as? [String: String],
-           let data = audio["data"], let mime = audio["mimeType"] {
-            audioBlock = ["type": "audio", "data": data, "mimeType": mime]
-            object.removeValue(forKey: "_audio")
+        var audioBlocks: [[String: Any]] = []
+        if var object = payload as? [String: Any] {
+            if let audio = object["_audio"] as? [String: String],
+               let data = audio["data"], let mime = audio["mimeType"] {
+                audioBlocks.append(["type": "audio", "data": data, "mimeType": mime])
+                object.removeValue(forKey: "_audio")
+            }
+            if let list = object["_audio_list"] as? [[String: String]] {
+                for audio in list {
+                    guard let data = audio["data"], let mime = audio["mimeType"] else { continue }
+                    audioBlocks.append(["type": "audio", "data": data, "mimeType": mime])
+                }
+                object.removeValue(forKey: "_audio_list")
+            }
             textPayload = object
         }
         let text: String
@@ -9362,7 +9431,7 @@ private final class MCPServer {
         }
 
         var content: [[String: Any]] = [["type": "text", "text": text]]
-        if let audioBlock { content.append(audioBlock) }
+        content.append(contentsOf: audioBlocks)
         var result: [String: Any] = [
             "content": content,
             "isError": isError
