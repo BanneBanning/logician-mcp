@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.48.1"
+private let serverVersion = "0.48.2"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -9332,13 +9332,21 @@ private final class MCPServer {
                 "logic_mcu_set_plugin_parameter", "logic_mcu_set_instrument_parameter",
                 "logic_mcu_set_send", "logic_evaluate_change"
             ]
-            if soundChangingTools.contains(name),
+            let arrangementTools: Set<String> = [
+                "logic_move_region", "logic_copy_region", "logic_delete_region",
+                "logic_record_midi"
+            ]
+            if soundChangingTools.contains(name) || arrangementTools.contains(name),
                var successPayload = payload as? [String: Any],
                successPayload["success"] as? Bool == true,
                successPayload["listen_note"] == nil {
-                successPayload["listen_note"] = name == "logic_evaluate_change"
-                    ? "Do not decide keep/rollback from the numbers alone: LISTEN to baseline_audio and after_audio (open the preview/clip files with your client's file viewer) before judging."
-                    : "You changed how the song SOUNDS. Judge the result by LISTENING (bounce the section, open the preview with your client's file viewer) - a fader or parameter value is not loudness; recordings and plugins differ."
+                if arrangementTools.contains(name) {
+                    successPayload["listen_note"] = "You changed the ARRANGEMENT. Bounce a range that includes a few bars BEFORE your edit and listen across the seam: the classic failure is the copied phrase landing displaced (snare on the wrong beat) even though the region boundaries read as bar-aligned - region positions do NOT prove the groove inside is aligned. If the pattern does not match the original groove exactly, undo and copy from a region that starts ON the beat (watch out for pickup regions)."
+                } else {
+                    successPayload["listen_note"] = name == "logic_evaluate_change"
+                        ? "Do not decide keep/rollback from the numbers alone: LISTEN to baseline_audio and after_audio (open the preview/clip files with your client's file viewer) before judging."
+                        : "You changed how the song SOUNDS. Judge the result by LISTENING (bounce the section, open the preview with your client's file viewer) - a fader or parameter value is not loudness; recordings and plugins differ."
+                }
                 return toolResult(payload: successPayload, isError: false)
             }
             return toolResult(payload: payload, isError: false)
