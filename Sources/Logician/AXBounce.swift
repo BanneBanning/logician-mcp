@@ -18,7 +18,7 @@ extension LogicAccessibility {
         }
         var target: AXUIElement?
         func walk(_ element: AXUIElement, depth: Int, path: [String]) {
-            guard depth < 6, target == nil else { return }
+            guard depth <= AXDepth.menuBarItem, target == nil else { return }
             let title = stringAttribute(element, kAXTitleAttribute as String)
             if stringAttribute(element, kAXRoleAttribute as String) == "AXMenuItem",
                title.contains(fragment), path.contains(parent) {
@@ -133,7 +133,7 @@ extension LogicAccessibility {
         for window in windows
         where stringAttribute(window, kAXTitleAttribute as String).contains("Bounce")
             || stringAttribute(window, kAXSubroleAttribute as String) == "AXDialog" {
-            if let cancel = findDescendant(of: window, where: {
+            if let cancel = firstDescendant(of: window, maximumDepth: AXDepth.bounceDialogControl, where: {
                 stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
                     && stringAttribute($0, kAXTitleAttribute as String) == "Cancel"
             }) {
@@ -149,14 +149,11 @@ extension LogicAccessibility {
             stringAttribute($0, kAXRoleAttribute as String) == "AXScrollArea"
         }) else { return [] }
         var rows: [(String, AXUIElement)] = []
-        func walk(_ element: AXUIElement, depth: Int) {
-            guard depth < 6 else { return }
+        collect(from: scroll, maximumDepth: AXDepth.bounceDestinationList) { element in
             if stringAttribute(element, kAXRoleAttribute as String) == "AXCheckBox" {
                 rows.append((stringAttribute(element, kAXDescriptionAttribute as String), element))
             }
-            for child in children(of: element) { walk(child, depth: depth + 1) }
         }
-        walk(scroll, depth: 0)
         return rows
     }
 
@@ -173,21 +170,6 @@ extension LogicAccessibility {
             if !windows.isEmpty { return element }
         }
         return nil
-    }
-
-    func findDescendant(
-        of root: AXUIElement,
-        maximumDepth: Int = 10,
-        where predicate: (AXUIElement) -> Bool
-    ) -> AXUIElement? {
-        var result: AXUIElement?
-        func walk(_ element: AXUIElement, depth: Int) {
-            guard depth < maximumDepth, result == nil else { return }
-            if predicate(element) { result = element; return }
-            for child in children(of: element) { walk(child, depth: depth + 1) }
-        }
-        walk(root, depth: 0)
-        return result
     }
 
     func bounceRange(
@@ -247,7 +229,7 @@ extension LogicAccessibility {
         while Date() < panelDeadline && panelRoot == nil {
             Thread.sleep(forTimeInterval: 0.08)
             if let hosted = (try? logicWindows())?.first(where: { window in
-                self.findDescendant(of: window, where: {
+                self.firstDescendant(of: window, maximumDepth: AXDepth.bounceDialogControl, where: {
                     self.stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
                         && self.stringAttribute($0, kAXTitleAttribute as String) == "Bounce"
                 }) != nil
@@ -265,7 +247,7 @@ extension LogicAccessibility {
         // accept the default and move the rendered file to the label name after.
         let timestamp = Int(Date().timeIntervalSince1970)
         let filename = "logicmcp-\(sanitizedFilenameComponent(label, fallback: "bounce"))-\(timestamp)"
-        guard let bounceButton = findDescendant(of: panel, where: {
+        guard let bounceButton = firstDescendant(of: panel, maximumDepth: AXDepth.bounceDialogControl, where: {
             stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
                 && stringAttribute($0, kAXTitleAttribute as String) == "Bounce"
         }) else {
@@ -277,7 +259,7 @@ extension LogicAccessibility {
         // A possible "already exists" sheet: press Replace.
         Thread.sleep(forTimeInterval: 0.25)
         if let replace = (try? logicWindows())?.lazy.compactMap({ window in
-            self.findDescendant(of: window, where: {
+            self.firstDescendant(of: window, maximumDepth: AXDepth.bounceDialogControl, where: {
                 self.stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
                     && self.stringAttribute($0, kAXTitleAttribute as String) == "Replace"
             })

@@ -15,14 +15,12 @@ extension LogicAccessibility {
             .first else { return [] }
         let appElement = AXUIElementCreateApplication(application.processIdentifier)
         var menus: [AXUIElement] = []
-        func walk(_ element: AXUIElement, depth: Int) {
-            guard depth < 8 else { return }
+        walk(from: appElement, maximumDepth: AXDepth.popupMenu) { element in
             let role = stringAttribute(element, kAXRoleAttribute as String)
-            if role == "AXMenuBar" { return }
-            if role == "AXMenu" { menus.append(element); return }
-            for child in children(of: element) { walk(child, depth: depth + 1) }
+            if role == "AXMenuBar" { return .skipChildren }
+            if role == "AXMenu" { menus.append(element); return .skipChildren }
+            return .descend
         }
-        walk(appElement, depth: 0)
         return menus
     }
 
@@ -42,27 +40,19 @@ extension LogicAccessibility {
         }
     }
 
+    /// First menu item with this title, searching `menu` and its submenus in
+    /// pre-order. `menu` itself is an AXMenu, never an AXMenuItem, so the
+    /// search including the root cannot match it.
     func findMenuItem(
         in menu: AXUIElement,
         titled title: String,
-        maximumDepth: Int = 5
+        maximumDepth: Int = AXDepth.popupMenuItem
     ) -> AXUIElement? {
-        var result: AXUIElement?
-        func walk(_ element: AXUIElement, depth: Int) {
-            guard depth < maximumDepth, result == nil else { return }
-            for item in children(of: element) {
-                let role = stringAttribute(item, kAXRoleAttribute as String)
-                if role == "AXMenuItem",
-                   stringAttribute(item, kAXTitleAttribute as String)
-                       .localizedCaseInsensitiveCompare(title) == .orderedSame {
-                    result = item
-                    return
-                }
-                walk(item, depth: depth + 1)
-            }
+        firstDescendant(of: menu, maximumDepth: maximumDepth) { item in
+            stringAttribute(item, kAXRoleAttribute as String) == "AXMenuItem"
+                && stringAttribute(item, kAXTitleAttribute as String)
+                    .localizedCaseInsensitiveCompare(title) == .orderedSame
         }
-        walk(menu, depth: 0)
-        return result
     }
 
     @discardableResult

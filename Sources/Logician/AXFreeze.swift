@@ -13,17 +13,10 @@ extension LogicAccessibility {
               let header = headers.first(where: {
                   $0.name.caseInsensitiveCompare(trackName) == .orderedSame
               }) else { return nil }
-        var freezeBox: AXUIElement?
-        func findFreeze(_ element: AXUIElement, _ depth: Int) {
-            guard depth < 4, freezeBox == nil else { return }
-            if stringAttribute(element, kAXRoleAttribute as String) == "AXCheckBox",
-               stringAttribute(element, kAXDescriptionAttribute as String) == "Freeze" {
-                freezeBox = element
-                return
-            }
-            for child in children(of: element) { findFreeze(child, depth + 1) }
+        let freezeBox = firstDescendant(of: header.item, maximumDepth: AXDepth.trackHeaderControl) { element in
+            stringAttribute(element, kAXRoleAttribute as String) == "AXCheckBox"
+                && stringAttribute(element, kAXDescriptionAttribute as String) == "Freeze"
         }
-        findFreeze(header.item, 0)
         guard let box = freezeBox else { return nil }
         return stringAttribute(box, kAXValueAttribute as String) == "1"
     }
@@ -35,8 +28,7 @@ extension LogicAccessibility {
         for window in windows {
             var hasFrozenText = false
             var unfreezeButton: AXUIElement?
-            func walk(_ element: AXUIElement, _ depth: Int) {
-                guard depth < 8 else { return }
+            collect(from: window, maximumDepth: AXDepth.alertDialog) { element in
                 let role = stringAttribute(element, kAXRoleAttribute as String)
                 if role == "AXStaticText",
                    stringAttribute(element, kAXValueAttribute as String).contains("frozen") {
@@ -46,9 +38,7 @@ extension LogicAccessibility {
                    stringAttribute(element, kAXTitleAttribute as String) == "Unfreeze" {
                     unfreezeButton = element
                 }
-                for child in children(of: element) { walk(child, depth + 1) }
             }
-            walk(window, 0)
             if hasFrozenText, let button = unfreezeButton {
                 return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
             }

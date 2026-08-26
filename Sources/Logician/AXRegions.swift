@@ -17,8 +17,7 @@ extension LogicAccessibility {
             throw DemoError.windowNotFound("project window")
         }
         var rows: [(Int, String, [AXUIElement])] = []
-        func walk(_ element: AXUIElement, _ depth: Int) {
-            guard depth < 10 else { return }
+        walk(from: window, maximumDepth: AXDepth.trackRegionRow) { element in
             let description = stringAttribute(element, kAXDescriptionAttribute as String)
             if stringAttribute(element, kAXRoleAttribute as String) == "AXLayoutArea",
                description.hasPrefix("Track "), description.contains("“") {
@@ -30,11 +29,10 @@ extension LogicAccessibility {
                     stringAttribute($0, "AXRoleDescription") == "Region"
                 }
                 rows.append((Int(digits) ?? 0, name, regions))
-                return // region items have no nested rows
+                return .skipChildren // region items have no nested rows
             }
-            for child in children(of: element) { walk(child, depth + 1) }
+            return .descend
         }
-        walk(window, 0)
         return rows
     }
 
@@ -190,14 +188,11 @@ extension LogicAccessibility {
         where stringAttribute(window, kAXTitleAttribute as String) == windowTitle
             && stringAttribute(window, kAXSubroleAttribute as String) != "AXStandardWindow" {
             var popups: [String] = []
-            func walk(_ element: AXUIElement, _ depth: Int) {
-                guard depth < 6 else { return }
+            collect(from: window, maximumDepth: AXDepth.pluginWindowHeader) { element in
                 if stringAttribute(element, kAXRoleAttribute as String) == "AXPopUpButton" {
                     popups.append(stringAttribute(element, kAXValueAttribute as String))
                 }
-                for child in children(of: element) { walk(child, depth + 1) }
             }
-            walk(window, 0)
             return popups.last { !$0.isEmpty }
         }
         return nil
