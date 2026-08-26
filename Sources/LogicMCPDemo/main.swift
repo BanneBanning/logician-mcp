@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.45.1"
+private let serverVersion = "0.46.0"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -7051,6 +7051,155 @@ extension MCUController {
         ]
     }
 
+    /// Track-level A/B for tracks that cannot be frozen (stack subtracks,
+    /// tracks sharing a channel strip): solo the track, bounce the range
+    /// offline before and after one verified MCU parameter change, then
+    /// unsolo. The master chain still applies (inherent to solo-bouncing) -
+    /// the deltas are still honest because it applies to both A and B.
+    static func evaluateChangeSoloBounced(
+        logic: LogicAccessibility,
+        trackName: String, trackNumber: Int?,
+        insertSlot: Int, parameter: String,
+        expectedCurrentValue: String, targetValue: String,
+        startBar: Int, endBar: Int,
+        keepChange: Bool
+    ) throws -> [String: Any] {
+        _ = try logic.selectTrack(
+            trackName: trackName, trackNumber: trackNumber, expectedProjectPath: nil
+        )
+
+        // Solo on - with a track number the AX strip toggle is authoritative
+        // (duplicate track names make the MCU name match ambiguous).
+        func setSolo(_ enabled: Bool) throws -> [String: Any] {
+            if trackNumber != nil {
+                return try logic.setStripToggle(
+                    trackName: trackName, trackNumber: trackNumber,
+                    control: "solo", enabled: enabled
+                )
+            }
+            return try setToggle(trackName: trackName, control: "solo", enabled: enabled)
+                ?? logic.setStripToggle(
+                    trackName: trackName, trackNumber: nil,
+                    control: "solo", enabled: enabled
+                )
+        }
+        let soloOn = try setSolo(true)
+        let wasAlreadySoloed = ((soloOn["state"] as? String) ?? "").hasPrefix("already")
+        var soloRestored = wasAlreadySoloed // nothing to restore when it was on
+        func unsolo() {
+            guard !wasAlreadySoloed, !soloRestored else { return }
+            soloRestored = ((try? setSolo(false)) != nil)
+        }
+
+        // Solo toggling can move the selection - re-select so the MCU
+        // parameter writes hit the right channel.
+        _ = try? logic.selectTrack(
+            trackName: trackName, trackNumber: trackNumber, expectedProjectPath: nil
+        )
+
+        let bounceA: [String: Any]
+        do {
+            bounceA = try logic.bounceRange(
+                startBar: startBar, endBar: endBar,
+                label: "\(trackName.lowercased())-solo-a", expectedProjectPath: nil
+            )
+        } catch {
+            logic.cancelBounceDialog()
+            unsolo()
+            throw error
+        }
+
+        guard let change = try setPluginParameter(
+            slot: insertSlot, parameter: parameter,
+            targetValue: targetValue, expectedCurrentValue: expectedCurrentValue,
+            tolerance: nil
+        ) else {
+            unsolo()
+            throw DemoError.trackNotExposed(
+                requested: "MCU write of '\(parameter)' in slot \(insertSlot)",
+                exposed: "the MCU bridge could not resolve the parameter; nothing was changed (baseline bounce A kept)"
+            )
+        }
+        let appliedValue = change["after"] as? String ?? targetValue
+        let beforeValue = change["before"] as? String ?? expectedCurrentValue
+        func rollBack() -> Bool {
+            for attempt in 0..<3 {
+                if attempt > 0 {
+                    _ = quiescentStatus()
+                    Thread.sleep(forTimeInterval: 1.0)
+                }
+                let expected = attempt < 2 ? appliedValue : nil
+                if ((try? setPluginParameter(
+                    slot: insertSlot, parameter: parameter,
+                    targetValue: beforeValue, expectedCurrentValue: expected,
+                    tolerance: nil
+                )) ?? nil) != nil {
+                    return true
+                }
+            }
+            return false
+        }
+
+        let bounceB: [String: Any]
+        do {
+            bounceB = try logic.bounceRange(
+                startBar: startBar, endBar: endBar,
+                label: "\(trackName.lowercased())-solo-b", expectedProjectPath: nil
+            )
+        } catch {
+            logic.cancelBounceDialog()
+            _ = rollBack() // never leave the change in place after a failed B
+            unsolo()
+            throw error
+        }
+
+        var decision = "kept"
+        var restored = true
+        if !keepChange {
+            if rollBack() {
+                decision = "rolled_back"
+            } else {
+                decision = "rollback_failed"
+                restored = false
+            }
+        }
+        unsolo()
+
+        let pathA = bounceA["path"] as? String ?? ""
+        let pathB = bounceB["path"] as? String ?? ""
+        let metricsA = LogicAccessibility.audioFileMetrics(path: pathA)
+        let metricsB = LogicAccessibility.audioFileMetrics(path: pathB)
+        var deltas: [String: Any] = [:]
+        if let a = metricsA?["rms_db"] as? [Double], let b = metricsB?["rms_db"] as? [Double] {
+            deltas["rms_delta_db"] = zip(a, b).map { (($1 - $0) * 100).rounded() / 100 }
+        }
+        if let a = metricsA?["peak_db"] as? [Double], let b = metricsB?["peak_db"] as? [Double] {
+            deltas["peak_delta_db"] = zip(a, b).map { (($1 - $0) * 100).rounded() / 100 }
+        }
+
+        return [
+            "success": true,
+            "verified": (restored || keepChange) && (soloRestored || wasAlreadySoloed),
+            "state": "evaluated",
+            "method": "solo_bounce",
+            "decision": decision,
+            "solo_restored": soloRestored || wasAlreadySoloed,
+            "change": [
+                "track": trackName, "insert_slot": insertSlot, "parameter": parameter,
+                "before": beforeValue, "applied": appliedValue
+            ],
+            "range": ["start_bar": startBar, "end_bar": endBar],
+            "baseline_audio": pathA,
+            "after_audio": pathB,
+            "baseline_preview": bounceA["preview_path"] ?? NSNull(),
+            "after_preview": bounceB["preview_path"] ?? NSNull(),
+            "baseline_metrics": metricsA ?? NSNull(),
+            "after_metrics": metricsB ?? NSNull(),
+            "deltas": deltas,
+            "note": "Two offline master bounces with only this track soloed - works on stack subtracks and shared-channel tracks that freeze refuses. Master-bus processing applies to both A and B. No playback occurred."
+        ]
+    }
+
     /// The selected track's insert slots as shown on the MCU (physical slot
     /// numbering, which can differ from the AX occupied-slot ordinals).
     static func pluginInsertNames() throws -> [String]? {
@@ -7814,6 +7963,25 @@ private final class MCPServer {
                         startBar: startBar, endBar: endBar,
                         startSeconds: range.start, endSeconds: range.end,
                         tempo: range.tempo,
+                        keepChange: arguments["keep_change"] as? Bool ?? false
+                    )
+                    break
+                }
+                if (arguments["method"] as? String) == "solo_bounce" {
+                    guard let slot = arguments["insert_slot"] as? Int else {
+                        throw DemoError.invalidArguments(
+                            "method 'solo_bounce' requires insert_slot (1-8, MCU physical slot; list with logic_mcu_plugin_inserts)"
+                        )
+                    }
+                    payload = try MCUController.evaluateChangeSoloBounced(
+                        logic: logic,
+                        trackName: requiredString("track_name", in: arguments),
+                        trackNumber: arguments["track_number"] as? Int,
+                        insertSlot: slot,
+                        parameter: requiredString("parameter", in: arguments),
+                        expectedCurrentValue: requiredString("expected_current_value", in: arguments),
+                        targetValue: requiredString("target_value", in: arguments),
+                        startBar: startBar, endBar: endBar,
                         keepChange: arguments["keep_change"] as? Bool ?? false
                     )
                     break
@@ -9149,20 +9317,20 @@ private final class MCPServer {
             ],
             [
                 "name": "logic_evaluate_change",
-                "description": "Run one complete closed-loop mix evaluation around exactly one verified plugin-parameter change, on a bar range. Three methods: 'realtime' (default; loop playback + sensor windows, needs plugin_name + active sensor), 'bounce' (two offline MASTER renders via the bounce dialog, needs plugin_name), and 'render' (two dialog-free freeze renders of the SINGLE track, compared on the sliced bar range — fastest and most isolated; needs insert_slot, the MCU physical slot, and works for all plugins including third-party). All methods roll the change back by default and return baseline/after audio paths, metrics and dB deltas.",
+                "description": "Run one complete closed-loop mix evaluation around exactly one verified plugin-parameter change, on a bar range. Four methods: 'realtime' (default; loop playback + sensor windows, needs plugin_name + active sensor), 'bounce' (two offline MASTER renders via the bounce dialog, needs plugin_name), 'render' (two dialog-free freeze renders of the SINGLE track, compared on the sliced bar range — fastest and most isolated; needs insert_slot, the MCU physical slot, and works for all plugins including third-party), and 'solo_bounce' (two offline bounces with ONLY this track soloed, solo restored after; needs insert_slot like 'render' — use for tracks freeze refuses: stack subtracks and tracks sharing a channel strip). All methods roll the change back by default and return baseline/after audio paths, metrics and dB deltas.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
                         "track_name": ["type": "string"],
                         "plugin_name": ["type": "string", "description": "Plugin window title; required for methods 'realtime' and 'bounce'."],
                         "insert_index": ["type": "integer"],
-                        "insert_slot": ["type": "integer", "description": "MCU physical insert slot 1-8; required for method 'render' (list with logic_mcu_plugin_inserts)."],
+                        "insert_slot": ["type": "integer", "description": "MCU physical insert slot 1-8; required for methods 'render' and 'solo_bounce' (list with logic_mcu_plugin_inserts)."],
                         "parameter": ["type": "string"],
                         "expected_current_value": ["type": "string"],
                         "target_value": ["type": "string"],
                         "start_bar": ["type": "integer"],
                         "end_bar": ["type": "integer", "description": "Exclusive: the range ends where this bar begins."],
-                        "method": ["type": "string", "description": "'realtime' (default), 'bounce' (offline master A/B) or 'render' (dialog-free single-track freeze A/B on the sliced bar range)."],
+                        "method": ["type": "string", "description": "'realtime' (default), 'bounce' (offline master A/B), 'render' (dialog-free single-track freeze A/B on the sliced bar range) or 'solo_bounce' (soloed offline A/B for tracks freeze refuses: stack subtracks, shared-channel tracks)."],
                         "tempo": ["type": "number", "description": "Override BPM for bar math (method 'render'); default reads the control bar. Constant tempo assumed."],
                         "beats_per_bar": ["type": "number", "description": "Override meter for bar math; default reads the control bar's time signature."],
                         "keep_change": ["type": "boolean", "description": "true keeps the change after measuring; default false rolls it back."],

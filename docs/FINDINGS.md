@@ -1537,3 +1537,9 @@ Reparationen: `logic_setup_key_commands {relearn: true}` — raderar först komm
 Övriga fixar: save verifieras nu även via ProjectData-mtime (dirty-flaggan kan vara view-only); bounce-dialogen avbryts alltid på felvägar (modal dialog = total lockout annars); duplicate_project degraderar save_first-fel till diskkopia-med-varning; NFC-normalisering på AppleScript-dokumentnamn; freeze-felmeddelandet nämner Track Header-konfig och relearn-reparationen.
 
 **Het vy-läcka fixad:** när servern dör med ytan kvar i plugin/instrument-vy auto-öppnar Logic pluginfönster vid varje spårval (Trilian poppade upp mitt i freeze-testet). Servern skickar nu exitToPan när stdin stängs — verifierat via LCD-spegeln (PL-vy → Pan-namn).
+
+### method "solo_bounce" — spårnivå-A/B för ofrysbara spår (2026-08-26, v0.46.0)
+
+Uppföljning på Ivan Vocals-fyndet: spår som Logic vägrar frysa (subspår i stackar, spår som delar kanalremsa) hade ingen spårnivå-A/B alls. Ny metod i logic_evaluate_change: solo på (AX-strippen är auktoritativ när track_number ges — dubblettnamn gör MCU-namnmatchning tvetydig) → offline-bounce A → verifierad MCU-parameterändring → bounce B → rollback → solo av. Solo-återställningen körs på ALLA felvägar; solo_restored rapporteras separat i payloaden. Master-kedjan ligger kvar i signalvägen (inneboende i solo-bounce) men träffar både A och B, så deltan är ärliga.
+
+Verifierat på exakt det spår Gemini gick bet på: Ivan Vocals #21, Channel EQ Pea4Ga +1,0→+2,8 dB, bounce 41–45: rolled_back, solo_restored, RMS-delta +0,09 dB. 157 s totalt — långsammare än freeze-render (15 s) men täcker spåren render inte kan. Guiden pekar dit från freeze-felmeddelandet.

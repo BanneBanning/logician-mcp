@@ -54,7 +54,7 @@ Run `logic_health` first. It starts the bridge daemon, checks every setup requir
 `logic_duplicate_project {save_first: true}` — copies the open project on disk and opens the COPY as the active project; the original is untouched. Do this FIRST whenever you intend to make changes the user has not individually approved. Tell the user which file you are working in.
 
 **Judge a change with evidence (the killer feature):**
-`logic_evaluate_change {track_name, insert_slot, parameter, expected_current_value, target_value, start_bar, end_bar, method: "render"}` — renders A, applies the change, renders B, ROLLS BACK (unless `keep_change: true`), and returns dB deltas plus listenable audio for both. ~15 s. `method: "bounce"` A/Bs against the master bus instead. A near-zero delta is a real answer (e.g. a compressor's AutoGain compensating) — report it as such.
+`logic_evaluate_change {track_name, insert_slot, parameter, expected_current_value, target_value, start_bar, end_bar, method: "render"}` — renders A, applies the change, renders B, ROLLS BACK (unless `keep_change: true`), and returns dB deltas plus listenable audio for both. ~15 s. `method: "bounce"` A/Bs against the master bus instead. `method: "solo_bounce"` solos the track around two offline bounces (solo restored after) — use it when `render` fails with "refuses to arm Freeze": subtracks inside stacks and tracks sharing a channel strip cannot be frozen, but they CAN be solo-bounced (slower, ~2-3 min). A near-zero delta is a real answer (e.g. a compressor's AutoGain compensating) — report it as such.
 
 **Deliver audio:**
 `logic_render_track {track_name, start_bar?, end_bar?}` — dialog-free track export (32-bit float AIFF + optional bar-sliced WAV with RMS/peak metrics), ~6 s. `logic_bounce_range` for the master.
@@ -687,7 +687,7 @@ Parameters:
 
 #### `logic_evaluate_change`
 
-Run one complete closed-loop mix evaluation around exactly one verified plugin-parameter change, on a bar range. Three methods: 'realtime' (default; loop playback + sensor windows, needs plugin_name + active sensor), 'bounce' (two offline MASTER renders via the bounce dialog, needs plugin_name), and 'render' (two dialog-free freeze renders of the SINGLE track, compared on the sliced bar range — fastest and most isolated; needs insert_slot, the MCU physical slot, and works for all plugins including third-party). All methods roll the change back by default and return baseline/after audio paths, metrics and dB deltas.
+Run one complete closed-loop mix evaluation around exactly one verified plugin-parameter change, on a bar range. Four methods: 'realtime' (default; loop playback + sensor windows, needs plugin_name + active sensor), 'bounce' (two offline MASTER renders via the bounce dialog, needs plugin_name), 'render' (two dialog-free freeze renders of the SINGLE track, compared on the sliced bar range — fastest and most isolated; needs insert_slot, the MCU physical slot, and works for all plugins including third-party), and 'solo_bounce' (two offline bounces with ONLY this track soloed, solo restored after; needs insert_slot like 'render' — use it for tracks freeze refuses: subtracks inside stacks and tracks sharing a channel strip). All methods roll the change back by default and return baseline/after audio paths, metrics and dB deltas.
 
 Parameters:
 
