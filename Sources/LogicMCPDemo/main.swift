@@ -5,7 +5,7 @@ import Foundation
 
 private let protocolVersion = "2025-06-18"
 private let serverName = "logician"
-private let serverVersion = "0.43.0"
+private let serverVersion = "0.44.0"
 
 private enum DemoError: LocalizedError {
     case accessibilityNotTrusted
@@ -1636,6 +1636,76 @@ private final class LogicAccessibility {
             actual: "not there within 30 s (a dialog may need attention)",
             restored: false
         )
+    }
+
+    /// Duplicates the OPEN project on disk (Autosave data stripped from the
+    /// copy so it opens without a recovery prompt) and optionally opens the
+    /// copy — the safe way to let an agent experiment destructively.
+    func duplicateProject(
+        destinationPath: String?, saveFirst: Bool,
+        openCopy: Bool, ifCurrentModified: String
+    ) throws -> [String: Any] {
+        let documents = openDocuments()
+        guard documents.count == 1, let document = documents.first,
+              let sourcePath = document.path else {
+            throw DemoError.trackNotExposed(
+                requested: "exactly one open project with a file path",
+                exposed: "open documents: " + documents.map(\.name).joined(separator: ", ")
+            )
+        }
+        var savedBeforeCopy = false
+        if saveFirst, document.modified {
+            _ = try saveProject(expectedProjectPath: sourcePath)
+            savedBeforeCopy = true
+        }
+        let source = URL(fileURLWithPath: sourcePath)
+        let destination: URL
+        if let given = destinationPath {
+            destination = URL(fileURLWithPath: (given as NSString).expandingTildeInPath)
+            guard destination.pathExtension == "logicx" else {
+                throw DemoError.invalidArguments("destination_path must end in .logicx")
+            }
+        } else {
+            destination = source.deletingLastPathComponent().appendingPathComponent(
+                source.deletingPathExtension().lastPathComponent + " Copy.logicx"
+            )
+        }
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            throw DemoError.invalidArguments("'\(destination.path)' already exists")
+        }
+        try FileManager.default.copyItem(at: source, to: destination)
+        // Strip autosave data or the copy greets its first open with a
+        // "Saved or Auto-saved?" recovery prompt.
+        if let alternatives = try? FileManager.default.contentsOfDirectory(
+            atPath: destination.appendingPathComponent("Alternatives").path
+        ) {
+            for alternative in alternatives {
+                try? FileManager.default.removeItem(
+                    at: destination.appendingPathComponent("Alternatives/\(alternative)/Autosave")
+                )
+            }
+        }
+        var result: [String: Any] = [
+            "success": true,
+            "verified": true,
+            "state": "duplicated",
+            "source": sourcePath,
+            "copy": destination.path,
+            "saved_before_copy": savedBeforeCopy
+        ]
+        if document.modified && !saveFirst {
+            result["warning"] =
+                "the open project has unsaved changes that are NOT in the copy (disk state was copied); pass save_first: true to include them"
+        }
+        if openCopy {
+            let opened = try openProject(
+                path: destination.path, createFromTemplate: false,
+                ifCurrentModified: ifCurrentModified
+            )
+            result["opened"] = opened["state"] ?? "opened"
+            result["note"] = "The COPY is now the open project - experiment freely; the original is untouched on disk."
+        }
+        return result
     }
 
     /// Closes the open project. `saving` must be an explicit 'yes' or 'no'.
@@ -8169,6 +8239,14 @@ private final class MCPServer {
                     ifCurrentModified: (arguments["if_current_modified"] as? String) ?? "fail"
                 )
 
+            case "logic_duplicate_project":
+                payload = try logic.duplicateProject(
+                    destinationPath: arguments["destination_path"] as? String,
+                    saveFirst: arguments["save_first"] as? Bool ?? false,
+                    openCopy: arguments["open_copy"] as? Bool ?? true,
+                    ifCurrentModified: (arguments["if_current_modified"] as? String) ?? "save"
+                )
+
             case "logic_close_project":
                 payload = try logic.closeProject(
                     saving: requiredString("saving", in: arguments),
@@ -9327,6 +9405,20 @@ private final class MCPServer {
                         "if_current_modified": ["type": "string", "description": "'fail' (default), 'save' or 'dont_save'."]
                     ],
                     "required": ["path"],
+                    "additionalProperties": false
+                ]
+            ],
+            [
+                "name": "logic_duplicate_project",
+                "description": "Duplicate the OPEN project on disk and (by default) open the copy — the safe sandbox for destructive experiments: the original stays untouched. The copy is the on-disk state; pass save_first: true to save unsaved changes into it first. Default destination: '<name> Copy.logicx' next to the original. Opening the copy closes the current project (single-project mode; if_current_modified defaults to 'save' here since the original is the project being closed).",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "destination_path": ["type": "string", "description": "Optional .logicx path for the copy."],
+                        "save_first": ["type": "boolean", "description": "Save the open project before copying so the copy includes unsaved changes. Default false."],
+                        "open_copy": ["type": "boolean", "description": "Open the copy after duplicating. Default true."],
+                        "if_current_modified": ["type": "string", "description": "'save' (default here) or 'dont_save' for closing the original when opening the copy."]
+                    ],
                     "additionalProperties": false
                 ]
             ],

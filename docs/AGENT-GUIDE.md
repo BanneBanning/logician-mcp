@@ -50,6 +50,9 @@ Run `logic_health` first. It starts the bridge daemon, checks every setup requir
 **Edit the arrangement:**
 `logic_list_regions` → `logic_select_region {track_name, start_bar}` → `logic_move_region {by_bars, by_beats}` / `logic_copy_region {to_bar, to_track?, move?}` / `logic_delete_region`. Split at a position: `logic_set_playhead {bar}` + select + `logic_trigger_key_command {name: "Split Regions/Events at Playhead Position"}`.
 
+**Experiment safely on a copy:**
+`logic_duplicate_project {save_first: true}` — copies the open project on disk and opens the COPY as the active project; the original is untouched. Do this FIRST whenever you intend to make changes the user has not individually approved. Tell the user which file you are working in.
+
 **Judge a change with evidence (the killer feature):**
 `logic_evaluate_change {track_name, insert_slot, parameter, expected_current_value, target_value, start_bar, end_bar, method: "render"}` — renders A, applies the change, renders B, ROLLS BACK (unless `keep_change: true`), and returns dB deltas plus listenable audio for both. ~15 s. `method: "bounce"` A/Bs against the master bus instead. A near-zero delta is a real answer (e.g. a compressor's AutoGain compensating) — report it as such.
 
