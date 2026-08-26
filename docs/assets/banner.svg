@@ -1,0 +1,82 @@
+<svg width="880" height="230" viewBox="0 0 880 230" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bezel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b2f36"/>
+      <stop offset="1" stop-color="#15171b"/>
+    </linearGradient>
+    <linearGradient id="lcdglass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0d1f14"/>
+      <stop offset="0.5" stop-color="#0a1a11"/>
+      <stop offset="1" stop-color="#081409"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-40%" width="140%" height="180%">
+      <feGaussianBlur stdDeviation="1.6" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- device bezel -->
+  <rect x="0" y="0" width="880" height="230" rx="18" fill="url(#bezel)"/>
+  <rect x="0.5" y="0.5" width="879" height="229" rx="17.5" fill="none" stroke="#3a3f47" stroke-width="1"/>
+
+  <!-- screws -->
+  <circle cx="26" cy="26" r="5" fill="#0e1013" stroke="#454b54" stroke-width="1"/>
+  <circle cx="854" cy="26" r="5" fill="#0e1013" stroke="#454b54" stroke-width="1"/>
+  <circle cx="26" cy="204" r="5" fill="#0e1013" stroke="#454b54" stroke-width="1"/>
+  <circle cx="854" cy="204" r="5" fill="#0e1013" stroke="#454b54" stroke-width="1"/>
+
+  <!-- LCD window -->
+  <rect x="52" y="34" width="640" height="132" rx="10" fill="#050607"/>
+  <rect x="60" y="42" width="624" height="116" rx="6" fill="url(#lcdglass)" stroke="#123420" stroke-width="1"/>
+
+  <!-- LCD text -->
+  <g font-family="Menlo, Consolas, 'Courier New', monospace" filter="url(#glow)">
+    <text x="84" y="88" font-size="44" font-weight="bold" fill="#4be37a" letter-spacing="10">LOGICIAN</text>
+    <text x="84" y="120" font-size="15" fill="#37b35f" letter-spacing="2">HANDS AND EARS FOR AI AGENTS</text>
+    <text x="84" y="144" font-size="13" fill="#2a8a49" letter-spacing="1">Vol -14.0dB   Pan  C   Ins1Pl  READY&#9608;</text>
+  </g>
+
+  <!-- channel LEDs -->
+  <g>
+    <circle cx="718" cy="52" r="4.5" fill="#4be37a"/>
+    <circle cx="736" cy="52" r="4.5" fill="#1d4a2c"/>
+    <circle cx="754" cy="52" r="4.5" fill="#1d4a2c"/>
+    <circle cx="772" cy="52" r="4.5" fill="#c94040"/>
+  </g>
+
+  <!-- vpot -->
+  <circle cx="745" cy="105" r="30" fill="#101216" stroke="#3a3f47" stroke-width="2"/>
+  <circle cx="745" cy="105" r="24" fill="#1a1d22"/>
+  <line x1="745" y1="105" x2="762" y2="88" stroke="#4be37a" stroke-width="3" stroke-linecap="round"/>
+  <g fill="#3a3f47">
+    <circle cx="713" cy="83" r="1.8"/><circle cx="708" cy="105" r="1.8"/><circle cx="713" cy="127" r="1.8"/>
+    <circle cx="745" cy="141" r="1.8"/><circle cx="777" cy="127" r="1.8"/><circle cx="782" cy="105" r="1.8"/>
+    <circle cx="777" cy="83" r="1.8"/><circle cx="745" cy="69" r="1.8"/>
+  </g>
+
+  <!-- fader track + cap -->
+  <rect x="822" y="44" width="4" height="150" rx="2" fill="#0b0d10"/>
+  <g>
+    <rect x="806" y="86" width="36" height="18" rx="3" fill="#22262c" stroke="#4a5058" stroke-width="1"/>
+    <rect x="806" y="93" width="36" height="3" fill="#4be37a"/>
+  </g>
+  <g fill="#3a3f47" font-family="Menlo, monospace" font-size="8">
+    <text x="796" y="50">0</text>
+    <text x="790" y="122">-20</text>
+    <text x="790" y="192">-60</text>
+  </g>
+
+  <!-- transport dots -->
+  <g transform="translate(52, 186)">
+    <rect x="0" y="0" width="46" height="18" rx="4" fill="#101216" stroke="#3a3f47"/>
+    <polygon points="18,4 30,9 18,14" fill="#4be37a"/>
+    <rect x="58" y="0" width="46" height="18" rx="4" fill="#101216" stroke="#3a3f47"/>
+    <rect x="74" y="4" width="10" height="10" fill="#6a7280"/>
+    <rect x="116" y="0" width="46" height="18" rx="4" fill="#101216" stroke="#3a3f47"/>
+    <circle cx="139" cy="9" r="5" fill="#c94040"/>
+  </g>
+  <text x="692" y="199" font-family="Menlo, monospace" font-size="10" fill="#6a7280" text-anchor="end">MACKIE CONTROL &#183; MCP &#183; NO MOUSE</text>
+</svg>

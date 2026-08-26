@@ -1,10 +1,21 @@
+<div align="center">
+
+<img src="docs/assets/banner.svg" alt="Logician — hands and ears for AI agents in Logic Pro" width="880"/>
+
 # Logician
 
 **Give your AI agent hands and ears in Logic Pro.**
 
-An MCP server that gives Claude, Gemini, Cursor — any MCP client — real, verified control over Logic Pro on macOS: every plugin parameter (third-party included), mixing, MIDI composition, arrangement editing, automation, and dialog-free audio export. Results that produce sound **carry the sound**: bounces and A/B evaluations return the audio itself, so a multimodal agent hears what it just did in the same reply it decides from.
+[![macOS](https://img.shields.io/badge/macOS-13%2B-black?logo=apple)](#requirements)
+[![Swift](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](Package.swift)
+[![MCP](https://img.shields.io/badge/MCP-59_tools-4be37a)](docs/AGENT-GUIDE.md)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
-`macOS 13+` · `Swift 6` · `MIT` · `59 tools` · no UI scripting, no mouse takeover
+[Install](#install) · [What it can do](#what-it-can-do-measured) · [Agent guide](docs/AGENT-GUIDE.md) · [Architecture](docs/ARCHITECTURE.md)
+
+</div>
+
+An MCP server that gives Claude, Gemini, Cursor — any MCP client — real, verified control over Logic Pro on macOS: every plugin parameter (third-party included), mixing, MIDI composition, arrangement editing, automation, and dialog-free audio export. Results that produce sound **carry the sound**: bounces and A/B evaluations return the audio itself, so a multimodal agent hears what it just did in the same reply it decides from. No UI scripting, no synthetic keypresses, no mouse takeover.
 
 ## Why this one is different
 
