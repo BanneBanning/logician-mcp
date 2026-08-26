@@ -239,6 +239,14 @@ extension MCUController {
         tolerance: Double?,
         trackName: String? = nil
     ) throws -> [String: Any]? {
+        // Bounds-check BEFORE any lcdFields()[slot-1] indexing below — an
+        // out-of-range slot (e.g. an AX ordinal like 9, or an off-by-one to
+        // 0) would otherwise crash the whole server instead of erroring.
+        guard (1...8).contains(slot) else {
+            throw DemoError.invalidArguments(
+                "insert_slot must be 1-8 (MCU physical slot); got \(slot)"
+            )
+        }
         guard freshStatus() != nil else { return nil }
         var slotName: String?
         let isHot = trackName != nil && hotPluginView?.track == trackName

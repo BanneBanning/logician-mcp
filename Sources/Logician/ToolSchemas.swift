@@ -55,23 +55,26 @@ extension MCPServer {
                     "type": "object",
                     "properties": [
                         "track_name": ["type": "string"],
-                        "plugin_name": ["type": "string", "description": "Plugin window title; required for methods 'realtime' and 'bounce'."],
-                        "insert_index": ["type": "integer"],
-                        "insert_slot": ["type": "integer", "description": "MCU physical insert slot 1-8; required for methods 'render' and 'solo_bounce' (list with logic_mcu_plugin_inserts)."],
+                        "track_number": ["type": "integer", "description": "Disambiguates duplicate track names (methods 'render' and 'solo_bounce')."],
+                        "plugin_name": ["type": "string", "description": "Plugin window title; required for method 'bounce'."],
+                        "insert_index": ["type": "integer", "description": "AX ordinal from logic_list_inserts - NOT the same numbering as insert_slot. Used by method 'bounce' only."],
+                        "insert_slot": ["type": "integer", "minimum": 1, "maximum": 8, "description": "MCU physical insert slot 1-8; required for methods 'render' and 'solo_bounce' (list with logic_mcu_plugin_inserts)."],
                         "parameter": ["type": "string"],
                         "expected_current_value": ["type": "string"],
                         "target_value": ["type": "string"],
-                        "start_bar": ["type": "integer"],
+                        "start_bar": ["type": "integer", "minimum": 1],
                         "end_bar": ["type": "integer", "description": "Exclusive: the range ends where this bar begins."],
-                        "method": ["type": "string", "description": "REQUIRED: 'render' (dialog-free single-track freeze A/B on the sliced bar range), 'bounce' (offline master A/B) or 'solo_bounce' (soloed offline A/B for tracks freeze refuses: stack subtracks, shared-channel tracks)."],
+                        "method": [
+                            "type": "string",
+                            "enum": ["render", "bounce", "solo_bounce"],
+                            "description": "'render' (dialog-free single-track freeze A/B on the sliced bar range), 'bounce' (offline master A/B) or 'solo_bounce' (soloed offline A/B for tracks freeze refuses: stack subtracks, shared-channel tracks)."
+                        ],
                         "tempo": ["type": "number", "description": "Override BPM for bar math (method 'render'); default reads the control bar. Constant tempo assumed."],
                         "beats_per_bar": ["type": "number", "description": "Override meter for bar math; default reads the control bar's time signature."],
                         "keep_change": ["type": "boolean", "description": "true keeps the change after measuring; default false rolls it back."],
-                        "verify_rollback": ["type": "boolean", "description": "Measure a third control window after rollback (default false; rollback accuracy has been verified at ~0.0 dB residual repeatedly)."],
-                        "settle_seconds": ["type": "number", "description": "Extra settle time after each phase, default 2."],
-                        "expected_project_path": ["type": "string"]
+                        "expected_project_path": ["type": "string", "description": "Refuse unless this is the open project."]
                     ],
-                    "required": ["track_name", "parameter", "expected_current_value", "target_value", "start_bar", "end_bar"],
+                    "required": ["track_name", "parameter", "expected_current_value", "target_value", "start_bar", "end_bar", "method"],
                     "additionalProperties": false
                 ]
             ],
@@ -190,26 +193,35 @@ extension MCPServer {
             ],
             [
                 "name": "logic_record_automation",
-                "description": "Write an automation curve on a track — volume (absolute fader), pan, a send level (send: 1-8) or ANY plugin parameter (insert_slot + plugin_parameter) — with no mouse and no automation-lane clicking. The value scale follows the parameter: dB for volume/sends, -64..63 for pan, the plugin's own units otherwise. Mechanism: calibrate the control near the working range, switch the track to Latch over the control surface, roll playback placing calibrated moves at each musical moment, return to Read, restore the original value, and verify by REPLAYING the range while sampling Logic's own echo at every point. ramp (default true) interpolates between points. Points need bar >= 2. Takes real time (the automated range, twice with verify)",
+                "description": "Write an automation curve on a track — volume (absolute fader), pan, a send level (send: 1-8) or ANY plugin parameter (insert_slot + plugin_parameter) — with no mouse and no automation-lane clicking. The value scale follows the parameter: dB for volume/sends, -64..63 for pan, the plugin's own units otherwise. Mechanism: calibrate the control near the working range, switch the track to Latch over the control surface, roll playback placing calibrated moves at each musical moment, return to Read, restore the original value, and verify by REPLAYING the range while sampling Logic's own echo at every point. ramp (default true) interpolates between points. Points need bar >= 2 and carry value (or db for volume). Takes real time (the automated range, twice with verify)",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
                         "track_name": ["type": "string"],
-                        "parameter": ["type": "string", "description": "v1: 'volume' only."],
+                        "parameter": [
+                            "type": "string",
+                            "enum": ["volume", "pan", "send", "plugin"],
+                            "description": "What to automate. 'send' also needs send; 'plugin' also needs insert_slot and plugin_parameter. Default 'volume'."
+                        ],
+                        "send": ["type": "integer", "minimum": 1, "maximum": 8, "description": "Send slot 1-8, required when parameter is 'send'."],
+                        "insert_slot": ["type": "integer", "minimum": 1, "maximum": 8, "description": "MCU physical insert slot 1-8, required when parameter is 'plugin'."],
+                        "plugin_parameter": ["type": "string", "description": "Parameter name as shown on the MCU, required when parameter is 'plugin'."],
+                        "tolerance": ["type": "number", "description": "Accepted deviation per verified point, in the parameter's own units."],
                         "points": [
                             "type": "array",
                             "items": [
                                 "type": "object",
                                 "properties": [
-                                    "bar": ["type": "integer"],
+                                    "bar": ["type": "integer", "minimum": 2],
                                     "beat": ["type": "number", "description": "1-based, fractions allowed. Default 1."],
-                                    "db": ["type": "number", "description": "Target volume in dB, e.g. -12.0."]
+                                    "value": ["type": "number", "description": "Target in the parameter's own units (dB for volume/sends, -64..63 for pan, the plugin's units otherwise)."],
+                                    "db": ["type": "number", "description": "Alias for value, kept for volume curves."]
                                 ],
-                                "required": ["bar", "db"]
+                                "required": ["bar"]
                             ]
                         ],
                         "ramp": ["type": "boolean", "description": "Default true: smooth linear ramps between points."],
-                        "verify": ["type": "boolean", "description": "Default true: replay the range in Read and sample the fader echo per point."]
+                        "verify": ["type": "boolean", "description": "Default true: replay the range in Read and sample the echo per point."]
                     ],
                     "required": ["track_name", "points"],
                     "additionalProperties": false
@@ -694,7 +706,9 @@ extension MCPServer {
                         "track_name": ["type": "string"],
                         "track_number": ["type": "integer"],
                         "plugin_name": ["type": "string", "description": "Menu title of the plugin, e.g. 'Gain', 'Channel EQ', 'Decapitator'."],
-                        "format": ["type": "string", "description": "Channel format submenu item when offered, default 'Stereo'."]
+                        "format": ["type": "string", "description": "Channel format submenu item when offered, default 'Stereo'."],
+                        "allow_mouse": ["type": "boolean", "description": "Permit the Accessibility chooser fallback, which moves the pointer. Default false (data-driven MCU browser only)."],
+                        "expected_project_path": ["type": "string", "description": "Refuse unless this is the open project."]
                     ],
                     "required": ["track_name", "plugin_name"],
                     "additionalProperties": false
@@ -709,7 +723,9 @@ extension MCPServer {
                         "track_name": ["type": "string"],
                         "track_number": ["type": "integer"],
                         "plugin_name": ["type": "string"],
-                        "insert_index": ["type": "integer"]
+                        "insert_index": ["type": "integer"],
+                        "allow_mouse": ["type": "boolean", "description": "Permit the Accessibility chooser fallback, which moves the pointer. Default false (data-driven MCU browser only)."],
+                        "expected_project_path": ["type": "string", "description": "Refuse unless this is the open project."]
                     ],
                     "required": ["track_name", "plugin_name"],
                     "additionalProperties": false

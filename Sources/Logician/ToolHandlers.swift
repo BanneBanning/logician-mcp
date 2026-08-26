@@ -4,8 +4,28 @@ import Foundation
 import LogicMCUBridge
 
 extension MCPServer {
+    /// Enforces the `additionalProperties: false` every schema declares. An
+    /// argument a tool does not read must be an ERROR, never silently
+    /// dropped: an agent that passes expected_current_value to a setter
+    /// without compare-and-set support would otherwise be told the write
+    /// succeeded and believe a precondition was checked that never was.
+    private func rejectUnknownArguments(tool: String, arguments: [String: Any]) throws {
+        guard let definition = toolDefinitions().first(where: { $0["name"] as? String == tool }),
+              let schema = definition["inputSchema"] as? [String: Any],
+              (schema["additionalProperties"] as? Bool) == false,
+              let properties = schema["properties"] as? [String: Any] else { return }
+        let unknown = arguments.keys.filter { properties[$0] == nil }.sorted()
+        guard !unknown.isEmpty else { return }
+        throw DemoError.invalidArguments(
+            "\(tool) does not accept: \(unknown.joined(separator: ", ")). "
+                + "Accepted: \(properties.keys.sorted().joined(separator: ", ")). "
+                + "The argument was NOT applied - do not assume it took effect."
+        )
+    }
+
     func callTool(name: String, arguments: [String: Any]) -> [String: Any] {
         do {
+            try rejectUnknownArguments(tool: name, arguments: arguments)
             let payload: Any
             switch name {
             case "logic_health":

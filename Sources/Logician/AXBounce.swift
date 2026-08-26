@@ -710,16 +710,33 @@ extension LogicAccessibility {
             windowTitle: trackName, parameterName: parameter,
             expectedCurrentValue: expectedCurrentValue, targetValue: targetValue
         )
-        let bounceB = try bounceRange(
-            startBar: startBar, endBar: endBar, label: "B", expectedProjectPath: nil
-        )
-        var decision = "kept"
-        if !keepChange {
-            _ = try setParameter(
+        func rollBack() -> Bool {
+            ((try? setParameter(
                 windowTitle: trackName, parameterName: parameter,
                 expectedCurrentValue: targetValue, targetValue: expectedCurrentValue
+            )) != nil)
+        }
+        let bounceB: [String: Any]
+        do {
+            bounceB = try bounceRange(
+                startBar: startBar, endBar: endBar, label: "B", expectedProjectPath: nil
             )
-            decision = "rolled_back"
+        } catch {
+            // Never leave the change applied after a failed B bounce - the
+            // render/solo_bounce methods already guarantee this.
+            cancelBounceDialog()
+            _ = rollBack()
+            throw error
+        }
+        var decision = "kept"
+        var restored = true
+        if !keepChange {
+            if rollBack() {
+                decision = "rolled_back"
+            } else {
+                decision = "rollback_failed"
+                restored = false
+            }
         }
 
         let pathA = bounceA["path"] as? String ?? ""
@@ -736,7 +753,9 @@ extension LogicAccessibility {
 
         var evalResult: [String: Any] = [
             "success": true,
-            "verified": true,
+            // Same meaning as the render/solo_bounce methods: did we end in
+            // the state we promised (rolled back, or deliberately kept)?
+            "verified": restored || keepChange,
             "state": "evaluated",
             "method": "bounce",
             "decision": decision,
@@ -745,7 +764,8 @@ extension LogicAccessibility {
                 "before": change["before"] ?? expectedCurrentValue,
                 "applied": change["after"] ?? targetValue
             ],
-            "loop": ["start_bar": startBar, "end_bar": endBar],
+            // "range" across all three methods (this one used to say "loop")
+            "range": ["start_bar": startBar, "end_bar": endBar],
             "baseline_audio": pathA,
             "after_audio": pathB,
             "baseline_metrics": metricsA ?? NSNull(),

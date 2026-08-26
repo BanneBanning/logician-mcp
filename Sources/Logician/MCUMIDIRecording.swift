@@ -371,11 +371,21 @@ extension MCUController {
             throw error
         }
 
-        guard let change = try setPluginParameter(
-            slot: insertSlot, parameter: parameter,
-            targetValue: targetValue, expectedCurrentValue: expectedCurrentValue,
-            tolerance: nil
-        ) else {
+        // setPluginParameter THROWS on the most common agent mistake (a wrong
+        // expected_current_value), not just returns nil — both paths must
+        // unsolo, or every later master bounce comes out silent.
+        let changeOpt: [String: Any]?
+        do {
+            changeOpt = try setPluginParameter(
+                slot: insertSlot, parameter: parameter,
+                targetValue: targetValue, expectedCurrentValue: expectedCurrentValue,
+                tolerance: nil
+            )
+        } catch {
+            unsolo()
+            throw error
+        }
+        guard let change = changeOpt else {
             unsolo()
             throw DemoError.trackNotExposed(
                 requested: "MCU write of '\(parameter)' in slot \(insertSlot)",
