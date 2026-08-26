@@ -6,17 +6,9 @@ import LogicMCUBridge
 extension MCUController {
     // MARK: Track rendering via Freeze (dialog-free offline export)
 
-    /// Renders the SELECTED track offline by toggling Track Freeze and
-    /// pressing play: Logic writes a 32-bit float AIFF into the project's
-    /// Media/Freeze Files with no dialogs. The file is copied out before the
-    /// freeze is toggled back off (Logic deletes it on unfreeze).
     /// Resolves a key command to its learned MIDI note; when missing and the
     /// command is one of the standard set, learns it automatically on the
     /// spot (lazy onboarding — the registry records what was added).
-    /// Set when the most recent resolve had to learn the command on the
-    /// spot (the Key Commands window flashes briefly) — surfaced in tool
-    /// results so users understand what they just saw.
-
     static func resolveKeyCommand(
         named name: String, logic: LogicAccessibility?
     ) throws -> (note: Int, channel: Int) {
@@ -62,6 +54,10 @@ extension MCUController {
         )
     }
 
+    /// Renders the SELECTED track offline by toggling Track Freeze and
+    /// pressing play: Logic writes a 32-bit float AIFF into the project's
+    /// Media/Freeze Files with no dialogs. The file is copied out before the
+    /// freeze is toggled back off (Logic deletes it on unfreeze).
     static func renderSelectedTrack(
         projectPath: String, label: String,
         sliceStartSeconds: Double? = nil, sliceEndSeconds: Double? = nil,

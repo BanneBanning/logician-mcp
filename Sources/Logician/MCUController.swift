@@ -3,10 +3,23 @@ import ApplicationServices
 import Foundation
 import LogicMCUBridge
 
+/// MCU-first implementations of the high-level controls. Each function returns
+/// nil when the MCU route is unavailable or cannot safely resolve the target
+/// (nothing was written — callers fall back to Accessibility), returns a result
+/// on verified success, and throws when a write happened but verification
+/// failed (never silently fall back after a partial write).
 enum MCUController {
     /// Hot-view cache: which track/slot the plugin-edit view currently
     /// shows, so consecutive parameter writes skip the whole select +
-    /// view-switch choreography. Cleared by anything that changes views.
+    /// view-switch choreography.
+    ///
+    /// This cache is NOT authoritative and is not cleared by every view
+    /// change — bank scans, send/instrument views and the automation paths
+    /// all leave it set. What makes that safe is that the read path
+    /// re-verifies the live LCD assignment code against the cached slot
+    /// before trusting it (see setPluginParameter), and callers re-select
+    /// the track anyway. exitToPan() clears it explicitly on shutdown so a
+    /// leaked hot view cannot make Logic auto-open plugin windows later.
     nonisolated(unsafe) static var hotPluginView: (track: String, slot: Int, cacheKey: String?)? // single-threaded server loop
 
     static func freshStatus() -> [String: Any]? {
@@ -73,5 +86,8 @@ enum MCUController {
         waitFor(seconds: Double(attempts) * 0.15, check)
     }
 
+    /// Set when the most recent resolve had to learn the command on the
+    /// spot (the Key Commands window flashes briefly) — surfaced in tool
+    /// results so users understand what they just saw.
     nonisolated(unsafe) static var lastResolveLearned = false // single-threaded server loop
 }

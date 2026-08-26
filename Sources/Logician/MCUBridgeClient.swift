@@ -15,7 +15,7 @@ enum MCUBridge {
               var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return [
                 "bridge_running": false,
-                "note": "no state file; start the bridge with .build/release/logic-mcu-bridge"
+                "note": "no state file yet; the bridge starts automatically - call logic_health, which starts it and audits the rest of the setup"
             ]
         }
         let updated = object["updated"] as? Double ?? 0
@@ -123,7 +123,3 @@ enum MCUBridge {
     }
 }
 
-/// Key commands learned onto the dedicated "Logic MCP Commands" MIDI port
-/// (Key Commands window > Learn New Assignment). The registry file is the
-/// consent record: only notes listed there may be triggered, because an
-/// unlisted note could be bound to anything in the user's key command set.

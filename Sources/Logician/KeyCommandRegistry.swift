@@ -3,6 +3,10 @@ import ApplicationServices
 import Foundation
 import LogicMCUBridge
 
+/// Key commands learned onto the dedicated "Logic MCP Commands" MIDI port
+/// (Key Commands window > Learn New Assignment). The registry file is the
+/// consent record: only notes listed there may be triggered, because an
+/// unlisted note could be bound to anything in the user's key command set.
 enum KeyCommandRegistry {
     static var url: URL {
         MCUBridge.directory.appendingPathComponent("keycmd-registry.json")
@@ -77,8 +81,3 @@ enum KeyCommandRegistry {
     ]
 }
 
-/// MCU-first implementations of the high-level controls. Each function returns
-/// nil when the MCU route is unavailable or cannot safely resolve the target
-/// (nothing was written — callers fall back to Accessibility), returns a result
-/// on verified success, and throws when a write happened but verification
-/// failed (never silently fall back after a partial write).
