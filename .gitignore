@@ -4,3 +4,6 @@
 xcuserdata/
 .DS_Store
 *.log
+
+# agent worktrees (transient)
+.claude/worktrees/
