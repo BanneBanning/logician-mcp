@@ -935,6 +935,18 @@ extension MCPServer {
                 payload = render
 
             case "logic_mcu_command":
+                // The registry is the consent record: firing a raw MIDI note
+                // could trigger whatever the user has bound to it. Route
+                // `keycmd` through the registry-checked path (refuses unlisted
+                // notes) instead of forwarding it raw to the bridge.
+                if (arguments["cmd"] as? String) == "keycmd" {
+                    guard let note = arguments["note"] as? Int else {
+                        throw DemoError.invalidArguments("keycmd requires an integer note")
+                    }
+                    let channel = arguments["channel"] as? Int ?? 16
+                    payload = try MCUController.triggerKeyCommand(note: note, channel: channel)
+                    break
+                }
                 var command: [String: Any] = [:]
                 for (key, value) in arguments where key != "expected_project_path" {
                     command[key] = value

@@ -204,8 +204,9 @@ extension MCUController {
         )
         try? manager.createDirectory(at: captures, withIntermediateDirectories: true)
         let stamp = Int(Date().timeIntervalSince1970)
+        let safeLabel = sanitizedFilenameComponent(label, fallback: "render")
         let destination = captures.appendingPathComponent(
-            "render-\(label)-\(stamp).\(URL(fileURLWithPath: rendered).pathExtension)"
+            "render-\(safeLabel)-\(stamp).\(URL(fileURLWithPath: rendered).pathExtension)"
         )
         try manager.copyItem(
             at: freezeDir.appendingPathComponent(rendered), to: destination
@@ -248,7 +249,7 @@ extension MCUController {
         }
         if let start = sliceStartSeconds, let end = sliceEndSeconds {
             let slicePath = captures.appendingPathComponent(
-                "render-\(label)-\(stamp)-slice.wav"
+                "render-\(safeLabel)-\(stamp)-slice.wav"
             ).path
             if let slice = LogicAccessibility.sliceAudioFile(
                 path: destination.path, startSeconds: start, endSeconds: end,

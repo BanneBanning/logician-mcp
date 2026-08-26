@@ -33,11 +33,21 @@ enum MCUBridge {
             // An outdated daemon owns the socket (pre-versioned builds kept
             // answering pings and silently lacked newer commands) — replace it.
             FileHandle.standardError.write(Data("[logician] replacing outdated bridge daemon\n".utf8))
-            let kill = Process()
-            kill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-            kill.arguments = ["-f", "logic-mcu-bridge|logician --bridge"]
-            try? kill.run()
-            kill.waitUntilExit()
+            let serverPath = URL(fileURLWithPath: CommandLine.arguments[0])
+                .resolvingSymlinksInPath().path
+            // Narrow, anchored matches instead of a broad substring OR that
+            // could catch unrelated processes (an editor, a tail, a grep whose
+            // command line merely contains "logician --bridge"):
+            //  - the legacy separate binary, by EXACT process name
+            //  - this exact binary launched with --bridge, by its absolute path
+            for arguments in [["-x", "logic-mcu-bridge"],
+                              ["-f", "\(serverPath) --bridge"]] {
+                let kill = Process()
+                kill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+                kill.arguments = arguments
+                try? kill.run()
+                kill.waitUntilExit()
+            }
             Thread.sleep(forTimeInterval: 0.5)
         }
         // The bridge daemon is this same binary launched with --bridge —

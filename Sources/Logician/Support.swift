@@ -5,7 +5,21 @@ import LogicMCUBridge
 
 let protocolVersion = "2025-06-18"
 let serverName = "logician"
-let serverVersion = "0.49.2"
+let serverVersion = "0.49.3"
+
+/// Reduces an agent-supplied string to a safe single filename component:
+/// keeps `[A-Za-z0-9._-]`, collapses everything else (including `/` and `..`
+/// path separators) to `-`, and caps the length. Used for every tool label
+/// that is glued into an output path, so a label like `../../etc/x` or a
+/// track named with a slash can never escape the captures directory.
+func sanitizedFilenameComponent(_ raw: String, fallback: String = "clip") -> String {
+    let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+    var out = String(raw.map { allowed.contains($0) ? $0 : "-" }.prefix(64))
+    // A component that is only dots ("." / "..") still resolves as traversal.
+    while out.first == "." { out.removeFirst() }
+    let trimmed = out.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    return trimmed.isEmpty ? fallback : trimmed
+}
 
 enum DemoError: LocalizedError {
     case accessibilityNotTrusted

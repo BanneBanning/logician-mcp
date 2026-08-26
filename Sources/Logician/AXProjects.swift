@@ -11,10 +11,15 @@ extension LogicAccessibility {
     /// (event timeout) and `make new document` creates a windowless ghost.
     /// Saving therefore goes through the Save key command, and new projects
     /// through a bundled empty template.
-    func runAppleScript(_ source: String) -> String? {
+    /// Runs an AppleScript. Any runtime value MUST be passed via `arguments`
+    /// (reachable in the script as `item N of argv`), NEVER interpolated into
+    /// `source` — a value that becomes code is an arbitrary-shell-execution
+    /// hole, because agent-controlled strings (project names, which are just
+    /// filenames the agent chose) reach here. `source` must be a constant.
+    func runAppleScript(_ source: String, arguments: [String] = []) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", source]
+        process.arguments = ["-e", source] + arguments
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
@@ -378,8 +383,18 @@ extension LogicAccessibility {
                 throw DemoError.currentValueMismatch(expected: expected, actual: path)
             }
         }
+        // The document name is agent-controlled (it is just the .logicx
+        // filename the agent chose) and MUST NOT be interpolated into the
+        // script — it goes through argv so it can never become code. `saving`
+        // is already constrained to the two literals above.
+        let savingBool = saving == "yes"
         guard runAppleScript(
-            "tell application \"Logic Pro\" to close document \"\(document.name)\" saving \(saving)"
+            """
+            on run argv
+                tell application "Logic Pro" to close document (item 1 of argv) saving \(savingBool ? "yes" : "no")
+            end run
+            """,
+            arguments: [document.name]
         ) != nil else {
             throw DemoError.writeFailed("AppleScript close failed")
         }

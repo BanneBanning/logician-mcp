@@ -93,3 +93,11 @@ Used where the surface protocol has no vocabulary — always element-addressed:
 ## Error taxonomy
 
 Uniform across all 59 tools: `not_found` / `not_exposed` (with what *is* visible), `precondition_failed` (your expected value didn't match; nothing written), `ambiguous` (candidates listed; disambiguate), `verification_failed` (write happened, echo didn't confirm; restoration state reported), `invalid_arguments`. Messages are written for agents: they name the observed state and the concrete next step.
+
+## Threat model (for the open-source release)
+
+Trust model: the AI agent already acts with the user's authority, and its only channel to the machine is this tool set, scoped to controlling Logic Pro. The line that matters is *scope escape* — an agent (possibly prompt-injected) running arbitrary code or touching files unrelated to Logic.
+
+Hardened accordingly: AppleScript is never built by string interpolation (runtime values, e.g. agent-chosen project names, pass through `argv` so they can never become code); tool labels are sanitized to a single filename component before they reach an output path (no traversal out of the captures directory); `logic_mcu_command`'s `keycmd` is routed through the registry consent gate rather than firing raw MIDI notes; the command socket is `chmod 0600`; and the outdated-daemon replacement kills by exact process name / absolute path, not a broad substring match.
+
+Accepted, by design: `logic_get_audio_clip` takes an arbitrary path and returns it as an audio block. It is not a general file-read primitive (only files macOS's audio stack decodes succeed), and fetching audio for the user is the tool's purpose — but a prompt-injected agent could read the audio content of any decodable media file it can name. This is consistent with the trust model (the agent already has the user's authority); it is called out here so downstream users can decide whether to confine readable roots.

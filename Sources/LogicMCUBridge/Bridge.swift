@@ -637,6 +637,10 @@ func startSocketServer() {
         $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, size) }
     }
     guard bound == 0, Darwin.listen(fd, 4) == 0 else { fatalError("bind/listen failed") }
+    // Owner-only: anyone who can reach the socket can drive Logic (faders,
+    // transport, raw MIDI). ~/Library being 0700 already blocks other users;
+    // this makes the restriction explicit rather than inherited.
+    chmod(socketPath, 0o600)
     Thread.detachNewThread {
         while true {
             let connection = Darwin.accept(fd, nil, nil)

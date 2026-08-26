@@ -264,7 +264,7 @@ extension LogicAccessibility {
         // The panel keeps its default name regardless of AXValue writes, so we
         // accept the default and move the rendered file to the label name after.
         let timestamp = Int(Date().timeIntervalSince1970)
-        let filename = "logicmcp-\(label)-\(timestamp)"
+        let filename = "logicmcp-\(sanitizedFilenameComponent(label, fallback: "bounce"))-\(timestamp)"
         guard let bounceButton = findDescendant(of: panel, where: {
             stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
                 && stringAttribute($0, kAXTitleAttribute as String) == "Bounce"
