@@ -39,7 +39,7 @@ extension MCPServer {
                 if !bridgeUp {
                     health["bridge_fix"] = "the bridge subprocess could not be started (self-spawn with --bridge failed)"
                 } else if (bridge["received_events"] as? Int ?? 0) == 0 {
-                    health["mcu_fix"] = "no MIDI from Logic yet: add a Mackie Control in Logic > Control Surfaces > Setup with ports 'Logic MCP MCU', or play something"
+                    health["mcu_fix"] = "no MIDI from Logic yet. If this is a FRESH setup: add a Mackie Control in Logic > Control Surfaces > Setup with ports 'Logic MCP MCU'. If it worked before and the bridge was restarted: Logic does not reopen the port by itself - open Control Surfaces > Setup and re-pick 'Logic MCP MCU' in Input/Output Port (or restart Logic). Tools fall back to Accessibility meanwhile, slower and less complete."
                 }
                 let registered = Set(KeyCommandRegistry.commands().compactMap { $0["name"] as? String })
                 health["key_commands"] = KeyCommandRegistry.standardCommands.map { command in

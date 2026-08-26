@@ -259,9 +259,25 @@ func setUpMIDI() -> Bool {
     // FIXED unique IDs: Logic binds its control-surface/assignment config to
     // the endpoint's kMIDIPropertyUniqueID. Random IDs (the default) break
     // every binding on bridge restart; stable IDs reconnect instantly.
-    MIDIObjectSetIntegerProperty(source, kMIDIPropertyUniqueID, 0x4C4D4331)
-    MIDIObjectSetIntegerProperty(commandSource, kMIDIPropertyUniqueID, 0x4C4D4332)
-    MIDIObjectSetIntegerProperty(midiInSource, kMIDIPropertyUniqueID, 0x4C4D4333)
+    // These writes MUST be checked: if an ID is already taken (a second
+    // daemon, a stale endpoint) CoreMIDI keeps the random ID it assigned and
+    // every Logic binding — control surface AND key commands — silently
+    // stops matching, while everything still looks healthy. Failing loudly
+    // here is strictly better than running with the wrong identity.
+    for (endpoint, uniqueID, label) in [
+        (source, MIDIUniqueID(0x4C4D4331), portName),
+        (commandSource, MIDIUniqueID(0x4C4D4332), "Logic MCP Commands"),
+        (midiInSource, MIDIUniqueID(0x4C4D4333), "Logic MCP MIDI In")
+    ] {
+        let status = MIDIObjectSetIntegerProperty(endpoint, kMIDIPropertyUniqueID, uniqueID)
+        guard status == noErr else {
+            let message = "could not claim the fixed unique ID for '\(label)' (OSStatus \(status)); "
+                + "another bridge instance or a stale endpoint holds it. Refusing to run "
+                + "with a random ID, which would silently break Logic's bindings.\n"
+            FileHandle.standardError.write(Data(message.utf8))
+            return false
+        }
+    }
     let status = MIDIDestinationCreateWithBlock(client, portName as CFString, &destination) { packetList, _ in
         let packets = packetList.pointee
         var packet = packets.packet
@@ -274,10 +290,17 @@ func setUpMIDI() -> Bool {
             packet = MIDIPacketNext(&packet).pointee
         }
     }
-    if status == noErr {
-        MIDIObjectSetIntegerProperty(destination, kMIDIPropertyUniqueID, 0x4C4D4330)
+    guard status == noErr else { return false }
+    let destinationID = MIDIObjectSetIntegerProperty(
+        destination, kMIDIPropertyUniqueID, MIDIUniqueID(0x4C4D4330)
+    )
+    guard destinationID == noErr else {
+        let message = "could not claim the fixed unique ID for the '\(portName)' destination "
+            + "(OSStatus \(destinationID)); another bridge instance holds it.\n"
+        FileHandle.standardError.write(Data(message.utf8))
+        return false
     }
-    return status == noErr
+    return true
 }
 
 func send(_ bytes: [UInt8]) {
@@ -613,13 +636,34 @@ func handleCommand(_ object: [String: Any]) -> [String: Any] {
         sendCommandPort([0x80 | channel, UInt8(note), 0x00])
         return ["ok": true, "sent_note": note, "channel": Int(channel) + 1]
     case "ping":
-        return ["ok": true, "pong": true, "bridge_protocol": 2]
+        return ["ok": true, "pong": true, "bridge_protocol": bridgeProtocolVersion]
     default:
         return ["ok": false, "error": "unknown cmd \(command)"]
     }
 }
 
 // MARK: - Command socket
+
+/// Held for the process lifetime by the single live daemon.
+private var instanceLockDescriptor: Int32 = -1
+
+/// Takes an exclusive flock on a lockfile. Two MCP clients starting at once
+/// (Claude Code and Antigravity, say) would otherwise both spawn a daemon:
+/// the second unlinks and rebinds the socket, so every command reaches a
+/// bridge whose MIDI endpoints could not claim the fixed unique IDs — the
+/// silent-orphaning failure the fixed IDs exist to prevent, with no error
+/// anywhere. Must run BEFORE unlink(socketPath).
+func acquireInstanceLock() -> Bool {
+    let lockPath = directory.appendingPathComponent("bridge.lock").path
+    let fd = open(lockPath, O_CREAT | O_RDWR, 0o600)
+    guard fd >= 0 else { return true } // cannot lock: do not block startup
+    guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+        close(fd)
+        return false
+    }
+    instanceLockDescriptor = fd // held until the process exits
+    return true
+}
 
 func startSocketServer() {
     unlink(socketPath)
@@ -645,18 +689,21 @@ func startSocketServer() {
         while true {
             let connection = Darwin.accept(fd, nil, nil)
             guard connection >= 0 else { continue }
-            var buffer = [UInt8](repeating: 0, count: 65536)
-            let count = Darwin.read(connection, &buffer, buffer.count)
-            if count > 0 {
-                let data = Data(buffer[0..<count])
+            // Read the WHOLE command (the client half-closes when done), not
+            // just whatever fit in one socket buffer.
+            let data = readToEOF(connection)
+            if !data.isEmpty {
                 let response: [String: Any]
                 if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                     response = handleCommand(object)
                 } else {
-                    response = ["ok": false, "error": "invalid JSON"]
+                    response = [
+                        "ok": false,
+                        "error": "invalid JSON (\(data.count) bytes received)"
+                    ]
                 }
                 if let out = try? JSONSerialization.data(withJSONObject: response) {
-                    out.withUnsafeBytes { _ = Darwin.write(connection, $0.baseAddress, out.count) }
+                    writeAll(connection, out)
                 }
             }
             Darwin.close(connection)
@@ -670,6 +717,12 @@ func startSocketServer() {
 /// launched with `--bridge`; the library form means one distributable binary.
 public func bridgeMain() -> Never {
     try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    guard acquireInstanceLock() else {
+        FileHandle.standardError.write(Data(
+            "another logic-mcu-bridge instance is already running; exiting\n".utf8
+        ))
+        exit(0) // not an error: the live daemon owns the ports
+    }
     guard setUpMIDI() else {
         FileHandle.standardError.write(Data("failed to create virtual MIDI endpoints\n".utf8))
         exit(1)

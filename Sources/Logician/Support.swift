@@ -5,7 +5,7 @@ import LogicMCUBridge
 
 let protocolVersion = "2025-06-18"
 let serverName = "logician"
-let serverVersion = "0.49.4"
+let serverVersion = "0.50.0"
 
 /// Reduces an agent-supplied string to a safe single filename component:
 /// keeps `[A-Za-z0-9._-]`, collapses everything else (including `/` and `..`
