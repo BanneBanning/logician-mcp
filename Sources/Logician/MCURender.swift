@@ -85,6 +85,50 @@ extension MCUController {
         }
         let baseline = freezeFiles()
 
+        /// Puts the track back the way this function found it - ensureUnfrozen
+        /// guarantees that is UNFROZEN - and reports whether that could be
+        /// CONFIRMED. Every exit between arming Freeze and the final unfreeze
+        /// goes through here, so no path can leave the project changed while
+        /// the error says otherwise, and no `restored` flag is ever a guess.
+        /// `certainlyFrozen` marks the paths where a freeze render demonstrably
+        /// happened, so the toggle is safe with no header to read; elsewhere a
+        /// blind re-toggle would FREEZE a never-frozen track.
+        func restoreUnfrozen(certainlyFrozen: Bool, renderedFile: String? = nil) -> Bool {
+            func header() -> Bool? {
+                guard let logic, let trackName else { return nil }
+                return logic.trackFreezeState(trackName: trackName)
+            }
+            if !certainlyFrozen {
+                switch header() {
+                case .some(false): return true  // never armed; nothing to undo
+                case .some(true): break         // armed; toggle it back
+                case nil:
+                    // No readable header. We pressed the toggle ourselves, so
+                    // press it back - blind, and therefore unconfirmable.
+                    _ = try? triggerKeyCommand(note: freeze.note, channel: freeze.channel)
+                    return false
+                }
+            }
+            guard (try? triggerKeyCommand(note: freeze.note, channel: freeze.channel)) != nil else {
+                return false
+            }
+            guard renderedFile != nil || (logic != nil && trackName != nil) else {
+                return false  // toggled, but nothing here can observe the result
+            }
+            var cleared = false
+            for attempt in 0..<40 {
+                // Unfreeze makes Logic delete the freeze file again; that is
+                // the signal that survives without an Accessibility handle.
+                if let file = renderedFile, !freezeFiles().contains(file) { cleared = true; break }
+                if renderedFile == nil, header() == false { cleared = true; break }
+                if attempt % 4 == 3, let logic { _ = logic.answerFreezeDialog() }
+                Thread.sleep(forTimeInterval: 0.25)
+            }
+            // The header is the authority whenever it is readable.
+            if header() == true { cleared = false }
+            return cleared
+        }
+
         _ = try triggerKeyCommand(note: freeze.note, channel: freeze.channel)
 
         // Freeze arms instantly (the header checkbox flips before any render
@@ -151,19 +195,14 @@ extension MCUController {
         guard let rendered = newAudio else {
             // Restore state: only toggle back when the track actually shows
             // as frozen (a blind re-toggle would freeze a never-frozen track).
-            if let logic, let trackName {
-                if logic.trackFreezeState(trackName: trackName) == true {
-                    _ = try? triggerKeyCommand(note: freeze.note, channel: freeze.channel)
-                    Thread.sleep(forTimeInterval: 0.5)
-                    _ = logic.answerFreezeDialog()
-                }
-            } else {
-                _ = try? triggerKeyCommand(note: freeze.note, channel: freeze.channel)
-            }
+            let restored = restoreUnfrozen(certainlyFrozen: false)
             throw LogicianError.openVerificationFailed(
-                renderStarted
+                (renderStarted
                     ? "freeze render started but no finished file appeared within 180 s"
-                    : "freeze never engaged within 10 s of play. Likely causes: the track is a stack or bus (not freezable), it has nothing to render, the Freeze button is not enabled in the track header (Logic: Track > Configure Track Header > Freeze), or the Toggle Track Freeze key-command binding is orphaned - run logic_setup_key_commands with relearn: true to repair"
+                    : "freeze never engaged within 10 s of play. Likely causes: the track is a stack or bus (not freezable), it has nothing to render, the Freeze button is not enabled in the track header (Logic: Track > Configure Track Header > Freeze), or the Toggle Track Freeze key-command binding is orphaned - run logic_setup_key_commands with relearn: true to repair")
+                    + (restored
+                        ? ". The track was returned to its unfrozen state."
+                        : ". The track could NOT be confirmed unfrozen - check the track header and unfreeze it manually if it is still lit.")
             )
         }
 
@@ -201,26 +240,42 @@ extension MCUController {
         try? manager.createDirectory(at: captures, withIntermediateDirectories: true)
         let stamp = Int(Date().timeIntervalSince1970)
         let safeLabel = sanitizedFilenameComponent(label, fallback: "render")
-        let destination = captures.appendingPathComponent(
-            "render-\(safeLabel)-\(stamp).\(URL(fileURLWithPath: rendered).pathExtension)"
-        )
-        try manager.copyItem(
-            at: freezeDir.appendingPathComponent(rendered), to: destination
-        )
+        // The name is only second-resolution, so two renders of the same label
+        // inside one second collided - and a collision here threw from
+        // copyItem with the track still frozen. Walk a suffix until the name
+        // is free; the stamp still identifies the render.
+        let extensionName = URL(fileURLWithPath: rendered).pathExtension
+        var stem = "render-\(safeLabel)-\(stamp)"
+        var attemptIndex = 2
+        while manager.fileExists(atPath:
+            captures.appendingPathComponent("\(stem).\(extensionName)").path), attemptIndex < 1000 {
+            stem = "render-\(safeLabel)-\(stamp)-\(attemptIndex)"
+            attemptIndex += 1
+        }
+        let destination = captures.appendingPathComponent("\(stem).\(extensionName)")
+        do {
+            try manager.copyItem(at: renderedURL, to: destination)
+        } catch {
+            // THE one non-optional throw between arming freeze and unfreezing.
+            // A full disk, a permission error or a name collision used to
+            // escape here leaving the track frozen, the freeze file on disk and
+            // no word of it in the error. Restore first, then report - with a
+            // `restored` flag that was actually checked.
+            let restored = restoreUnfrozen(certainlyFrozen: true, renderedFile: rendered)
+            throw LogicianError.verificationFailed(
+                requested: "copy of the freeze render to \(destination.path)",
+                actual: "the copy failed: \(error.localizedDescription)",
+                restored: restored
+            )
+        }
 
         // Unfreeze and verify Logic removed the freeze file again; answer the
         // confirm dialog if the toggle raises one, and double-check via the
-        // header checkbox when we can.
-        _ = try triggerKeyCommand(note: freeze.note, channel: freeze.channel)
-        var unfroze = false
-        for attempt in 0..<40 {
-            if !freezeFiles().contains(rendered) { unfroze = true; break }
-            if attempt % 4 == 3, let logic { _ = logic.answerFreezeDialog() }
-            Thread.sleep(forTimeInterval: 0.25)
-        }
-        if let logic, let trackName, logic.trackFreezeState(trackName: trackName) == true {
-            unfroze = false
-        }
+        // header checkbox when we can. A failure to even SEND the toggle no
+        // longer throws past the caller: the capture is already safe on disk,
+        // so it is reported through `unfrozen: false` like every other way
+        // this can fail to restore.
+        let unfroze = restoreUnfrozen(certainlyFrozen: true, renderedFile: rendered)
 
         var result: [String: Any] = [
             "success": true,
@@ -244,9 +299,9 @@ extension MCUController {
                 "the rendered file contains no audio — does the track have any regions?"
         }
         if let start = sliceStartSeconds, let end = sliceEndSeconds {
-            let slicePath = captures.appendingPathComponent(
-                "render-\(safeLabel)-\(stamp)-slice.wav"
-            ).path
+            // Derived from the (collision-free) capture name so the slice
+            // cannot collide either.
+            let slicePath = captures.appendingPathComponent("\(stem)-slice.wav").path
             if let slice = LogicAccessibility.sliceAudioFile(
                 path: destination.path, startSeconds: start, endSeconds: end,
                 destinationPath: slicePath

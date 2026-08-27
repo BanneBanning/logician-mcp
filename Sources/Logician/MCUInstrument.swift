@@ -351,12 +351,28 @@ extension MCUController {
                 }
             }
         }
-        // No match: undo the net movement.
-        if net != 0 { try turn(-net) }
+        // No match: undo the net movement. `net` routinely exceeds one
+        // message's 63-tick capacity here (up to 24 upward plus 48 downward
+        // turns at a step size that escalates to 8), and the bridge clamps a
+        // single oversized vpot message instead of splitting it - a plain
+        // turn(-net) therefore dropped everything past the 63rd tick and left
+        // the parameter moved while the error still claimed restored: true.
+        // Chunk it, and REPORT WHAT THE LCD ACTUALLY SHOWS: `restored` is only
+        // true when every chunk went out AND the readback is back at `original`.
+        // An unreadable LCD counts as not restored - we cannot prove it.
+        var undone = true
+        if net != 0 {
+            do {
+                for chunk in vpotTickChunks(-net) { try turn(chunk) }
+            } catch {
+                undone = false
+            }
+        }
+        let landed = read()
         throw LogicianError.verificationFailed(
             requested: target,
-            actual: read() ?? "unknown",
-            restored: true
+            actual: landed ?? "unknown",
+            restored: undone && landed?.localizedCaseInsensitiveCompare(original) == .orderedSame
         )
     }
 }
