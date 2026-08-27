@@ -11,13 +11,43 @@
 [![MCP](https://img.shields.io/badge/MCP-57_tools-4be37a)](docs/AGENT-GUIDE.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
-[**📦 Installation Guide**](docs/INSTALL.md) · [What it can do](#what-it-can-do-measured) · [Agent guide](docs/AGENT-GUIDE.md) · [Architecture](docs/ARCHITECTURE.md)
-
-**New here? → [Follow the step-by-step Installation Guide](docs/INSTALL.md).** ~10 minutes, foolproof, with a built-in checker that names the fix for anything wrong.
+[Get started](#get-started) · [What it can do](#what-it-can-do-measured) · [Agent guide](docs/AGENT-GUIDE.md) · [Architecture](docs/ARCHITECTURE.md)
 
 </div>
 
 An MCP server that gives Claude, Gemini, Cursor — any MCP client — real, verified control over Logic Pro on macOS: every plugin parameter (third-party included), mixing, MIDI composition, arrangement editing, automation, and dialog-free audio export. Results that produce sound **carry the sound**: bounces and A/B evaluations return the audio itself, so a multimodal agent hears what it just did in the same reply it decides from. No UI scripting, no synthetic keypresses, no mouse takeover.
+
+## Get started
+
+> Needs **macOS 13+**, **Logic Pro**, and Apple's command-line tools (`xcode-select --install` if `swift --version` fails).
+
+**1 · Download & build** — paste into Terminal (compile takes a minute):
+
+```bash
+git clone https://github.com/BanneBanning/logician-mcp.git
+cd logician-mcp && swift build -c release
+```
+
+**2 · Connect it to your AI** — from inside that folder, one line for your client, then **restart the client**:
+
+```bash
+agy mcp add logician "$(pwd)/.build/release/logician"          # Antigravity + Gemini (recommended — the agent can hear your mix)
+claude mcp add logician -- "$(pwd)/.build/release/logician"    # Claude Code
+```
+
+**3 · Let Logic see it** *(once)* — in Logic:
+
+> **Logic Pro → Control Surfaces → Setup → New → Install → Mackie Control**, then set **Input Port** and **Output Port** to **`Logic MCP MCU`**.
+
+And grant Accessibility to your client when macOS asks (or System Settings → Privacy & Security → Accessibility).
+
+**4 · Check it** — ask your agent:
+
+> **"Run logic_health"** — it verifies every step above and names the fix for anything still wrong. Then try: *"Bounce bars 1–4 and tell me what you hear."*
+
+📖 **First time setting up an MCP server?** The [**step-by-step Installation Guide**](docs/INSTALL.md) walks every single click, with a troubleshooting table.
+
+---
 
 ## Why this one is different
 
@@ -50,37 +80,6 @@ Logician assumes the model on the other end is fallible and designs for it:
 | Compose MIDI (notes, CC, pitch bend) recorded through the track's instrument, render-verified | real time + ~8 s |
 | Automation curves (volume/pan/sends/plugin params, all modes), playhead-chase verified | ~10–30 s |
 | Duplicate the project to a safe sandbox copy | ~2 s |
-
-## Install
-
-**→ [Full step-by-step Installation Guide](docs/INSTALL.md)** — start here if you have not set up an MCP server before. It walks every click, tells you what you should see, and leans on a built-in checker that names the fix for anything wrong.
-
-**Quick version** (if you already run MCP servers):
-
-```bash
-git clone https://github.com/BanneBanning/logician-mcp.git
-cd logician-mcp && swift build -c release
-```
-
-Register the binary with your client — Antigravity `agy mcp add logician <path>`, Claude Code `claude mcp add logician -- <path>`, or the `mcpServers` JSON shape for others — then restart the client. Two one-time setup steps remain: grant Accessibility to your client, and add a Mackie Control in Logic → Control Surfaces → Setup pointing at the `Logic MCP MCU` ports. Ask the agent to run `logic_health`; it verifies every step and names any fix. The [Installation Guide](docs/INSTALL.md) covers all of this in detail.
-
-### Which client to use — the ears decide
-
-Half of what this server offers is that the agent can *hear* its own work, and clients differ enormously there. Two things have to be true: the model must accept audio at all, and the client must actually deliver it.
-
-| Client | Verdict |
-|---|---|
-| **Antigravity CLI + Gemini** | **Recommended.** The model genuinely hears music — in testing it identified the genre, instrumentation and tempo feel of an unfamiliar track correctly. The CLI drops MCP audio *blocks*, but its file viewer passes an audio file to the model as real multimodal input, so open the `preview_path` a bounce returns. |
-| **Clients that forward MCP audio blocks** | Ideal when the model is audio-capable: bounces and A/B evaluations carry their sound inline, so the agent hears the result in the same reply it decides from. Test yours once — see below. |
-| **GPT-5.6 (Sol / Terra / Luna) via Codex** | Hands, no ears. Those models take text and image only; audio lives in separate models (`gpt-audio-1.5`, `gpt-realtime-2.1`) that Codex does not run. Fine for arranging, MIDI composition and batch edits against `metrics`/`deltas` — pass `include_audio: false` — but do not let it make mix decisions by ear, because it has none. |
-
-**Test your client once, before trusting any listening claim:** bounce a range and ask the agent plainly whether an audio content block arrived. If it says text only, use the file-viewer route on `preview_path` and pass `include_audio: false` to stop paying for blocks that never land.
-
-A caveat worth knowing even with the best setup: models that hear music reliably catch genre, instrumentation and broad character, and reliably *miss* timing. In testing, an agent described a track accurately and still approved a drum edit that had landed a beat off. Trust an agent's ears for balance and tone; verify structure and groove yourself.
-
-Everything else is self-serve: the server spawns its own bridge daemon, `logic_health` diagnoses every setup step with a concrete fix, and the Logic key commands the tools rely on are learned into your Logic automatically on first use — additively, removable in the Key Commands window, with collision handling.
-
-**Point the agent at [docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md)** — core concepts, workflows, error taxonomy, and the complete tool reference generated from the live schemas.
 
 ## Requirements
 
