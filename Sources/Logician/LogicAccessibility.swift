@@ -38,7 +38,7 @@ final class LogicAccessibility {
                 return path
             }
         }
-        throw DemoError.windowNotFound("project window with AXDocument")
+        throw LogicianError.windowNotFound("project window with AXDocument")
     }
 
     func listTracks() throws -> [String: Any] {

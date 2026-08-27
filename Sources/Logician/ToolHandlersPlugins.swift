@@ -38,7 +38,7 @@ extension MCPServer {
                 format: (arguments["format"] as? String) ?? "Stereo"
             )
         } else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "mouse-free plugin insertion",
                 exposed: "the MCU bridge is unavailable; pass allow_mouse: true to permit the AX chooser fallback (takes over the pointer briefly)"
             )
@@ -68,7 +68,7 @@ extension MCPServer {
                 insertIndex: arguments["insert_index"] as? Int
             )
         } else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "mouse-free plugin removal",
                 exposed: "the MCU bridge is unavailable; pass allow_mouse: true to permit the AX chooser fallback (takes over the pointer briefly)"
             )
@@ -119,7 +119,7 @@ extension MCPServer {
         let presetPlugin = try requiredString("plugin_name", in: arguments)
         let direction = (arguments["direction"] as? String) ?? "next"
         guard ["next", "previous"].contains(direction) else {
-            throw DemoError.invalidArguments("direction must be 'next' or 'previous'")
+            throw LogicianError.invalidArguments("direction must be 'next' or 'previous'")
         }
         let steps = max(arguments["steps"] as? Int ?? 1, 1)
         _ = try logic.selectTrack(trackName: presetTrack, trackNumber: arguments["track_number"] as? Int, expectedProjectPath: nil)
@@ -164,7 +164,7 @@ extension MCPServer {
             expectedProjectPath: nil
         )
         guard let inserts = try MCUController.pluginInsertNames() else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "MCU plugin insert list",
                 exposed: "the MCU bridge is unavailable or the insert list did not appear"
             )
@@ -181,7 +181,7 @@ extension MCPServer {
 
     func handleMcuPluginParameters(_ arguments: [String: Any]) throws -> Any {
         guard let slot = arguments["insert_slot"] as? Int else {
-            throw DemoError.invalidArguments("missing integer: insert_slot (1-8, MCU physical slot)")
+            throw LogicianError.invalidArguments("missing integer: insert_slot (1-8, MCU physical slot)")
         }
         _ = try logic.selectTrack(
             trackName: requiredString("track_name", in: arguments),
@@ -200,7 +200,7 @@ extension MCPServer {
                   maxPages: pluginMaxPages
               ) else {
             MCUController.exitToPan()
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "MCU parameter pages for slot \(slot)",
                 exposed: "could not enter the plugin edit mode"
             )
@@ -224,7 +224,7 @@ extension MCPServer {
 
     func handleMcuSetPluginParameter(_ arguments: [String: Any]) throws -> Any {
         guard let slot = arguments["insert_slot"] as? Int else {
-            throw DemoError.invalidArguments("missing integer: insert_slot (1-8, MCU physical slot)")
+            throw LogicianError.invalidArguments("missing integer: insert_slot (1-8, MCU physical slot)")
         }
         _ = try logic.selectTrack(
             trackName: requiredString("track_name", in: arguments),
@@ -239,7 +239,7 @@ extension MCPServer {
             tolerance: arguments["tolerance"] as? Double,
             trackName: requiredString("track_name", in: arguments)
         ) else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "MCU plugin parameter control",
                 exposed: "the MCU bridge is unavailable or the plugin edit mode could not be entered"
             )
@@ -261,7 +261,7 @@ extension MCPServer {
             maxPages: instrumentMaxPages
         ) else {
             MCUController.exitToPan()
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "MCU instrument parameters",
                 exposed: "no instrument in the slot, or the edit mode could not be entered"
             )
@@ -297,7 +297,7 @@ extension MCPServer {
             expectedCurrentValue: arguments["expected_current_value"] as? String,
             tolerance: arguments["tolerance"] as? Double
         ) else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "MCU instrument parameter control",
                 exposed: "no instrument in the slot, or the edit mode could not be entered"
             )

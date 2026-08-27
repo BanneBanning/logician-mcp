@@ -17,7 +17,7 @@ extension MCUController {
         // driving the other control.
         guard let strip = BridgeCommandName(rawValue: control), strip == .mute || strip == .solo
         else {
-            throw DemoError.invalidArguments("control must be mute or solo")
+            throw LogicianError.invalidArguments("control must be mute or solo")
         }
         guard freshStatus() != nil else { return nil }
         guard let channel = try findChannel(trackName: trackName) else { return nil }
@@ -33,10 +33,10 @@ extension MCUController {
         }
         let response = try MCUBridge.send(.channel(strip, channel))
         guard response.ok else {
-            throw DemoError.writeFailed("MCU \(control) failed: \(response.error ?? "?")")
+            throw LogicianError.writeFailed("MCU \(control) failed: \(response.error ?? "?")")
         }
         guard pollStatus(until: { ledLit(note, in: $0) == enabled }) != nil else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "\(control)=\(enabled)",
                 actual: "MCU \(control) LED did not change",
                 restored: false
@@ -125,14 +125,14 @@ extension MCUController {
                 .vpot(index: channel, delta: difference > 0 ? ticks : -ticks)
             )
             guard response.ok else {
-                throw DemoError.writeFailed("MCU vpot failed: \(response.error ?? "?")")
+                throw LogicianError.writeFailed("MCU vpot failed: \(response.error ?? "?")")
             }
             _ = awaitEvents(since: before, timeoutMs: 300)
             guard let updated = currentDb() else { break }
             if abs(updated - db) < 0.01 {
                 stuck += 1
                 if stuck >= 3 {
-                    throw DemoError.verificationFailed(
+                    throw LogicianError.verificationFailed(
                         requested: String(format: "%.1f dB", targetDb),
                         actual: String(format: "volume stuck at %.1f dB", updated),
                         restored: false
@@ -145,7 +145,7 @@ extension MCUController {
             db = updated
         }
         guard abs(db - targetDb) <= max(toleranceDb, 0.25) else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: String(format: "%.1f dB", targetDb),
                 actual: String(format: "%.1f dB", db),
                 restored: false

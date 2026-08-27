@@ -17,7 +17,7 @@ extension LogicAccessibility {
                 && stringAttribute(element, kAXDescriptionAttribute as String) == name
         }
         guard let strip = match else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: name,
                 exposed: "no inspector strip with that name is visible"
             )
@@ -39,7 +39,7 @@ extension LogicAccessibility {
             ))
         }
         guard let left = strips.first(where: { $0.help.hasPrefix("Left inspector") }) ?? strips.first else {
-            throw DemoError.windowNotFound("left inspector channel strip")
+            throw LogicianError.windowNotFound("left inspector channel strip")
         }
         if left.name == trackName {
             return left.element
@@ -49,7 +49,7 @@ extension LogicAccessibility {
         if let other = strips.first(where: { $0.name == trackName }) {
             return other.element
         }
-        throw DemoError.trackNotExposed(requested: trackName, exposed: left.name)
+        throw LogicianError.trackNotExposed(requested: trackName, exposed: left.name)
     }
 
     func insertSlots(of strip: AXUIElement) -> [InsertSlot] {
@@ -84,27 +84,27 @@ extension LogicAccessibility {
     ) throws -> InsertSlot {
         if let index = index {
             guard let slot = slots.first(where: { $0.index == index }) else {
-                throw DemoError.insertNotFound(
+                throw LogicianError.insertNotFound(
                     track: track,
                     plugin: "slot \(index)",
                     available: slots.map { "\($0.index): \($0.name)" }
                 )
             }
             guard pluginNamesMatch(slot.name, plugin) else {
-                throw DemoError.insertMismatch(slot: index, expected: plugin, actual: slot.name)
+                throw LogicianError.insertMismatch(slot: index, expected: plugin, actual: slot.name)
             }
             return slot
         }
         let matches = slots.filter { pluginNamesMatch($0.name, plugin) }
         guard !matches.isEmpty else {
-            throw DemoError.insertNotFound(
+            throw LogicianError.insertNotFound(
                 track: track,
                 plugin: plugin,
                 available: slots.map { "\($0.index): \($0.name)" }
             )
         }
         guard matches.count == 1, let slot = matches.first else {
-            throw DemoError.insertAmbiguous(track: track, plugin: plugin, slots: matches.map(\.index))
+            throw LogicianError.insertAmbiguous(track: track, plugin: plugin, slots: matches.map(\.index))
         }
         return slot
     }
@@ -138,7 +138,7 @@ extension LogicAccessibility {
                 && stringAttribute(element, kAXDescriptionAttribute as String) == "Tracks header"
         }
         guard let group = headerGroup else {
-            throw DemoError.windowNotFound("Tracks header group")
+            throw LogicianError.windowNotFound("Tracks header group")
         }
         return group
     }
@@ -163,19 +163,19 @@ extension LogicAccessibility {
             return standard
         }
         guard let fallback = windows.first(where: { documentPath(of: $0) != nil }) else {
-            throw DemoError.windowNotFound("project window with AXDocument")
+            throw LogicianError.windowNotFound("project window with AXDocument")
         }
         return fallback
     }
 
     func logicWindows() throws -> [AXUIElement] {
         guard AXIsProcessTrusted() else {
-            throw DemoError.accessibilityNotTrusted
+            throw LogicianError.accessibilityNotTrusted
         }
         guard let application = NSRunningApplication
             .runningApplications(withBundleIdentifier: bundleIdentifier)
             .first else {
-            throw DemoError.logicNotRunning
+            throw LogicianError.logicNotRunning
         }
         let appElement = AXUIElementCreateApplication(application.processIdentifier)
         var collected = attribute(appElement, kAXWindowsAttribute as String) as? [AXUIElement] ?? []
@@ -325,21 +325,21 @@ extension LogicAccessibility {
         }
 
         guard !candidates.isEmpty else {
-            throw DemoError.parameterNotFound(parameterName)
+            throw LogicianError.parameterNotFound(parameterName)
         }
         guard candidates.count == 1, let field = candidates.first else {
-            throw DemoError.parameterAmbiguous(parameterName, candidates.count)
+            throw LogicianError.parameterAmbiguous(parameterName, candidates.count)
         }
 
         var settable = DarwinBoolean(false)
         guard AXUIElementIsAttributeSettable(field, kAXValueAttribute as CFString, &settable) == .success,
               settable.boolValue else {
-            throw DemoError.valueNotWritable(parameterName)
+            throw LogicianError.valueNotWritable(parameterName)
         }
 
         let before = try revealFormattedValue(of: field, fallbackName: parameterName)
         guard equivalentFormattedValues(before, expectedCurrentValue) else {
-            throw DemoError.currentValueMismatch(expected: expectedCurrentValue, actual: before)
+            throw LogicianError.currentValueMismatch(expected: expectedCurrentValue, actual: before)
         }
 
         let writeStatus = AXUIElementSetAttributeValue(
@@ -348,20 +348,20 @@ extension LogicAccessibility {
             targetValue as CFString
         )
         guard writeStatus == .success else {
-            throw DemoError.writeFailed("AXError \(writeStatus.rawValue)")
+            throw LogicianError.writeFailed("AXError \(writeStatus.rawValue)")
         }
 
         let confirmStatus = AXUIElementPerformAction(field, kAXConfirmAction as CFString)
         guard confirmStatus == .success else {
             let restored = restore(field: field, value: before)
-            throw DemoError.confirmationFailed("AXError \(confirmStatus.rawValue); restored=\(restored)")
+            throw LogicianError.confirmationFailed("AXError \(confirmStatus.rawValue); restored=\(restored)")
         }
 
         Thread.sleep(forTimeInterval: 0.35)
         let after = try revealFormattedValue(of: field, fallbackName: parameterName)
         guard equivalentFormattedValues(after, targetValue) else {
             let restored = restore(field: field, value: before)
-            throw DemoError.verificationFailed(requested: targetValue, actual: after, restored: restored)
+            throw LogicianError.verificationFailed(requested: targetValue, actual: after, restored: restored)
         }
 
         return [
@@ -383,7 +383,7 @@ extension LogicAccessibility {
         guard let window = try logicWindows().first(where: {
             stringAttribute($0, kAXTitleAttribute as String) == title
         }) else {
-            throw DemoError.windowNotFound(title)
+            throw LogicianError.windowNotFound(title)
         }
         return window
     }
@@ -437,12 +437,12 @@ extension LogicAccessibility {
             kCFBooleanTrue
         )
         guard focusStatus == .success else {
-            throw DemoError.writeFailed("Could not focus \(fallbackName); AXError \(focusStatus.rawValue)")
+            throw LogicianError.writeFailed("Could not focus \(fallbackName); AXError \(focusStatus.rawValue)")
         }
         Thread.sleep(forTimeInterval: 0.20)
         let value = stringAttribute(field, kAXValueAttribute as String)
         guard !value.isEmpty, value.localizedCaseInsensitiveCompare(fallbackName) != .orderedSame else {
-            throw DemoError.writeFailed("Could not reveal formatted value for \(fallbackName)")
+            throw LogicianError.writeFailed("Could not reveal formatted value for \(fallbackName)")
         }
         return value
     }

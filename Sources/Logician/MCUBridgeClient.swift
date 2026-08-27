@@ -82,7 +82,7 @@ enum MCUBridge {
     static func send(_ command: BridgeCommand) throws -> BridgeResponse {
         let data = try transact(try bridgeJSONEncoder.encode(command), isPing: command.name == .ping)
         guard let response = try? bridgeJSONDecoder.decode(BridgeResponse.self, from: data) else {
-            throw DemoError.openVerificationFailed("no response from the MCU bridge")
+            throw LogicianError.openVerificationFailed("no response from the MCU bridge")
         }
         return response
     }
@@ -99,7 +99,7 @@ enum MCUBridge {
     static func sendForDictionary(_ command: BridgeCommand) throws -> [String: Any] {
         let data = try transact(try bridgeJSONEncoder.encode(command), isPing: command.name == .ping)
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw DemoError.openVerificationFailed("no response from the MCU bridge")
+            throw LogicianError.openVerificationFailed("no response from the MCU bridge")
         }
         return object
     }
@@ -112,7 +112,7 @@ enum MCUBridge {
         let payload = try JSONSerialization.data(withJSONObject: command)
         let data = try transact(payload, isPing: (command["cmd"] as? String) == "ping")
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw DemoError.openVerificationFailed("no response from the MCU bridge")
+            throw LogicianError.openVerificationFailed("no response from the MCU bridge")
         }
         return object
     }
@@ -120,11 +120,11 @@ enum MCUBridge {
     private static func transact(_ payload: Data, isPing: Bool) throws -> Data {
         do {
             return try sendOnce(payload)
-        } catch DemoError.writeFailed(let detail) where detail.hasPrefix("could not reach") {
+        } catch LogicianError.writeFailed(let detail) where detail.hasPrefix("could not reach") {
             // The daemon died mid-session. Self-healing is the stated
             // philosophy everywhere else; do it here instead of making the
             // agent guess that logic_health is the cure.
-            guard !isPing else { throw DemoError.writeFailed(detail) }
+            guard !isPing else { throw LogicianError.writeFailed(detail) }
             ensureRunning()
             return try sendOnce(payload)
         }
@@ -134,7 +134,7 @@ enum MCUBridge {
         let path = directory.appendingPathComponent("command.sock").path
         let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else {
-            throw DemoError.writeFailed("could not create a socket")
+            throw LogicianError.writeFailed("could not create a socket")
         }
         defer { Darwin.close(fd) }
         var address = sockaddr_un()
@@ -151,7 +151,7 @@ enum MCUBridge {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, size) }
         }
         guard connected == 0 else {
-            throw DemoError.writeFailed(
+            throw LogicianError.writeFailed(
                 "could not reach the MCU bridge socket (it is started automatically; "
                     + "run logic_health if this persists)"
             )
@@ -159,12 +159,12 @@ enum MCUBridge {
         // Write ALL of it (retrying short writes) and half-close so the
         // bridge sees a clean EOF; then read the whole reply until it closes.
         guard writeAll(fd, payload) else {
-            throw DemoError.writeFailed("the MCU bridge closed the connection mid-command")
+            throw LogicianError.writeFailed("the MCU bridge closed the connection mid-command")
         }
         Darwin.shutdown(fd, SHUT_WR)
         let data = readToEOF(fd)
         guard !data.isEmpty else {
-            throw DemoError.openVerificationFailed("no response from the MCU bridge")
+            throw LogicianError.openVerificationFailed("no response from the MCU bridge")
         }
         return data
     }

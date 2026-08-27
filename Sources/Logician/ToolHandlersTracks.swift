@@ -73,7 +73,7 @@ extension MCPServer {
         let delList = ((try? logic.listTracks())?["tracks"] as? [[String: Any]]) ?? []
         guard let selected = delList.first(where: { $0["selected"] as? Bool == true }),
               (selected["track_name"] as? String)?.caseInsensitiveCompare(delTrack) == .orderedSame else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "'\(delTrack)' selected before Delete Track",
                 actual: "the selection shows a different track; refusing",
                 restored: true
@@ -116,7 +116,7 @@ extension MCPServer {
 
     func handleSetTrackStack(_ arguments: [String: Any]) throws -> Any {
         guard let expanded = arguments["expanded"] as? Bool else {
-            throw DemoError.invalidArguments("missing boolean: expanded")
+            throw LogicianError.invalidArguments("missing boolean: expanded")
         }
         return try logic.setTrackStack(
             trackName: requiredString("track_name", in: arguments),
@@ -161,7 +161,7 @@ extension MCPServer {
 
     func handleCopyRegion(_ arguments: [String: Any]) throws -> Any {
         guard let toBar = arguments["to_bar"] as? Int else {
-            throw DemoError.invalidArguments("missing integer: to_bar")
+            throw LogicianError.invalidArguments("missing integer: to_bar")
         }
         return try logic.copyRegion(
             trackName: requiredString("track_name", in: arguments),

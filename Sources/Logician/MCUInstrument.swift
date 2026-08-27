@@ -160,7 +160,7 @@ extension MCUController {
             if pageNumber < totalPages { try pageRight() }
         }
         guard duplicates == 0, let match = found else {
-            throw DemoError.parameterAmbiguous(
+            throw LogicianError.parameterAmbiguous(
                 "\(parameter) (MCU parameters: \(allNames.joined(separator: ", ")))",
                 found == nil ? 0 : duplicates + 1
             )
@@ -176,7 +176,7 @@ extension MCUController {
               ),
               landed.indices.contains(match.index),
               landed[match.index].name == match.name else {
-            throw DemoError.openVerificationFailed(
+            throw LogicianError.openVerificationFailed(
                 "the parameter page shifted while navigating to '\(match.name)'"
             )
         }
@@ -188,7 +188,7 @@ extension MCUController {
             let matchesNumber = parseNumber(originalText) != nil && parseNumber(expected) != nil
                 && abs(parseNumber(originalText)! - parseNumber(expected)!) < 0.0001
             guard matchesText || matchesNumber else {
-                throw DemoError.currentValueMismatch(expected: expected, actual: originalText)
+                throw LogicianError.currentValueMismatch(expected: expected, actual: originalText)
             }
         }
 
@@ -199,7 +199,7 @@ extension MCUController {
             let before = freshStatus()?["received_events"] as? Int ?? -1
             let response = try MCUBridge.send(.vpot(index: index, delta: ticks))
             guard response.ok else {
-                throw DemoError.writeFailed("MCU vpot failed: \(response.error ?? "?")")
+                throw LogicianError.writeFailed("MCU vpot failed: \(response.error ?? "?")")
             }
             _ = awaitEvents(since: before, timeoutMs: 350)
         }
@@ -248,7 +248,7 @@ extension MCUController {
         turn: (Int) throws -> Void
     ) throws -> String {
         guard var current = read() else {
-            throw DemoError.openVerificationFailed("the parameter value is not readable on the LCD")
+            throw LogicianError.openVerificationFailed("the parameter value is not readable on the LCD")
         }
         let original = current
         // Probe with a single tick to learn the parameter's step size.
@@ -272,7 +272,7 @@ extension MCUController {
                 stuck += 1
                 if stuck >= 3 {
                     _ = try? convergeBack(to: original, ticksPerUnit: ticksPerUnit, read: read, turn: turn)
-                    throw DemoError.verificationFailed(
+                    throw LogicianError.verificationFailed(
                         requested: "\(target)",
                         actual: "parameter stuck at \(updated)",
                         restored: true
@@ -292,7 +292,7 @@ extension MCUController {
         }
         guard abs(current - target) <= effectiveTolerance * 2 else {
             _ = try? convergeBack(to: original, ticksPerUnit: ticksPerUnit, read: read, turn: turn)
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "\(target)",
                 actual: "\(current)",
                 restored: true
@@ -353,7 +353,7 @@ extension MCUController {
         }
         // No match: undo the net movement.
         if net != 0 { try turn(-net) }
-        throw DemoError.verificationFailed(
+        throw LogicianError.verificationFailed(
             requested: target,
             actual: read() ?? "unknown",
             restored: true

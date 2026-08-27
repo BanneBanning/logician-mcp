@@ -138,20 +138,20 @@ extension LogicAccessibility {
     func saveProject(expectedProjectPath: String?) throws -> [String: Any] {
         let documents = openDocuments()
         guard documents.count == 1, let document = documents.first else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "exactly one open project to save",
                 exposed: "open documents: \(documents.map(\.name).joined(separator: ", "))"
             )
         }
         guard let path = document.path else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "a project with a file path",
                 exposed: "'\(document.name)' has never been saved; use logic_new_project to create pathed projects"
             )
         }
         if let expected = expectedProjectPath {
             guard normalizedPath(path) == normalizedPath(expected) else {
-                throw DemoError.currentValueMismatch(expected: expected, actual: path)
+                throw LogicianError.currentValueMismatch(expected: expected, actual: path)
             }
         }
         if !document.modified {
@@ -189,7 +189,7 @@ extension LogicAccessibility {
                 ]
             }
         }
-        throw DemoError.verificationFailed(
+        throw LogicianError.verificationFailed(
             requested: "save of '\(document.name)'",
             actual: "neither the modified flag cleared nor the project file changed within 10 s. "
                 + "If saves keep failing, the key-command MIDI binding may be orphaned "
@@ -208,15 +208,15 @@ extension LogicAccessibility {
         let target = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
         if createFromTemplate {
             guard target.pathExtension == "logicx" else {
-                throw DemoError.invalidArguments("path must end in .logicx")
+                throw LogicianError.invalidArguments("path must end in .logicx")
             }
             guard !FileManager.default.fileExists(atPath: target.path) else {
-                throw DemoError.invalidArguments("'\(target.path)' already exists; use logic_open_project")
+                throw LogicianError.invalidArguments("'\(target.path)' already exists; use logic_open_project")
             }
             guard let template = Bundle.module.url(
                 forResource: "EmptyProject", withExtension: "logicx"
             ) else {
-                throw DemoError.trackNotExposed(
+                throw LogicianError.trackNotExposed(
                     requested: "the bundled empty project template",
                     exposed: "EmptyProject.logicx missing from the resource bundle"
                 )
@@ -227,7 +227,7 @@ extension LogicAccessibility {
             try FileManager.default.copyItem(at: template, to: target)
         } else {
             guard FileManager.default.fileExists(atPath: target.path) else {
-                throw DemoError.trackNotExposed(
+                throw LogicianError.trackNotExposed(
                     requested: "project at '\(target.path)'", exposed: "no such file"
                 )
             }
@@ -239,7 +239,7 @@ extension LogicAccessibility {
             case "save", "dont_save":
                 break // answered below once Logic asks
             default:
-                throw DemoError.trackNotExposed(
+                throw LogicianError.trackNotExposed(
                     requested: "opening '\(target.lastPathComponent)'",
                     exposed: "'\(open.name)' has unsaved changes; pass if_current_modified: 'save' or 'dont_save' (explicit decision required), or call logic_save_project first"
                 )
@@ -273,7 +273,7 @@ extension LogicAccessibility {
                 ]
             }
         }
-        throw DemoError.verificationFailed(
+        throw LogicianError.verificationFailed(
             requested: "'\(expectedName)' appearing in Logic's document list",
             actual: "not there within 30 s (a dialog may need attention)",
             restored: false
@@ -290,7 +290,7 @@ extension LogicAccessibility {
         let documents = openDocuments()
         guard documents.count == 1, let document = documents.first,
               let sourcePath = document.path else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "exactly one open project with a file path",
                 exposed: "open documents: " + documents.map(\.name).joined(separator: ", ")
             )
@@ -312,7 +312,7 @@ extension LogicAccessibility {
         if let given = destinationPath {
             destination = URL(fileURLWithPath: (given as NSString).expandingTildeInPath)
             guard destination.pathExtension == "logicx" else {
-                throw DemoError.invalidArguments("destination_path must end in .logicx")
+                throw LogicianError.invalidArguments("destination_path must end in .logicx")
             }
         } else {
             destination = source.deletingLastPathComponent().appendingPathComponent(
@@ -320,7 +320,7 @@ extension LogicAccessibility {
             )
         }
         guard !FileManager.default.fileExists(atPath: destination.path) else {
-            throw DemoError.invalidArguments("'\(destination.path)' already exists")
+            throw LogicianError.invalidArguments("'\(destination.path)' already exists")
         }
         try FileManager.default.copyItem(at: source, to: destination)
         // Strip autosave data or the copy greets its first open with a
@@ -361,18 +361,18 @@ extension LogicAccessibility {
     /// Closes the open project. `saving` must be an explicit 'yes' or 'no'.
     func closeProject(saving: String, expectedProjectPath: String?) throws -> [String: Any] {
         guard saving == "yes" || saving == "no" else {
-            throw DemoError.invalidArguments("saving must be 'yes' or 'no' (explicit decision)")
+            throw LogicianError.invalidArguments("saving must be 'yes' or 'no' (explicit decision)")
         }
         let documents = openDocuments()
         guard documents.count == 1, let document = documents.first else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "exactly one open project",
                 exposed: "open documents: \(documents.map(\.name).joined(separator: ", "))"
             )
         }
         if let expected = expectedProjectPath, let path = document.path {
             guard normalizedPath(path) == normalizedPath(expected) else {
-                throw DemoError.currentValueMismatch(expected: expected, actual: path)
+                throw LogicianError.currentValueMismatch(expected: expected, actual: path)
             }
         }
         // The document name is agent-controlled (it is just the .logicx
@@ -388,7 +388,7 @@ extension LogicAccessibility {
             """,
             arguments: [document.name]
         ) != nil else {
-            throw DemoError.writeFailed("AppleScript close failed")
+            throw LogicianError.writeFailed("AppleScript close failed")
         }
         Thread.sleep(forTimeInterval: 1.0)
         let remaining = openDocuments()

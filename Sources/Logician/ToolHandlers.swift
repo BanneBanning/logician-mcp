@@ -16,7 +16,7 @@ extension MCPServer {
               let properties = tool.inputSchema["properties"] as? [String: Any] else { return }
         let unknown = arguments.keys.filter { properties[$0] == nil }.sorted()
         guard !unknown.isEmpty else { return }
-        throw DemoError.invalidArguments(
+        throw LogicianError.invalidArguments(
             "\(tool.name) does not accept: \(unknown.joined(separator: ", ")). "
                 + "Accepted: \(properties.keys.sorted().joined(separator: ", ")). "
                 + "The argument was NOT applied - do not assume it took effect."
@@ -26,7 +26,7 @@ extension MCPServer {
     func callTool(name: String, arguments: [String: Any]) -> [String: Any] {
         do {
             guard let tool = toolRegistry().first(where: { $0.name == name }) else {
-                throw DemoError.invalidArguments("unknown tool: \(name)")
+                throw LogicianError.invalidArguments("unknown tool: \(name)")
             }
             try rejectUnknownArguments(tool: tool, arguments: arguments)
             let payload = try tool.handler(self)(arguments)
@@ -51,7 +51,7 @@ extension MCPServer {
                     "success": false,
                     "verified": false,
                     "state": "failed",
-                    "error_code": (error as? DemoError)?.code ?? "failed",
+                    "error_code": (error as? LogicianError)?.code ?? "failed",
                     "error": error.localizedDescription
                 ],
                 isError: true
@@ -61,7 +61,7 @@ extension MCPServer {
 
     func requiredString(_ key: String, in arguments: [String: Any]) throws -> String {
         guard let value = arguments[key] as? String, !value.isEmpty else {
-            throw DemoError.invalidArguments("missing non-empty string: \(key)")
+            throw LogicianError.invalidArguments("missing non-empty string: \(key)")
         }
         return value
     }
@@ -73,7 +73,7 @@ extension MCPServer {
         logic: LogicAccessibility, startBar: Int, endBar: Int, arguments: [String: Any]
     ) throws -> (start: Double, end: Double, tempo: Double, beatsPerBar: Double) {
         guard startBar >= 1, endBar > startBar else {
-            throw DemoError.invalidArguments("need start_bar >= 1 and end_bar > start_bar")
+            throw LogicianError.invalidArguments("need start_bar >= 1 and end_bar > start_bar")
         }
         var tempo = (arguments["tempo"] as? Double)
             ?? (arguments["tempo"] as? Int).map(Double.init) ?? 0
@@ -83,7 +83,7 @@ extension MCPServer {
             let transport = try logic.getTransport()
             if tempo <= 0 {
                 guard let read = transport["tempo"] as? Double else {
-                    throw DemoError.trackNotExposed(
+                    throw LogicianError.trackNotExposed(
                         requested: "tempo from the control bar",
                         exposed: "no tempo readable; pass an explicit 'tempo' argument"
                     )

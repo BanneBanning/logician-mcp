@@ -18,7 +18,7 @@ extension LogicAccessibility {
         try pressMenuItem(containing: "Edit", underMenu: "Key Commands")
         Thread.sleep(forTimeInterval: 1.5)
         guard let window = try existing() else {
-            throw DemoError.windowNotFound("Key Commands window after menu press")
+            throw LogicianError.windowNotFound("Key Commands window after menu press")
         }
         return window
     }
@@ -47,7 +47,7 @@ extension LogicAccessibility {
                 && children(of: field).contains {
                     stringAttribute($0, kAXDescriptionAttribute as String) == "search"
                 }
-        }) else { throw DemoError.windowNotFound("Key Commands search field") }
+        }) else { throw LogicianError.windowNotFound("Key Commands search field") }
 
         func findOutline(_ element: AXUIElement) -> AXUIElement? {
             firstDescendant(of: element, maximumDepth: AXDepth.keyCommandsOutline) {

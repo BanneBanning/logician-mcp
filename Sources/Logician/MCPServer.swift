@@ -12,7 +12,7 @@ final class MCPServer {
             guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
             do {
                 guard let request = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else {
-                    throw DemoError.invalidArguments("request must be a JSON object")
+                    throw LogicianError.invalidArguments("request must be a JSON object")
                 }
                 if let response = try handle(request) {
                     write(response)

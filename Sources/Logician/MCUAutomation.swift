@@ -25,11 +25,11 @@ extension MCUController {
         _ mode: String, logic: LogicAccessibility, trackName: String
     ) throws {
         guard let note = automationModeNote(mode) else {
-            throw DemoError.invalidArguments("mode must be read/touch/latch/write/trim")
+            throw LogicianError.invalidArguments("mode must be read/touch/latch/write/trim")
         }
         let response = try MCUBridge.send(.press(note: note))
         guard response.ok else {
-            throw DemoError.writeFailed("automation mode press failed")
+            throw LogicianError.writeFailed("automation mode press failed")
         }
         for _ in 0..<10 {
             Thread.sleep(forTimeInterval: 0.25)
@@ -38,7 +38,7 @@ extension MCUController {
                 return
             }
         }
-        throw DemoError.verificationFailed(
+        throw LogicianError.verificationFailed(
             requested: "automation mode '\(mode)' on '\(trackName)'",
             actual: "the strip still shows '\(logic.automationModeLabel(trackName: trackName) ?? "?")'",
             restored: false
@@ -65,7 +65,7 @@ extension MCUController {
     ) throws -> [String: Any] {
         let transport = try logic.getTransport()
         guard let tempo = transport["tempo"] as? Double else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "tempo from the control bar", exposed: "not readable"
             )
         }
@@ -75,19 +75,19 @@ extension MCUController {
             ($0.bar, $0.beat) < ($1.bar, $1.beat)
         }
         guard let first = sorted.first, first.bar >= 2 else {
-            throw DemoError.invalidArguments("points need bar >= 2 (one bar of pre-roll)")
+            throw LogicianError.invalidArguments("points need bar >= 2 (one bar of pre-roll)")
         }
         guard let channel = try findChannel(trackName: trackName) else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "MCU channel for '\(trackName)'",
                 exposed: "not found in the bank view"
             )
         }
         guard try selectFoundChannel(channel) else {
-            throw DemoError.writeFailed("MCU select failed")
+            throw LogicianError.writeFailed("MCU select failed")
         }
         guard let originalFader = currentFader14(channel) else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "the track's fader echo",
                 exposed: "Logic has not reported fader positions for this bank yet"
             )
@@ -99,7 +99,7 @@ extension MCUController {
             guard try setVolume(trackName: trackName, targetDb: db, toleranceDb: 0.15) != nil,
                   let position = currentFader14(channel) else {
                 _ = try? MCUBridge.send(.fader(channel: channel, value: originalFader))
-                throw DemoError.verificationFailed(
+                throw LogicianError.verificationFailed(
                     requested: "calibration of \(db) dB",
                     actual: "volume converge or fader echo failed; original volume restored",
                     restored: true
@@ -142,7 +142,7 @@ extension MCUController {
             _ = try logic.setPlayhead(barNumber: first.bar - 1, beat: 1)
             Thread.sleep(forTimeInterval: 0.5)
             guard (try? setPlaying(true)) != nil else {
-                throw DemoError.writeFailed("play failed")
+                throw LogicianError.writeFailed("play failed")
             }
             // Sync: the timecode crossing into the first bar.
             let syncDeadline = Date().addingTimeInterval(20)
@@ -152,7 +152,7 @@ extension MCUController {
                 Thread.sleep(forTimeInterval: 0.01)
             }
             guard let start = anchor else {
-                throw DemoError.verificationFailed(
+                throw LogicianError.verificationFailed(
                     requested: "playback reaching bar \(first.bar)",
                     actual: "the timecode never got there", restored: false
                 )
@@ -230,7 +230,7 @@ extension MCUController {
             let chunk = max(-63, min(63, remaining))
             let response = try MCUBridge.send(.vpot(index: index, delta: chunk))
             guard response.ok else {
-                throw DemoError.writeFailed("vpot failed mid-automation")
+                throw LogicianError.writeFailed("vpot failed mid-automation")
             }
             remaining -= chunk
         }
@@ -309,12 +309,12 @@ extension MCUController {
             Thread.sleep(forTimeInterval: 0.25)
         }
         guard let origin = current else {
-            throw DemoError.trackNotExposed(requested: "a readable vpot echo", exposed: "none")
+            throw LogicianError.trackNotExposed(requested: "a readable vpot echo", exposed: "none")
         }
         try turnVpot(index, by: 4)
         Thread.sleep(forTimeInterval: 0.35)
         guard let probed = read(), abs(probed - origin) > 0.0001 else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "a vpot probe response",
                 actual: "the value did not move on a 4-tick probe",
                 restored: false
@@ -349,7 +349,7 @@ extension MCUController {
     ) throws -> [String: Any] {
         let transport = try logic.getTransport()
         guard let tempo = transport["tempo"] as? Double else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "tempo from the control bar", exposed: "not readable"
             )
         }
@@ -357,15 +357,15 @@ extension MCUController {
             .split(separator: "/").first.flatMap { Int($0) } ?? 4)
         let sorted = points.sorted { ($0.bar, $0.beat) < ($1.bar, $1.beat) }
         guard let first = sorted.first, first.bar >= 2 else {
-            throw DemoError.invalidArguments("points need bar >= 2 (one bar of pre-roll)")
+            throw LogicianError.invalidArguments("points need bar >= 2 (one bar of pre-roll)")
         }
         guard let channel = try findChannel(trackName: trackName) else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "MCU channel for '\(trackName)'", exposed: "not in the bank view"
             )
         }
         guard try selectFoundChannel(channel) else {
-            throw DemoError.writeFailed("MCU select failed")
+            throw LogicianError.writeFailed("MCU select failed")
         }
         let view = try enterView(channel)
         defer { restoreView() }
@@ -376,7 +376,7 @@ extension MCUController {
             Thread.sleep(forTimeInterval: 0.25)
         }
         guard let original = initial else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "a readable \(kindLabel) value", exposed: "no echo after 3 s"
             )
         }
@@ -413,7 +413,7 @@ extension MCUController {
             Thread.sleep(forTimeInterval: 0.5)
             let parkedTimecode = freshStatus()?["timecode"] as? String
             guard (try? setPlaying(true)) != nil else {
-                throw DemoError.writeFailed("play failed")
+                throw LogicianError.writeFailed("play failed")
             }
             // Anchor at ROLL START (the parked bar), not at the first point's
             // bar crossing: the whole pre-roll bar is then usable for the
@@ -426,7 +426,7 @@ extension MCUController {
                 Thread.sleep(forTimeInterval: 0.01)
             }
             guard let start = anchor else {
-                throw DemoError.verificationFailed(
+                throw LogicianError.verificationFailed(
                     requested: "playback rolling from bar \(first.bar - 1)",
                     actual: "the timecode never moved", restored: false
                 )

@@ -9,7 +9,7 @@ extension MCUController {
     static func pressNote(_ note: Int) throws {
         let response = try MCUBridge.send(.press(note: note))
         guard response.ok else {
-            throw DemoError.writeFailed("MCU note press failed: \(response.error ?? "?")")
+            throw LogicianError.writeFailed("MCU note press failed: \(response.error ?? "?")")
         }
     }
 
@@ -319,7 +319,7 @@ extension MCUController {
         // out-of-range slot (e.g. an AX ordinal like 9, or an off-by-one to
         // 0) would otherwise crash the whole server instead of erroring.
         guard (1...8).contains(slot) else {
-            throw DemoError.invalidArguments(
+            throw LogicianError.invalidArguments(
                 "insert_slot must be 1-8 (MCU physical slot); got \(slot)"
             )
         }

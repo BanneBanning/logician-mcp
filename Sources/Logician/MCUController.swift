@@ -80,7 +80,7 @@ enum MCUController {
     static func press(_ button: String) throws {
         let response = try MCUBridge.send(.press(button: button))
         guard response.ok else {
-            throw DemoError.writeFailed("MCU press \(button) failed: \(response.error ?? "?")")
+            throw LogicianError.writeFailed("MCU press \(button) failed: \(response.error ?? "?")")
         }
     }
 

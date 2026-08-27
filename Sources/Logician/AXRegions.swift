@@ -14,7 +14,7 @@ extension LogicAccessibility {
         guard let window = try logicWindows().first(where: {
             stringAttribute($0, kAXSubroleAttribute as String) == "AXStandardWindow"
         }) else {
-            throw DemoError.windowNotFound("project window")
+            throw LogicianError.windowNotFound("project window")
         }
         var rows: [(Int, String, [AXUIElement])] = []
         walk(from: window, maximumDepth: AXDepth.trackRegionRow) { element in
@@ -85,7 +85,7 @@ extension LogicAccessibility {
             ])
         }
         if let filter = trackName, tracks.isEmpty {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "regions on '\(filter)'",
                 exposed: "visible track rows: " + rows.map(\.track).joined(separator: ", ")
             )
@@ -104,13 +104,13 @@ extension LogicAccessibility {
         trackName: String, regionName: String?, startBar: Int?, exclusive: Bool
     ) throws -> [String: Any] {
         guard regionName != nil || startBar != nil else {
-            throw DemoError.invalidArguments("pass region_name and/or start_bar")
+            throw LogicianError.invalidArguments("pass region_name and/or start_bar")
         }
         let rows = try regionRows()
         guard let row = rows.first(where: {
             $0.track.caseInsensitiveCompare(trackName) == .orderedSame
         }) else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "track '\(trackName)'",
                 exposed: "visible track rows: " + rows.map(\.track).joined(separator: ", ")
             )
@@ -125,7 +125,7 @@ extension LogicAccessibility {
             return true
         }
         guard hits.count == 1, let hit = hits.first else {
-            throw DemoError.parameterAmbiguous(
+            throw LogicianError.parameterAmbiguous(
                 "region on '\(trackName)' (candidates: " + annotated.map { _, info in
                     "\(info["name"] ?? "?")@bar\(info["start_bar"] ?? 0)"
                 }.joined(separator: ", ") + ")",
@@ -146,14 +146,14 @@ extension LogicAccessibility {
                 hit.0, "AXSelected" as CFString, kCFBooleanTrue
             )
             guard status == .success else {
-                throw DemoError.writeFailed("AXSelected write returned AXError \(status.rawValue)")
+                throw LogicianError.writeFailed("AXSelected write returned AXError \(status.rawValue)")
             }
             Thread.sleep(forTimeInterval: 0.3)
             if stringAttribute(hit.0, "AXSelected") == "1" { stuck = true; break }
             if attempt == 0 { Thread.sleep(forTimeInterval: 0.5) } // stale-element transient
         }
         guard stuck else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "region selected",
                 actual: "the region's AXSelected did not stick after a retry",
                 restored: false
@@ -201,7 +201,7 @@ extension LogicAccessibility {
     /// Renames a track by writing the channel strip's name field.
     func renameTrack(trackName: String, newName: String) throws -> [String: Any] {
         guard !newName.trimmingCharacters(in: .whitespaces).isEmpty else {
-            throw DemoError.invalidArguments("new_name must be non-empty")
+            throw LogicianError.invalidArguments("new_name must be non-empty")
         }
         _ = try selectTrack(trackName: trackName, trackNumber: nil, expectedProjectPath: nil)
         // The header/strip name fields ignore direct AXValue writes; the
@@ -212,7 +212,7 @@ extension LogicAccessibility {
         var editor: AXUIElement?
         guard let application = NSRunningApplication
             .runningApplications(withBundleIdentifier: bundleIdentifier).first else {
-            throw DemoError.logicNotRunning
+            throw LogicianError.logicNotRunning
         }
         let appElement = AXUIElementCreateApplication(application.processIdentifier)
         for _ in 0..<15 {
@@ -225,7 +225,7 @@ extension LogicAccessibility {
             }
         }
         guard let field = editor else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "the inline rename editor",
                 exposed: "no settable focused element appeared after Rename Track"
             )
@@ -234,7 +234,7 @@ extension LogicAccessibility {
             field, kAXValueAttribute as CFString, newName as CFString
         )
         guard status == .success else {
-            throw DemoError.writeFailed("name write returned AXError \(status.rawValue)")
+            throw LogicianError.writeFailed("name write returned AXError \(status.rawValue)")
         }
         _ = AXUIElementPerformAction(field, kAXConfirmAction as CFString)
         Thread.sleep(forTimeInterval: 0.6)
@@ -254,7 +254,7 @@ extension LogicAccessibility {
         guard tracks.contains(where: {
             ($0["track_name"] as? String)?.caseInsensitiveCompare(newName) == .orderedSame
         }) else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "track renamed to '\(newName)'",
                 actual: "no track header shows the new name",
                 restored: false
@@ -270,12 +270,12 @@ extension LogicAccessibility {
     /// knob, bounded by a time budget (one step per ~15 ms write).
     func stripPanWrite(trackName: String, target: Double, budget: TimeInterval) throws {
         guard let strip = try? inspectorStrip(named: trackName) else {
-            throw DemoError.windowNotFound("channel strip for '\(trackName)'")
+            throw LogicianError.windowNotFound("channel strip for '\(trackName)'")
         }
         guard let knob = children(of: strip).first(where: {
             stringAttribute($0, kAXDescriptionAttribute as String) == "pan"
         }) else {
-            throw DemoError.windowNotFound("pan knob on '\(trackName)'")
+            throw LogicianError.windowNotFound("pan knob on '\(trackName)'")
         }
         let goal = Int(target.rounded())
         let deadline = Date().addingTimeInterval(budget)
@@ -328,7 +328,7 @@ extension LogicAccessibility {
             trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true
         )
         guard try selectedRegionCount() == 1 else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "exactly one selected region before Delete",
                 actual: "\(try selectedRegionCount()) regions selected; refusing to fire Delete",
                 restored: true
@@ -346,7 +346,7 @@ extension LogicAccessibility {
             if after.count == before.count - 1 && !stillThere { gone = true; break }
         }
         guard gone else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "region '\(selection["name"] ?? "?")' deleted",
                 actual: "the region is still in the arrangement map (undo history unaffected)",
                 restored: false
@@ -366,13 +366,13 @@ extension LogicAccessibility {
         byBars: Int, byBeats: Int
     ) throws -> [String: Any] {
         guard byBars != 0 || byBeats != 0 else {
-            throw DemoError.invalidArguments("pass a non-zero by_bars and/or by_beats")
+            throw LogicianError.invalidArguments("pass a non-zero by_bars and/or by_beats")
         }
         let selection = try selectRegion(
             trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true
         )
         guard try selectedRegionCount() == 1 else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "exactly one selected region before nudging",
                 actual: "selection drifted; refusing", restored: true
             )
@@ -399,14 +399,14 @@ extension LogicAccessibility {
                 && ($0["selected"] as? Bool) == true
         }
         guard let moved = target else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "the moved region still selected at its new position",
                 actual: "could not find it in the arrangement map",
                 restored: false
             )
         }
         if byBeats == 0, let newBar = moved["start_bar"] as? Int, newBar != oldStart + byBars {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "region at bar \(oldStart + byBars)",
                 actual: "region at bar \(newBar)",
                 restored: false
@@ -430,7 +430,7 @@ extension LogicAccessibility {
             trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true
         )
         guard try selectedRegionCount() == 1 else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "exactly one selected region before \(move ? "Cut" : "Copy")",
                 actual: "selection drifted; refusing", restored: true
             )
@@ -455,7 +455,7 @@ extension LogicAccessibility {
             }
         }
         guard let landed = pasted else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "a region at bar \(toBar) on '\(destinationTrack)'",
                 actual: "nothing appeared there after Paste (clipboard state uncertain)",
                 restored: false

@@ -63,14 +63,14 @@ extension LogicAccessibility {
             if let found = pluginChooserMenu() { menu = found; break }
         }
         guard let chooser = menu else {
-            throw DemoError.openVerificationFailed("the plugin chooser menu did not open")
+            throw LogicianError.openVerificationFailed("the plugin chooser menu did not open")
         }
         guard let item = findMenuItem(in: chooser, titled: pluginName) else {
             dismissPopupMenus()
             let topLevel = children(of: chooser)
                 .map { stringAttribute($0, kAXTitleAttribute as String) }
                 .filter { !$0.isEmpty }
-            throw DemoError.insertNotFound(track: "plugin menu", plugin: pluginName, available: topLevel)
+            throw LogicianError.insertNotFound(track: "plugin menu", plugin: pluginName, available: topLevel)
         }
         // Plugins with channel-format submenus need a leaf item chosen; take
         // the requested format when offered, otherwise whatever the channel
@@ -121,7 +121,7 @@ extension LogicAccessibility {
 
     func navigateMenu(_ chooser: AXUIElement, along titles: [String]) throws {
         guard !titles.isEmpty else {
-            throw DemoError.openVerificationFailed("empty menu path")
+            throw LogicianError.openVerificationFailed("empty menu path")
         }
         // Logic must already be frontmost here: activating it now would
         // dismiss the open menu (verified 2026-08-25).
@@ -133,7 +133,7 @@ extension LogicAccessibility {
                 stringAttribute($0, kAXTitleAttribute as String)
                     .localizedCaseInsensitiveCompare(title) == .orderedSame
             }) else {
-                throw DemoError.openVerificationFailed("menu item '\(title)' vanished during navigation")
+                throw LogicianError.openVerificationFailed("menu item '\(title)' vanished during navigation")
             }
             let itemFrame = try frame(of: item)
             let point = CGPoint(x: itemFrame.midX, y: itemFrame.midY)
@@ -150,7 +150,7 @@ extension LogicAccessibility {
                 guard let submenu = children(of: item).first(where: {
                     stringAttribute($0, kAXRoleAttribute as String) == "AXMenu"
                 }) else {
-                    throw DemoError.openVerificationFailed("submenu under '\(title)' did not open")
+                    throw LogicianError.openVerificationFailed("submenu under '\(title)' did not open")
                 }
                 menu = submenu
             }
@@ -180,7 +180,7 @@ extension LogicAccessibility {
             stringAttribute($0, kAXDescriptionAttribute as String) == "audio plug-in"
         }
         guard let appendSlot = bars.last ?? pristineSlot else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "an empty insert slot on '\(trackName)'",
                 exposed: "neither an insert bar nor the audio plug-in button was found in the strip"
             )
@@ -217,7 +217,7 @@ extension LogicAccessibility {
         }
         guard let slot = added else {
             dismissPopupMenus()
-            throw DemoError.openVerificationFailed(
+            throw LogicianError.openVerificationFailed(
                 "no new insert matching '\(pluginName)' appeared on '\(trackName)'"
             )
         }
@@ -250,7 +250,7 @@ extension LogicAccessibility {
         guard let listButton = children(of: slot.group).first(where: {
             stringAttribute($0, kAXDescriptionAttribute as String) == "list"
         }) else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "plugin menu button on slot \(slot.index)",
                 exposed: "the insert group has no list button"
             )
@@ -275,7 +275,7 @@ extension LogicAccessibility {
             }
         }
         dismissPopupMenus()
-        throw DemoError.openVerificationFailed(
+        throw LogicianError.openVerificationFailed(
             "the insert count on '\(trackName)' did not decrease after choosing No Plug-in"
         )
     }
@@ -305,7 +305,7 @@ extension LogicAccessibility {
         // matches when track selection cannot resolve the name.
         do {
             _ = try selectTrack(trackName: trackName, trackNumber: trackNumber, expectedProjectPath: nil)
-        } catch let error as DemoError {
+        } catch let error as LogicianError {
             guard case .trackNotFound = error, (try? anyInspectorStrip(named: trackName)) != nil else {
                 throw error
             }
@@ -379,7 +379,7 @@ extension LogicAccessibility {
         if let expected = expectedProjectPath {
             let actual = try projectDocumentPath()
             guard normalizedPath(expected) == normalizedPath(actual) else {
-                throw DemoError.projectMismatch(expected: expected, actual: actual)
+                throw LogicianError.projectMismatch(expected: expected, actual: actual)
             }
         }
 
@@ -387,20 +387,20 @@ extension LogicAccessibility {
         let slots = insertSlots(of: strip)
         let slot = try resolveSlot(slots, track: trackName, plugin: pluginName, index: insertIndex)
         guard let openButton = slot.openButton else {
-            throw DemoError.valueNotWritable("insert slot \(slot.index) (\(slot.name)) exposes no open button")
+            throw LogicianError.valueNotWritable("insert slot \(slot.index) (\(slot.name)) exposes no open button")
         }
 
         let before = Set(try logicWindows().map(WindowKey.init))
         let pressStatus = AXUIElementPerformAction(openButton, kAXPressAction as CFString)
         guard pressStatus == .success else {
-            throw DemoError.writeFailed("AXPress on open button returned AXError \(pressStatus.rawValue)")
+            throw LogicianError.writeFailed("AXPress on open button returned AXError \(pressStatus.rawValue)")
         }
 
         if let appeared = try pollWindowDiff(before: before, expectAppear: true) {
             let title = stringAttribute(appeared, kAXTitleAttribute as String)
             guard title == trackName else {
                 _ = closeWindowElement(appeared)
-                throw DemoError.openVerificationFailed(
+                throw LogicianError.openVerificationFailed(
                     "A window titled '\(title)' appeared, expected '\(trackName)'. It was closed again."
                 )
             }
@@ -414,7 +414,7 @@ extension LogicAccessibility {
             let restoreStatus = AXUIElementPerformAction(openButton, kAXPressAction as CFString)
             guard restoreStatus == .success,
                   let reopened = try pollWindowDiff(before: beforeRestore, expectAppear: true) else {
-                throw DemoError.openVerificationFailed(
+                throw LogicianError.openVerificationFailed(
                     "The open button toggled an already-open window closed and it could not be reopened."
                 )
             }
@@ -422,7 +422,7 @@ extension LogicAccessibility {
             return openResult(state: "already_open", track: trackName, slot: slot, windowTitle: title)
         }
 
-        throw DemoError.openVerificationFailed("No window appeared or disappeared after pressing the open button.")
+        throw LogicianError.openVerificationFailed("No window appeared or disappeared after pressing the open button.")
     }
 
     func closePlugin(
@@ -434,13 +434,13 @@ extension LogicAccessibility {
         let slots = insertSlots(of: strip)
         let slot = try resolveSlot(slots, track: trackName, plugin: pluginName, index: insertIndex)
         guard let openButton = slot.openButton else {
-            throw DemoError.valueNotWritable("insert slot \(slot.index) (\(slot.name)) exposes no open button")
+            throw LogicianError.valueNotWritable("insert slot \(slot.index) (\(slot.name)) exposes no open button")
         }
 
         let before = Set(try logicWindows().map(WindowKey.init))
         let pressStatus = AXUIElementPerformAction(openButton, kAXPressAction as CFString)
         guard pressStatus == .success else {
-            throw DemoError.writeFailed("AXPress on open button returned AXError \(pressStatus.rawValue)")
+            throw LogicianError.writeFailed("AXPress on open button returned AXError \(pressStatus.rawValue)")
         }
 
         if try pollWindowDisappeared(before: before) {
@@ -457,34 +457,34 @@ extension LogicAccessibility {
         if let appeared = try pollWindowDiff(before: before, expectAppear: true) {
             // The plugin window was closed already; the toggle opened it. Close it again.
             _ = closeWindowElement(appeared)
-            throw DemoError.pluginNotOpen(
+            throw LogicianError.pluginNotOpen(
                 "the open button opened a new window, which was closed again to restore the UI"
             )
         }
-        throw DemoError.openVerificationFailed("No window disappeared after pressing the open button.")
+        throw LogicianError.openVerificationFailed("No window disappeared after pressing the open button.")
     }
 
     func closePluginWindow(title: String) throws -> [String: Any] {
         let windows = try logicWindows()
         let matches = windows.filter { stringAttribute($0, kAXTitleAttribute as String) == title }
         guard let window = matches.first else {
-            throw DemoError.windowNotFound(title)
+            throw LogicianError.windowNotFound(title)
         }
         guard matches.count == 1 else {
-            throw DemoError.windowAmbiguous(title, matches.count)
+            throw LogicianError.windowAmbiguous(title, matches.count)
         }
         // Dialogs are plugin/auxiliary windows even when they carry the project
         // document (Drum Machine Designer does); never close standard windows.
         guard stringAttribute(window, kAXSubroleAttribute as String) == "AXDialog" else {
-            throw DemoError.windowNotClosable(title)
+            throw LogicianError.windowNotClosable(title)
         }
 
         let before = Set(try logicWindows().map(WindowKey.init))
         guard closeWindowElement(window) else {
-            throw DemoError.writeFailed("AXPress on the window close button failed")
+            throw LogicianError.writeFailed("AXPress on the window close button failed")
         }
         guard try pollWindowDisappeared(before: before) else {
-            throw DemoError.openVerificationFailed("The window '\(title)' did not disappear after pressing close.")
+            throw LogicianError.openVerificationFailed("The window '\(title)' did not disappear after pressing close.")
         }
         return [
             "success": true,

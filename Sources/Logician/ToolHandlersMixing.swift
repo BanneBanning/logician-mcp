@@ -14,7 +14,7 @@ extension MCPServer {
     /// the old switch branched on the tool name to pick one.
     private func setStripToggle(control: String, arguments: [String: Any]) throws -> Any {
         guard let enabled = arguments["enabled"] as? Bool else {
-            throw DemoError.invalidArguments("missing boolean: enabled")
+            throw LogicianError.invalidArguments("missing boolean: enabled")
         }
         let toggleTrack = try requiredString("track_name", in: arguments)
         return try MCUController.setToggle(
@@ -29,7 +29,7 @@ extension MCPServer {
 
     func handleSetTrackVolume(_ arguments: [String: Any]) throws -> Any {
         guard let db = (arguments["db"] as? Double) ?? (arguments["db"] as? Int).map(Double.init) else {
-            throw DemoError.invalidArguments("missing number: db")
+            throw LogicianError.invalidArguments("missing number: db")
         }
         let volumeTrack = try requiredString("track_name", in: arguments)
         let tolerance = (arguments["tolerance_db"] as? Double) ?? 0.15
@@ -45,7 +45,7 @@ extension MCPServer {
 
     func handleSetTrackPan(_ arguments: [String: Any]) throws -> Any {
         guard let position = arguments["position"] as? Int else {
-            throw DemoError.invalidArguments("missing integer: position")
+            throw LogicianError.invalidArguments("missing integer: position")
         }
         return try logic.setTrackPan(
             trackName: requiredString("track_name", in: arguments),
@@ -60,7 +60,7 @@ extension MCPServer {
             trackName: requiredString("track_name", in: arguments),
             destination: requiredString("destination", in: arguments)
         ) else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "send creation via the control surface",
                 exposed: "the MCU bridge is unavailable"
             )
@@ -77,7 +77,7 @@ extension MCPServer {
             expectedProjectPath: arguments["expected_project_path"] as? String
         )
         guard let sends = try MCUController.readSends() else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "MCU send view",
                 exposed: "the MCU bridge is unavailable or the send view did not appear"
             )
@@ -91,12 +91,12 @@ extension MCPServer {
 
     func handleMcuSetSend(_ arguments: [String: Any]) throws -> Any {
         guard let send = arguments["send"] as? Int else {
-            throw DemoError.invalidArguments("missing integer: send (1-8)")
+            throw LogicianError.invalidArguments("missing integer: send (1-8)")
         }
         let levelDb = (arguments["level_db"] as? Double)
             ?? (arguments["level_db"] as? Int).map(Double.init)
         guard let target = levelDb else {
-            throw DemoError.invalidArguments("missing number: level_db")
+            throw LogicianError.invalidArguments("missing number: level_db")
         }
         _ = try logic.selectTrack(
             trackName: requiredString("track_name", in: arguments),
@@ -108,7 +108,7 @@ extension MCPServer {
             targetDb: target,
             expectedCurrentValue: arguments["expected_current_value"] as? String
         ) else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "MCU send level write",
                 exposed: "the MCU bridge is unavailable or the send view layout was unexpected"
             )
@@ -121,14 +121,14 @@ extension MCPServer {
         let bpm = (arguments["bpm"] as? Double)
             ?? (arguments["bpm"] as? Int).map(Double.init)
         guard let targetBpm = bpm else {
-            throw DemoError.invalidArguments("missing number: bpm")
+            throw LogicianError.invalidArguments("missing number: bpm")
         }
         let transportBefore = try logic.getTransport()
         let currentBpm = transportBefore["tempo"] as? Double
         if let expected = (arguments["expected_current_bpm"] as? Double)
             ?? (arguments["expected_current_bpm"] as? Int).map(Double.init) {
             guard let current = currentBpm, abs(current - expected) < 0.5 else {
-                throw DemoError.currentValueMismatch(
+                throw LogicianError.currentValueMismatch(
                     expected: "\(expected) BPM",
                     actual: "\(currentBpm.map { "\($0)" } ?? "unreadable") BPM"
                 )

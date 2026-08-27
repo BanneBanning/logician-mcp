@@ -11,7 +11,7 @@ extension LogicAccessibility {
     /// but accepts writes every ~8 ms, so even a doubling converges in ~1.3 s.
     func setTempo(_ target: Double) throws -> Double {
         guard target >= 5, target <= 990 else {
-            throw DemoError.invalidArguments("tempo must be 5-990 BPM")
+            throw LogicianError.invalidArguments("tempo must be 5-990 BPM")
         }
         let bar = try controlBarGroup()
         guard let inner = children(of: bar).first(where: {
@@ -19,7 +19,7 @@ extension LogicAccessibility {
         }), let slider = children(of: inner).first(where: {
             stringAttribute($0, kAXDescriptionAttribute as String) == "Tempo"
         }) else {
-            throw DemoError.windowNotFound("Tempo slider in the control bar")
+            throw LogicianError.windowNotFound("Tempo slider in the control bar")
         }
         let goal = Double(Int(target.rounded()))
         let deadline = Date().addingTimeInterval(25)
@@ -44,7 +44,7 @@ extension LogicAccessibility {
         }
         let final = Double(stringAttribute(slider, kAXValueAttribute as String)) ?? -1
         guard abs(final - goal) < 0.5 else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "tempo \(Int(goal)) BPM",
                 actual: "tempo stuck at \(final)",
                 restored: false
@@ -107,7 +107,7 @@ extension LogicAccessibility {
         // Narrow windows collapse the Cycle button out of the control bar;
         // fall back to the C key command, verified via the ruler's cycle region.
         guard let current = cycleStateFromRuler() else {
-            throw DemoError.windowNotFound("Cycle button in the control bar and cycle region in the ruler")
+            throw LogicianError.windowNotFound("Cycle button in the control bar and cycle region in the ruler")
         }
         if current == enabled {
             return [
@@ -131,7 +131,7 @@ extension LogicAccessibility {
                 ]
             }
         }
-        throw DemoError.verificationFailed(requested: "cycle=\(enabled)", actual: "cycle=\(current)", restored: false)
+        throw LogicianError.verificationFailed(requested: "cycle=\(enabled)", actual: "cycle=\(current)", restored: false)
     }
 
     func cycleStateFromRuler() -> Bool? {
@@ -160,7 +160,7 @@ extension LogicAccessibility {
 
         let bar = try controlBarGroup()
         guard let play = controlBarChild(bar, "Play") else {
-            throw DemoError.windowNotFound("Play button in the control bar")
+            throw LogicianError.windowNotFound("Play button in the control bar")
         }
         guard stringAttribute(play, kAXValueAttribute as String) == "1" else {
             return [
@@ -188,7 +188,7 @@ extension LogicAccessibility {
                 ]
             }
         }
-        throw DemoError.verificationFailed(requested: "playing=false", actual: "playing=true", restored: false)
+        throw LogicianError.verificationFailed(requested: "playing=false", actual: "playing=true", restored: false)
     }
 
     func sendKeystrokeToFrontmostLogic(virtualKey: CGKeyCode, label: String) throws {
@@ -196,7 +196,7 @@ extension LogicAccessibility {
         let source = CGEventSource(stateID: .hidSystemState)
         guard let down = CGEvent(keyboardEventSource: source, virtualKey: virtualKey, keyDown: true),
               let up = CGEvent(keyboardEventSource: source, virtualKey: virtualKey, keyDown: false) else {
-            throw DemoError.writeFailed("could not create keyboard events for \(label)")
+            throw LogicianError.writeFailed("could not create keyboard events for \(label)")
         }
         down.post(tap: .cghidEventTap)
         Thread.sleep(forTimeInterval: 0.05)
@@ -206,7 +206,7 @@ extension LogicAccessibility {
     func setPlayhead(barNumber: Int, beat: Int?) throws -> [String: Any] {
         let controlBar = try controlBarGroup()
         guard let lcd = playheadGroup(in: controlBar) else {
-            throw DemoError.windowNotFound("Playhead Position display in the control bar")
+            throw LogicianError.windowNotFound("Playhead Position display in the control bar")
         }
         let beforeBar = sliderValue(lcd, "bar")
         let beforeBeat = sliderValue(lcd, "beat")
@@ -220,7 +220,7 @@ extension LogicAccessibility {
               let afterBar = sliderValue(refreshed, "bar"),
               afterBar == barNumber,
               beat == nil || sliderValue(refreshed, "beat") == beat else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "bar \(barNumber)\(beat.map { ", beat \($0)" } ?? "")",
                 actual: "bar \(sliderValue(lcd, "bar").map(String.init) ?? "?"), beat \(sliderValue(lcd, "beat").map(String.init) ?? "?")",
                 restored: false
@@ -246,7 +246,7 @@ extension LogicAccessibility {
     ) throws -> [String: Any] {
         let bar = try controlBarGroup()
         guard let checkbox = controlBarChild(bar, description) else {
-            throw DemoError.windowNotFound("\(description) button in the control bar")
+            throw LogicianError.windowNotFound("\(description) button in the control bar")
         }
         let current = stringAttribute(checkbox, kAXValueAttribute as String) == "1"
         if current == desired {
@@ -259,7 +259,7 @@ extension LogicAccessibility {
         }
         let status = AXUIElementPerformAction(checkbox, kAXPressAction as CFString)
         guard status == .success else {
-            throw DemoError.writeFailed("AXPress on \(description) returned AXError \(status.rawValue)")
+            throw LogicianError.writeFailed("AXPress on \(description) returned AXError \(status.rawValue)")
         }
         for _ in 0..<20 {
             Thread.sleep(forTimeInterval: 0.1)
@@ -274,7 +274,7 @@ extension LogicAccessibility {
                 ]
             }
         }
-        throw DemoError.verificationFailed(
+        throw LogicianError.verificationFailed(
             requested: "\(description)=\(desired)",
             actual: "\(description)=\(current)",
             restored: false
@@ -289,7 +289,7 @@ extension LogicAccessibility {
                   stringAttribute($0, kAXDescriptionAttribute as String) == sliderName
               }),
               let start = Int(stringAttribute(slider, kAXValueAttribute as String)) else {
-            throw DemoError.windowNotFound("playhead \(sliderName) slider")
+            throw LogicianError.windowNotFound("playhead \(sliderName) slider")
         }
         let maximumSteps = min(abs(target - start) + 4, 512)
         var last = start
@@ -302,12 +302,12 @@ extension LogicAccessibility {
                 target as CFNumber
             )
             guard status == .success else {
-                throw DemoError.writeFailed("AXValue write on \(sliderName) returned AXError \(status.rawValue)")
+                throw LogicianError.writeFailed("AXValue write on \(sliderName) returned AXError \(status.rawValue)")
             }
             Thread.sleep(forTimeInterval: 0.12)
             let after = Int(stringAttribute(slider, kAXValueAttribute as String)) ?? current
             if after == last && after != target {
-                throw DemoError.verificationFailed(
+                throw LogicianError.verificationFailed(
                     requested: "\(sliderName) \(target)",
                     actual: "\(sliderName) stuck at \(after)",
                     restored: false
@@ -316,7 +316,7 @@ extension LogicAccessibility {
             last = after
         }
         guard Int(stringAttribute(slider, kAXValueAttribute as String)) == target else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "\(sliderName) \(target)",
                 actual: "\(sliderName) \(stringAttribute(slider, kAXValueAttribute as String))",
                 restored: false
@@ -328,13 +328,13 @@ extension LogicAccessibility {
 
     func setCycleRange(startBar: Int, endBar: Int, enabled: Bool?) throws -> [String: Any] {
         guard startBar >= 1, endBar > startBar else {
-            throw DemoError.invalidArguments("start_bar must be >= 1 and end_bar > start_bar")
+            throw LogicianError.invalidArguments("start_bar must be >= 1 and end_bar > start_bar")
         }
         let targetLength = endBar - startBar
 
         let ruler = try rulerArea()
         guard let region = rulerChild(ruler, "cycle region") else {
-            throw DemoError.trackNotExposed(requested: "cycle region", exposed: "no cycle region in the ruler")
+            throw LogicianError.trackNotExposed(requested: "cycle region", exposed: "no cycle region in the ruler")
         }
         let originalLength = cycleLengthBars(region)
 
@@ -342,7 +342,7 @@ extension LogicAccessibility {
         guard let lcd = playheadGroup(in: controlBar),
               let savedBar = sliderValue(lcd, "bar"),
               let savedBeat = sliderValue(lcd, "beat") else {
-            throw DemoError.windowNotFound("Playhead Position display in the control bar")
+            throw LogicianError.windowNotFound("Playhead Position display in the control bar")
         }
         defer {
             try? convergeSlider(in: controlBar, sliderName: "bar", target: savedBar)
@@ -356,7 +356,7 @@ extension LogicAccessibility {
             let freshRuler = try rulerArea()
             guard let freshRegion = rulerChild(freshRuler, "cycle region"),
                   let thumb = rulerChild(freshRuler, "Playhead thumb") else {
-                throw DemoError.windowNotFound("cycle region or playhead thumb in the ruler")
+                throw LogicianError.windowNotFound("cycle region or playhead thumb in the ruler")
             }
             let regionFrame = try frame(of: freshRegion)
             return (
@@ -390,7 +390,7 @@ extension LogicAccessibility {
             }
         }
         guard let anchored = anchor else {
-            throw DemoError.openVerificationFailed(
+            throw LogicianError.openVerificationFailed(
                 "Could not anchor the cycle region to a bar line via the playhead thumb."
             )
         }
@@ -408,7 +408,7 @@ extension LogicAccessibility {
         let startX = xForBar(startBar)
         let endX = xForBar(endBar)
         guard startX >= preDrag.rulerFrame.minX, endX <= preDrag.rulerFrame.maxX else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "bars \(startBar)-\(endBar)",
                 exposed: "the target range is outside the visible ruler; scroll or zoom Logic so it is visible"
             )
@@ -418,21 +418,21 @@ extension LogicAccessibility {
 
         func regionFrameNow() throws -> CGRect {
             guard let current = rulerChild(try rulerArea(), "cycle region") else {
-                throw DemoError.windowNotFound("cycle region in the ruler")
+                throw LogicianError.windowNotFound("cycle region in the ruler")
             }
             return try frame(of: current)
         }
         func setRegionPosition(x: CGFloat) throws {
             guard let current = rulerChild(try rulerArea(), "cycle region") else {
-                throw DemoError.windowNotFound("cycle region in the ruler")
+                throw LogicianError.windowNotFound("cycle region in the ruler")
             }
             var origin = CGPoint(x: x, y: preDrag.regionY)
             guard let value = AXValueCreate(.cgPoint, &origin) else {
-                throw DemoError.writeFailed("could not create the AXPosition value")
+                throw LogicianError.writeFailed("could not create the AXPosition value")
             }
             let status = AXUIElementSetAttributeValue(current, kAXPositionAttribute as CFString, value)
             guard status == .success else {
-                throw DemoError.writeFailed("AXPosition write on the cycle region returned AXError \(status.rawValue)")
+                throw LogicianError.writeFailed("AXPosition write on the cycle region returned AXError \(status.rawValue)")
             }
             Thread.sleep(forTimeInterval: 0.3)
         }
@@ -458,7 +458,7 @@ extension LogicAccessibility {
                     try setRegionPosition(x: min(startX + preDrag.slope, preDrag.rulerFrame.maxX - 2))
                     currentFrame = try regionFrameNow()
                     guard !covers(currentFrame, startX) else {
-                        throw DemoError.openVerificationFailed(
+                        throw LogicianError.openVerificationFailed(
                             "Could not move the existing cycle region away from the drag start point."
                         )
                     }
@@ -486,7 +486,7 @@ extension LogicAccessibility {
               cycleLengthBars(resized) == targetLength else {
             let actualLength = rulerChild((try? rulerArea()) ?? ruler, "cycle region")
                 .map { stringAttribute($0, "AXSizeDescription") } ?? "?"
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "cycle bars \(startBar)-\(endBar) (\(targetLength) bars)",
                 actual: "start is \(String(format: "%.2f", startError)) bars off, size is '\(actualLength)'",
                 restored: false
@@ -524,7 +524,7 @@ extension LogicAccessibility {
                 && stringAttribute(element, kAXDescriptionAttribute as String) == "Tracks time ruler"
         }
         guard let area = ruler else {
-            throw DemoError.windowNotFound("Tracks time ruler")
+            throw LogicianError.windowNotFound("Tracks time ruler")
         }
         return area
     }
@@ -537,11 +537,11 @@ extension LogicAccessibility {
 
     func frame(of element: AXUIElement) throws -> CGRect {
         guard let value = attribute(element, "AXFrame") else {
-            throw DemoError.writeFailed("could not read an element frame")
+            throw LogicianError.writeFailed("could not read an element frame")
         }
         var rect = CGRect.zero
         guard AXValueGetValue((value as! AXValue), .cgRect, &rect) else {
-            throw DemoError.writeFailed("could not decode an element frame")
+            throw LogicianError.writeFailed("could not decode an element frame")
         }
         return rect
     }
@@ -554,13 +554,13 @@ extension LogicAccessibility {
               let startBar = leadingInt(stringAttribute(start, kAXValueDescriptionAttribute as String)),
               let endBar = leadingInt(stringAttribute(end, kAXValueDescriptionAttribute as String)),
               endBar > startBar else {
-            throw DemoError.windowNotFound("Start/End markers in the ruler")
+            throw LogicianError.windowNotFound("Start/End markers in the ruler")
         }
         let startX = try frame(of: start).origin.x
         let endX = try frame(of: end).origin.x
         let slope = (endX - startX) / CGFloat(endBar - startBar)
         guard slope > 1 else {
-            throw DemoError.openVerificationFailed("Ruler scale too small (\(slope) px/bar); zoom in horizontally.")
+            throw LogicianError.openVerificationFailed("Ruler scale too small (\(slope) px/bar); zoom in horizontally.")
         }
         return slope
     }
@@ -568,7 +568,7 @@ extension LogicAccessibility {
     func approximateBarAt(x: CGFloat, in ruler: AXUIElement) throws -> Int {
         guard let start = rulerChild(ruler, "Start Marker"),
               let startBar = leadingInt(stringAttribute(start, kAXValueDescriptionAttribute as String)) else {
-            throw DemoError.windowNotFound("Start marker in the ruler")
+            throw LogicianError.windowNotFound("Start marker in the ruler")
         }
         let startX = try frame(of: start).origin.x
         let slope = try pixelsPerBar(in: ruler)
@@ -622,14 +622,14 @@ extension LogicAccessibility {
                 stringAttribute($0, kAXRoleAttribute as String) + " '"
                     + stringAttribute($0, kAXDescriptionAttribute as String) + "'"
             } ?? "nothing"
-            throw DemoError.writeFailed(
+            throw LogicianError.writeFailed(
                 "hit test at the \(label) resolved to \(hitDescription); refusing to drag. Another window may cover the ruler."
             )
         }
         let source = CGEventSource(stateID: .hidSystemState)
         let previousLocation = CGEvent(source: nil)?.location
         guard let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: from, mouseButton: .left) else {
-            throw DemoError.writeFailed("could not create mouse events for \(label)")
+            throw LogicianError.writeFailed("could not create mouse events for \(label)")
         }
         down.post(tap: .cghidEventTap)
         Thread.sleep(forTimeInterval: 0.08)
@@ -658,7 +658,7 @@ extension LogicAccessibility {
         guard let application = NSRunningApplication
             .runningApplications(withBundleIdentifier: bundleIdentifier)
             .first else {
-            throw DemoError.logicNotRunning
+            throw LogicianError.logicNotRunning
         }
         let appElement = AXUIElementCreateApplication(application.processIdentifier)
         func frontmost() -> Bool {
@@ -683,7 +683,7 @@ extension LogicAccessibility {
             }
         }
         guard frontmost() else {
-            throw DemoError.writeFailed("Logic could not be brought frontmost; refusing to interact with \(label)")
+            throw LogicianError.writeFailed("Logic could not be brought frontmost; refusing to interact with \(label)")
         }
     }
 
@@ -695,7 +695,7 @@ extension LogicAccessibility {
                 && stringAttribute(element, kAXHelpAttribute as String).hasPrefix("Control bar")
         }
         guard let group = bar else {
-            throw DemoError.windowNotFound("Control Bar group")
+            throw LogicianError.windowNotFound("Control Bar group")
         }
         return group
     }

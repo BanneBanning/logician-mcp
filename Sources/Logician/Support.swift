@@ -70,7 +70,11 @@ func sanitizedFilenameComponent(_ raw: String, fallback: String = "clip") -> Str
     return trimmed.isEmpty ? fallback : trimmed
 }
 
-enum DemoError: LocalizedError {
+/// The product's error taxonomy. Every tool failure is one of these, and the
+/// `code` values (not_found, precondition_failed, ambiguous,
+/// verification_failed, …) are the vocabulary agents branch on — they are
+/// documented in docs/AGENT-GUIDE.md, so renaming one is an API change.
+enum LogicianError: LocalizedError {
     case accessibilityNotTrusted
     case logicNotRunning
     case windowNotFound(String)

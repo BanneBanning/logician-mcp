@@ -63,7 +63,7 @@ extension MCUController {
             _ = quiescentStatus()
         }
         guard let slot = slotNumber else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "an empty send slot", exposed: "all 8 send slots are occupied"
             )
         }
@@ -90,7 +90,7 @@ extension MCUController {
             if name == entries.last { continue }
             if let firstEntry = entries.first, name == firstEntry, entries.count > 2 {
                 exitToPan()
-                throw DemoError.trackNotExposed(
+                throw LogicianError.trackNotExposed(
                     requested: "destination '\(destination)'",
                     exposed: "the browser wrapped; entries: " + entries.joined(separator: ", ")
                 )
@@ -98,14 +98,14 @@ extension MCUController {
             entries.append(name)
         }
         guard found else {
-            throw DemoError.openVerificationFailed(
+            throw LogicianError.openVerificationFailed(
                 "the destination browser never showed '\(destination)'"
             )
         }
         Thread.sleep(forTimeInterval: 0.3)
         _ = quiescentStatus()
         guard shownDestination().caseInsensitiveCompare(destination) == .orderedSame else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "'\(destination)' shown at confirmation time",
                 actual: "the entry drifted to '\(shownDestination())'; aborted",
                 restored: true
@@ -119,7 +119,7 @@ extension MCUController {
                   ($0["send"] as? Int) == slot
                       && (($0["destination"] as? String) ?? "").caseInsensitiveCompare(destination) == .orderedSame
               }) else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "send \(slot) -> \(destination)",
                 actual: "the send list does not show it after confirmation",
                 restored: false
@@ -201,7 +201,7 @@ extension MCUController {
         sendNumber: Int, targetDb: Double, expectedCurrentValue: String?
     ) throws -> [String: Any]? {
         guard (1...8).contains(sendNumber) else {
-            throw DemoError.invalidArguments("send must be 1-8")
+            throw LogicianError.invalidArguments("send must be 1-8")
         }
         guard try ensureSendView() else { return nil }
         defer { exitToPan() }
@@ -217,7 +217,7 @@ extension MCUController {
         let levelIndex = base + 1
         let destination = fields[base].value
         guard fields[base].name.hasPrefix("Sen"), !destination.isEmpty, destination != "--" else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "send \(sendNumber)",
                 exposed: "the selected track has no send in slot \(sendNumber)"
             )
@@ -231,7 +231,7 @@ extension MCUController {
             let matchesNumber = parseNumber(originalText) != nil && parseNumber(expected) != nil
                 && abs(parseNumber(originalText)! - parseNumber(expected)!) < 0.0001
             guard matchesText || matchesNumber else {
-                throw DemoError.currentValueMismatch(expected: expected, actual: originalText)
+                throw LogicianError.currentValueMismatch(expected: expected, actual: originalText)
             }
         }
         func currentText() -> String? {
@@ -241,7 +241,7 @@ extension MCUController {
             let before = freshStatus()?["received_events"] as? Int ?? -1
             let response = try MCUBridge.send(.vpot(index: levelIndex, delta: ticks))
             guard response.ok else {
-                throw DemoError.writeFailed("MCU vpot failed: \(response.error ?? "?")")
+                throw LogicianError.writeFailed("MCU vpot failed: \(response.error ?? "?")")
             }
             _ = awaitEvents(since: before, timeoutMs: 350)
         }

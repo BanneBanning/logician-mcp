@@ -8,14 +8,14 @@ extension MCPServer {
 
     func handleSetPlaying(_ arguments: [String: Any]) throws -> Any {
         guard let playing = arguments["playing"] as? Bool else {
-            throw DemoError.invalidArguments("missing boolean: playing")
+            throw LogicianError.invalidArguments("missing boolean: playing")
         }
         return try MCUController.setPlaying(playing) ?? logic.setPlaying(playing: playing)
     }
 
     func handleSetPlayhead(_ arguments: [String: Any]) throws -> Any {
         guard let barNumber = arguments["bar"] as? Int else {
-            throw DemoError.invalidArguments("missing integer: bar")
+            throw LogicianError.invalidArguments("missing integer: bar")
         }
         return try logic.setPlayhead(
             barNumber: barNumber,
@@ -25,7 +25,7 @@ extension MCPServer {
 
     func handleSetCycle(_ arguments: [String: Any]) throws -> Any {
         guard let enabled = arguments["enabled"] as? Bool else {
-            throw DemoError.invalidArguments("missing boolean: enabled")
+            throw LogicianError.invalidArguments("missing boolean: enabled")
         }
         return try MCUController.setCycle(enabled) ?? logic.setCycle(enabled: enabled)
     }
@@ -33,7 +33,7 @@ extension MCPServer {
     func handleSetCycleRange(_ arguments: [String: Any]) throws -> Any {
         guard let startBar = arguments["start_bar"] as? Int,
               let endBar = arguments["end_bar"] as? Int else {
-            throw DemoError.invalidArguments("missing integers: start_bar, end_bar")
+            throw LogicianError.invalidArguments("missing integers: start_bar, end_bar")
         }
         return try logic.setCycleRange(
             startBar: startBar,
@@ -45,7 +45,7 @@ extension MCPServer {
     func handleRecordMidi(_ arguments: [String: Any]) throws -> Any {
         let trackName = try requiredString("track_name", in: arguments)
         guard let rawNotes = arguments["notes"] as? [[String: Any]], !rawNotes.isEmpty else {
-            throw DemoError.invalidArguments(
+            throw LogicianError.invalidArguments(
                 "notes required: [{pitch, bar, beat?, duration_beats?, velocity?, channel?}, ...]"
             )
         }
@@ -54,7 +54,7 @@ extension MCPServer {
                ($0["track_name"] as? String)?.caseInsensitiveCompare(trackName) == .orderedSame
            }),
            header["is_stack"] as? Bool == true {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "MIDI recording on '\(trackName)'",
                 exposed: "'\(trackName)' is a track stack — record on one of its subtracks"
             )
@@ -63,28 +63,28 @@ extension MCPServer {
         func parsePitch(_ value: Any) throws -> Int {
             if let number = value as? Int {
                 guard (0...127).contains(number) else {
-                    throw DemoError.invalidArguments("pitch \(number) outside 0-127")
+                    throw LogicianError.invalidArguments("pitch \(number) outside 0-127")
                 }
                 return number
             }
             guard let name = value as? String else {
-                throw DemoError.invalidArguments("pitch must be 0-127 or a name like 'C3'/'F#1'")
+                throw LogicianError.invalidArguments("pitch must be 0-127 or a name like 'C3'/'F#1'")
             }
             let semitones: [Character: Int] = ["C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11]
             var rest = name.uppercased()
             guard let letter = rest.first, let base = semitones[letter] else {
-                throw DemoError.invalidArguments("unknown pitch name '\(name)'")
+                throw LogicianError.invalidArguments("unknown pitch name '\(name)'")
             }
             rest.removeFirst()
             var accidental = 0
             if rest.hasPrefix("#") { accidental = 1; rest.removeFirst() }
             else if rest.hasPrefix("B") && rest.count > 1 { accidental = -1; rest.removeFirst() }
             guard let octave = Int(rest) else {
-                throw DemoError.invalidArguments("unknown pitch name '\(name)' (use e.g. 'C3' = MIDI 60)")
+                throw LogicianError.invalidArguments("unknown pitch name '\(name)' (use e.g. 'C3' = MIDI 60)")
             }
             let midi = 60 + (octave - 3) * 12 + base + accidental
             guard (0...127).contains(midi) else {
-                throw DemoError.invalidArguments("pitch '\(name)' outside MIDI 0-127")
+                throw LogicianError.invalidArguments("pitch '\(name)' outside MIDI 0-127")
             }
             return midi
         }
@@ -95,15 +95,15 @@ extension MCPServer {
         var parsed: [ParsedNote] = []
         for raw in rawNotes {
             guard let bar = raw["bar"] as? Int, bar >= 1 else {
-                throw DemoError.invalidArguments("each note needs bar >= 1")
+                throw LogicianError.invalidArguments("each note needs bar >= 1")
             }
             let velocity = raw["velocity"] as? Int ?? 100
             guard (1...127).contains(velocity) else {
-                throw DemoError.invalidArguments("velocity must be 1-127")
+                throw LogicianError.invalidArguments("velocity must be 1-127")
             }
             let channel = raw["channel"] as? Int ?? 1
             guard (1...16).contains(channel) else {
-                throw DemoError.invalidArguments("channel must be 1-16")
+                throw LogicianError.invalidArguments("channel must be 1-16")
             }
             parsed.append(ParsedNote(
                 pitch: try parsePitch(raw["pitch"] ?? ""),
@@ -140,7 +140,7 @@ extension MCPServer {
         for note in parsed {
             let offsetBeats = Double(note.bar - startBar) * range.beatsPerBar + (note.beat - 1)
             guard offsetBeats >= 0 else {
-                throw DemoError.invalidArguments(
+                throw LogicianError.invalidArguments(
                     "note at bar \(note.bar) lies before start_bar \(startBar)"
                 )
             }
@@ -156,13 +156,13 @@ extension MCPServer {
                 guard let bar = raw["bar"] as? Int,
                       let cc = raw["cc"] as? Int, (0...127).contains(cc),
                       let value = raw["value"] as? Int, (0...127).contains(value) else {
-                    throw DemoError.invalidArguments("each cc_event needs bar, cc (0-127) and value (0-127)")
+                    throw LogicianError.invalidArguments("each cc_event needs bar, cc (0-127) and value (0-127)")
                 }
                 let beat = (raw["beat"] as? Double) ?? (raw["beat"] as? Int).map(Double.init) ?? 1.0
                 let channel = UInt8(((raw["channel"] as? Int) ?? 1) - 1) & 0x0F
                 let offsetBeats = Double(bar - startBar) * range.beatsPerBar + (beat - 1)
                 guard offsetBeats >= 0 else {
-                    throw DemoError.invalidArguments("cc_event at bar \(bar) lies before start_bar \(startBar)")
+                    throw LogicianError.invalidArguments("cc_event at bar \(bar) lies before start_bar \(startBar)")
                 }
                 events.append((offsetBeats * msPerBeat,
                                [0xB0 | channel, UInt8(cc), UInt8(value)]))
@@ -172,13 +172,13 @@ extension MCPServer {
             for raw in rawBends {
                 guard let bar = raw["bar"] as? Int,
                       let value = raw["value"] as? Int, (-8192...8191).contains(value) else {
-                    throw DemoError.invalidArguments("each pitch_bend needs bar and value (-8192..8191; 0 = center)")
+                    throw LogicianError.invalidArguments("each pitch_bend needs bar and value (-8192..8191; 0 = center)")
                 }
                 let beat = (raw["beat"] as? Double) ?? (raw["beat"] as? Int).map(Double.init) ?? 1.0
                 let channel = UInt8(((raw["channel"] as? Int) ?? 1) - 1) & 0x0F
                 let offsetBeats = Double(bar - startBar) * range.beatsPerBar + (beat - 1)
                 guard offsetBeats >= 0 else {
-                    throw DemoError.invalidArguments("pitch_bend at bar \(bar) lies before start_bar \(startBar)")
+                    throw LogicianError.invalidArguments("pitch_bend at bar \(bar) lies before start_bar \(startBar)")
                 }
                 let fourteen = value + 8192
                 events.append((offsetBeats * msPerBeat,
@@ -249,14 +249,14 @@ extension MCPServer {
 
     func handleRecordAutomation(_ arguments: [String: Any]) throws -> Any {
         guard let rawPoints = arguments["points"] as? [[String: Any]], rawPoints.count >= 1 else {
-            throw DemoError.invalidArguments("points required: [{bar, beat?, db}, ...]")
+            throw LogicianError.invalidArguments("points required: [{bar, beat?, db}, ...]")
         }
         let parameter = (arguments["parameter"] as? String) ?? "volume"
         let automationPoints: [(bar: Int, beat: Double, value: Double)] = try rawPoints.map { raw in
             guard let bar = raw["bar"] as? Int,
                   let value = (raw["value"] as? Double) ?? (raw["value"] as? Int).map(Double.init)
                       ?? (raw["db"] as? Double) ?? (raw["db"] as? Int).map(Double.init) else {
-                throw DemoError.invalidArguments("each point needs bar (int) and value/db (number)")
+                throw LogicianError.invalidArguments("each point needs bar (int) and value/db (number)")
             }
             let beat = (raw["beat"] as? Double) ?? (raw["beat"] as? Int).map(Double.init) ?? 1.0
             return (bar, beat, value)
@@ -297,7 +297,7 @@ extension MCPServer {
             )
         case "send":
             guard let sendSlot = arguments["send"] as? Int, (1...8).contains(sendSlot) else {
-                throw DemoError.invalidArguments("parameter 'send' requires send: 1-8")
+                throw LogicianError.invalidArguments("parameter 'send' requires send: 1-8")
             }
             automationResult = try MCUController.recordVpotAutomation(
                 logic: logic, trackName: automationTrack, kindLabel: "send \(sendSlot) level",
@@ -305,7 +305,7 @@ extension MCPServer {
                 tolerance: toleranceArg ?? 1.0,
                 enterView: { _ in
                     guard try MCUController.ensureSendView() else {
-                        throw DemoError.trackNotExposed(
+                        throw LogicianError.trackNotExposed(
                             requested: "the send channel view", exposed: "not reachable"
                         )
                     }
@@ -324,7 +324,7 @@ extension MCPServer {
                 },
                 refreshView: {
                     guard try MCUController.ensureSendView() else {
-                        throw DemoError.trackNotExposed(
+                        throw LogicianError.trackNotExposed(
                             requested: "the send view for verification", exposed: "not reachable"
                         )
                     }
@@ -334,7 +334,7 @@ extension MCPServer {
             )
         case "plugin":
             guard let slot = arguments["insert_slot"] as? Int else {
-                throw DemoError.invalidArguments("parameter 'plugin' requires insert_slot (1-8)")
+                throw LogicianError.invalidArguments("parameter 'plugin' requires insert_slot (1-8)")
             }
             let paramName = try requiredString("plugin_parameter", in: arguments)
             let maxAbs = automationPoints.map { abs($0.value) }.max() ?? 1
@@ -346,13 +346,13 @@ extension MCPServer {
                 enterView: { _ in
                     guard try MCUController.ensurePluginList() != nil,
                           try MCUController.enterPluginEdit(slot: slot) else {
-                        throw DemoError.trackNotExposed(
+                        throw LogicianError.trackNotExposed(
                             requested: "plugin edit mode for slot \(slot)",
                             exposed: "could not enter"
                         )
                     }
                     guard let found = try MCUController.locateParameter(named: paramName) else {
-                        throw DemoError.trackNotExposed(
+                        throw LogicianError.trackNotExposed(
                             requested: "parameter '\(paramName)' in slot \(slot)",
                             exposed: "not found on the parameter pages"
                         )
@@ -369,7 +369,7 @@ extension MCPServer {
                     guard try MCUController.ensurePluginList() != nil,
                           try MCUController.enterPluginEdit(slot: slot),
                           try MCUController.locateParameter(named: paramName) != nil else {
-                        throw DemoError.trackNotExposed(
+                        throw LogicianError.trackNotExposed(
                             requested: "the plugin view for verification", exposed: "not reachable"
                         )
                     }
@@ -377,7 +377,7 @@ extension MCPServer {
                 restoreView: { MCUController.exitToPan() }
             )
         default:
-            throw DemoError.invalidArguments("parameter must be volume, pan, send or plugin")
+            throw LogicianError.invalidArguments("parameter must be volume, pan, send or plugin")
         }
         automationResult["track"] = automationTrack
         return automationResult

@@ -38,12 +38,12 @@ extension MCUController {
         tempo: Double, beatsPerBar: Double, syncCompensationMs: Double
     ) throws -> [String: Any] {
         guard startBar >= 2 else {
-            throw DemoError.invalidArguments(
+            throw LogicianError.invalidArguments(
                 "start_bar must be >= 2 (one bar of pre-roll is needed for the timecode sync)"
             )
         }
         guard freshStatus() != nil else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "MCU bridge for MIDI recording",
                 exposed: "the bridge is not running or Logic has not connected"
             )
@@ -77,7 +77,7 @@ extension MCUController {
         }
         // Record LED confirms Logic is actually rolling/armed.
         guard pollStatus(until: { ledLit(0x5F, in: $0) }) != nil else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "recording started",
                 actual: "the MCU record LED never lit",
                 restored: true
@@ -127,7 +127,7 @@ extension MCUController {
             Thread.sleep(forTimeInterval: 0.005)
         }
         guard synced else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "playhead reaching bar \(startBar)",
                 actual: "the timecode never crossed into the start bar within 20 s",
                 restored: true
@@ -140,7 +140,7 @@ extension MCUController {
             }
         ))
         guard streamResponse.ok, let durationMs = streamResponse.durationMs else {
-            throw DemoError.writeFailed(
+            throw LogicianError.writeFailed(
                 "midi_stream failed: \(streamResponse.error ?? "?")"
             )
         }
@@ -173,7 +173,7 @@ extension MCUController {
                ($0["track_name"] as? String)?.caseInsensitiveCompare(trackName) == .orderedSame
            }),
            header["is_stack"] as? Bool == true {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "render A/B of '\(trackName)'",
                 exposed: "'\(trackName)' is a track stack — Logic cannot freeze stacks; evaluate on a subtrack or use method 'bounce'"
             )
@@ -200,7 +200,7 @@ extension MCUController {
             targetValue: targetValue, expectedCurrentValue: expectedCurrentValue,
             tolerance: nil
         ) else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "MCU write of '\(parameter)' in slot \(insertSlot)",
                 exposed: "the MCU bridge could not resolve the parameter; nothing was changed (baseline render A kept)"
             )
@@ -385,7 +385,7 @@ extension MCUController {
         }
         guard let change = changeOpt else {
             unsolo()
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "MCU write of '\(parameter)' in slot \(insertSlot)",
                 exposed: "the MCU bridge could not resolve the parameter; nothing was changed (baseline bounce A kept)"
             )

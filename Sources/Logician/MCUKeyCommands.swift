@@ -11,7 +11,7 @@ extension MCUController {
     /// anything in the user's key command set.
     static func triggerKeyCommand(note: Int, channel: Int) throws -> [String: Any] {
         guard let entry = KeyCommandRegistry.entry(note: note, channel: channel) else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "key command note \(note) channel \(channel)",
                 exposed: "registered commands: "
                     + KeyCommandRegistry.commands().map {
@@ -21,7 +21,7 @@ extension MCUController {
         }
         let response = try MCUBridge.send(.keycmd(note: note, channel: channel))
         guard response.ok else {
-            throw DemoError.writeFailed("keycmd failed: \(response.error ?? "?")")
+            throw LogicianError.writeFailed("keycmd failed: \(response.error ?? "?")")
         }
         return [
             "success": true,

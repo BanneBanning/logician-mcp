@@ -41,25 +41,25 @@ extension LogicAccessibility {
     ) throws -> TrackHeader {
         if let number = number {
             guard let byNumber = headers.first(where: { $0.number == number }) else {
-                throw DemoError.trackNotFound(
+                throw LogicianError.trackNotFound(
                     "track \(number)",
                     available: headers.map { "\($0.number): \($0.name)" }
                 )
             }
             guard byNumber.name == name else {
-                throw DemoError.trackMismatch(number: number, expected: name, actual: byNumber.name)
+                throw LogicianError.trackMismatch(number: number, expected: name, actual: byNumber.name)
             }
             return byNumber
         }
         let matches = headers.filter { $0.name == name }
         guard !matches.isEmpty else {
-            throw DemoError.trackNotFound(
+            throw LogicianError.trackNotFound(
                 name,
                 available: headers.map { "\($0.number): \($0.name)" }
             )
         }
         guard matches.count == 1, let match = matches.first else {
-            throw DemoError.trackAmbiguous(name, numbers: matches.map(\.number))
+            throw LogicianError.trackAmbiguous(name, numbers: matches.map(\.number))
         }
         return match
     }
@@ -68,7 +68,7 @@ extension LogicAccessibility {
         guard let expected = expected else { return }
         let actual = try projectDocumentPath()
         guard normalizedPath(expected) == normalizedPath(actual) else {
-            throw DemoError.projectMismatch(expected: expected, actual: actual)
+            throw LogicianError.projectMismatch(expected: expected, actual: actual)
         }
     }
 
@@ -107,18 +107,18 @@ extension LogicAccessibility {
                 stringAttribute($0, kAXRoleAttribute as String) == "AXRadioButton"
                     && stringAttribute($0, kAXDescriptionAttribute as String) == "Has Focus"
             }) else {
-                throw DemoError.writeFailed(
+                throw LogicianError.writeFailed(
                     "AXSelectedChildren returned AXError \(setStatus.rawValue) and no Has Focus button was found"
                 )
             }
             let pressStatus = AXUIElementPerformAction(focusButton, kAXPressAction as CFString)
             guard pressStatus == .success else {
-                throw DemoError.writeFailed("AXPress on Has Focus returned AXError \(pressStatus.rawValue)")
+                throw LogicianError.writeFailed("AXPress on Has Focus returned AXError \(pressStatus.rawValue)")
             }
             guard pollTrackSelected(target.item, name: target.name) else {
                 let restored = restoreSelection(previous?.item, in: group)
                 let actual = currentSelectionDescription()
-                throw DemoError.selectionFailed(requested: target.name, actual: actual, restored: restored)
+                throw LogicianError.selectionFailed(requested: target.name, actual: actual, restored: restored)
             }
         }
 
@@ -208,7 +208,7 @@ extension LogicAccessibility {
         let before = try parsedTrackHeaders()
         let target = try resolveTrack(before, name: trackName, number: trackNumber)
         guard let disclosure = target.disclosure, let currentlyExpanded = target.expanded else {
-            throw DemoError.trackNotStack(target.name)
+            throw LogicianError.trackNotStack(target.name)
         }
 
         if currentlyExpanded == expanded {
@@ -233,7 +233,7 @@ extension LogicAccessibility {
             verified = pollStackState(trackNumber: target.number, expanded: expanded, attempts: 20)
         }
         guard verified else {
-            throw DemoError.openVerificationFailed(
+            throw LogicianError.openVerificationFailed(
                 "The disclosure triangle of '\(target.name)' did not reach expanded=\(expanded)."
             )
         }
@@ -301,11 +301,11 @@ extension LogicAccessibility {
     /// click unless a hit test at that position resolves to the same element.
     func clickElement(_ element: AXUIElement, describedAs label: String) throws {
         guard let frameValue = attribute(element, "AXFrame") else {
-            throw DemoError.writeFailed("could not read the frame of \(label)")
+            throw LogicianError.writeFailed("could not read the frame of \(label)")
         }
         var frame = CGRect.zero
         guard AXValueGetValue((frameValue as! AXValue), .cgRect, &frame), !frame.isEmpty else {
-            throw DemoError.writeFailed("could not decode the frame of \(label)")
+            throw LogicianError.writeFailed("could not decode the frame of \(label)")
         }
         let point = CGPoint(x: frame.midX, y: frame.midY)
 
@@ -319,7 +319,7 @@ extension LogicAccessibility {
             &hit
         )
         guard hitStatus == .success, let hitElement = hit, elementCoversTarget(hitElement, target: element) else {
-            throw DemoError.writeFailed(
+            throw LogicianError.writeFailed(
                 "hit test at the position of \(label) did not resolve to that element; refusing to click"
             )
         }
@@ -338,7 +338,7 @@ extension LogicAccessibility {
                   mouseCursorPosition: point,
                   mouseButton: .left
               ) else {
-            throw DemoError.writeFailed("could not create mouse events for \(label)")
+            throw LogicianError.writeFailed("could not create mouse events for \(label)")
         }
         down.post(tap: .cghidEventTap)
         Thread.sleep(forTimeInterval: 0.05)
@@ -379,7 +379,7 @@ extension LogicAccessibility {
         guard let control = children(of: strip).first(where: {
             stringAttribute($0, kAXDescriptionAttribute as String) == description
         }) else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "\(description) control on '\(trackName)'",
                 exposed: "the inspector strip has no such control"
             )
@@ -406,7 +406,7 @@ extension LogicAccessibility {
         }
         let status = AXUIElementPerformAction(button, kAXPressAction as CFString)
         guard status == .success else {
-            throw DemoError.writeFailed("AXPress on \(control) returned AXError \(status.rawValue)")
+            throw LogicianError.writeFailed("AXPress on \(control) returned AXError \(status.rawValue)")
         }
         for _ in 0..<20 {
             Thread.sleep(forTimeInterval: 0.1)
@@ -421,7 +421,7 @@ extension LogicAccessibility {
                 ]
             }
         }
-        throw DemoError.verificationFailed(
+        throw LogicianError.verificationFailed(
             requested: "\(control)=\(enabled)", actual: "\(control)=\(current)", restored: false
         )
     }
@@ -444,11 +444,11 @@ extension LogicAccessibility {
             trackName: trackName, trackNumber: trackNumber, description: "volume fader"
         )
         guard let beforeDb = decibelValue(of: fader) else {
-            throw DemoError.valueNotWritable("the volume fader exposes no readable dB value")
+            throw LogicianError.valueNotWritable("the volume fader exposes no readable dB value")
         }
         guard let minRaw = Int(stringAttribute(fader, kAXMinValueAttribute as String)),
               let maxRaw = Int(stringAttribute(fader, kAXMaxValueAttribute as String)) else {
-            throw DemoError.valueNotWritable("the volume fader exposes no raw range")
+            throw LogicianError.valueNotWritable("the volume fader exposes no raw range")
         }
 
         // Each AXValue write moves the fader one raw step toward the written
@@ -477,12 +477,12 @@ extension LogicAccessibility {
             let stepTarget = currentDb < targetDb ? maxRaw : minRaw
             let status = AXUIElementSetAttributeValue(fader, kAXValueAttribute as CFString, stepTarget as CFNumber)
             guard status == .success else {
-                throw DemoError.writeFailed("AXValue write on the volume fader returned AXError \(status.rawValue)")
+                throw LogicianError.writeFailed("AXValue write on the volume fader returned AXError \(status.rawValue)")
             }
             Thread.sleep(forTimeInterval: 0.03)
         }
         guard abs(achievedDb - targetDb) <= max(toleranceDb, 0.25) else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: String(format: "%.1f dB", targetDb),
                 actual: String(format: "%.1f dB", achievedDb),
                 restored: false
@@ -509,7 +509,7 @@ extension LogicAccessibility {
         guard let minRaw = Int(stringAttribute(knob, kAXMinValueAttribute as String)),
               let maxRaw = Int(stringAttribute(knob, kAXMaxValueAttribute as String)),
               position >= minRaw, position <= maxRaw else {
-            throw DemoError.invalidArguments("pan position must be within the knob's range")
+            throw LogicianError.invalidArguments("pan position must be within the knob's range")
         }
         let before = Int(stringAttribute(knob, kAXValueAttribute as String)) ?? 0
         var last = before
@@ -518,19 +518,19 @@ extension LogicAccessibility {
             if current == position { break }
             let status = AXUIElementSetAttributeValue(knob, kAXValueAttribute as CFString, position as CFNumber)
             guard status == .success else {
-                throw DemoError.writeFailed("AXValue write on the pan knob returned AXError \(status.rawValue)")
+                throw LogicianError.writeFailed("AXValue write on the pan knob returned AXError \(status.rawValue)")
             }
             Thread.sleep(forTimeInterval: 0.03)
             let after = Int(stringAttribute(knob, kAXValueAttribute as String)) ?? current
             if after == last && after != position {
-                throw DemoError.verificationFailed(
+                throw LogicianError.verificationFailed(
                     requested: "pan \(position)", actual: "stuck at \(after)", restored: false
                 )
             }
             last = after
         }
         guard Int(stringAttribute(knob, kAXValueAttribute as String)) == position else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "pan \(position)",
                 actual: stringAttribute(knob, kAXValueAttribute as String),
                 restored: false

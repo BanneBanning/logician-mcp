@@ -6,7 +6,7 @@ extension MCPServer {
         let payload: Any
         guard let startBar = arguments["start_bar"] as? Int,
               let endBar = arguments["end_bar"] as? Int else {
-            throw DemoError.invalidArguments("missing integers: start_bar, end_bar")
+            throw LogicianError.invalidArguments("missing integers: start_bar, end_bar")
         }
         do {
             payload = try logic.bounceRange(
@@ -28,11 +28,11 @@ extension MCPServer {
         let payload: Any
         guard let startBar = arguments["start_bar"] as? Int,
               let endBar = arguments["end_bar"] as? Int else {
-            throw DemoError.invalidArguments("missing integers: start_bar, end_bar")
+            throw LogicianError.invalidArguments("missing integers: start_bar, end_bar")
         }
         if (arguments["method"] as? String) == "render" {
             guard let slot = arguments["insert_slot"] as? Int else {
-                throw DemoError.invalidArguments(
+                throw LogicianError.invalidArguments(
                     "method 'render' requires insert_slot (1-8, MCU physical slot; list with logic_mcu_plugin_inserts)"
                 )
             }
@@ -56,7 +56,7 @@ extension MCPServer {
         }
         if (arguments["method"] as? String) == "solo_bounce" {
             guard let slot = arguments["insert_slot"] as? Int else {
-                throw DemoError.invalidArguments(
+                throw LogicianError.invalidArguments(
                     "method 'solo_bounce' requires insert_slot (1-8, MCU physical slot; list with logic_mcu_plugin_inserts)"
                 )
             }
@@ -93,7 +93,7 @@ extension MCPServer {
             }
             return payload
         }
-        throw DemoError.invalidArguments(
+        throw LogicianError.invalidArguments(
             "method must be one of 'render' (single-track freeze A/B, needs insert_slot), "
                 + "'bounce' (master A/B, needs plugin_name) or 'solo_bounce' "
                 + "(soloed master A/B for tracks freeze refuses, needs insert_slot)"
@@ -112,7 +112,7 @@ extension MCPServer {
                ($0["track_name"] as? String)?.caseInsensitiveCompare(trackName) == .orderedSame
            }),
            header["is_stack"] as? Bool == true {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "freeze render of '\(trackName)'",
                 exposed: "'\(trackName)' is a track stack — Logic cannot freeze stacks; render its subtracks individually or use logic_bounce_range for the summed output"
             )
@@ -152,7 +152,7 @@ extension MCPServer {
     func handleGetAudioClip(_ arguments: [String: Any]) throws -> Any {
         let clipPath = (try requiredString("path", in: arguments) as NSString).expandingTildeInPath
         guard FileManager.default.fileExists(atPath: clipPath) else {
-            throw DemoError.trackNotExposed(requested: "audio file at '\(clipPath)'", exposed: "no such file")
+            throw LogicianError.trackNotExposed(requested: "audio file at '\(clipPath)'", exposed: "no such file")
         }
         let clipStart = (arguments["start_seconds"] as? Double)
             ?? (arguments["start_seconds"] as? Int).map(Double.init) ?? 0
@@ -196,10 +196,10 @@ extension MCPServer {
         convert.waitUntilExit()
         guard convert.terminationStatus == 0,
               let clipData = try? Data(contentsOf: scratch), !clipData.isEmpty else {
-            throw DemoError.writeFailed("afconvert could not produce the clip (is the source a readable audio file?)")
+            throw LogicianError.writeFailed("afconvert could not produce the clip (is the source a readable audio file?)")
         }
         guard clipData.count <= 400_000 else {
-            throw DemoError.invalidArguments(
+            throw LogicianError.invalidArguments(
                 "the encoded clip is \(clipData.count / 1000) KB - too large to attach safely; request a shorter duration_seconds"
             )
         }

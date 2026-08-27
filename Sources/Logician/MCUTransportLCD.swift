@@ -18,7 +18,7 @@ extension MCUController {
         }
         try press(playing ? "play" : "stop")
         guard pollStatus(until: { ledLit(playLED, in: $0) == playing }) != nil else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "playing=\(playing)",
                 actual: "MCU play LED did not change",
                 restored: false
@@ -45,7 +45,7 @@ extension MCUController {
         }
         try press("cycle")
         guard pollStatus(until: { ledLit(cycleLED, in: $0) == enabled }) != nil else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "cycle=\(enabled)",
                 actual: "MCU cycle LED did not change",
                 restored: false

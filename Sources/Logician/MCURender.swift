@@ -23,7 +23,7 @@ extension MCUController {
                 return found
             }
         }
-        throw DemoError.trackNotExposed(
+        throw LogicianError.trackNotExposed(
             requested: "key command '\(name)'",
             exposed: "not in the registry and automatic learning did not succeed; run logic_setup_key_commands with Logic frontmost"
         )
@@ -47,7 +47,7 @@ extension MCUController {
             if logic.trackFreezeState(trackName: trackName) == false { return }
             Thread.sleep(forTimeInterval: 0.25)
         }
-        throw DemoError.verificationFailed(
+        throw LogicianError.verificationFailed(
             requested: "unfreeze of '\(trackName)' before rendering",
             actual: "the track header's freeze button is still lit",
             restored: false
@@ -101,7 +101,7 @@ extension MCUController {
                 Thread.sleep(forTimeInterval: 0.25)
             }
             if !armed {
-                throw DemoError.openVerificationFailed(checkboxSeen
+                throw LogicianError.openVerificationFailed(checkboxSeen
                     ? "Logic refuses to arm Freeze on this track: the header checkbox exists "
                         + "but stays off (verified via Accessibility). Common causes: the track "
                         + "shares its channel strip with another track (e.g. a duplicated track "
@@ -139,7 +139,7 @@ extension MCUController {
                timecode.contains("ALERT") {
                 _ = try? setPlaying(false)
                 _ = try? triggerKeyCommand(note: freeze.note, channel: freeze.channel)
-                throw DemoError.openVerificationFailed(
+                throw LogicianError.openVerificationFailed(
                     "Logic is showing a modal alert (MCU timecode reads ALERT); dismiss it and retry"
                 )
             }
@@ -160,7 +160,7 @@ extension MCUController {
             } else {
                 _ = try? triggerKeyCommand(note: freeze.note, channel: freeze.channel)
             }
-            throw DemoError.openVerificationFailed(
+            throw LogicianError.openVerificationFailed(
                 renderStarted
                     ? "freeze render started but no finished file appeared within 180 s"
                     : "freeze never engaged within 10 s of play. Likely causes: the track is a stack or bus (not freezable), it has nothing to render, the Freeze button is not enabled in the track header (Logic: Track > Configure Track Header > Freeze), or the Toggle Track Freeze key-command binding is orphaned - run logic_setup_key_commands with relearn: true to repair"

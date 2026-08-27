@@ -51,7 +51,7 @@ extension MCPServer {
         if let onlyNames = arguments["commands"] as? [String], !onlyNames.isEmpty {
             targets = targets.filter { onlyNames.contains($0.name) }
             guard !targets.isEmpty else {
-                throw DemoError.invalidArguments(
+                throw LogicianError.invalidArguments(
                     "no standard command matches; valid names: "
                         + KeyCommandRegistry.standardCommands.map(\.name).joined(separator: ", ")
                 )
@@ -96,7 +96,7 @@ extension MCPServer {
         // notes) instead of forwarding it raw to the bridge.
         if (arguments["cmd"] as? String) == "keycmd" {
             guard let note = arguments["note"] as? Int else {
-                throw DemoError.invalidArguments("keycmd requires an integer note")
+                throw LogicianError.invalidArguments("keycmd requires an integer note")
             }
             let channel = arguments["channel"] as? Int ?? 16
             payload = try MCUController.triggerKeyCommand(note: note, channel: channel)

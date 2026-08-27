@@ -11,10 +11,10 @@ extension LogicAccessibility {
     func pressMenuItem(containing fragment: String, underMenu parent: String) throws {
         guard let application = NSRunningApplication
             .runningApplications(withBundleIdentifier: bundleIdentifier)
-            .first else { throw DemoError.logicNotRunning }
+            .first else { throw LogicianError.logicNotRunning }
         let appElement = AXUIElementCreateApplication(application.processIdentifier)
         guard let menuBar = attribute(appElement, kAXMenuBarAttribute as String) else {
-            throw DemoError.windowNotFound("menu bar")
+            throw LogicianError.windowNotFound("menu bar")
         }
         var target: AXUIElement?
         func walk(_ element: AXUIElement, depth: Int, path: [String]) {
@@ -31,11 +31,11 @@ extension LogicAccessibility {
         }
         walk(menuBar as! AXUIElement, depth: 0, path: [])
         guard let item = target else {
-            throw DemoError.windowNotFound("menu item '\(fragment)' under '\(parent)'")
+            throw LogicianError.windowNotFound("menu item '\(fragment)' under '\(parent)'")
         }
         let status = AXUIElementPerformAction(item, kAXPressAction as CFString)
         guard status == .success else {
-            throw DemoError.writeFailed("menu press returned AXError \(status.rawValue)")
+            throw LogicianError.writeFailed("menu press returned AXError \(status.rawValue)")
         }
     }
 
@@ -62,7 +62,7 @@ extension LogicAccessibility {
     func setBouncePosition(group: AXUIElement, bar: Int) throws {
         guard let segment = children(of: group).first,
               let minimum = Int64(stringAttribute(segment, kAXMinValueAttribute as String)) else {
-            throw DemoError.valueNotWritable("bounce position group has no readable segments")
+            throw LogicianError.valueNotWritable("bounce position group has no readable segments")
         }
         let ticksPerBar: Int64 = 16_492_674_416_640
         let target = minimum + Int64(bar - 1) * ticksPerBar
@@ -98,13 +98,13 @@ extension LogicAccessibility {
         }
 
         guard var current = read() else {
-            throw DemoError.valueNotWritable("bounce position value unreadable")
+            throw LogicianError.valueNotWritable("bounce position value unreadable")
         }
         if current == target { return }
         if (current - minimum) % ticksPerBar != 0 {
             // Sub-bar remainder: clamp to the minimum first to erase it.
             guard stepTo(minimum, maxWrites: 200) == minimum else {
-                throw DemoError.verificationFailed(
+                throw LogicianError.verificationFailed(
                     requested: "bounce position bar \(bar)",
                     actual: "could not clear the sub-bar offset (stuck at '"
                         + stringAttribute(group, kAXValueAttribute as String)
@@ -116,7 +116,7 @@ extension LogicAccessibility {
             current = minimum
         }
         if stepTo(target, maxWrites: 200) != target {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "bounce position bar \(bar)",
                 actual: stringAttribute(group, kAXValueAttribute as String)
                     .replacingOccurrences(of: "\t", with: " ")
@@ -180,13 +180,13 @@ extension LogicAccessibility {
     ) throws -> [String: Any] {
         try verifyProjectPath(expectedProjectPath)
         guard endBar > startBar else {
-            throw DemoError.invalidArguments("end_bar must be greater than start_bar")
+            throw LogicianError.invalidArguments("end_bar must be greater than start_bar")
         }
         try ensureLogicFrontmost(for: "the bounce dialog") // dialogs need key focus
 
         try pressMenuItem(containing: "Project or Section", underMenu: "Bounce")
         guard let dialog = bounceDialog() else {
-            throw DemoError.windowNotFound("bounce dialog")
+            throw LogicianError.windowNotFound("bounce dialog")
         }
 
         // Destinations: ensure exactly Uncompressed. Settings persist between
@@ -208,7 +208,7 @@ extension LogicAccessibility {
         guard groups.count == 2 else {
             _ = children(of: dialog).first { stringAttribute($0, kAXTitleAttribute as String) == "Cancel" }
                 .map { AXUIElementPerformAction($0, kAXPressAction as CFString) }
-            throw DemoError.windowNotFound("start/end position fields in the bounce dialog")
+            throw LogicianError.windowNotFound("start/end position fields in the bounce dialog")
         }
         try setBouncePosition(group: groups[1], bar: endBar) // end first avoids clamping
         try setBouncePosition(group: groups[0], bar: startBar)
@@ -216,7 +216,7 @@ extension LogicAccessibility {
         guard let okButton = children(of: dialog).first(where: {
             stringAttribute($0, kAXTitleAttribute as String) == "OK"
         }) else {
-            throw DemoError.windowNotFound("OK button in the bounce dialog")
+            throw LogicianError.windowNotFound("OK button in the bounce dialog")
         }
         _ = AXUIElementPerformAction(okButton, kAXPressAction as CFString)
 
@@ -240,7 +240,7 @@ extension LogicAccessibility {
             }
         }
         guard let panel = panelRoot else {
-            throw DemoError.openVerificationFailed("the save panel did not appear")
+            throw LogicianError.openVerificationFailed("the save panel did not appear")
         }
 
         // The panel keeps its default name regardless of AXValue writes, so we
@@ -251,10 +251,10 @@ extension LogicAccessibility {
             stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
                 && stringAttribute($0, kAXTitleAttribute as String) == "Bounce"
         }) else {
-            throw DemoError.openVerificationFailed("no Bounce button in the save panel")
+            throw LogicianError.openVerificationFailed("no Bounce button in the save panel")
         }
         guard AXUIElementPerformAction(bounceButton, kAXPressAction as CFString) == .success else {
-            throw DemoError.writeFailed("pressing Bounce failed")
+            throw LogicianError.writeFailed("pressing Bounce failed")
         }
         // A possible "already exists" sheet: press Replace.
         Thread.sleep(forTimeInterval: 0.25)
@@ -311,7 +311,7 @@ extension LogicAccessibility {
             }
         }
         guard let renderedPath = resultPath else {
-            throw DemoError.openVerificationFailed(
+            throw LogicianError.openVerificationFailed(
                 "no bounced file appeared within 60 s"
             )
         }

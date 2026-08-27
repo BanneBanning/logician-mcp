@@ -23,7 +23,7 @@ extension MCUController {
         guard try selectFoundChannel(channel) else { return nil }
         guard let inserts = try pluginInsertNames() else { return nil }
         guard let emptyIndex = inserts.firstIndex(where: { $0.isEmpty || $0 == "--" }) else {
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "an empty insert slot",
                 exposed: "all 8 MCU insert slots are occupied"
             )
@@ -70,7 +70,7 @@ extension MCUController {
             if name == entries.last { continue }
             if let first = entries.first, name == first, entries.count > 2 {
                 abortBrowse()
-                throw DemoError.trackNotExposed(
+                throw LogicianError.trackNotExposed(
                     requested: "plugin '\(pluginName)' in the control-surface browser",
                     exposed: "the browser wrapped around without a match; entries seen: \(entries.joined(separator: ", "))"
                 )
@@ -79,7 +79,7 @@ extension MCUController {
         }
         guard found else {
             abortBrowse()
-            throw DemoError.openVerificationFailed(
+            throw LogicianError.openVerificationFailed(
                 "the plugin browser never showed '\(pluginName)' within 250 steps"
             )
         }
@@ -101,7 +101,7 @@ extension MCUController {
         }
         guard let settled = settledName, matches(settled) else {
             abortBrowse()
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "'\(pluginName)' shown at confirmation time",
                 actual: "the browser entry drifted to '\(browseName() ?? "?")' and back-stepping could not recover it; aborted without instantiating",
                 restored: true
@@ -120,7 +120,7 @@ extension MCUController {
             : ""
         exitToPan()
         guard !slotName.isEmpty, slotName != "--" else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "'\(pluginName)' instantiated in slot \(emptyIndex + 1)",
                 actual: "the slot still shows empty after confirmation",
                 restored: false
@@ -145,7 +145,7 @@ extension MCUController {
             Thread.sleep(forTimeInterval: 0.4)
         }
         guard axConfirmed else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "'\(pluginName)' on track '\(trackName)' (AX cross-check)",
                 actual: "the LCD claimed success but the track's AX insert list never showed the plugin — it may have landed on another channel; check the mixer",
                 restored: false
@@ -183,7 +183,7 @@ extension MCUController {
         }
         guard matches.count == 1, let target = matches.first else {
             exitToPan()
-            throw DemoError.trackNotExposed(
+            throw LogicianError.trackNotExposed(
                 requested: "exactly one insert matching '\(pluginName)'",
                 exposed: "MCU slots: " + inserts.enumerated()
                     .map { "\($0 + 1): \($1.isEmpty ? "--" : $1)" }.joined(separator: ", ")
@@ -210,7 +210,7 @@ extension MCUController {
         }
         guard reached else {
             exitToPan()
-            throw DemoError.openVerificationFailed(
+            throw LogicianError.openVerificationFailed(
                 "the browser never reached the No Plug-in entry within 400 steps; nothing was changed (browse abandoned)"
             )
         }
@@ -226,7 +226,7 @@ extension MCUController {
         }
         guard browseName() == "--" else {
             exitToPan()
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "the No Plug-in entry shown at confirmation time",
                 actual: "the entry drifted to '\(browseName() ?? "?")'; aborted without removing",
                 restored: true
@@ -258,7 +258,7 @@ extension MCUController {
             Thread.sleep(forTimeInterval: 0.4)
         }
         guard nowEmpty, axGone else {
-            throw DemoError.verificationFailed(
+            throw LogicianError.verificationFailed(
                 requested: "'\(pluginName)' removed from '\(trackName)'",
                 actual: nowEmpty
                     ? "the LCD slot cleared but AX still lists the plugin"
