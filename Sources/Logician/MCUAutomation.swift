@@ -222,17 +222,30 @@ extension MCUController {
 
     // MARK: Vpot automation (pan / send / plugin parameters)
 
-    /// Sends a relative vpot move of any size (the wire format caps one
-    /// message at 63 ticks).
-    static func turnVpot(_ index: Int, by delta: Int) throws {
+    /// Splits a relative vpot move into wire-legal messages. ONE MCU vpot
+    /// message carries at most 63 ticks - the bridge clamps with
+    /// `min(abs(delta), 63)` and SILENTLY DROPS the rest, so any larger move
+    /// must go out as several messages. Pure and exact on purpose: the undo
+    /// paths (stepToText) depend on the chunks summing back to `delta`.
+    static func vpotTickChunks(_ delta: Int) -> [Int] {
+        var chunks: [Int] = []
         var remaining = delta
         while remaining != 0 {
             let chunk = max(-63, min(63, remaining))
+            chunks.append(chunk)
+            remaining -= chunk
+        }
+        return chunks
+    }
+
+    /// Sends a relative vpot move of any size (the wire format caps one
+    /// message at 63 ticks).
+    static func turnVpot(_ index: Int, by delta: Int) throws {
+        for chunk in vpotTickChunks(delta) {
             let response = try MCUBridge.send(.vpot(index: index, delta: chunk))
             guard response.ok else {
                 throw LogicianError.writeFailed("vpot failed mid-automation")
             }
-            remaining -= chunk
         }
     }
 
