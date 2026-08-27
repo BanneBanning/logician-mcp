@@ -60,7 +60,8 @@ extension MCPServer {
                         "start_bar": ["type": "integer"],
                         "end_bar": ["type": "integer"],
                         "label": ["type": "string", "description": "Filename label, e.g. 'A' or 'baseline'."],
-                        "expected_project_path": ["type": "string"]
+                        "expected_project_path": ["type": "string"],
+                        "include_audio": MCPServer.includeAudioProperty
                     ],
                     "required": ["start_bar", "end_bar"],
                     "additionalProperties": false
@@ -94,7 +95,8 @@ extension MCPServer {
                         "tempo": ["type": "number", "description": "Override BPM for bar math (method 'render'); default reads the control bar. Constant tempo assumed."],
                         "beats_per_bar": ["type": "number", "description": "Override meter for bar math; default reads the control bar's time signature."],
                         "keep_change": ["type": "boolean", "description": "true keeps the change after measuring; default false rolls it back."],
-                        "expected_project_path": ["type": "string", "description": "Refuse unless this is the open project."]
+                        "expected_project_path": ["type": "string", "description": "Refuse unless this is the open project."],
+                        "include_audio": MCPServer.includeAudioProperty
                     ],
                     "required": ["track_name", "parameter", "expected_current_value", "target_value", "start_bar", "end_bar", "method"],
                     "additionalProperties": false
@@ -756,7 +758,8 @@ extension MCPServer {
                         "end_bar": ["type": "integer", "description": "Exclusive: the slice ends where this bar begins."],
                         "tempo": ["type": "number", "description": "Override BPM for the bar math; default reads the control bar. Constant tempo assumed."],
                         "beats_per_bar": ["type": "number", "description": "Override meter; default reads the control bar's time signature."],
-                        "expected_project_path": ["type": "string", "description": "Absolute .logicx path; when given, the open project's AXDocument must match before anything is changed."]
+                        "expected_project_path": ["type": "string", "description": "Absolute .logicx path; when given, the open project's AXDocument must match before anything is changed."],
+                        "include_audio": MCPServer.includeAudioProperty
                     ],
                     "required": ["track_name"],
                     "additionalProperties": false
@@ -810,7 +813,11 @@ extension MCPServer {
                         // description already promises; making it machine-
                         // readable turns a silently shortened clip into an
                         // argument error the model can act on.
-                        "duration_seconds": ["type": "number", "minimum": 0, "maximum": 20, "description": "Clip length, default 8, max 20."]
+                        "duration_seconds": ["type": "number", "minimum": 0, "maximum": 20, "description": "Clip length, default 8, max 20."],
+                        // false leaves only clip_path - which is still worth
+                        // having: the file viewer route works in clients that
+                        // drop MCP audio blocks.
+                        "include_audio": MCPServer.includeAudioProperty
                     ],
                     "required": ["path"],
                     "additionalProperties": false
@@ -1146,6 +1153,21 @@ extension MCPServer {
             ),
         ]
     }
+
+    /// The `include_audio` opt-out, declared identically by every tool that
+    /// can attach an MCP audio block (logic_bounce_range, logic_render_track,
+    /// logic_evaluate_change, logic_get_audio_clip). Default TRUE: hearing the
+    /// result is the point of this server, and a client that forwards audio
+    /// blocks must keep getting them. false is for the other kind of client —
+    /// one that stringifies content blocks it does not know, where 300-800 KB
+    /// of base64 is a context overflow rather than a sound. Honoured centrally
+    /// in `toolResult`, so it holds for every audio-carrying tool at once.
+    /// Computed, not a stored static: `[String: Any]` is not Sendable, and a
+    /// schema fragment is cheap to rebuild.
+    static var includeAudioProperty: [String: Any] { [
+        "type": "boolean",
+        "description": "Attach the rendered audio as MCP audio content blocks (default true). Pass false ONLY if your client does not forward audio blocks to the model: the result then carries the file paths alone (a few hundred KB of base64 that your client would have turned into text is skipped), and you listen by opening those paths with your client's file viewer."
+    ] }
 
     /// What `tools/list` puts on the wire, derived from the registry —
     /// never a second list that could drift from it.
