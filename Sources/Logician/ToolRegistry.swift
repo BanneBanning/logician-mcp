@@ -388,7 +388,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_plugin_preset",
-                description: "Step a plugin's factory/user preset (next/previous, N steps) via Logic's topmost-plugin-window key command: the plugin window is opened (and closed again if this call opened it), the command fired, and the change verified against the window's preset label. Preset before/after names are returned."
+                description: "Browse and load a plugin's settings (presets). action 'list' enumerates the setting menu — every name, its category, and which one is marked as loaded — WITHOUT changing anything; action 'select' loads one by name (bare 'Rock Bass' or qualified '03 Guitars/Rock Bass'), verified against the plugin window's setting label; action 'step' walks next/previous N settings via Logic's topmost-plugin-window key command, the only route that needs no readable menu. Default action: 'step', or 'select' when name is given. The plugin window is opened and closed again if this call opened it. Reading the menu needs Logic frontmost for a moment (a menu cannot open in a background app). Honesty contract: 'list' returns presets: null plus a reason when the plugin's UI exposes no Logic setting pop-up (fully custom UIs), and presets: [] — an empty list, not a failure — for plugins that genuinely ship no factory settings; 'step' reports success: false when the label did not move. WARNING: loading a setting overwrites EVERY parameter of the plugin, and a setting name is not a promise about the current state — unnamed tweaks on top of a named setting are lost and re-selecting the old name does not bring them back."
                     + Tool.stripAddressingNote
                     // Selection routes through the surface, but OPENING the
                     // plugin window is an Accessibility action on the strip.
@@ -400,14 +400,18 @@ extension MCPServer {
                         "plugin_name": ["type": "string"],
                         "insert_index": ["type": "integer"],
                         "track_number": ["type": "integer"],
-                        "direction": ["type": "string", "enum": ["next", "previous"], "description": "'next' (default) or 'previous'."],
-                        "steps": ["type": "integer", "description": "How many presets to step, default 1."]
+                        "action": ["type": "string", "enum": ["list", "select", "step"], "description": "'list' (read-only enumeration), 'select' (load the setting named by name), 'step' (relative next/previous). Default: 'step', or 'select' when name is given."],
+                        "name": ["type": "string", "description": "For action 'select': the setting to load, as 'list' reports it. Bare name, or 'Category/Name' when two categories share a name (also accepts 'Category > Name'). Case- and diacritic-insensitive; never fuzzy — a near miss is refused with the available names rather than guessed at."],
+                        "direction": ["type": "string", "enum": ["next", "previous"], "description": "For action 'step': 'next' (default) or 'previous'."],
+                        "steps": ["type": "integer", "description": "For action 'step': how many settings to step, default 1."]
                     ],
                     "required": ["track_name", "plugin_name"],
                     "additionalProperties": false
                 ],
-                // Relative: stepping again advances further, so never
-                // idempotent.
+                // Not idempotent as a whole: 'step' advances further each
+                // call. ('list' changes nothing and 'select' is idempotent,
+                // but the flag describes the tool, and the safe answer for a
+                // tool that can write is `write`.)
                 safety: .write,
                 handler: MCPServer.handlePluginPreset
             ),

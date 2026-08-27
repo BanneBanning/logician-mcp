@@ -9,7 +9,7 @@ Status legend: 🎯 planned · 🔬 needs a research session against Logic first
 | 1 | [Tempo honesty guards](#1-tempo-honesty-guards) | small | 🎯 · bar-math guards shipped, 5 of 6 bullets done (2026-08-27); blocked on Logic publishing the Smart Tempo mode |
 | 2 | [Stereo Out / master-chain addressing](#2-stereo-out--master-chain-addressing) | medium | 🎯🔬 |
 | 3 | [Variable tempo (tempo track / Smart Tempo)](#3-variable-tempo-tempo-track--smart-tempo) | large | 🎯🔬 |
-| 4 | [Plugin preset browsing](#4-plugin-preset-browsing) | medium | 🔬 |
+| 4 | [Plugin preset browsing](#4-plugin-preset-browsing) | medium | 🎯 · `list`/`select`/`step` shipped and live-verified on a track (2026-08-27); `select` on a headerless strip and the MCU route still unverified |
 | 5 | [Homebrew packaging](#5-homebrew-packaging) | small | ⏸ blocked on the repo going public |
 | — | [Deliberately parked](#parked) (localization, track-stack freeze) | — | ⏸ |
 
@@ -105,6 +105,24 @@ The item-1 honesty guards are the safety net while this lands: worst case during
 3. Master-chain presets come along for free once item 2 lands, since the blocker is the same `selectTrack` gate.
 
 **Definition of done:** an agent can ask "what presets does this compressor have?", jump to one by name, and get an honest failure on plugins that expose nothing — no blind stepping loops.
+
+### Status after v0.52.0 (2026-08-27)
+
+**The definition of done is met, and the research session found a bug in the code that was already there** (full log in FINDINGS, "Pluginpresets"):
+
+1. **The AX menu route is real, and it is `AXPress`, not `AXShowMenu`.** The roadmap's suggested `AXShowMenu` is *unsupported* on that element (`AXError -25206`); `AXPress` opens the menu while reporting `AXError -25204`, exactly like the insert slot's plugin chooser. The existing `popupMenus()` finds it. Enumeration is complete: `Compressor` 156 settings in 6 categories, `Channel EQ` on `Stereo Out` 114 in 7, `Limiter` 11 flat, `Sensor`/`Trilian` none.
+2. **`AXMenuItemMarkChar` exists** — `✓` on the loaded leaf, `-` on its category — so "which preset is loaded" has a second, independent answer beside the header label.
+3. **Press-by-title is proven**, and it needs no mouse: unlike the plugin chooser, this menu materializes its submenus' children, so `AXPress` on a leaf returns `.success` and the label follows. One fully restored round trip was run on a track's Compressor.
+4. **The bug: `pluginPresetLabel` was reading the wrong pop-up.** "The rightmost pop-up with a value" returned a *parameter* pop-up on `Channel EQ` (stereo mode), `Limiter` (algorithm) and `Pitch Shifter` (mode) — values that never move when the preset does, so `step` reported `stepped: false` on steps that worked. The pop-ups are told apart by their action set (setting pop-up: `AXPress` only), which is what ships.
+5. **Step 3 of the plan ("master-chain presets come along for free once item 2 lands") held**, with item 2's own caveat: the setting menu lives in the plugin *window*, so a headerless strip must be showing in an inspector. `Stereo Out` enumerates today; `Master`/`Aux 1` need the Mixer open.
+
+**Not done — deliberately, and honestly:**
+
+- **`select` has never run on a headerless strip.** The `Stereo Out` path is proven up to and including `list`, not past it.
+- **The `presets: null` branch** (a plugin with no Logic setting pop-up at all) is unit-tested but never seen live — all five plugins opened, `Trilian` included, had one. The new pop-up rule is measured on five plugins; a plugin that publishes `AXShowMenu` on its setting pop-up too would get `null` instead of a wrong value, which is the right direction but not coverage.
+- **The MCU route (question (a)) is still unanswered, and was not hunted for.** Finding it would have meant vpot presses inside a plugin edit view, which are parameter writes. Item 4 is therefore an AX-only capability, as the plan guessed.
+- **A shortcut left on the table:** the setting menu carries its own `Next`/`Previous` items (indices 6 and 7), so relative stepping exists in the AX plane and would need no learned key command. Untested; `step` was left exactly as it was.
+- **A finding worth more than the feature:** a preset *name* is not a promise about the plugin's *state*. The round trip restored the label and ten of eleven Compressor parameters; `Output Gain` came back on the factory value, not the project's. Logic's Compare button did not flag it (it is session-scoped). Every preset change — `step` included — now carries that warning.
 
 ## 5. Homebrew packaging
 
