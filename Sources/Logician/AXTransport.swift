@@ -539,8 +539,9 @@ extension LogicAccessibility {
         guard let value = attribute(element, "AXFrame") else {
             throw LogicianError.writeFailed("could not read an element frame")
         }
-        var rect = CGRect.zero
-        guard AXValueGetValue((value as! AXValue), .cgRect, &rect) else {
+        // rectValue, not `as! AXValue`: a non-AXValue frame reply throws the
+        // same "could not decode" error instead of trapping the whole process.
+        guard let rect = rectValue(value) else {
             throw LogicianError.writeFailed("could not decode an element frame")
         }
         return rect

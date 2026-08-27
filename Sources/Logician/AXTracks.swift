@@ -303,8 +303,10 @@ extension LogicAccessibility {
         guard let frameValue = attribute(element, "AXFrame") else {
             throw LogicianError.writeFailed("could not read the frame of \(label)")
         }
-        var frame = CGRect.zero
-        guard AXValueGetValue((frameValue as! AXValue), .cgRect, &frame), !frame.isEmpty else {
+        // rectValue, not `as! AXValue`: a frame attribute that comes back as
+        // some other CF type reports "could not decode" instead of trapping
+        // and taking the server down with it.
+        guard let frame = rectValue(frameValue), !frame.isEmpty else {
             throw LogicianError.writeFailed("could not decode the frame of \(label)")
         }
         let point = CGPoint(x: frame.midX, y: frame.midY)
@@ -362,7 +364,9 @@ extension LogicAccessibility {
             if CFEqual(element, target) {
                 return true
             }
-            current = attribute(element, kAXParentAttribute as String).map { ($0 as! AXUIElement) }
+            // A parent that is not an element ends the walk (returns false,
+            // "does not cover the target") instead of trapping.
+            current = elementAttribute(element, kAXParentAttribute as String)
         }
         return false
     }

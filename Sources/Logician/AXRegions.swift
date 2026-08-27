@@ -217,8 +217,9 @@ extension LogicAccessibility {
         let appElement = AXUIElementCreateApplication(application.processIdentifier)
         for _ in 0..<15 {
             Thread.sleep(forTimeInterval: 0.2)
-            if let focused = attribute(appElement, "AXFocusedUIElement") {
-                let element = focused as! AXUIElement
+            // A focused "element" that is not one keeps polling (the editor
+            // may not exist yet) rather than trapping mid-rename.
+            if let element = elementAttribute(appElement, "AXFocusedUIElement") {
                 var settable = DarwinBoolean(false)
                 AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
                 if settable.boolValue { editor = element; break }
@@ -244,8 +245,10 @@ extension LogicAccessibility {
             for window in windows
             where stringAttribute(window, kAXSubroleAttribute as String) == "AXDialog"
                 && stringAttribute(window, kAXTitleAttribute as String) == newName {
-                if let close = attribute(window, kAXCloseButtonAttribute as String) {
-                    _ = AXUIElementPerformAction(close as! AXUIElement, kAXPressAction as CFString)
+                // Skip a close button that is not an element, as if the
+                // attribute were absent; `as!` here would trap.
+                if let close = elementAttribute(window, kAXCloseButtonAttribute as String) {
+                    _ = AXUIElementPerformAction(close, kAXPressAction as CFString)
                 }
             }
         }
