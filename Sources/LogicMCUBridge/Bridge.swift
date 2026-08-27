@@ -51,32 +51,32 @@ final class SurfaceState {
             .trimmingCharacters(in: .whitespaces)
     }
 
-    func snapshotObject() -> [String: Any] {
+    func snapshot() -> SurfaceSnapshot {
         lock.lock()
         defer { lock.unlock() }
-        return snapshotObjectLocked()
+        return snapshotLocked()
     }
 
-    private func snapshotObjectLocked() -> [String: Any] {
-        let namedLEDs: [String: Int] = [
-            "play": 0x5E, "stop": 0x5D, "record": 0x5F,
-            "rewind": 0x5B, "forward": 0x5C, "cycle": 0x56
-        ]
-        var object: [String: Any] = [
-            "updated": Date().timeIntervalSince1970,
-            "last_receive": lastReceive,
-            "received_events": receivedCount,
-            "online": Date().timeIntervalSince1970 - lastReceive < 10 && receivedCount > 0,
-            "lcd_top": String(bytes: lcd[0..<56], encoding: .ascii) ?? "",
-            "lcd_bottom": String(bytes: lcd[56..<112], encoding: .ascii) ?? "",
-            "timecode": String(bytes: timecode, encoding: .ascii) ?? "",
-            "assignment": String(bytes: assignment, encoding: .ascii) ?? "",
-            "faders_14bit": faders,
-            "vpot_rings": vpotRings
-        ]
-        object["transport_leds"] = namedLEDs.mapValues { leds[$0] ?? false }
-        object["leds_lit"] = leds.filter(\.value).keys.sorted()
-        return object
+    private static let namedLEDs: [String: Int] = [
+        "play": 0x5E, "stop": 0x5D, "record": 0x5F,
+        "rewind": 0x5B, "forward": 0x5C, "cycle": 0x56
+    ]
+
+    private func snapshotLocked() -> SurfaceSnapshot {
+        SurfaceSnapshot(
+            updated: Date().timeIntervalSince1970,
+            lastReceive: lastReceive,
+            receivedEvents: receivedCount,
+            online: Date().timeIntervalSince1970 - lastReceive < 10 && receivedCount > 0,
+            lcdTop: String(bytes: lcd[0..<56], encoding: .ascii) ?? "",
+            lcdBottom: String(bytes: lcd[56..<112], encoding: .ascii) ?? "",
+            timecode: String(bytes: timecode, encoding: .ascii) ?? "",
+            assignment: String(bytes: assignment, encoding: .ascii) ?? "",
+            faders14bit: faders,
+            vpotRings: vpotRings,
+            transportLEDs: Self.namedLEDs.mapValues { leds[$0] ?? false },
+            ledsLit: leds.filter(\.value).keys.sorted()
+        )
     }
 
     var eventCount: Int {
@@ -89,25 +89,10 @@ final class SurfaceState {
         lock.lock()
         defer { lock.unlock() }
         dirty = false
-        let namedLEDs: [String: Int] = [
-            "play": 0x5E, "stop": 0x5D, "record": 0x5F,
-            "rewind": 0x5B, "forward": 0x5C, "cycle": 0x56
-        ]
-        var object: [String: Any] = [
-            "updated": Date().timeIntervalSince1970,
-            "last_receive": lastReceive,
-            "received_events": receivedCount,
-            "online": Date().timeIntervalSince1970 - lastReceive < 10 && receivedCount > 0,
-            "lcd_top": String(bytes: lcd[0..<56], encoding: .ascii) ?? "",
-            "lcd_bottom": String(bytes: lcd[56..<112], encoding: .ascii) ?? "",
-            "timecode": String(bytes: timecode, encoding: .ascii) ?? "",
-            "assignment": String(bytes: assignment, encoding: .ascii) ?? "",
-            "faders_14bit": faders,
-            "vpot_rings": vpotRings
-        ]
-        object["transport_leds"] = namedLEDs.mapValues { leds[$0] ?? false }
-        object["leds_lit"] = leds.filter(\.value).keys.sorted()
-        return try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        // Same snapshot the socket serves — this used to be a second,
+        // hand-maintained copy of the dictionary above, which is exactly the
+        // kind of drift the shared type removes.
+        return try? bridgeJSONEncoder.encode(snapshotLocked())
     }
 
     var isDirty: Bool {
@@ -434,96 +419,102 @@ let buttonNames: [String: UInt8] = [
     "assign_plugin": 0x2B, "assign_eq": 0x2C, "assign_instrument": 0x2D
 ]
 
-func handleCommand(_ object: [String: Any]) -> [String: Any] {
-    guard let command = object["cmd"] as? String else {
-        return ["ok": false, "error": "missing cmd"]
+func handleCommand(_ object: BridgeCommand) -> BridgeResponse {
+    guard let command = object.cmd else {
+        return .failure("missing cmd")
     }
-    switch command {
-    case "press":
-        if let name = object["button"] as? String, let note = buttonNames[name] {
+    // `name` is nil for anything outside the vocabulary, which falls through
+    // to the same "unknown cmd" reply the string switch used to produce.
+    switch object.name {
+    case .press:
+        if let name = object.button, let note = buttonNames[name] {
             pressButton(note: note)
-            return ["ok": true, "pressed": name]
+            var response = BridgeResponse.success
+            response.pressed = name
+            return response
         }
-        if let note = object["note"] as? Int, (0...127).contains(note) {
+        if let note = object.note, (0...127).contains(note) {
             pressButton(note: UInt8(note))
-            return ["ok": true, "pressed_note": note]
+            var response = BridgeResponse.success
+            response.pressedNote = note
+            return response
         }
-        return ["ok": false, "error": "unknown button; known: \(buttonNames.keys.sorted().joined(separator: ","))"]
-    case "select":
-        guard let channel = object["channel"] as? Int, (0...7).contains(channel) else {
-            return ["ok": false, "error": "channel 0-7 required"]
+        return .failure("unknown button; known: \(buttonNames.keys.sorted().joined(separator: ","))")
+    case .select:
+        guard let channel = object.channel, (0...7).contains(channel) else {
+            return .failure("channel 0-7 required")
         }
         pressButton(note: UInt8(0x18 + channel))
-        return ["ok": true]
-    case "mute":
-        guard let channel = object["channel"] as? Int, (0...7).contains(channel) else {
-            return ["ok": false, "error": "channel 0-7 required"]
+        return .success
+    case .mute:
+        guard let channel = object.channel, (0...7).contains(channel) else {
+            return .failure("channel 0-7 required")
         }
         pressButton(note: UInt8(0x10 + channel))
-        return ["ok": true]
-    case "solo":
-        guard let channel = object["channel"] as? Int, (0...7).contains(channel) else {
-            return ["ok": false, "error": "channel 0-7 required"]
+        return .success
+    case .solo:
+        guard let channel = object.channel, (0...7).contains(channel) else {
+            return .failure("channel 0-7 required")
         }
         pressButton(note: UInt8(0x08 + channel))
-        return ["ok": true]
-    case "vpot_press":
-        guard let index = object["index"] as? Int, (0...7).contains(index) else {
-            return ["ok": false, "error": "index 0-7 required"]
+        return .success
+    case .vpotPress:
+        guard let index = object.index, (0...7).contains(index) else {
+            return .failure("index 0-7 required")
         }
         pressButton(note: UInt8(0x20 + index))
-        return ["ok": true]
-    case "fader":
-        guard let channel = object["channel"] as? Int, (0...8).contains(channel),
-              let value = object["value"] as? Int else {
-            return ["ok": false, "error": "channel 0-8 and value (14-bit) required"]
+        return .success
+    case .fader:
+        guard let channel = object.channel, (0...8).contains(channel),
+              let value = object.value else {
+            return .failure("channel 0-8 and value (14-bit) required")
         }
         setFader(channel: channel, value14: value)
-        return ["ok": true]
-    case "vpot":
-        guard let index = object["index"] as? Int, (0...7).contains(index),
-              let delta = object["delta"] as? Int else {
-            return ["ok": false, "error": "index 0-7 and delta required"]
+        return .success
+    case .vpot:
+        guard let index = object.index, (0...7).contains(index),
+              let delta = object.delta else {
+            return .failure("index 0-7 and delta required")
         }
         turnVPot(index: index, delta: delta)
-        return ["ok": true]
-    case "raw":
-        guard let bytes = object["bytes"] as? [Int], bytes.allSatisfy({ (0...255).contains($0) }) else {
-            return ["ok": false, "error": "bytes array required"]
+        return .success
+    case .raw:
+        guard let bytes = object.bytes, bytes.allSatisfy({ (0...255).contains($0) }) else {
+            return .failure("bytes array required")
         }
         send(bytes.map(UInt8.init))
-        return ["ok": true]
-    case "status":
-        var snapshot = state.snapshotObject()
-        snapshot["ok"] = true
-        snapshot["midi_streaming"] = isMIDIStreamActive()
-        return snapshot
-    case "await":
+        return .success
+    case .status:
+        var response = BridgeResponse.success
+        response.snapshot = state.snapshot()
+        response.midiStreaming = isMIDIStreamActive()
+        return response
+    case .awaitEvents:
         // Event-driven wait: returns as soon as new MIDI arrived from Logic
         // after `since` (a received_events value), or after timeout_ms.
-        let since = object["since"] as? Int ?? -1
-        let timeoutMs = min(object["timeout_ms"] as? Int ?? 500, 5000)
+        let since = object.since ?? -1
+        let timeoutMs = min(object.timeoutMs ?? 500, 5000)
         let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000)
         while state.eventCount <= since && Date() < deadline {
             usleep(5000) // 5 ms
         }
-        var snapshot = state.snapshotObject()
-        snapshot["ok"] = true
-        snapshot["timed_out"] = state.eventCount <= since
-        return snapshot
-    case "converge":
+        var response = BridgeResponse.success
+        response.snapshot = state.snapshot()
+        response.timedOut = state.eventCount <= since
+        return response
+    case .converge:
         // Server-side convergence pays a socket round trip plus a fat await
         // per tick; here the LCD echo lands in-process and can be polled
         // every few milliseconds. Adaptive tick ratio, same discipline as
         // the server's convergeNumeric.
-        guard let index = object["index"] as? Int, (0...7).contains(index),
-              let target = (object["target"] as? Double) ?? (object["target"] as? Int).map(Double.init) else {
-            return ["ok": false, "error": "index 0-7 and target (number) required"]
+        guard let index = object.index, (0...7).contains(index),
+              let target = object.target else {
+            return .failure("index 0-7 and target (number) required")
         }
-        let field = object["field"] as? Int ?? index
-        let maxMs = min(object["max_ms"] as? Int ?? 3000, 15000)
-        let tolerance = (object["tolerance"] as? Double) ?? 0.0
-        var ratio = (object["ratio"] as? Double) ?? 2.0
+        let field = object.field ?? index
+        let maxMs = min(object.maxMs ?? 3000, 15000)
+        let tolerance = object.tolerance ?? 0.0
+        var ratio = object.ratio ?? 2.0
         func parseValue(_ text: String) -> Double? {
             let normalized = text.replacingOccurrences(of: ",", with: ".")
             if normalized.hasPrefix("-oo") { return -70.0 }
@@ -533,7 +524,7 @@ func handleCommand(_ object: [String: Any]) -> [String: Any] {
         }
         let deadline = Date().addingTimeInterval(Double(maxMs) / 1000)
         guard var current = parseValue(state.lcdBottomField(field)) else {
-            return ["ok": false, "error": "field \(field) is not numeric: '\(state.lcdBottomField(field))'"]
+            return .failure("field \(field) is not numeric: '\(state.lcdBottomField(field))'")
         }
         var iterations = 0
         while Date() < deadline {
@@ -574,71 +565,74 @@ func handleCommand(_ object: [String: Any]) -> [String: Any] {
         }
         usleep(30000)
         let finalText = state.lcdBottomField(field)
-        return [
-            "ok": true,
-            "final_text": finalText,
-            "final_value": parseValue(finalText) ?? current,
-            "iterations": iterations,
-            "ratio": ratio
-        ]
-    case "midi_stream":
+        var response = BridgeResponse.success
+        response.finalText = finalText
+        response.finalValue = parseValue(finalText) ?? current
+        response.iterations = iterations
+        response.ratio = ratio
+        return response
+    case .midiStream:
         // Timed performance MIDI on the "Logic MCP MIDI In" port. events is
         // an array of [offset_ms, byte, byte, ...]; playback is asynchronous
         // (poll status.midi_streaming or wait duration_ms).
-        guard let rawEvents = object["events"] as? [[Any]], !rawEvents.isEmpty else {
-            return ["ok": false, "error": "events required: [[offset_ms, byte, ...], ...]"]
+        guard let rawEvents = object.events, !rawEvents.isEmpty else {
+            return .failure("events required: [[offset_ms, byte, ...], ...]")
         }
         guard rawEvents.count <= 20000 else {
-            return ["ok": false, "error": "too many events (max 20000)"]
+            return .failure("too many events (max 20000)")
         }
         var events: [(offsetMs: Double, bytes: [UInt8])] = []
         for raw in rawEvents {
-            guard raw.count >= 2,
-                  let offset = (raw[0] as? Double) ?? (raw[0] as? Int).map(Double.init),
-                  offset >= 0 else {
-                return ["ok": false, "error": "each event needs [offset_ms >= 0, byte, ...]"]
+            guard raw.elements.count >= 2, let offset = raw.offsetMs, offset >= 0 else {
+                return .failure("each event needs [offset_ms >= 0, byte, ...]")
             }
-            var bytes: [UInt8] = []
-            for value in raw.dropFirst() {
-                guard let byte = value as? Int, (0...255).contains(byte) else {
-                    return ["ok": false, "error": "event bytes must be 0-255"]
-                }
-                bytes.append(UInt8(byte))
+            guard let bytes = raw.bytes else {
+                return .failure("event bytes must be 0-255")
             }
             events.append((offset, bytes))
         }
         if isMIDIStreamActive() {
-            return ["ok": false, "error": "a MIDI stream is already playing; midi_abort first"]
+            return .failure("a MIDI stream is already playing; midi_abort first")
         }
         events.sort { $0.offsetMs < $1.offsetMs }
         playMIDIStream(events)
-        return [
-            "ok": true,
-            "events": events.count,
-            "duration_ms": Int(events.last?.offsetMs ?? 0)
-        ]
-    case "midi_abort":
+        var response = BridgeResponse.success
+        response.eventCount = events.count
+        response.durationMs = Int(events.last?.offsetMs ?? 0)
+        return response
+    case .midiAbort:
         midiStreamLock.lock()
         midiStreamGeneration += 1 // cancels the playback thread
         midiStreamActive = false
         midiStreamLock.unlock()
         silenceMIDIIn()
-        return ["ok": true, "aborted": true]
-    case "keycmd":
+        var response = BridgeResponse.success
+        response.aborted = true
+        return response
+    case .keycmd:
         // Note on channel 16 on the dedicated Commands port; Logic's key
         // command MIDI assignments intercept these before any track input.
-        guard let note = object["note"] as? Int, (0...127).contains(note) else {
-            return ["ok": false, "error": "note 0-127 required"]
+        guard let note = object.note, (0...127).contains(note) else {
+            return .failure("note 0-127 required")
         }
-        let channel = UInt8((object["channel"] as? Int ?? 16) - 1) & 0x0F
+        // truncatingIfNeeded, not UInt8(_:): channel 0 made the old
+        // conversion evaluate UInt8(-1), which TRAPS and takes the whole
+        // daemon down. Every valid channel (1...16) is unaffected.
+        let channel = UInt8(truncatingIfNeeded: (object.channel ?? 16) - 1) & 0x0F
         sendCommandPort([0x90 | channel, UInt8(note), 0x7F])
         usleep(40000)
         sendCommandPort([0x80 | channel, UInt8(note), 0x00])
-        return ["ok": true, "sent_note": note, "channel": Int(channel) + 1]
-    case "ping":
-        return ["ok": true, "pong": true, "bridge_protocol": bridgeProtocolVersion]
-    default:
-        return ["ok": false, "error": "unknown cmd \(command)"]
+        var response = BridgeResponse.success
+        response.sentNote = note
+        response.channel = Int(channel) + 1
+        return response
+    case .ping:
+        var response = BridgeResponse.success
+        response.pong = true
+        response.bridgeProtocol = bridgeProtocolVersion
+        return response
+    case nil:
+        return .failure("unknown cmd \(command)")
     }
 }
 
@@ -693,16 +687,17 @@ func startSocketServer() {
             // just whatever fit in one socket buffer.
             let data = readToEOF(connection)
             if !data.isEmpty {
-                let response: [String: Any]
-                if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let response: BridgeResponse
+                if let object = try? bridgeJSONDecoder.decode(BridgeCommand.self, from: data) {
                     response = handleCommand(object)
                 } else {
-                    response = [
-                        "ok": false,
-                        "error": "invalid JSON (\(data.count) bytes received)"
-                    ]
+                    // Only a payload that is not a JSON object at all lands
+                    // here: BridgeCommand decodes every field leniently, so a
+                    // wrongly-typed or unknown key still reaches the handler
+                    // and gets the handler's own error, exactly as before.
+                    response = .failure("invalid JSON (\(data.count) bytes received)")
                 }
-                if let out = try? JSONSerialization.data(withJSONObject: response) {
+                if let out = try? bridgeJSONEncoder.encode(response) {
                     writeAll(connection, out)
                 }
             }

@@ -9,20 +9,20 @@ import XCTest
 /// read that back. They run serially (XCTest default) and each asserts only
 /// on what it just fed.
 final class MIDIParserTests: XCTestCase {
-    private func snapshot() -> [String: Any] {
-        state.snapshotObject()
+    private func snapshot() -> SurfaceSnapshot {
+        state.snapshot()
     }
 
     private func lcdTop() -> String {
-        (snapshot()["lcd_top"] as? String) ?? ""
+        snapshot().lcdTop
     }
 
     private func litLEDs() -> Set<Int> {
-        Set((snapshot()["leds_lit"] as? [Int]) ?? [])
+        Set(snapshot().ledsLit)
     }
 
     private func faders() -> [Int] {
-        (snapshot()["faders_14bit"] as? [Int]) ?? []
+        snapshot().faders14bit
     }
 
     func testNoteOnLightsALEDAndNoteOffClearsIt() {

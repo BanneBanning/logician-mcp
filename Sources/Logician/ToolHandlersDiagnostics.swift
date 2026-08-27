@@ -8,13 +8,14 @@ extension MCPServer {
         var health = logic.health()
         // Doctor checks: every setup step as data, with the fix in text.
         MCUBridge.ensureRunning()
-        let bridge = (try? MCUBridge.send(["cmd": "status"])) ?? [:]
-        let bridgeUp = bridge["ok"] as? Bool == true
+        let bridge = (try? MCUBridge.send(.status)) ?? BridgeResponse(ok: false)
+        let bridgeUp = bridge.ok
+        let receivedEvents = bridge.snapshot?.receivedEvents ?? 0
         health["bridge_running"] = bridgeUp
-        health["mcu_connected"] = (bridge["received_events"] as? Int ?? 0) > 0
+        health["mcu_connected"] = receivedEvents > 0
         if !bridgeUp {
             health["bridge_fix"] = "the bridge subprocess could not be started (self-spawn with --bridge failed)"
-        } else if (bridge["received_events"] as? Int ?? 0) == 0 {
+        } else if receivedEvents == 0 {
             health["mcu_fix"] = "no MIDI from Logic yet. If this is a FRESH setup: add a Mackie Control in Logic > Control Surfaces > Setup with ports 'Logic MCP MCU'. If it worked before and the bridge was restarted: Logic does not reopen the port by itself - open Control Surfaces > Setup and re-pick 'Logic MCP MCU' in Input/Output Port (or restart Logic). Tools fall back to Accessibility meanwhile, slower and less complete."
         }
         // Orphaned twin ports are the single most confusing failure
@@ -105,7 +106,11 @@ extension MCPServer {
         for (key, value) in arguments where key != "expected_project_path" {
             command[key] = value
         }
-        payload = try MCUBridge.send(command)
+        // sendRaw, not send: this tool exists to reach commands the server
+        // does not model, so the agent's object goes over the wire verbatim
+        // and the reply comes back verbatim. Everywhere else the server
+        // speaks BridgeCommand/BridgeResponse.
+        payload = try MCUBridge.sendRaw(command)
         return payload
     }
 }

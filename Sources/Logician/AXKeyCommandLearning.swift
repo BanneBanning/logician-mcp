@@ -204,7 +204,7 @@ extension LogicAccessibility {
                     _ = AXUIElementPerformAction(freshLearn, kAXPressAction as CFString)
                     Thread.sleep(forTimeInterval: 0.4)
                 }
-                _ = try? MCUBridge.send(["cmd": "keycmd", "note": candidate, "channel": 16])
+                _ = try? MCUBridge.send(.keycmd(note: candidate, channel: 16))
                 Thread.sleep(forTimeInterval: 1.0)
                 if dismissConflictAlert() { continue } // collision: next candidate
                 var verified = false

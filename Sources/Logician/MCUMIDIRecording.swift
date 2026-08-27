@@ -69,7 +69,7 @@ extension MCUController {
         Thread.sleep(forTimeInterval: 0.6)
         try press("record")
         defer {
-            _ = try? MCUBridge.send(["cmd": "midi_abort"]) // stuck-note safety
+            _ = try? MCUBridge.send(.midiAbort) // stuck-note safety
             _ = try? setPlaying(false)
             if let bar = savedBar {
                 _ = try? logic.setPlayhead(barNumber: bar, beat: nil)
@@ -134,16 +134,14 @@ extension MCUController {
             )
         }
         let shiftMs = max(0, leadMs - syncCompensationMs)
-        let streamResponse = try MCUBridge.send([
-            "cmd": "midi_stream",
-            "events": events.map { event -> [Any] in
-                [event.offsetMs + shiftMs] + event.bytes.map { Int($0) }
+        let streamResponse = try MCUBridge.send(.midiStream(
+            events: events.map {
+                MIDIStreamEvent(offsetMs: $0.offsetMs + shiftMs, bytes: $0.bytes)
             }
-        ])
-        guard streamResponse["ok"] as? Bool == true,
-              let durationMs = streamResponse["duration_ms"] as? Int else {
+        ))
+        guard streamResponse.ok, let durationMs = streamResponse.durationMs else {
             throw DemoError.writeFailed(
-                "midi_stream failed: \(streamResponse["error"] ?? "?")"
+                "midi_stream failed: \(streamResponse.error ?? "?")"
             )
         }
         Thread.sleep(forTimeInterval: (Double(durationMs) + tailMs) / 1000)
@@ -484,8 +482,8 @@ extension MCUController {
 
     static func enterPluginEdit(slot: Int) throws -> Bool {
         guard (1...8).contains(slot) else { return false }
-        let response = try MCUBridge.send(["cmd": "vpot_press", "index": slot - 1])
-        guard response["ok"] as? Bool == true else { return false }
+        let response = try MCUBridge.send(.vpotPress(index: slot - 1))
+        guard response.ok else { return false }
         return waitFor(seconds: 2.5, { status in
             guard let assignment = status["assignment"] as? String,
                   let top = status["lcd_top"] as? String else { return false }
