@@ -109,7 +109,14 @@ extension MCUController {
             let landed = currentDb() ?? fast.value
             return [
                 "success": true, "verified": abs(landed - targetDb) <= max(toleranceDb, 0.6),
-                "state": "volume_set", "requested_db": targetDb, "db": landed,
+                "state": "volume_set",
+                // The fast path used to omit the track entirely, so a result
+                // could not say WHICH track it moved - the slow path below
+                // always named it. Both report it the same way now.
+                "track": trackName, "track_name": trackName,
+                "before_db": round(startDb * 10) / 10,
+                "after_db": round(landed * 10) / 10,
+                "requested_db": targetDb, "db": landed,
                 "route": "mcu", "write_route": "bridge_converge"
             ]
         }

@@ -166,6 +166,7 @@ extension LogicAccessibility {
         result["success"] = true
         result["verified"] = true
         result["track"] = row.track
+        result["track_name"] = row.track
         result["exclusive"] = exclusive
         return result
     }

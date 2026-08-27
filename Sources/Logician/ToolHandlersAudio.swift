@@ -142,6 +142,7 @@ extension MCPServer {
             logic: logic, trackName: trackName
         )
         render["track"] = trackName
+        render["track_name"] = trackName
         if let range = sliceRange {
             render["slice_tempo"] = range.tempo
             render["slice_beats_per_bar"] = range.beatsPerBar

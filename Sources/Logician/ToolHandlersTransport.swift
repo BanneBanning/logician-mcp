@@ -215,6 +215,7 @@ extension MCPServer {
             result["speed_note"] = "Recorded at \(Int(recordingTempo)) BPM and restored to \(Int(range.tempo)); timing jitter scales with speed — quantize if it matters."
         }
         result["track"] = trackName
+        result["track_name"] = trackName
         result["notes"] = parsed.count
         result["start_bar"] = startBar
         result["tempo"] = range.tempo
