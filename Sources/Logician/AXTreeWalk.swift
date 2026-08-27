@@ -107,6 +107,18 @@ enum AXDepth {
     /// Project window -> the "Control Bar" group (transport buttons, LCD).
     static let controlBar = 6
 
+    // MARK: List Editors (Event / Marker / Tempo / Signature)
+
+    /// Project window -> the List Editors pane's tab strip (the `AXRadioButton`s
+    /// described `Event`/`Marker`/`Tempo`/`Signature`) and the tab group each
+    /// one reveals. MEASURED live 2026-08-27: both sit at window depth 2 — the
+    /// pane is a direct child of the project window, not buried under the
+    /// arrange area's wrappers — so 8 is pure headroom. See `readTempoMap`.
+    static let listEditorTab = 8
+    /// The Tempo tab's own group -> its `AXTable` (measured at 3, under one
+    /// scroll area) and its "Number of Items" text (measured at 1).
+    static let listEditorTable = 6
+
     // MARK: Modal dialogs and alerts
 
     /// Any Logic window -> the static text and buttons of a modal alert
