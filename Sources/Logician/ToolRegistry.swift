@@ -38,7 +38,8 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_list_inserts",
-                description: "List audio-effect insert slots (index, plugin display name, bypass state) of the named track's channel strip, read-only. The track must be selected so its strip is shown in the left inspector; otherwise the error not_exposed reports which track is currently shown.",
+                description: "List audio-effect insert slots (index, plugin display name, bypass state) of the named track's channel strip, read-only. The track must be selected so its strip is shown in the left inspector; otherwise the error not_exposed reports which track is currently shown."
+                    + Tool.stripAddressingAXNote,
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -73,7 +74,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_evaluate_change",
-                description: "Run one complete closed-loop mix evaluation around exactly one verified plugin-parameter change, on a bar range. Three methods: 'render' (two dialog-free freeze renders of the SINGLE track, compared on the sliced bar range — fastest and most isolated; needs insert_slot, the MCU physical slot, and works for all plugins including third-party), 'bounce' (two offline MASTER renders via the bounce dialog, needs plugin_name), and 'solo_bounce' (two offline bounces with ONLY this track soloed, solo restored after; needs insert_slot like 'render' — use for tracks freeze refuses: stack subtracks and tracks sharing a channel strip). All methods roll the change back by default, return baseline/after audio paths, metrics and dB deltas, and CARRY both versions as audio content blocks. TEMPO GUARD: method 'render' cuts its two slices with constant-tempo bar math, so it first samples the tempo at both ends of the range (parks the playhead, reads, restores — a couple of seconds) and REFUSES with precondition_failed when they differ, naming 'bounce'/'solo_bounce' as the tempo-accurate alternatives; those two hand Logic the bar numbers and are never sampled or refused.",
+                description: "Run one complete closed-loop mix evaluation around exactly one verified plugin-parameter change, on a bar range. Three methods: 'render' (two dialog-free freeze renders of the SINGLE track, compared on the sliced bar range — fastest and most isolated; needs insert_slot, the MCU physical slot, and works for all plugins including third-party), 'bounce' (two offline MASTER renders via the bounce dialog, needs plugin_name), and 'solo_bounce' (two offline bounces with ONLY this track soloed, solo restored after; needs insert_slot like 'render' — use for tracks freeze refuses: stack subtracks and tracks sharing a channel strip). All methods roll the change back by default, return baseline/after audio paths, metrics and dB deltas, and CARRY both versions as audio content blocks. TEMPO GUARD: method 'render' cuts its two slices with constant-tempo bar math, so it first samples the tempo at both ends of the range (parks the playhead, reads, restores — a couple of seconds) and REFUSES with precondition_failed when they differ, naming 'bounce'/'solo_bounce' as the tempo-accurate alternatives; those two hand Logic the bar numbers and are never sampled or refused. MASTER CHAIN: method 'bounce' accepts a strip without a track header ('Stereo Out', an aux, a bus) — it bounces the whole mix, so no track needs selecting; the strip must be visible in an inspector (see logic_list_inserts) because the parameter is written through the plugin WINDOW. 'render' (freeze) and 'solo_bounce' (solo) are track-only by nature.",
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -110,7 +111,8 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_mcu_plugin_inserts",
-                description: "List a track's insert slots as the Mackie Control sees them (physical slot numbers 1-8 with plugin names), via the selected track's MCU plugin list. Works for ALL plugins including custom-UI third-party ones. Selects the track first.",
+                description: "List a track's insert slots as the Mackie Control sees them (physical slot numbers 1-8 with plugin names), via the selected track's MCU plugin list. Works for ALL plugins including custom-UI third-party ones. Selects the strip first."
+                    + Tool.stripAddressingNote,
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -128,7 +130,8 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_mcu_plugin_parameters",
-                description: "Read ALL of a plugin's parameter names and formatted values (every MCU page) via host automation — works for plugins whose UI exposes nothing to Accessibility (Decapitator, Trilian, ...). insert_slot is the MCU physical slot from logic_mcu_plugin_inserts.",
+                description: "Read ALL of a plugin's parameter names and formatted values (every MCU page) via host automation — works for plugins whose UI exposes nothing to Accessibility (Decapitator, Trilian, ...). insert_slot is the MCU physical slot from logic_mcu_plugin_inserts."
+                    + Tool.stripAddressingNote,
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -149,7 +152,8 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_mcu_set_plugin_parameter",
-                description: "Set one plugin parameter through host automation (MCU vpot) with the LCD value echo as verified readback — the data-plane route that reaches every plugin. Numeric targets converge adaptively; text targets (e.g. 'On', 'B') step until exact match. Optional expected_current_value enforces compare-and-set; failed verification rolls back. Parameter is matched against the MCU's abbreviated names (e.g. 'Thrs' matches 'Threshold').",
+                description: "Set one plugin parameter through host automation (MCU vpot) with the LCD value echo as verified readback — the data-plane route that reaches every plugin. Numeric targets converge adaptively; text targets (e.g. 'On', 'B') step until exact match. Optional expected_current_value enforces compare-and-set; failed verification rolls back. Parameter is matched against the MCU's abbreviated names (e.g. 'Thrs' matches 'Threshold')."
+                    + Tool.stripAddressingNote,
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -219,7 +223,8 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_mcu_sends",
-                description: "List a track's sends as data via the Mackie Control channel send view: slot number, destination bus, level in dB, position (pre/post fader) and status. UI-independent; competitors' MCPs do not expose sends at all.",
+                description: "List a track's sends as data via the Mackie Control channel send view: slot number, destination bus, level in dB, position (pre/post fader) and status. UI-independent; competitors' MCPs do not expose sends at all."
+                    + Tool.stripAddressingNote,
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -237,7 +242,8 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_mcu_set_send",
-                description: "Set one send's level in dB on a track, verified through the MCU LCD echo (compare-and-set with expected_current_value, readback, same discipline as plugin parameters). Only the level vpot is touched — never the destination. List sends first with logic_mcu_sends.",
+                description: "Set one send's level in dB on a track, verified through the MCU LCD echo (compare-and-set with expected_current_value, readback, same discipline as plugin parameters). Only the level vpot is touched — never the destination. List sends first with logic_mcu_sends."
+                    + Tool.stripAddressingNote,
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -382,7 +388,11 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_plugin_preset",
-                description: "Step a plugin's factory/user preset (next/previous, N steps) via Logic's topmost-plugin-window key command: the plugin window is opened (and closed again if this call opened it), the command fired, and the change verified against the window's preset label. Preset before/after names are returned.",
+                description: "Step a plugin's factory/user preset (next/previous, N steps) via Logic's topmost-plugin-window key command: the plugin window is opened (and closed again if this call opened it), the command fired, and the change verified against the window's preset label. Preset before/after names are returned."
+                    + Tool.stripAddressingNote
+                    // Selection routes through the surface, but OPENING the
+                    // plugin window is an Accessibility action on the strip.
+                    + Tool.stripAddressingAXNote,
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -451,7 +461,8 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_add_send",
-                description: "Create a send on a track to a bus/output — mouse-free via the control surface's send-destination browser (first empty slot, browsed to the named destination, settle-verified, confirmed). New sends start at -oo dB; set the level with logic_mcu_set_send. Destination names as Logic shows them, e.g. 'Bus 1', 'Bus 2'.",
+                description: "Create a send on a track to a bus/output — mouse-free via the control surface's send-destination browser (first empty slot, browsed to the named destination, settle-verified, confirmed). New sends start at -oo dB; set the level with logic_mcu_set_send. Destination names as Logic shows them, e.g. 'Bus 1', 'Bus 2'."
+                    + Tool.stripAddressingNote,
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -937,7 +948,8 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_survey_plugins",
-                description: "Inventory every insert on a track: open each plugin window, list its accessible parameters (name, raw range, writability), classify the exposure, and close windows that were opened. Takes a few seconds per insert. Use to map which plugins are controllable through this MCP.",
+                description: "Inventory every insert on a track: open each plugin window, list its accessible parameters (name, raw range, writability), classify the exposure, and close windows that were opened. Takes a few seconds per insert. Use to map which plugins are controllable through this MCP."
+                    + Tool.stripAddressingAXNote,
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -954,7 +966,8 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_add_plugin",
-                description: "Add a plugin to a track's first empty insert slot — mouse-free via the Mackie Control plugin browser (vpot-stepped, LCD-verified, vpot-press instantiates). Works for every plugin in Logic's browser including third-party. If the MCU bridge is down, the AX chooser fallback requires allow_mouse: true because it briefly takes over the pointer.",
+                description: "Add a plugin to a track's first empty insert slot — mouse-free via the Mackie Control plugin browser (vpot-stepped, LCD-verified, vpot-press instantiates). Works for every plugin in Logic's browser including third-party. If the MCU bridge is down, the AX chooser fallback requires allow_mouse: true because it briefly takes over the pointer."
+                    + Tool.stripAddressingNote,
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -975,7 +988,8 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_remove_plugin",
-                description: "Remove a plugin from a track — mouse-free via the Mackie Control plugin browser's No Plug-in entry (can take up to ~60 s of vpot stepping; verified via LCD and an AX cross-check on the named track). If the MCU bridge is down, the AX chooser fallback requires allow_mouse: true because it briefly takes over the pointer.",
+                description: "Remove a plugin from a track — mouse-free via the Mackie Control plugin browser's No Plug-in entry (can take up to ~60 s of vpot stepping; verified via LCD and an AX cross-check on the named track). If the MCU bridge is down, the AX chooser fallback requires allow_mouse: true because it briefly takes over the pointer."
+                    + Tool.stripAddressingNote,
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -997,7 +1011,8 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_set_track_mute",
-                description: "Mute or unmute a track via its inspector channel strip mute button, verified by readback. Selects the track first.",
+                description: "Mute or unmute a track via its inspector channel strip mute button, verified by readback (control surface first, inspector strip as fallback)."
+                    + Tool.stripAddressingNote,
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -1015,7 +1030,8 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_set_track_solo",
-                description: "Solo or unsolo a track via its inspector channel strip solo button, verified by readback. Selects the track first.",
+                description: "Solo or unsolo a track via its inspector channel strip solo button, verified by readback (control surface first, inspector strip as fallback)."
+                    + Tool.stripAddressingNote,
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -1033,7 +1049,8 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_set_track_volume",
-                description: "Set a track's volume fader to a target dB value (e.g. -14.2, 0.0) by converging the inspector strip fader against its dB readout. Reports before/after dB. Fader steps are about 0.1-0.3 dB apart; default tolerance 0.15 dB.",
+                description: "Set a track's volume fader to a target dB value (e.g. -14.2, 0.0) by converging the inspector strip fader against its dB readout. Reports before/after dB. Fader steps are about 0.1-0.3 dB apart; default tolerance 0.15 dB."
+                    + Tool.stripAddressingNote,
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -1052,7 +1069,8 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_set_track_pan",
-                description: "Set a track's pan/balance knob position (integer, typically -64..63 where 0 is center) via the inspector strip, verified by readback.",
+                description: "Set a track's pan/balance knob position (integer, typically -64..63 where 0 is center) via the inspector strip, verified by readback."
+                    + Tool.stripAddressingNote,
                 inputSchema: [
                     "type": "object",
                     "properties": [

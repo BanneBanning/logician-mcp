@@ -53,6 +53,8 @@ Logic's MCU implementation multiplexes everything through 8 channel strips, a 2�
 
 **Hot views.** Entering a plugin's parameter pages costs over a second (view switch, page search). Consecutive writes to the same plugin keep the view "hot" and skip setup — with the page-cache key carried along, since losing it silently degrades to a per-page linear search. The server exits to the neutral pan view when the client disconnects: a leaked hot plugin view makes Logic auto-open plugin windows on every later track selection.
 
+**Addressing what has no track header.** Outputs, the master fader, auxes and buses are ordinary strips on the surface but do not exist in the Tracks area, so a name is routed rather than assumed: a track keeps the Accessibility path, and anything else is resolved on the surface — bank map, LCD name, then a selection proven from the mirror (the strip's SELECT LED lit alone) *before* any view that cannot name its own channel is entered. Two rules make that safe. Logic's abbreviations are recovered by ordered-subsequence matching, which also accepts cells that merely happen to be a subsequence ("Set" matches a request for "Stereo Out"), so a cell shorter than the 6-character cell width is rejected as an abbreviation of a longer name. And the rightmost bank *clamps* — on a project whose strip count is not a multiple of 8 it re-shows the previous bank's tail, shifted — so the same strip was counted twice and every name in that overlap (the whole master chain, in practice) read as "ambiguous"; the clamp shift is computed and the duplicate collapsed. Both rules are pure functions with unit tests built from a real bank map.
+
 **Plugin add/remove without a mouse.** Turning a vpot on an *empty* insert slot in `PL` view steps through Logic's plugin list (one entry per two ticks); pressing instantiates. The `--` boundary entry removes. Drift is corrected by settle-and-reverify with back-steps, and a named-track Accessibility cross-check protects against wrong-channel edits. (An Accessibility-driven chooser exists as a fallback but is gated behind `allow_mouse: true`, off by default.)
 
 ## Control plane 2: key commands over MIDI
@@ -102,7 +104,8 @@ Used where the surface protocol has no vocabulary — always element-addressed:
 
 - `Support.swift` — errors, shared types, version constants, the scoped-cache envelope, filename sanitisation
 - `LogicAccessibility.swift` + `AX*.swift` — the Accessibility plane (bounce dialog, regions, projects, tracks, transport, plugins, freeze, key-command learning)
-- `MCUController.swift` + `MCU*.swift` — the Mackie Control plane (transport/LCD, mixing, sends, render, plugin browser, automation, MIDI recording, parameters, instrument)
+- `MCUController.swift` + `MCU*.swift` — the Mackie Control plane (transport/LCD, mixing, sends, render, plugin browser, automation, MIDI recording, parameters, instrument, bank map)
+- `StripAddressing.swift` — which plane addresses a strip name, and what a failure on both says
 - `MCUBridgeClient.swift`, `KeyCommandRegistry.swift` — the daemon client and the key-command consent record
 - `MCPServer.swift`, `Tool.swift`, `ToolRegistry.swift`, `ToolHandlers*.swift` — the MCP plane
 
@@ -110,7 +113,7 @@ Used where the surface protocol has no vocabulary — always element-addressed:
 
 **Caches are scoped or absent.** `bank-cache.json` and `param-names-cache.json` carry a stamp of the build version and the project path; a file that does not match reads as absent rather than as data, and a cache is not written at all when the scope cannot be established. The parameter-name cache additionally verifies one live page against the cached row before any cheap read is trusted — it pairs cached names with fresh values positionally, so a plugin update that inserts a parameter would otherwise produce confidently wrong pairs.
 
-**Tests** (`swift test`, ~0.04 s, no Logic required) cover the pure logic: socket framing under real concurrency, the MIDI running-status parser including malformed and pseudorandom input, LCD field slicing, the dB parser, filename sanitisation, cache scoping, formatted-value comparison, the bars→seconds and end-of-take arithmetic, and the tempo-map guards' epsilon and message construction. Everything else needs Logic running and is verified by hand against a real project.
+**Tests** (`swift test`, ~0.04 s, no Logic required) cover the pure logic: socket framing under real concurrency, the MIDI running-status parser including malformed and pseudorandom input, LCD field slicing, the dB parser, filename sanitisation, cache scoping, formatted-value comparison, the bars→seconds and end-of-take arithmetic, the tempo-map guards' epsilon and message construction, and the strip-addressing rules (abbreviation plausibility, the clamped-bank de-duplication, plane routing) against a bank map recorded off a real surface. Everything else needs Logic running and is verified by hand against a real project.
 
 ## Error taxonomy
 

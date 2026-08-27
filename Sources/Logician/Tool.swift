@@ -127,5 +127,16 @@ struct Tool {
 
     static let arrangementListenNote = "You changed the ARRANGEMENT. Bounce a range that includes a few bars BEFORE your edit and listen across the seam: the classic failure is the copied phrase landing displaced (snare on the wrong beat) even though the region boundaries read as bar-aligned - region positions do NOT prove the groove inside is aligned. If the pattern does not match the original groove exactly, undo and copy from a region that starts ON the beat (watch out for pickup regions)."
 
+    /// Appended to every tool whose `track_name` also accepts a strip that has
+    /// no track header. Same sentence everywhere on purpose: an agent that
+    /// learns it once can reuse it, and the caveats are the same in every case.
+    static let stripAddressingNote = " Also accepts output/aux/bus strip names ('Stereo Out', 'Master', 'Aux 1', bus names): those have no track header, so they are resolved and selected on the control surface (LCD name + SELECT LED verified before any write) instead of by track selection. Use the name as Logic shows it in the Mixer, not the 6-character LCD abbreviation. Needs the MCU bridge for those names, and track_number applies to tracks only."
+
+    /// For the Accessibility-only strip tools: they reach a headerless strip
+    /// only while an inspector is SHOWING it, which the control-surface tools
+    /// do not require (verified 2026-08-27: 'Stereo Out' was visible as the
+    /// selected track's output while 'Master' and 'Aux 1' were not).
+    static let stripAddressingAXNote = " Output/aux/bus strips ('Stereo Out') work too, but only while an inspector is SHOWING that strip (select a track routed to it, or open the Mixer) — Accessibility cannot reach a strip that is off screen. For any other strip use the control-surface tools (logic_mcu_plugin_inserts, logic_mcu_plugin_parameters), which address every strip in the project."
+
     static let evaluateChangeListenNote = "Do not decide keep/rollback from the numbers alone: LISTEN to baseline_audio and after_audio (open the preview/clip files with your client's file viewer) before judging."
 }

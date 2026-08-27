@@ -54,6 +54,25 @@ Status legend: 🎯 planned · 🔬 needs a research session against Logic first
 
 **Definition of done:** `logic_set_volume`, mute/solo, and the four plugin parameter/add/remove/preset tools accept `Stereo Out` (and aux/bus names), verified by LCD echo, with the same compare-and-set semantics as tracks — and an agent can A/B a limiter setting on the master bus end to end.
 
+### Status after v0.51.0 (2026-08-27)
+
+**Shipped, and the addressing is live-verified** (see FINDINGS, "Stereo Out och masterkedjan"):
+
+1. **Step 1 (mixing) and step 2 (plugins) are implemented.** All 15 name-taking mixing/send/plugin tools now route: a track keeps its exact Accessibility path, a headerless strip is resolved on the surface (`findChannel`) and selected with a proof from the mirror (`selectChannelVerified`: LCD name before the press, SELECT LED alone after it) before any view that cannot name its own channel is entered — the inverse of the FINDINGS:1393 failure, and it now guards the two plugin-browser paths as well. Pan and the AX fallbacks go through the inspector strip (`stripForControls`) instead of the track-header path.
+2. **The real blocker turned out to be a bug in `findChannel`, not the AX habit.** The rightmost bank *clamps*, so `Stereo Out`, `Master`, `Aux 1-3`, `Audio 8/9` and the buses each appeared in two bank rows; the scan counted two matches and returned "ambiguous" for names that are unique. Live before/after on the reference project: `findChannel("Stereo Out")` = nil → **strip 7 of bank 2 in 3.1 s**. Every strip in the clamp overlap now resolves.
+3. **Experiments (a) and (c) are done, read-only.** MCU selection of an output strip behaves exactly like a track's (SELECT LED echo, PL view populated: `Cha EQ / Limitr / Sensor`); the CS volume view publishes a real dB readout for the master strip (`+0,0dB`), which is the readback half of `logic_set_volume`; the send view answers with an empty list (an output has no sends). One new caveat: on `Stereo Out` the MCU slot order was the **reverse** of the Accessibility insert order.
+4. **Experiment (d) is answered without pressing `global_view`**: the four-bank scan already reaches every strip including the master fader channel, so a more stable output bank is not needed for addressing.
+
+**Not done — deliberately, and honestly:**
+
+- **Every write on a headerless strip is UNVERIFIED.** Nothing was written to the user's project in this session (no fader, no vpot, no mute, no plugin). Volume, mute/solo, send levels, plugin parameters and add/remove on `Stereo Out` are implemented and unit-tested but have never run. First live test should be a `logic_mcu_set_plugin_parameter` on the Stereo Out Channel EQ with `expected_current_value` set, on a scratch project.
+- **Experiment (b), the dB calibration, is answered only halfway.** There is no fixed dB curve to invalidate: `setVolume` converges against the LCD dB echo and `recordVolumeAutomation` calibrates dB→14-bit empirically per channel, so both are channel-agnostic by construction. The master strip's readout is confirmed readable; that the *convergence* lands there is untested.
+- **Experiment (c) on the dedicated master fader (mirror index 8) is inconclusive.** Index 8 does not change with banking (consistent with a dedicated object), but every strip on the relevant banks read 12443 = +0.0 dB, so it cannot be told apart from the `Master` or `St Out` strip faders by reading alone. Deciding it needs a fader move — a write.
+- **`global_view` (note 0x33) is still never pressed** by the server.
+- **Automation on a headerless strip does not work**: `setAutomationMode` reads the automation mode off the *track header's* Accessibility label. Needs its own pass.
+- Known name gap: Logic sometimes *substitutes* words when abbreviating (`Ivan Effect` → `IvanFx`), which subsequence matching cannot recover. Such a name fails as `not_found`, never as a wrong strip.
+- **Step 4 is shipped but UNVERIFIED**: `logic_evaluate_change` method `bounce` had its own unconditional `selectTrack` (`AXBounce.swift:744`) and now takes the headerless fallback, so a limiter A/B on `Stereo Out` is reachable end to end — via the plugin *window* (Accessibility), which means the strip has to be visible in an inspector and the plugin has to expose its parameter to AX. Never run. Methods `render` (freeze) and `solo_bounce` (solo) stay track-only by nature.
+
 ## 3. Variable tempo (tempo track / Smart Tempo)
 
 **Ground truth.** FINDINGS.md:712 already names the shape: *"tempo-track following in the bar math: read tempo changes, piecewise integration."* All the damage concentrates in the one primitive plus the two recording paths: `barRangeSeconds` and its four callers; `logic_record_midi`'s single linear ms ramp (`ToolHandlersTransport.swift:138`); automation recording's single `msPerBeat` (`Sources/Logician/MCUAutomation.swift:114, 399`). The bridge itself is tempo-agnostic (offsets arrive as ms) — no bridge changes needed.
@@ -91,7 +110,7 @@ The item-1 honesty guards are the safety net while this lands: worst case during
 
 **Blocked on the repo going public** — a formula needs a public URL to fetch. When that happens, the shape is standard and small:
 
-1. Tag releases (`v0.50.0` — the version already lives in `Sources/Logician/Support.swift`).
+1. Tag releases (`v0.51.0` — the version already lives in `Sources/Logician/Support.swift`).
 2. A tap repo (`BanneBanning/homebrew-logician`) with a formula that fetches the release tarball and runs `swift build -c release` (build-from-source; `depends_on :macos` ≥ 13 and the Xcode CLT).
 3. README install step 1 gains the alternative: `brew install bannebanning/logician/logician`.
 
