@@ -741,7 +741,17 @@ extension LogicAccessibility {
         expectedProjectPath: String?
     ) throws -> [String: Any] {
         try verifyProjectPath(expectedProjectPath)
-        _ = try selectTrack(trackName: trackName, trackNumber: nil, expectedProjectPath: nil)
+        // The master A/B is the one evaluation that needs no track: it bounces
+        // the whole mix. So a headerless strip (Stereo Out, an aux, a bus) must
+        // reach it — selection is only here to put the strip in the inspector,
+        // and a strip already showing there needs no selecting. Same fallback
+        // as surveyPlugins; the plugin window below is addressed by strip name.
+        do {
+            _ = try selectTrack(trackName: trackName, trackNumber: nil, expectedProjectPath: nil)
+        } catch let error as LogicianError
+        where isHeaderlessStripCandidate(error, trackNumberGiven: false) {
+            guard (try? anyInspectorStrip(named: trackName)) != nil else { throw error }
+        }
         let openResult = try openPlugin(
             trackName: trackName, pluginName: pluginName,
             insertIndex: insertIndex, expectedProjectPath: nil

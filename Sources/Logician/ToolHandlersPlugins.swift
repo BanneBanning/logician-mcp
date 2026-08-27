@@ -18,10 +18,8 @@ extension MCPServer {
         // MCU plugin browser first (mouse-free); the AX chooser needs
         // the physical mouse for hover navigation, so it only runs
         // when explicitly allowed.
-        _ = try logic.selectTrack(
-            trackName: requiredString("track_name", in: arguments),
-            trackNumber: arguments["track_number"] as? Int,
-            expectedProjectPath: arguments["expected_project_path"] as? String
+        _ = try selectStripTarget(
+            arguments, expectedProjectPath: arguments["expected_project_path"] as? String
         )
         if var viaBrowser = try MCUController.addPluginViaBrowser(
             pluginName: requiredString("plugin_name", in: arguments),
@@ -48,10 +46,8 @@ extension MCPServer {
 
     func handleRemovePlugin(_ arguments: [String: Any]) throws -> Any {
         let payload: Any
-        _ = try logic.selectTrack(
-            trackName: requiredString("track_name", in: arguments),
-            trackNumber: arguments["track_number"] as? Int,
-            expectedProjectPath: arguments["expected_project_path"] as? String
+        _ = try selectStripTarget(
+            arguments, expectedProjectPath: arguments["expected_project_path"] as? String
         )
         if var removed = try MCUController.removePluginViaBrowser(
             pluginName: requiredString("plugin_name", in: arguments),
@@ -122,7 +118,7 @@ extension MCPServer {
             throw LogicianError.invalidArguments("direction must be 'next' or 'previous'")
         }
         let steps = max(arguments["steps"] as? Int ?? 1, 1)
-        _ = try logic.selectTrack(trackName: presetTrack, trackNumber: arguments["track_number"] as? Int, expectedProjectPath: nil)
+        _ = try selectStripTarget(arguments)
         let opened = try logic.openPlugin(
             trackName: presetTrack, pluginName: presetPlugin,
             insertIndex: arguments["insert_index"] as? Int, expectedProjectPath: nil
@@ -163,11 +159,7 @@ extension MCPServer {
     }
 
     func handleMcuPluginInserts(_ arguments: [String: Any]) throws -> Any {
-        _ = try logic.selectTrack(
-            trackName: requiredString("track_name", in: arguments),
-            trackNumber: arguments["track_number"] as? Int,
-            expectedProjectPath: nil
-        )
+        let target = try selectStripTarget(arguments)
         guard let inserts = try MCUController.pluginInsertNames() else {
             throw LogicianError.trackNotExposed(
                 requested: "MCU plugin insert list",
@@ -175,24 +167,23 @@ extension MCPServer {
             )
         }
         MCUController.exitToPan()
-        return [
-            "track": try requiredString("track_name", in: arguments),
+        var insertsPayload: [String: Any] = [
+            "track": target.name,
+            "track_name": target.name,
             "mcu_slots": inserts.enumerated().map { index, name in
                 ["slot": index + 1, "plugin": name.isEmpty ? "--" : name]
             },
-            "note": "MCU slot numbers are physical insert positions and can differ from AX occupied-slot ordinals."
+            "note": "MCU slot numbers are physical insert positions and can differ from AX occupied-slot ordinals — on an output strip they were observed in the REVERSE order (Stereo Out, 2026-08-27). Never translate an AX insert_index into an insert_slot."
         ]
+        insertsPayload.merge(target.resultFields) { current, _ in current }
+        return insertsPayload
     }
 
     func handleMcuPluginParameters(_ arguments: [String: Any]) throws -> Any {
         guard let slot = arguments["insert_slot"] as? Int else {
             throw LogicianError.invalidArguments("missing integer: insert_slot (1-8, MCU physical slot)")
         }
-        _ = try logic.selectTrack(
-            trackName: requiredString("track_name", in: arguments),
-            trackNumber: arguments["track_number"] as? Int,
-            expectedProjectPath: nil
-        )
+        let target = try selectStripTarget(arguments)
         let pluginMaxPages = arguments["max_pages"] as? Int ?? 12
         guard let listStatus = try MCUController.ensurePluginList(),
               try MCUController.enterPluginEdit(slot: slot),
@@ -212,7 +203,8 @@ extension MCPServer {
         }
         MCUController.exitToPan()
         var pluginPayload: [String: Any] = [
-            "track": try requiredString("track_name", in: arguments),
+            "track": target.name,
+            "track_name": target.name,
             "insert_slot": slot,
             "pages": capped.pages.count,
             "pages_total": capped.total,
@@ -220,6 +212,7 @@ extension MCPServer {
                 page.map { ["name": $0.name, "value": $0.value, "page": pageIndex + 1] }
             }
         ]
+        pluginPayload.merge(target.resultFields) { current, _ in current }
         if capped.truncated {
             pluginPayload["truncated"] = true
             pluginPayload["note"] = "Showing \(capped.pages.count) of \(capped.total) pages (each uncached page costs ~1.7 s of LCD indicator fade). Pass max_pages for more."
@@ -231,12 +224,8 @@ extension MCPServer {
         guard let slot = arguments["insert_slot"] as? Int else {
             throw LogicianError.invalidArguments("missing integer: insert_slot (1-8, MCU physical slot)")
         }
-        _ = try logic.selectTrack(
-            trackName: requiredString("track_name", in: arguments),
-            trackNumber: arguments["track_number"] as? Int,
-            expectedProjectPath: nil
-        )
-        guard let result = try MCUController.setPluginParameter(
+        let target = try selectStripTarget(arguments)
+        guard var result = try MCUController.setPluginParameter(
             slot: slot,
             parameter: requiredString("parameter", in: arguments),
             targetValue: requiredString("target_value", in: arguments),
@@ -249,15 +238,15 @@ extension MCPServer {
                 exposed: "the MCU bridge is unavailable or the plugin edit mode could not be entered"
             )
         }
+        result.merge(target.resultFields) { current, _ in current }
         return result
     }
 
     func handleMcuInstrumentParameters(_ arguments: [String: Any]) throws -> Any {
-        _ = try logic.selectTrack(
-            trackName: requiredString("track_name", in: arguments),
-            trackNumber: arguments["track_number"] as? Int,
-            expectedProjectPath: nil
-        )
+        // Instruments live on tracks, not on outputs — but the routing is the
+        // same call everywhere so a headerless name gets the same honest
+        // error instead of "no visible track header matches".
+        _ = try selectStripTarget(arguments)
         let instrumentMaxPages = arguments["max_pages"] as? Int ?? 12
         guard let entered = try MCUController.enterInstrumentEdit(
             trackName: requiredString("track_name", in: arguments)
@@ -290,11 +279,7 @@ extension MCPServer {
     }
 
     func handleMcuSetInstrumentParameter(_ arguments: [String: Any]) throws -> Any {
-        _ = try logic.selectTrack(
-            trackName: requiredString("track_name", in: arguments),
-            trackNumber: arguments["track_number"] as? Int,
-            expectedProjectPath: nil
-        )
+        _ = try selectStripTarget(arguments)
         guard let result = try MCUController.setInstrumentParameter(
             trackName: requiredString("track_name", in: arguments),
             parameter: requiredString("parameter", in: arguments),

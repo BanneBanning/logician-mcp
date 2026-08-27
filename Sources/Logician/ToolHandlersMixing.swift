@@ -71,10 +71,11 @@ extension MCPServer {
     }
 
     func handleMcuSends(_ arguments: [String: Any]) throws -> Any {
-        _ = try logic.selectTrack(
-            trackName: requiredString("track_name", in: arguments),
-            trackNumber: arguments["track_number"] as? Int,
-            expectedProjectPath: arguments["expected_project_path"] as? String
+        // Selection routes itself: a track through Accessibility, an
+        // output/aux/bus strip through the control surface (the send view
+        // shows the SELECTED strip either way).
+        let target = try selectStripTarget(
+            arguments, expectedProjectPath: arguments["expected_project_path"] as? String
         )
         guard let sends = try MCUController.readSends() else {
             throw LogicianError.trackNotExposed(
@@ -82,11 +83,14 @@ extension MCPServer {
                 exposed: "the MCU bridge is unavailable or the send view did not appear"
             )
         }
-        return [
-            "track": try requiredString("track_name", in: arguments),
+        var sendsPayload: [String: Any] = [
+            "track": target.name,
+            "track_name": target.name,
             "sends": sends,
             "note": "Send slots as the Mackie Control channel view shows them; level in dB, position pre/post, status active/muted."
         ]
+        sendsPayload.merge(target.resultFields) { current, _ in current }
+        return sendsPayload
     }
 
     func handleMcuSetSend(_ arguments: [String: Any]) throws -> Any {
@@ -95,17 +99,15 @@ extension MCPServer {
         }
         let levelDb = (arguments["level_db"] as? Double)
             ?? (arguments["level_db"] as? Int).map(Double.init)
-        guard let target = levelDb else {
+        guard let targetDb = levelDb else {
             throw LogicianError.invalidArguments("missing number: level_db")
         }
-        _ = try logic.selectTrack(
-            trackName: requiredString("track_name", in: arguments),
-            trackNumber: arguments["track_number"] as? Int,
-            expectedProjectPath: arguments["expected_project_path"] as? String
+        let target = try selectStripTarget(
+            arguments, expectedProjectPath: arguments["expected_project_path"] as? String
         )
         guard var sendResult = try MCUController.setSendLevel(
             sendNumber: send,
-            targetDb: target,
+            targetDb: targetDb,
             expectedCurrentValue: arguments["expected_current_value"] as? String
         ) else {
             throw LogicianError.trackNotExposed(
@@ -113,7 +115,9 @@ extension MCPServer {
                 exposed: "the MCU bridge is unavailable or the send view layout was unexpected"
             )
         }
-        sendResult["track"] = try requiredString("track_name", in: arguments)
+        sendResult["track"] = target.name
+        sendResult["track_name"] = target.name
+        sendResult.merge(target.resultFields) { current, _ in current }
         return sendResult
     }
 

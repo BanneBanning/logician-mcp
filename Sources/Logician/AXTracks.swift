@@ -373,13 +373,18 @@ extension LogicAccessibility {
 
     // MARK: - Strip controls (mute/solo/volume/pan)
 
+    /// The named control on the strip a mixing tool is about to touch.
+    ///
+    /// Resolution is delegated to `stripForControls`: tracks are selected first
+    /// (unchanged), and output/aux/bus strips — which have no track header and
+    /// used to throw `trackNotFound` right here — are addressed by name in the
+    /// inspector instead.
     func selectedStripChild(
         trackName: String,
         trackNumber: Int?,
         description: String
     ) throws -> AXUIElement {
-        _ = try selectTrack(trackName: trackName, trackNumber: trackNumber, expectedProjectPath: nil)
-        let strip = try inspectorStrip(named: trackName)
+        let strip = try stripForControls(trackName: trackName, trackNumber: trackNumber).strip
         guard let control = children(of: strip).first(where: {
             stringAttribute($0, kAXDescriptionAttribute as String) == description
         }) else {

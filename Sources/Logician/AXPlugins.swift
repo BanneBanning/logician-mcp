@@ -308,7 +308,8 @@ extension LogicAccessibility {
         do {
             _ = try selectTrack(trackName: trackName, trackNumber: trackNumber, expectedProjectPath: nil)
         } catch let error as LogicianError {
-            guard case .trackNotFound = error, (try? anyInspectorStrip(named: trackName)) != nil else {
+            guard isHeaderlessStripCandidate(error, trackNumberGiven: trackNumber != nil),
+                  (try? anyInspectorStrip(named: trackName)) != nil else {
                 throw error
             }
         }
