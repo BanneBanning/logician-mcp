@@ -168,10 +168,11 @@ Safety model: read before write, abort on ambiguity, verify by readback, roll ba
 
 ## Known limitations & roadmap
 
+- The biggest limitation is the models themselves: today's multimodal agents — Gemini's included — are not yet the mixing engineers you might wish for. That is exactly why Logician exists: give them real hands and ears in Logic, and you can *measure* how good they actually are instead of guessing.
 - English Logic UI assumed (Accessibility string matching; locale tables are future work)
 - Constant tempo assumed for bar math; MIDI recording takes real time
 - Track stacks cannot be freeze-rendered (Logic limitation — `solo_bounce` covers their subtracks)
-- Roadmap: Stereo Out / master-chain addressing, plugin preset browsing via vpot, Homebrew packaging, localization
+- **[docs/ROADMAP.md](docs/ROADMAP.md)** is the concrete plan for what falls next, in order: tempo honesty guards, Stereo Out / master-chain addressing, variable tempo (tempo track / Smart Tempo), plugin preset browsing, Homebrew packaging
 
 ---
 
