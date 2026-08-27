@@ -45,6 +45,44 @@ extension MCUController {
         )
     }
 
+    // MARK: Automation timing under a tempo map
+
+    /// Milliseconds from the FIRST point's musical moment to (`bar`, `beat`).
+    ///
+    /// With a tempo map read from Logic's Tempo List this is the integral of the
+    /// map between the two positions, so a curve whose points straddle a tempo
+    /// change lands on the beats it was asked for. Without a map it is the single
+    /// `msPerBeat` multiplication that shipped before — the same arithmetic, so a
+    /// project with no readable map behaves exactly as it did.
+    ///
+    /// Pure, and unit-tested: automation timing is real-time and expensive to
+    /// re-run, so its arithmetic should not need Logic to be trusted.
+    static func automationOffsetMs(
+        bar: Int, beat: Double, firstBar: Int, beatsPerBar: Double,
+        tempo: Double, map: TempoMap?
+    ) -> Double {
+        let beatsFromFirst = Double(bar - firstBar) * beatsPerBar + (beat - 1)
+        guard let map, map.source == .tempoList, !map.isConstant else {
+            return beatsFromFirst * (60000.0 / tempo)
+        }
+        let origin = TempoMap.beatOffset(bar: firstBar, beatsPerBar: beatsPerBar)
+        return (map.seconds(atBeatOffset: origin + beatsFromFirst, beatsPerBar: beatsPerBar)
+            - map.seconds(atBeatOffset: origin, beatsPerBar: beatsPerBar)) * 1000
+    }
+
+    /// The milliseconds-per-beat IN FORCE at (`bar`, `beat`) — what a per-beat
+    /// convergence budget and a ramp's subdivision step need once "the tempo" is
+    /// no longer one number.
+    static func automationMsPerBeat(
+        bar: Int, beat: Double, beatsPerBar: Double, tempo: Double, map: TempoMap?
+    ) -> Double {
+        guard let map, map.source == .tempoList, !map.isConstant else {
+            return 60000.0 / tempo
+        }
+        let position = TempoMap.beatOffset(bar: bar, beatsPerBar: beatsPerBar) + (beat - 1)
+        return 60000.0 / map.bpm(atBeatOffset: position, beatsPerBar: beatsPerBar)
+    }
+
     static func currentFader14(_ channel: Int) -> Int? {
         guard let faders = freshStatus()?["faders_14bit"] as? [Int],
               faders.indices.contains(channel), faders[channel] >= 0 else { return nil }
@@ -61,7 +99,8 @@ extension MCUController {
         trackName: String,
         points: [(bar: Int, beat: Double, db: Double)],
         ramp: Bool,
-        verify: Bool
+        verify: Bool,
+        tempoMap: TempoMap? = nil
     ) throws -> [String: Any] {
         let transport = try logic.getTransport()
         guard let tempo = transport["tempo"] as? Double else {
@@ -115,10 +154,13 @@ extension MCUController {
         _ = try? MCUBridge.send(.fader(channel: channel, value: originalFader))
         Thread.sleep(forTimeInterval: 0.3)
 
-        // Timed schedule relative to the crossing into the first point's bar.
-        let msPerBeat = 60000.0 / tempo
+        // Timed schedule relative to the crossing into the first point's bar,
+        // integrated over the tempo map when one was read.
         func offsetMs(_ bar: Int, _ beat: Double) -> Double {
-            (Double(bar - first.bar) * beatsPerBar + (beat - 1)) * msPerBeat
+            automationOffsetMs(
+                bar: bar, beat: beat, firstBar: first.bar, beatsPerBar: beatsPerBar,
+                tempo: tempo, map: tempoMap
+            )
         }
         var schedule: [(ms: Double, value: Int)] = sorted.map {
             (offsetMs($0.bar, $0.beat), calibration[$0.db] ?? originalFader)
@@ -128,7 +170,13 @@ extension MCUController {
             for index in 0..<(sorted.count - 1) {
                 let a = schedule[index], b = schedule[index + 1]
                 expanded.append(a)
-                let steps = max(Int((b.ms - a.ms) / (msPerBeat / 2)), 1)
+                // Half-beat resolution AT THIS POINT's tempo: under a map the
+                // beat is not the same number of milliseconds everywhere.
+                let localMsPerBeat = automationMsPerBeat(
+                    bar: sorted[index].bar, beat: sorted[index].beat,
+                    beatsPerBar: beatsPerBar, tempo: tempo, map: tempoMap
+                )
+                let steps = max(Int((b.ms - a.ms) / (localMsPerBeat / 2)), 1)
                 if steps > 1 {
                     for s in 1..<steps {
                         let t = Double(s) / Double(steps)
@@ -372,7 +420,8 @@ extension MCUController {
         tolerance: Double,
         enterView: (Int) throws -> (read: () -> Double?, write: (Double, TimeInterval) throws -> Void),
         refreshView: (() throws -> Void)? = nil,
-        restoreView: @escaping () -> Void
+        restoreView: @escaping () -> Void,
+        tempoMap: TempoMap? = nil
     ) throws -> [String: Any] {
         let transport = try logic.getTransport()
         guard let tempo = transport["tempo"] as? Double else {
@@ -410,23 +459,38 @@ extension MCUController {
         // Park on the first point's value before rolling.
         try view.write(first.value, 2.0)
 
-        let msPerBeat = 60000.0 / tempo
         func offsetMs(_ bar: Int, _ beat: Double) -> Double {
-            (Double(bar - first.bar) * beatsPerBar + (beat - 1)) * msPerBeat
+            automationOffsetMs(
+                bar: bar, beat: beat, firstBar: first.bar, beatsPerBar: beatsPerBar,
+                tempo: tempo, map: tempoMap
+            )
         }
-        var schedule: [(ms: Double, value: Double)] = sorted.map {
-            (offsetMs($0.bar, $0.beat), $0.value)
+        func localMsPerBeat(_ bar: Int, _ beat: Double) -> Double {
+            automationMsPerBeat(
+                bar: bar, beat: beat, beatsPerBar: beatsPerBar, tempo: tempo, map: tempoMap
+            )
+        }
+        // Each entry carries the ms-per-beat in force at its own position, so the
+        // subdivision step and the convergence budget below stay musical after
+        // the ramp expansion has thrown the bar/beat away.
+        var schedule: [(ms: Double, value: Double, msPerBeat: Double)] = sorted.map {
+            (offsetMs($0.bar, $0.beat), $0.value, localMsPerBeat($0.bar, $0.beat))
         }
         if ramp && schedule.count > 1 {
-            var expanded: [(Double, Double)] = []
+            var expanded: [(Double, Double, Double)] = []
             for index in 0..<(schedule.count - 1) {
                 let a = schedule[index], b = schedule[index + 1]
                 expanded.append(a)
-                let steps = max(Int((b.ms - a.ms) / msPerBeat), 1) // 1 delvärde/slag
+                // 1 delvärde/slag, at the tempo in force where the segment starts.
+                let steps = max(Int((b.ms - a.ms) / a.msPerBeat), 1)
                 if steps > 1 {
                     for s in 1..<steps {
                         let t = Double(s) / Double(steps)
-                        expanded.append((a.ms + (b.ms - a.ms) * t, a.value + (b.value - a.value) * t))
+                        expanded.append((
+                            a.ms + (b.ms - a.ms) * t,
+                            a.value + (b.value - a.value) * t,
+                            a.msPerBeat
+                        ))
                     }
                 }
             }
@@ -458,7 +522,11 @@ extension MCUController {
                     actual: "the timecode never moved", restored: false
                 )
             }
-            let preRollMs = beatsPerBar * msPerBeat // one bar before the first point
+            // One bar before the first point — the length of THAT bar, which
+            // under a tempo map is not the length of any other bar. `offsetMs`
+            // is measured from the first point, so the pre-roll bar is its
+            // negative offset.
+            let preRollMs = abs(offsetMs(first.bar - 1, 1))
             for (position, entry) in schedule.enumerated() {
                 // Vpot convergence takes time — lead each write so the curve
                 // centers on the musical moment instead of trailing it. The
@@ -476,8 +544,9 @@ extension MCUController {
                     // nothing would be recorded — wiggle to anchor the curve.
                     try view.write(entry.value - 1, 0.25)
                 }
+                // The middle points' budget is half a beat AT THIS POINT's tempo.
                 try view.write(entry.value,
-                               isFirst ? 1.0 : (isLast ? 1.5 : max(0.15, min(0.6, msPerBeat / 2000))))
+                               isFirst ? 1.0 : (isLast ? 1.5 : max(0.15, min(0.6, entry.msPerBeat / 2000))))
             }
             Thread.sleep(forTimeInterval: 0.5)
             _ = try? setPlaying(false)

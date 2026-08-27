@@ -161,14 +161,19 @@ extension MCPServer {
             notes: parsed.map { (bar: $0.bar, beat: $0.beat, durationBeats: $0.durationBeats) },
             extraEventBars: extraBars
         ).endBar
+        // What we know about the tempo, resolved ONCE for this invocation: the
+        // note scheduling and the verification render's slice cover the same
+        // bars, so they share one answer. With Logic's Tempo List readable that
+        // answer is the whole map (and no playhead is moved at all); without it,
+        // it is the two-point sample that shipped before.
+        let knowledge = resolveTempoKnowledge(
+            startBar: startBar, endBar: endBar, beatsPerBar: beatsPerBar
+        )
+        let tempoMap = knowledge.readMap
         let range = try MCPServer.barRangeSeconds(
             startBar: startBar, endBar: endBar,
-            tempo: resolved.tempo, beatsPerBar: beatsPerBar
+            tempo: resolved.tempo, beatsPerBar: beatsPerBar, map: tempoMap
         )
-        // Two-point tempo sample, taken ONCE for this invocation: the note
-        // scheduling and the verification render's slice cover the same bars, so
-        // they share one answer instead of paying for two playhead round trips.
-        let tempoSample = logic.sampleTempoAcross(startBar: startBar, endBar: endBar)
         // speed > 1 records at a raised tempo and scales event times:
         // the region lands at identical bar positions in a fraction
         // of the wall time. Default 1 = real time (audible playback).
@@ -183,20 +188,53 @@ extension MCPServer {
         // playhead sits on, and the single value written back cannot restore a
         // map. Refuse before anything is written; real-time recording (speed 1)
         // touches no tempo at all and stays available.
-        if effectiveSpeed > 1.001, let span = tempoSample.span, !span.isConstant {
+        if effectiveSpeed > 1.001, knowledge.isVarying == true {
+            let evidence: String
+            if let map = tempoMap {
+                evidence = "Logic's Tempo List holds \(map.events.count) tempo events"
+                    + " (\(map.tempos.map(formattedBPM).joined(separator: ", ")) BPM), so this"
+                    + " project has a tempo map"
+            } else {
+                evidence = knowledge.refusalDetail
+                    ?? knowledge.sample?.span?.mismatchClause
+                    ?? "the tempo is not constant across the take"
+            }
             throw LogicianError.tempoMapUnsafe(
                 operation: "logic_record_midi at speed \(String(format: "%g", effectiveSpeed))",
-                detail: "\(tempoSample.refusalDetail ?? span.mismatchClause). Speed mode records"
+                detail: "\(evidence). Speed mode records"
                     + " at a raised tempo by OVERWRITING the control bar's tempo slider and"
                     + " restoring a SINGLE value afterwards — against a tempo map that write"
                     + " lands on whichever tempo node the playhead sits on and the restore"
                     + " cannot put the map back, so it is destructive. NOTHING was recorded and"
                     + " no tempo was written. Record with speed 1 (real time, the default): it"
-                    + " never touches the tempo. The note timing will still be placed by"
-                    + " constant-tempo bar math, which the result's warning describes."
+                    + " never touches the tempo"
+                    + (tempoMap != nil
+                        ? ", and the note timing is integrated over the tempo map read from the"
+                            + " Tempo List, so the notes land on the right beats."
+                        : ". The note timing will still be placed by constant-tempo bar math,"
+                            + " which the result's warning describes.")
             )
         }
         let msPerBeat = 60000.0 / recordingTempo
+        // Event times. With the tempo map READ, each offset is the integral of
+        // the map from the take's first bar line to the event — so a note in
+        // bar 9 of a take that crosses a tempo change lands on the beat instead
+        // of drifting by everything the change accumulated. Without a map it is
+        // the single linear `msPerBeat` ramp that shipped before, unchanged.
+        //
+        // A CONSTANT map takes the `msPerBeat` path too, deliberately: it is the
+        // same arithmetic, and `speed` (which scales `recordingTempo`) is only
+        // ever allowed there.
+        let takeStartBeats = TempoMap.beatOffset(bar: startBar, beatsPerBar: range.beatsPerBar)
+        let takeStartSeconds = tempoMap.map {
+            $0.seconds(atBeatOffset: takeStartBeats, beatsPerBar: range.beatsPerBar)
+        } ?? 0
+        func offsetMs(_ offsetBeats: Double) -> Double {
+            guard let tempoMap, !tempoMap.isConstant else { return offsetBeats * msPerBeat }
+            return (tempoMap.seconds(
+                atBeatOffset: takeStartBeats + offsetBeats, beatsPerBar: range.beatsPerBar
+            ) - takeStartSeconds) * 1000
+        }
         var events: [(offsetMs: Double, bytes: [UInt8])] = []
         for note in parsed {
             let offsetBeats = Double(note.bar - startBar) * range.beatsPerBar + (note.beat - 1)
@@ -206,9 +244,9 @@ extension MCPServer {
                 )
             }
             let status = UInt8(note.channel - 1)
-            events.append((offsetBeats * msPerBeat,
+            events.append((offsetMs(offsetBeats),
                            [0x90 | status, UInt8(note.pitch), UInt8(note.velocity)]))
-            events.append(((offsetBeats + note.durationBeats) * msPerBeat - 1,
+            events.append((offsetMs(offsetBeats + note.durationBeats) - 1,
                            [0x80 | status, UInt8(note.pitch), 0]))
         }
         // CC and pitch-bend events ride the same timed stream.
@@ -225,7 +263,7 @@ extension MCPServer {
                 guard offsetBeats >= 0 else {
                     throw LogicianError.invalidArguments("cc_event at bar \(bar) lies before start_bar \(startBar)")
                 }
-                events.append((offsetBeats * msPerBeat,
+                events.append((offsetMs(offsetBeats),
                                [0xB0 | channel, UInt8(cc), UInt8(value)]))
             }
         }
@@ -242,7 +280,7 @@ extension MCPServer {
                     throw LogicianError.invalidArguments("pitch_bend at bar \(bar) lies before start_bar \(startBar)")
                 }
                 let fourteen = value + 8192
-                events.append((offsetBeats * msPerBeat,
+                events.append((offsetMs(offsetBeats),
                                [0xE0 | channel, UInt8(fourteen & 0x7F), UInt8((fourteen >> 7) & 0x7F)]))
             }
         }
@@ -283,12 +321,21 @@ extension MCPServer {
         if let name = projectTempoMode.name {
             result["project_tempo_mode"] = name
         }
+        if let block = knowledge.payload { result["tempo_map"] = block }
+        // A recording made while the Smart Tempo mode was NOT verifiably Keep
+        // can have rewritten the tempo map (Adapt follows the recording), so the
+        // cached map is no longer a description of this project. Forget it: the
+        // next caller re-reads the Tempo List, which is cheap, while a stale map
+        // would integrate confidently wrong boundaries.
+        if projectTempoMode != .keep { invalidateTempoMapCache() }
         appendWarning(smartTempoWarning, to: &result)
         // Both honest complaints can be true at once (an unreadable Smart Tempo
         // mode AND a tempo map), so they are appended, never assigned.
         appendWarning(
-            tempoSample.warning(
-                sliced: "the note timing (bars x beats x 60/BPM) and the verification render's slice"
+            knowledge.warning(
+                sliced: tempoMap != nil
+                    ? "the note timing and the verification render's slice"
+                    : "the note timing (bars x beats x 60/BPM) and the verification render's slice"
             ),
             to: &result
         )
@@ -348,6 +395,11 @@ extension MCPServer {
         let verifyCurve = arguments["verify"] as? Bool ?? true
         let toleranceArg = (arguments["tolerance"] as? Double)
             ?? (arguments["tolerance"] as? Int).map(Double.init)
+        // The tempo map, read ONCE for this curve: point placement, the pre-roll
+        // bar and the per-point convergence budgets all integrate it. The
+        // playhead-chase verification is bar-based already, so it is the proof
+        // this arithmetic landed the points on the beats they were asked for.
+        let automationTempoMap = resolveTempoMap().map
         var automationResult: [String: Any]
         switch parameter {
         case "volume":
@@ -356,7 +408,8 @@ extension MCPServer {
                 trackName: automationTrack,
                 points: automationPoints.map { ($0.bar, $0.beat, $0.value) },
                 ramp: ramp,
-                verify: verifyCurve
+                verify: verifyCurve,
+                tempoMap: automationTempoMap
             )
         case "pan":
             automationResult = try MCUController.recordVpotAutomation(
@@ -375,7 +428,8 @@ extension MCPServer {
                         }
                     )
                 },
-                restoreView: { }
+                restoreView: { },
+                tempoMap: automationTempoMap
             )
         case "send":
             guard let sendSlot = arguments["send"] as? Int, (1...8).contains(sendSlot) else {
@@ -412,7 +466,8 @@ extension MCPServer {
                     }
                     try MCUController.sendViewToPage(forSend: sendSlot)
                 },
-                restoreView: { MCUController.exitToPan() }
+                restoreView: { MCUController.exitToPan() },
+                tempoMap: automationTempoMap
             )
         case "plugin":
             guard let slot = arguments["insert_slot"] as? Int else {
@@ -456,12 +511,22 @@ extension MCPServer {
                         )
                     }
                 },
-                restoreView: { MCUController.exitToPan() }
+                restoreView: { MCUController.exitToPan() },
+                tempoMap: automationTempoMap
             )
         default:
             throw LogicianError.invalidArguments("parameter must be volume, pan, send or plugin")
         }
         automationResult["track"] = automationTrack
+        if let map = automationTempoMap, map.source == .tempoList {
+            automationResult["tempo_map"] = [
+                "source": "tempo_list",
+                "events": map.events.count,
+                "tempos": map.tempos,
+                "constant": map.isConstant,
+                "integrated": true
+            ]
+        }
         return automationResult
     }
 }
