@@ -10,15 +10,35 @@ final class MCPServer {
         log("starting \(serverName) \(serverVersion)")
         while let line = readLine(strippingNewline: true) {
             guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            let message: Any
             do {
-                guard let request = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else {
-                    throw LogicianError.invalidArguments("request must be a JSON object")
-                }
-                if let response = try handle(request) {
-                    write(response)
-                }
+                message = try JSONSerialization.jsonObject(with: Data(line.utf8))
             } catch {
                 write(jsonRPCError(id: NSNull(), code: -32700, message: error.localizedDescription))
+                continue
+            }
+            do {
+                if let request = message as? [String: Any] {
+                    if let response = try handle(request) {
+                        write(response)
+                    }
+                } else if let batch = message as? [Any] {
+                    // A JSON-RPC batch. Legal in the versions this server
+                    // negotiates down to (2024-11-05 and 2025-03-26 inherit
+                    // batching from JSON-RPC 2.0; only 2025-06-18 removes
+                    // it), and it used to fail the object cast and come back
+                    // as a parse error with a null id.
+                    if let responses = handleBatch(batch) {
+                        writeJSON(responses)
+                    }
+                } else {
+                    write(jsonRPCError(
+                        id: NSNull(), code: -32600,
+                        message: "Invalid Request: a JSON-RPC message must be an object, or an array of them"
+                    ))
+                }
+            } catch {
+                write(jsonRPCError(id: NSNull(), code: -32603, message: error.localizedDescription))
             }
         }
         // stdin closed: the client is gone. Leave the control surface in the
@@ -34,7 +54,22 @@ final class MCPServer {
         // A notification (no id) must NEVER get a response - answering one,
         // even with an error, is invalid JSON-RPC and strict clients
         // (Antigravity's Go MCP layer) close the connection over it.
-        let isNotification = request["id"] == nil
+        //
+        // Checked BEFORE the switch, not inside `default:` where it used to
+        // live: an id-less `tools/call`, `tools/list` or `ping` matched a
+        // case, never reached the guard, and was answered with `"id": null` -
+        // exactly the reply the guard exists to prevent.
+        //
+        // A REQUEST method arriving without an id is a client bug, and it is
+        // deliberately NOT dispatched: performing a Logic write whose result
+        // could never be reported back is worse than dropping the message.
+        // The drop is logged so it is diagnosable rather than silent.
+        if request["id"] == nil {
+            if !method.hasPrefix("notifications/") && method != "initialized" {
+                log("dropped '\(method)' sent without an id: a notification gets no response, so its result could never reach the caller")
+            }
+            return nil
+        }
 
         switch method {
         case "initialize":
@@ -63,15 +98,32 @@ final class MCPServer {
             let params = request["params"] as? [String: Any] ?? [:]
             let toolName = params["name"] as? String ?? ""
             let arguments = params["arguments"] as? [String: Any] ?? [:]
+            // An unknown NAME is an invalid `params.name`, not a tool that ran
+            // and failed. MCP reserves `isError` for EXECUTION failures, so
+            // returning one told a strict client "the call succeeded, the tool
+            // reported a problem" - the wrong half of the protocol.
+            if let unknown = unknownToolMessage(name: toolName) {
+                return jsonRPCError(id: id, code: -32602, message: unknown)
+            }
             return response(id: id, result: callTool(name: toolName, arguments: arguments))
 
         default:
-            if isNotification || method.hasPrefix("notifications/") { return nil }
+            // Real notifications already returned above. An unknown
+            // `notifications/*` that carries an id anyway is still a
+            // notification by name, and gets no "method not found" either.
+            if method.hasPrefix("notifications/") { return nil }
             return jsonRPCError(id: id, code: -32601, message: "Method not found: \(method)")
         }
     }
 
-    func toolResult(payload: Any, isError: Bool) -> [String: Any] {
+    /// The `CallToolResult` wire shape.
+    ///
+    /// `includeAudio: false` is the `include_audio` opt-out: the audio keys
+    /// are still stripped from the text payload (they are transport, never
+    /// content), but no audio block is attached and the note that promised
+    /// one is rewritten - a result that says "this CARRIES the audio" while
+    /// carrying nothing is exactly the dishonesty this server refuses.
+    func toolResult(payload: Any, isError: Bool, includeAudio: Bool = true) -> [String: Any] {
         // A payload carrying "_audio" {data, mimeType} becomes an MCP audio
         // content block so multimodal clients can LISTEN instead of being
         // tempted to read raw audio files into their context.
@@ -90,6 +142,18 @@ final class MCPServer {
                 }
                 object.removeValue(forKey: "_audio_list")
             }
+            if !includeAudio && !audioBlocks.isEmpty {
+                audioBlocks = []
+                // Correct the standing promise in place. No key is added or
+                // removed - only the value of the note that would otherwise
+                // tell the agent to listen to blocks that are not there.
+                let omitted = "Audio blocks were OMITTED because you passed include_audio: false. Nothing was heard. To listen, open the audio paths in this result (preview_path / clip_path / baseline_audio / after_audio) with your client's file viewer, or call again with include_audio: true. NEVER read audio files as text/bash."
+                if object["listen_note"] != nil {
+                    object["listen_note"] = omitted
+                } else if object["note"] != nil {
+                    object["note"] = omitted
+                }
+            }
             textPayload = object
         }
         let text: String
@@ -103,14 +167,24 @@ final class MCPServer {
 
         var content: [[String: Any]] = [["type": "text", "text": text]]
         content.append(contentsOf: audioBlocks)
-        var result: [String: Any] = [
+        // NO `structuredContent`. It used to carry a second copy of the same
+        // dictionary the text block already holds, which doubled the tokens of
+        // every call in any client that renders both - and it was unvalidated:
+        // the spec pairs structured content with an `outputSchema`, and these
+        // 57 results are heterogeneous, branch-dependent dictionaries (an
+        // optional `warning`, an optional `slice`, `metrics` only when the
+        // file could be measured, a completely different error shape) that no
+        // honest schema describes. A permissive `{"type": "object"}` would
+        // validate nothing while keeping the duplicate; a specific one would
+        // eventually reject a truthful result, which is the worst outcome this
+        // server can produce. The serialized-JSON text block is what the spec
+        // prescribes without an output schema, and it is also the ONLY form
+        // the 2024-11-05 and 2025-03-26 clients this server negotiates down to
+        // understand - structured content did not exist before 2025-06-18.
+        return [
             "content": content,
             "isError": isError
         ]
-        if let structured = textPayload as? [String: Any] {
-            result["structuredContent"] = structured
-        }
-        return result
     }
 
     func response(id: Any, result: Any) -> [String: Any] {
@@ -125,9 +199,50 @@ final class MCPServer {
         ]
     }
 
+    /// One JSON-RPC batch: every member is processed in order, and only the
+    /// members that carry an id produce a response. nil means "write NOTHING"
+    /// - the required answer when every member was a notification, and the
+    /// same rule that keeps a strict client from closing the connection over
+    /// a reply it never asked for.
+    func handleBatch(_ members: [Any]) -> [[String: Any]]? {
+        guard !members.isEmpty else {
+            return [jsonRPCError(
+                id: NSNull(), code: -32600, message: "Invalid Request: the batch is empty"
+            )]
+        }
+        var responses: [[String: Any]] = []
+        for member in members {
+            guard let request = member as? [String: Any] else {
+                responses.append(jsonRPCError(
+                    id: NSNull(), code: -32600,
+                    message: "Invalid Request: every member of a batch must be a JSON object"
+                ))
+                continue
+            }
+            do {
+                if let response = try handle(request) {
+                    responses.append(response)
+                }
+            } catch {
+                // One bad member must not lose the rest of the batch.
+                responses.append(jsonRPCError(
+                    id: request["id"] ?? NSNull(), code: -32603,
+                    message: error.localizedDescription
+                ))
+            }
+        }
+        return responses.isEmpty ? nil : responses
+    }
+
     func write(_ object: [String: Any]) {
-        guard JSONSerialization.isValidJSONObject(object),
-              let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+        writeJSON(object)
+    }
+
+    /// Writes one newline-delimited JSON message: an object for a single
+    /// response, an array for a batch.
+    func writeJSON(_ message: Any) {
+        guard JSONSerialization.isValidJSONObject(message),
+              let data = try? JSONSerialization.data(withJSONObject: message, options: [.sortedKeys]),
               var line = String(data: data, encoding: .utf8) else {
             log("failed to serialize response")
             return

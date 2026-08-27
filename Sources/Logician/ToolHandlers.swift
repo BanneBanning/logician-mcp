@@ -23,12 +23,32 @@ extension MCPServer {
         )
     }
 
+    /// nil when this server has a tool called `name`; otherwise the message
+    /// for the -32602 that `tools/call` answers with. An unknown name is a
+    /// PROTOCOL error (bad `params.name`), not a tool that ran and failed, so
+    /// it never reaches `callTool` from the request path - and the reply still
+    /// names every tool that does exist, because the usual cause is a client
+    /// or agent working from a stale list.
+    func unknownToolMessage(name: String) -> String? {
+        let names = toolRegistry().map(\.name)
+        guard !names.contains(name) else { return nil }
+        return "Unknown tool: '\(name)'. Nothing was executed. Available tools: "
+            + names.sorted().joined(separator: ", ")
+    }
+
     func callTool(name: String, arguments: [String: Any]) -> [String: Any] {
         do {
             guard let tool = toolRegistry().first(where: { $0.name == name }) else {
-                throw LogicianError.invalidArguments("unknown tool: \(name)")
+                // Unreachable from `tools/call` (see unknownToolMessage), kept
+                // so a direct caller cannot dispatch a name that does not exist.
+                throw LogicianError.invalidArguments(unknownToolMessage(name: name) ?? "unknown tool: \(name)")
             }
             try rejectUnknownArguments(tool: tool, arguments: arguments)
+            // Opt-out for the four tools that can attach ~300-800 KB of base64
+            // audio. Default TRUE: a client that forwards audio blocks is the
+            // reason those tools exist. A client that stringifies unknown
+            // content blocks instead can now ask for the paths alone.
+            let includeAudio = arguments["include_audio"] as? Bool ?? true
             let payload = try tool.handler(self)(arguments)
             // Every write that changes how the song SOUNDS carries a standing
             // instruction to judge it by ear. Parameter and fader numbers say
@@ -42,9 +62,9 @@ extension MCPServer {
                successPayload["success"] as? Bool == true,
                successPayload["listen_note"] == nil {
                 successPayload["listen_note"] = note
-                return toolResult(payload: successPayload, isError: false)
+                return toolResult(payload: successPayload, isError: false, includeAudio: includeAudio)
             }
-            return toolResult(payload: payload, isError: false)
+            return toolResult(payload: payload, isError: false, includeAudio: includeAudio)
         } catch {
             return toolResult(
                 payload: [
