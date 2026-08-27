@@ -72,6 +72,21 @@ Run `logic_health` first. It starts the bridge daemon, checks every setup requir
 - `logic_get_audio_clip {path, start_seconds?, duration_seconds?}` returns a short mono AAC clip as a native MCP audio content block — use it when your client forwards audio blocks (test once: if the tool result reaches you as text only, your client drops them; switch to the file-viewer route). Pick the interesting window (e.g. where the regions are) rather than second 0, which may be silence.
 - **Sanity-check what you hear against the numbers**: bounce results now include `metrics` and a `warning` when the file is SILENT or when tracks are left SOLOED. A leftover solo silently empties every master bounce — if the warning names soloed tracks, unsolo before trusting any bounce.
 
+## Reading a result
+
+Every successful result carries the same four fields, and they mean different things — do not collapse them:
+
+- **`success`** — the operation did what it was asked to do. `false` means it did not; look at `error` and `error_code`.
+- **`verified`** — Logic's own feedback confirmed the new state (an LCD echo, a readback, a header checkbox). `success: true, verified: false` means the write went out but could not be confirmed: treat the value as unknown and re-read before building on it.
+- **`state`** — what happened, as a word you can branch on (below).
+- **`write_route`** — which mechanism did it (`bridge_converge`, `mcu_vpot_converge`, `midi_key_command_save`, `ax_value_stepwise_db_converge`, …). Useful when something is slow or a fallback fired: an `ax_*` route means the MCU path was unavailable.
+
+**The `state` vocabulary.** The stem names the operation's outcome — `saved`, `bounced`, `evaluated`, `renamed`, `deleted`, `moved`, `duplicated`, `closed`, `recorded`, `volume_set`, `pan_set`, `plugin_added`, `plugin_removed`, `cycle_range_set`, `on`/`off`, `stopped`, `confirmed`, `failed`.
+
+**An `already_` prefix means nothing was changed** — the target was already in the requested state (`already_saved`, `already_selected`, `already_on`, `already_expanded`, `already_open`, `already_stopped`, `already_cycle_on`, …). This is the signal worth branching on: it is a successful no-op, so it is not a reason to retry, and in an A/B loop it means your "before" and "after" are the same thing. If you expected a change and got `already_*`, your model of the project is wrong — re-read before continuing.
+
+**Restoration.** When a write fails after partially landing, the error carries `restored: true/false`. `false` means the project is in an in-between state and you must re-read; the tools never guess this flag — an unverifiable restoration reports `false`.
+
 ## Error taxonomy
 
 - `not_found` / `not_exposed` — the target does not exist or is not reachable; the message lists what IS visible. Check names/slots.
