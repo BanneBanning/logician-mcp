@@ -340,6 +340,30 @@ func isMIDIStreamActive() -> Bool {
     return midiStreamActive
 }
 
+/// Sleeps until `hostTime` in short slices, re-checking cancellation between
+/// them; returns false as soon as the stream was cancelled.
+///
+/// The wait used to be a SINGLE usleep capped at 1 s per event, with no
+/// re-check of the deadline afterwards — so every gap longer than that fell
+/// straight through and the event went to CoreMIDI far ahead of its due time
+/// (sparse pads, held chords, slow tempi, rests). CoreMIDI cannot un-send a
+/// stamped packet it already holds, so midi_abort — the emergency stop for
+/// stuck notes — had nothing left to cancel. Slicing the wait keeps at most
+/// one slice of dispatch beyond the documented ~80 ms lead.
+func waitForMIDIStream(until hostTime: UInt64, generation: Int) -> Bool {
+    let sliceUs: UInt64 = 20_000 // ceiling on how long midi_abort can lag
+    while true {
+        midiStreamLock.lock()
+        let cancelled = midiStreamGeneration != generation
+        midiStreamLock.unlock()
+        if cancelled { return false }
+        let now = mach_absolute_time()
+        guard hostTime > now else { return true }
+        let waitNs = (hostTime - now) * UInt64(timebase.numer) / UInt64(timebase.denom)
+        usleep(UInt32(max(1, min(waitNs / 1000, sliceUs))))
+    }
+}
+
 /// Plays timestamped events on the MIDI In port from a background thread.
 /// Offsets are milliseconds from stream start; pacing via usleep is well
 /// under a millisecond of jitter, which recording quantization dwarfs.
@@ -356,21 +380,24 @@ func playMIDIStream(_ events: [(offsetMs: Double, bytes: [UInt8])]) {
         let anchor = mach_absolute_time()
         let leadMs = 80.0
         for event in events {
-            midiStreamLock.lock()
-            let cancelled = midiStreamGeneration != generation
-            midiStreamLock.unlock()
-            if cancelled { return }
             let due = anchor &+ hostTicks(fromMs: event.offsetMs)
             let sendAt = event.offsetMs > leadMs
                 ? anchor &+ hostTicks(fromMs: event.offsetMs - leadMs)
                 : anchor
-            let now = mach_absolute_time()
-            if sendAt > now {
-                let waitNs = (sendAt - now) * UInt64(timebase.numer) / UInt64(timebase.denom)
-                usleep(UInt32(min(waitNs / 1000, 1_000_000)))
-            }
+            // Cancellation is now re-checked DURING the wait, not only
+            // between events: an abort in a long gap is honoured within one
+            // slice instead of after the whole gap has been slept through.
+            guard waitForMIDIStream(until: sendAt, generation: generation) else { return }
             sendMIDIInStamped(event.bytes, atHostTime: due)
         }
+        // The final packets are handed over one lead ahead of when they
+        // sound, so the thread waits out that lead before clearing the flag:
+        // otherwise midiStreamActive (and midi_stream's busy check) reported
+        // idle while notes were still pending in CoreMIDI.
+        _ = waitForMIDIStream(
+            until: anchor &+ hostTicks(fromMs: events.last?.offsetMs ?? 0),
+            generation: generation
+        )
         midiStreamLock.lock()
         if midiStreamGeneration == generation { midiStreamActive = false }
         midiStreamLock.unlock()

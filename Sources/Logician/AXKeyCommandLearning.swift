@@ -24,10 +24,12 @@ extension LogicAccessibility {
     }
 
     func closeKeyCommandsWindow() {
+        // A close button that is not an element leaves the window open (same
+        // as no close button) instead of trapping the server.
         guard let window = try? logicWindows().first(where: {
             stringAttribute($0, kAXTitleAttribute as String).contains("Key Command")
-        }), let close = attribute(window, kAXCloseButtonAttribute as String) else { return }
-        _ = AXUIElementPerformAction(close as! AXUIElement, kAXPressAction as CFString)
+        }), let close = elementAttribute(window, kAXCloseButtonAttribute as String) else { return }
+        _ = AXUIElementPerformAction(close, kAXPressAction as CFString)
     }
 
     /// Learns MIDI-note assignments for the given commands via the Key

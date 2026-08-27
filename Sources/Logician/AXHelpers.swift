@@ -192,8 +192,9 @@ extension LogicAccessibility {
         // the project window still resolves through these attributes — a
         // non-empty list is no guarantee the document window is in it.
         for name in [kAXMainWindowAttribute as String, kAXFocusedWindowAttribute as String] {
-            guard let value = attribute(appElement, name) else { continue }
-            let window = value as! AXUIElement
+            // A non-element answer here is skipped like a missing attribute
+            // instead of trapping (`as!`) on the way to the window list.
+            guard let window = elementAttribute(appElement, name) else { continue }
             if !collected.contains(where: { CFEqual($0, window) }) {
                 collected.append(window)
             }
@@ -254,8 +255,9 @@ extension LogicAccessibility {
     }
 
     func closeWindowElement(_ window: AXUIElement) -> Bool {
-        if let closeButton = attribute(window, kAXCloseButtonAttribute as String) {
-            let button = closeButton as! AXUIElement
+        // A close-button attribute that is not an element falls through to the
+        // child-button path below rather than trapping (`as!`).
+        if let button = elementAttribute(window, kAXCloseButtonAttribute as String) {
             if AXUIElementPerformAction(button, kAXPressAction as CFString) == .success {
                 return true
             }
@@ -515,5 +517,29 @@ extension LogicAccessibility {
         var value: CFTypeRef?
         let status = AXUIElementCopyAttributeValue(element, name as CFString, &value)
         return status == .success ? value : nil
+    }
+
+    /// An attribute that should hold another element. Attribute values arrive
+    /// untyped (CFTypeRef) and Logic does answer with the wrong CF type on
+    /// stale or half-built UI; forcing that with `as!` TRAPS, and a Swift trap
+    /// kills the whole MCP server, so this degrades to nil exactly like a
+    /// missing attribute — the path every caller already handles.
+    func elementAttribute(_ element: AXUIElement, _ name: String) -> AXUIElement? {
+        guard let value = attribute(element, name),
+              CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        // Swift refuses `as?` on CoreFoundation types ("will always
+        // succeed"), so the type ID above IS the check; the force-cast that
+        // follows it can no longer fail.
+        return (value as! AXUIElement)
+    }
+
+    /// The CGRect inside an AXValue-typed attribute value, nil when the reply
+    /// is not an AXValue or does not carry a rect — same reason: an `as!` to
+    /// AXValue on a non-AXValue reply traps the process.
+    func rectValue(_ value: CFTypeRef) -> CGRect? {
+        guard CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        var rect = CGRect.zero
+        guard AXValueGetValue((value as! AXValue), .cgRect, &rect) else { return nil }
+        return rect
     }
 }

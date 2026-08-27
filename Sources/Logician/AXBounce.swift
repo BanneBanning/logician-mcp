@@ -13,7 +13,10 @@ extension LogicAccessibility {
             .runningApplications(withBundleIdentifier: bundleIdentifier)
             .first else { throw LogicianError.logicNotRunning }
         let appElement = AXUIElementCreateApplication(application.processIdentifier)
-        guard let menuBar = attribute(appElement, kAXMenuBarAttribute as String) else {
+        // elementAttribute, not `as!` on the raw attribute: a menu bar that
+        // comes back as a non-element reports "menu bar not found" instead
+        // of trapping and killing the server.
+        guard let menuBar = elementAttribute(appElement, kAXMenuBarAttribute as String) else {
             throw LogicianError.windowNotFound("menu bar")
         }
         var target: AXUIElement?
@@ -29,7 +32,7 @@ extension LogicAccessibility {
                 walk(child, depth: depth + 1, path: title.isEmpty ? path : path + [title])
             }
         }
-        walk(menuBar as! AXUIElement, depth: 0, path: [])
+        walk(menuBar, depth: 0, path: [])
         guard let item = target else {
             throw LogicianError.windowNotFound("menu item '\(fragment)' under '\(parent)'")
         }
@@ -298,14 +301,34 @@ extension LogicAccessibility {
         }
         var resultPath: String?
         var lastSize: UInt64 = 0
+        var stableRounds = 0
         let renderDeadline = Date().addingTimeInterval(60)
         while Date() < renderDeadline {
             Thread.sleep(forTimeInterval: 0.1)
             if resultPath == nil { resultPath = findResult() }
             if let path = resultPath {
                 let size = ((try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? UInt64) ?? 0
+                // "Same size 100 ms apart" also holds for a file Logic has
+                // only paused writing, and the metric readers then walk a
+                // half-written chunk table. Require the container header to
+                // account for every byte as well, where it can be read.
+                let header = FileHandle(forReadingAtPath: path).flatMap { handle -> Data? in
+                    defer { try? handle.close() }
+                    return try? handle.read(upToCount: 12)
+                }
+                let complete = LogicAccessibility.containerComplete(
+                    header: header ?? Data(), fileSize: size
+                ) ?? true
                 if size > 0, size == lastSize {
-                    break // size stable = render finished
+                    stableRounds += 1
+                    // Stable AND complete is the real finish line; the
+                    // stable-round fallback keeps a container we cannot judge
+                    // from blocking until the 60 s deadline.
+                    if complete || stableRounds >= 20 {
+                        break // render finished
+                    }
+                } else {
+                    stableRounds = 0
                 }
                 lastSize = size
             }
@@ -407,6 +430,43 @@ extension LogicAccessibility {
         return data
     }
 
+    /// True when a chunk body of `bodyBytes` bytes lies inside the file. The
+    /// IFF walk loop only proves the 8-byte chunk HEADER is present, so every
+    /// read past it needs its own check: a file truncated within 4 bytes of an
+    /// SSND header used to trap on the `Data` subscript, and a Swift trap
+    /// takes down the whole MCP server, not just the request.
+    static func chunkBodyInBounds(offset: Int, bodyBytes: Int, count: Int) -> Bool {
+        guard offset >= 0, bodyBytes >= 0, count >= 8, offset <= count - 8 else { return false }
+        return count - offset - 8 >= bodyBytes
+    }
+
+    /// Whether `fileSize` covers the container declared in the first bytes of
+    /// an audio file: AIFF/AIFC ("FORM", big-endian) and WAV ("RIFF",
+    /// little-endian) both declare the payload size that follows their 8-byte
+    /// header. Returns nil for anything else, so callers can keep whatever
+    /// they did before on a format this cannot judge.
+    ///
+    /// Needed because "the size did not change over 100 ms" also holds for a
+    /// render Logic has merely paused writing — measuring one of those is how
+    /// a truncated chunk table reaches the readers above.
+    static func containerComplete(header: Data, fileSize: UInt64) -> Bool? {
+        guard header.count >= 8 else { return nil }
+        let bytes = [UInt8](header.prefix(8))
+        let declared: UInt64
+        switch String(bytes: bytes[0..<4], encoding: .ascii) ?? "" {
+        case "FORM":
+            declared = (UInt64(bytes[4]) << 24) | (UInt64(bytes[5]) << 16)
+                | (UInt64(bytes[6]) << 8) | UInt64(bytes[7])
+        case "RIFF":
+            declared = (UInt64(bytes[7]) << 24) | (UInt64(bytes[6]) << 16)
+                | (UInt64(bytes[5]) << 8) | UInt64(bytes[4])
+        default:
+            return nil
+        }
+        guard declared > 8 else { return false }
+        return fileSize >= declared + 8
+    }
+
     /// RMS/peak per channel from a bounced AIFF (big-endian PCM) or WAV file —
     /// the objective numbers for bounce-based A/B, computed straight from disk.
     static func audioFileMetrics(path: String) -> [String: Any]? {
@@ -444,7 +504,11 @@ extension LogicAccessibility {
                     isFloat = compression.lowercased() == "fl32"
                 }
             }
-            if chunkID == "SSND" {
+            // The offset field lives in the chunk BODY, which the loop
+            // condition does not guarantee is present: without this check a
+            // file truncated inside an SSND header traps on the subscript.
+            if chunkID == "SSND",
+               LogicAccessibility.chunkBodyInBounds(offset: offset, bodyBytes: 4, count: data.count) {
                 let dataOffset = Int(beUInt32(offset + 8))
                 soundStart = offset + 16 + dataOffset
                 soundBytes = size - 8 - dataOffset
@@ -564,7 +628,11 @@ extension LogicAccessibility {
                     isFloat = compression.lowercased() == "fl32"
                 }
             }
-            if chunkID == "SSND" {
+            // The offset field lives in the chunk BODY, which the loop
+            // condition does not guarantee is present: without this check a
+            // file truncated inside an SSND header traps on the subscript.
+            if chunkID == "SSND",
+               LogicAccessibility.chunkBodyInBounds(offset: offset, bodyBytes: 4, count: data.count) {
                 let dataOffset = Int(beUInt32(offset + 8))
                 soundStart = offset + 16 + dataOffset
                 soundBytes = size - 8 - dataOffset

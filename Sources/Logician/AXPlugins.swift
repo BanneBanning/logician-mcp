@@ -114,7 +114,9 @@ extension LogicAccessibility {
             if stringAttribute(element, kAXRoleAttribute as String) == "AXMenuItem" {
                 titles.append(stringAttribute(element, kAXTitleAttribute as String))
             }
-            current = attribute(element, kAXParentAttribute as String).map { ($0 as! AXUIElement) }
+            // A parent that is not an element ends the walk with the titles
+            // gathered so far, the same as reaching the top; `as!` trapped.
+            current = elementAttribute(element, kAXParentAttribute as String)
         }
         return titles.reversed()
     }
