@@ -79,6 +79,20 @@ Restart the session (MCP servers load at session start) and verify with `agy mcp
 
 **Other MCP clients:** the same `mcpServers` JSON shape, or the client's own `mcp add` command where one exists (prefer it).
 
+### Which client to use — the ears decide
+
+Half of what this server offers is that the agent can *hear* its own work, and clients differ enormously there. Two things have to be true: the model must accept audio at all, and the client must actually deliver it.
+
+| Client | Verdict |
+|---|---|
+| **Antigravity CLI + Gemini** | **Recommended.** The model genuinely hears music — in testing it identified the genre, instrumentation and tempo feel of an unfamiliar track correctly. The CLI drops MCP audio *blocks*, but its file viewer passes an audio file to the model as real multimodal input, so open the `preview_path` a bounce returns. |
+| **Clients that forward MCP audio blocks** | Ideal when the model is audio-capable: bounces and A/B evaluations carry their sound inline, so the agent hears the result in the same reply it decides from. Test yours once — see below. |
+| **GPT-5.6 (Sol / Terra / Luna) via Codex** | Hands, no ears. Those models take text and image only; audio lives in separate models (`gpt-audio-1.5`, `gpt-realtime-2.1`) that Codex does not run. Fine for arranging, MIDI composition and batch edits against `metrics`/`deltas` — pass `include_audio: false` — but do not let it make mix decisions by ear, because it has none. |
+
+**Test your client once, before trusting any listening claim:** bounce a range and ask the agent plainly whether an audio content block arrived. If it says text only, use the file-viewer route on `preview_path` and pass `include_audio: false` to stop paying for blocks that never land.
+
+A caveat worth knowing even with the best setup: models that hear music reliably catch genre, instrumentation and broad character, and reliably *miss* timing. In testing, an agent described a track accurately and still approved a drum edit that had landed a beat off. Trust an agent's ears for balance and tone; verify structure and groove yourself.
+
 Everything else is self-serve: the server spawns its own bridge daemon, `logic_health` diagnoses every setup step with a concrete fix, and the Logic key commands the tools rely on are learned into your Logic automatically on first use — additively, removable in the Key Commands window, with collision handling.
 
 **Point the agent at [docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md)** — core concepts, workflows, error taxonomy, and the complete tool reference generated from the live schemas.
