@@ -207,46 +207,48 @@ extension MCUController {
         return false
     }
 
+    /// The strip index of a named channel on the surface, with the surface
+    /// left banked at it — or nil when it could not be resolved SAFELY, which
+    /// callers answer by trying the other control plane, never by guessing.
+    /// `lastChannelResolution` carries the reason.
     static func findChannel(trackName: String, retryOnEmpty: Bool = true) throws -> Int? {
-        guard try ensurePanNames() else { debugLog("pan multi-channel view failed"); return nil }
+        let resolution = try resolveChannel(trackName: trackName, retryOnEmpty: retryOnEmpty)
+        lastChannelResolution = resolution
+        guard case .resolved(let channel) = resolution else {
+            debugLog("findChannel('\(trackName)'): \(resolution)")
+            return nil
+        }
+        return channel
+    }
+
+    /// Banks to the leftmost position, scans right for a strip whose LCD name
+    /// matches, and leaves the surface banked at the match. Nothing that
+    /// matters is written on any failure path.
+    static func resolveChannel(trackName: String, retryOnEmpty: Bool = true) throws -> ChannelResolution {
+        guard try ensurePanNames() else {
+            debugLog("pan multi-channel view failed")
+            return .unavailable(reason: "the control surface's pan-names view could not be reached")
+        }
 
         // Resolve the project ONCE: both cache reads below and the write at
         // the end of the scan must agree on which project the map belongs to,
         // and re-asking mid-scan could straddle a project switch.
         let projectPath = currentProjectPath()
 
-        // Fastest path: the track is unique on the bank already showing.
-        if let status = freshStatus(), let top = status["lcd_top"] as? String,
-           let cachedTops = loadBankCache(projectPath: projectPath), cachedTops.contains(top) {
-            let allMatches = cachedTops.flatMap { cachedTop in
-                lcdFields(cachedTop).enumerated().filter {
-                    lcdNameMatches(track: trackName, lcd: $0.element)
-                }
-            }
-            if allMatches.count == 1 {
-                let current = lcdFields(top).enumerated().filter {
-                    lcdNameMatches(track: trackName, lcd: $0.element)
-                }
-                if current.count == 1, let hit = current.first {
-                    return hit.offset
-                }
-            }
-        }
-
-        // Fast path: the cached bank map from the previous full scan.
+        // Fast path: the cached bank map from the previous full scan. A cache
+        // may be stale, so only a fresh scan is allowed to DECLARE not-found
+        // or ambiguous — an unusable cache falls through to a rescan.
         if let cachedTops = loadBankCache(projectPath: projectPath) {
-            var cachedMatches: [(bank: Int, channel: Int)] = []
-            for (bank, cachedTop) in cachedTops.enumerated() {
-                for (channel, name) in lcdFields(cachedTop).enumerated()
-                where lcdNameMatches(track: trackName, lcd: name) {
-                    cachedMatches.append((bank, channel))
+            let matches = channelMatches(name: trackName, bankTops: cachedTops)
+            if matches.count == 1, let match = matches.first {
+                // Fastest path: the surface is already banked at the match.
+                if let top = freshStatus()?["lcd_top"] as? String, top == cachedTops[match.bank] {
+                    return .resolved(match.channel)
+                }
+                if try navigateToBank(match.bank, expecting: cachedTops[match.bank]) {
+                    return .resolved(match.channel)
                 }
             }
-            if cachedMatches.count == 1, let match = cachedMatches.first,
-               try navigateToBank(match.bank, expecting: cachedTops[match.bank]) {
-                return match.channel
-            }
-            // stale or ambiguous cache: fall through to a full rescan
             try? FileManager.default.removeItem(at: bankCacheURL)
         }
 
@@ -261,21 +263,23 @@ extension MCUController {
             _ = try ensurePanNames()
             settled = try settledTop()
         }
-        guard var top = settled else { debugLog("no settled top after reset"); return nil }
+        guard var top = settled else {
+            debugLog("no settled top after reset")
+            return .unavailable(reason: "the surface's channel-name row never settled")
+        }
         var bankTops: [String] = []
-        var matches: [(bank: Int, channel: Int)] = []
-        for bank in 0..<10 {
+        for _ in 0..<10 {
             if bankTops.last == top { break }
             bankTops.append(top)
-            for (channel, name) in lcdFields(top).enumerated()
-            where lcdNameMatches(track: trackName, lcd: name) {
-                matches.append((bank, channel))
-            }
             try press("bank_right")
-            guard let next = try settledTop(previous: top) else { debugLog("no settled top in scan"); return nil }
+            guard let next = try settledTop(previous: top) else {
+                debugLog("no settled top in scan")
+                return .unavailable(reason: "a bank's channel-name row never settled during the scan")
+            }
             top = next
         }
         saveScopedCache(bankTops, to: bankCacheURL, projectPath: projectPath)
+        let matches = channelMatches(name: trackName, bankTops: bankTops)
         // Right after a project switch Logic rebuilds the control surface for
         // a few seconds and a full scan can come up empty — settle and rescan
         // once before giving up.
@@ -283,18 +287,24 @@ extension MCUController {
             debugLog("empty bank scan; settling and rescanning once")
             Thread.sleep(forTimeInterval: 2.5)
             try? FileManager.default.removeItem(at: bankCacheURL)
-            return try findChannel(trackName: trackName, retryOnEmpty: false)
+            return try resolveChannel(trackName: trackName, retryOnEmpty: false)
         }
-        guard matches.count == 1, let match = matches.first else { debugLog("match count \(matches.count)"); return nil }
+        guard matches.count == 1, let match = matches.first else {
+            debugLog("match count \(matches.count)")
+            let cells = matches.map { lcdFields(bankTops[$0.bank])[$0.channel] }
+            return matches.isEmpty
+                ? .notFound(cells: bankMapCells(bankTops))
+                : .ambiguous(cells: cells)
+        }
         // Navigate back from the left edge, never relatively: when the track
         // count is not a multiple of 8 the rightmost bank CLAMPS (shows the
         // last 8 tracks), so stepping left from there walks a SHIFTED grid
         // and the expected bank content never reappears.
         if try navigateToBank(match.bank, expecting: bankTops[match.bank]) {
-            return match.channel
+            return .resolved(match.channel)
         }
         debugLog("navigate-back verify failed")
-        return nil
+        return .unavailable(reason: "the surface would not bank back to the matching bank")
     }
 
     /// Waits until the LCD top row holds stable, non-transient channel content

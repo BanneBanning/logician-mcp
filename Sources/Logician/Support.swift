@@ -5,7 +5,7 @@ import LogicMCUBridge
 
 let protocolVersion = "2025-06-18"
 let serverName = "logician"
-let serverVersion = "0.50.0"
+let serverVersion = "0.51.0"
 
 /// Schema version stamped into every on-disk cache. Deliberately tied to
 /// `serverVersion`: these files hold measurements of Logic's MCU LCD, and a
@@ -329,6 +329,14 @@ enum LogicianError: LocalizedError {
     case trackMismatch(number: Int, expected: String, actual: String)
     case selectionFailed(requested: String, actual: String, restored: Bool)
     case trackNotStack(String)
+    /// Several control-surface strips answer to one name (duplicate track
+    /// names, or two names Logic abbreviates into the same six characters).
+    /// Distinct from `trackAmbiguous`, which can offer track NUMBERS as the
+    /// way out — an output/aux/bus strip has no number to offer.
+    case stripAmbiguous(name: String, cells: [String])
+    /// The name is neither a track header nor a control-surface strip: both
+    /// planes were asked, and the message says so.
+    case stripNotFound(name: String, tracks: [String], cells: [String])
     case projectTempoModeUnsafe(mode: String, detail: String)
     case tempoMapUnsafe(operation: String, detail: String)
 
@@ -336,8 +344,10 @@ enum LogicianError: LocalizedError {
         switch self {
         case .accessibilityNotTrusted: return "not_trusted"
         case .logicNotRunning: return "not_running"
-        case .windowNotFound, .parameterNotFound, .insertNotFound, .trackNotFound: return "not_found"
-        case .parameterAmbiguous, .insertAmbiguous, .windowAmbiguous, .trackAmbiguous: return "ambiguous"
+        case .windowNotFound, .parameterNotFound, .insertNotFound, .trackNotFound,
+             .stripNotFound: return "not_found"
+        case .parameterAmbiguous, .insertAmbiguous, .windowAmbiguous, .trackAmbiguous,
+             .stripAmbiguous: return "ambiguous"
         case .valueNotWritable, .trackNotExposed, .windowNotClosable, .trackNotStack: return "not_exposed"
         case .currentValueMismatch, .projectMismatch, .insertMismatch, .pluginNotOpen, .trackMismatch,
              .projectTempoModeUnsafe, .tempoMapUnsafe: return "precondition_failed"
@@ -399,6 +409,15 @@ enum LogicianError: LocalizedError {
             return "Track selection could not be verified. Requested '\(requested)', selection is '\(actual)'. Restored previous selection: \(restored)."
         case .trackNotStack(let name):
             return "Track '\(name)' exposes no track stack disclosure arrow; it is not a track stack."
+        case .stripNotFound(let name, let tracks, let cells):
+            return "'\(name)' is neither a visible track header nor a strip the control surface shows. "
+                + "Track headers: \(tracks.isEmpty ? "none readable" : tracks.joined(separator: ", ")). "
+                + "Surface strips (names as the 6-character LCD abbreviates them): "
+                + "\(cells.isEmpty ? "none readable" : cells.joined(separator: ", ")). Nothing was written."
+        case .stripAmbiguous(let name, let cells):
+            return "'\(name)' matches \(cells.count) control-surface strips (LCD cells: "
+                + "\(cells.joined(separator: ", "))). Nothing was selected or written. "
+                + "Rename one of them, or address a track by track_number instead."
         case .projectTempoModeUnsafe(let mode, let detail):
             return "Refusing to record: the project tempo mode is \(mode). \(detail)"
         case .tempoMapUnsafe(let operation, let detail):
