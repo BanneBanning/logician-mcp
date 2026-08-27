@@ -3,25 +3,210 @@ import ApplicationServices
 import Foundation
 import LogicMCUBridge
 
+/// What the MCU's 10-digit 7-segment display is currently showing.
+///
+/// The display has two modes — bars/beats or SMPTE — and the wire protocol
+/// carries **no mode bit**: ten CC messages (0x40–0x49) paint ten digits
+/// (`Bridge.swift`), and nothing says whether they mean
+/// bars/beats/divisions/ticks or hours/minutes/seconds/frames. Everything
+/// that synchronises against a bar therefore has to judge the digits
+/// themselves, which is what this classification is for: in SMPTE mode the
+/// old parse silently read hours as bars and minutes as beats, and MIDI
+/// recording then synced against nonsense.
+enum MCUTimecodeReading: Equatable {
+    /// A plausible bars/beats position (`BBB bb dd ttt` field layout).
+    /// `division`/`ticks` are 0 when Logic blanked those fields.
+    case beats(bar: Int, beat: Int, division: Int, ticks: Int)
+    /// No digits at all: the bridge has no status, or Logic has never painted
+    /// the display. No information — not, in itself, a mode problem.
+    case notReported
+    /// A modal dialog has frozen the surface; Logic literally paints `ALERT`
+    /// into the position display (FINDINGS, Toggle Track Freeze session), and
+    /// no position exists until the dialog is dismissed.
+    case alert
+    /// Digits that cannot be a bars/beats position — the SMPTE case, plus any
+    /// other unparseable display. `reason` names what was observed.
+    case implausible(reason: String)
+}
+
 extension MCUController {
+    // MARK: The timecode display: mode plausibility
+
+    /// The four position fields of the 10-digit display, unparsed.
+    ///
+    /// The bridge decodes the ten 7-segment digits into exactly ten
+    /// characters with no separators (a 10-byte buffer, `Bridge.swift:26`,
+    /// blank-initialised to 0x20 and written right-to-left), so the fields
+    /// are fixed slices: bar 3, beat 2, division 2, ticks 3. A
+    /// space-separated rendering (four groups of exactly those widths, the
+    /// shape the snapshot fixture in ProtocolTests spells out) is accepted
+    /// too, so a future formatter change degrades into "still parsed"
+    /// instead of "every position implausible".
+    static func timecodeFields(
+        _ raw: String
+    ) -> (bar: String, beat: String, division: String, ticks: String)? {
+        let widths = [3, 2, 2, 3]
+        let groups = raw.split(separator: " ").map(String.init)
+        if groups.count == 4, groups.map(\.count) == widths {
+            return (groups[0], groups[1], groups[2], groups[3])
+        }
+        let characters = Array(raw)
+        guard characters.count >= 10 else { return nil }
+        var slices: [String] = []
+        var start = 0
+        for width in widths {
+            slices.append(String(characters[start..<(start + width)]))
+            start += width
+        }
+        return (slices[0], slices[1], slices[2], slices[3])
+    }
+
+    /// One display field: blank (Logic painted nothing there), a number, or
+    /// something that is not a number at all.
+    private enum TimecodeField: Equatable {
+        case blank
+        case number(Int)
+        case garbage
+    }
+
+    private static func timecodeField(_ raw: String) -> TimecodeField {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { return .blank }
+        guard trimmed.allSatisfy({ $0.isASCII && $0.isNumber }), let value = Int(trimmed) else {
+            return .garbage
+        }
+        return .number(value)
+    }
+
+    /// Classifies a raw display string as a bars/beats position or not.
+    /// Pure — no bridge, no Logic, no side effects; unit-tested.
+    ///
+    /// The check refuses only on *positive* evidence, because a false refusal
+    /// blocks a legitimate recording:
+    /// - bars, beats and divisions are **one-based** everywhere in Logic,
+    ///   while SMPTE's hours/minutes/seconds are zero-based — so a zero (or a
+    ///   blank) in the bar or beat field, or a literal `00` division, is
+    ///   evidence of SMPTE mode rather than of a musical position;
+    /// - a blank division or ticks field is *tolerated* (leading-zero
+    ///   suppression on the 7-segment display is only verified for digits and
+    ///   spaces, FINDINGS 2026-08-25), reported as 0;
+    /// - `expectedBar` is the decisive check and is passed wherever the
+    ///   caller has just parked the playhead at a verified bar: SMPTE digits
+    ///   that happen to be shaped like a position still disagree with it.
+    static func classifyTimecode(
+        _ raw: String?, expectedBar: Int? = nil, barTolerance: Int = 1
+    ) -> MCUTimecodeReading {
+        guard let raw else { return .notReported }
+        if raw.uppercased().contains("ALERT") { return .alert }
+        let shown = raw.trimmingCharacters(in: .whitespaces)
+        if shown.isEmpty { return .notReported }
+        guard let fields = timecodeFields(raw) else {
+            return .implausible(
+                reason: "the position display reads '\(shown)', which is not the 10-digit bars/beats layout"
+            )
+        }
+        guard case .number(let bar) = timecodeField(fields.bar), bar >= 1 else {
+            return .implausible(
+                reason: "the position display reads '\(shown)', whose bar field is not a bar number (bars start at 1)"
+            )
+        }
+        guard case .number(let beat) = timecodeField(fields.beat), beat >= 1 else {
+            return .implausible(
+                reason: "the position display reads '\(shown)', whose beat field is not a beat number (beats start at 1)"
+            )
+        }
+        var division = 0
+        switch timecodeField(fields.division) {
+        case .blank: break
+        case .number(let value) where value >= 1: division = value
+        default:
+            return .implausible(
+                reason: "the position display reads '\(shown)', whose division field is not a division (divisions start at 1)"
+            )
+        }
+        var ticks = 0
+        switch timecodeField(fields.ticks) {
+        case .blank: break
+        case .number(let value): ticks = value
+        case .garbage:
+            return .implausible(
+                reason: "the position display reads '\(shown)', whose tick field is not numeric"
+            )
+        }
+        if let expectedBar, abs(bar - expectedBar) > barTolerance {
+            return .implausible(
+                reason: "the position display reads '\(shown)' (bar \(bar)) while the playhead is parked at bar \(expectedBar)"
+            )
+        }
+        return .beats(bar: bar, beat: beat, division: division, ticks: ticks)
+    }
+
+    /// The live reading off the bridge mirror.
+    static func timecodeReading(expectedBar: Int? = nil) -> MCUTimecodeReading {
+        classifyTimecode(freshStatus()?["timecode"] as? String, expectedBar: expectedBar)
+    }
+
+    /// Refuses to run a bar-synchronised operation against a display that is
+    /// not showing bars/beats — the guard that turns "silently recorded
+    /// against hours-as-bars" into an actionable refusal. Nothing is written
+    /// by this check itself.
+    ///
+    /// TODO (docs/ROADMAP.md item 1, "Guard the MCU timecode parse"): the
+    /// bridge already maps the `smpte_beats` button (`Bridge.swift:447`), so
+    /// this could press it once, re-read, and continue when the display
+    /// becomes plausible (the press *is* the fix — nothing to restore). Not
+    /// implemented because pressing it cannot be verified without a live
+    /// Logic + bridge session; until someone confirms the button's effect on
+    /// the mirrored display, refusing is better than guessing inside a
+    /// sync-critical path.
+    static func requireBeatsDisplay(expectedBar: Int? = nil, operation: String) throws {
+        if let error = beatsDisplayError(
+            for: timecodeReading(expectedBar: expectedBar), operation: operation
+        ) {
+            throw error
+        }
+    }
+
+    /// The refusal a given reading deserves, or nil when it is a usable
+    /// position. Split out of `requireBeatsDisplay` so the messages agents
+    /// actually branch on are unit-testable without a bridge.
+    static func beatsDisplayError(
+        for reading: MCUTimecodeReading, operation: String
+    ) -> LogicianError? {
+        switch reading {
+        case .beats:
+            return nil
+        case .alert:
+            return LogicianError.openVerificationFailed(
+                "Logic is showing a modal alert (MCU timecode reads ALERT); dismiss it and retry"
+            )
+        case .notReported:
+            return LogicianError.trackNotExposed(
+                requested: "the MCU position display for \(operation)",
+                exposed: "the 10-digit position display is blank — Logic has not reported a playhead position on the control surface (check logic_health / the Mackie Control setup)"
+            )
+        case .implausible(let reason):
+            return LogicianError.currentValueMismatch(
+                expected: "the MCU position display in bars/beats mode for \(operation)",
+                actual: "\(reason) — the MCU secondary display is in SMPTE mode; press the SMPTE/Beats button in Logic's control bar or the MCU display to switch to beats, then retry"
+            )
+        }
+    }
+
     // MARK: MIDI recording (composition via the "Logic MCP MIDI In" port)
 
-    /// Current bar from the MCU timecode display (BBB bb dd ttt layout).
+    /// Current bar from the MCU timecode display (BBB bb dd ttt layout), or
+    /// nil when the display is not showing a plausible bars/beats position
+    /// (SMPTE mode, `ALERT`, blank). Polling loops then see "no position
+    /// yet" and time out with their own verification error instead of
+    /// syncing against hours; `requireBeatsDisplay` is what names the fix.
     static func timecodeBar() -> Int? {
-        guard let timecode = freshStatus()?["timecode"] as? String, timecode.count >= 3 else {
-            return nil
-        }
-        return Int(timecode.prefix(3).trimmingCharacters(in: .whitespaces))
+        guard case .beats(let bar, _, _, _) = timecodeReading() else { return nil }
+        return bar
     }
 
     static func timecodeBarBeat() -> (bar: Int, beat: Int)? {
-        guard let timecode = freshStatus()?["timecode"] as? String, timecode.count >= 5 else {
-            return nil
-        }
-        guard let bar = Int(timecode.prefix(3).trimmingCharacters(in: .whitespaces)) else {
-            return nil
-        }
-        let beat = Int(timecode.dropFirst(3).prefix(2).trimmingCharacters(in: .whitespaces)) ?? 1
+        guard case .beats(let bar, let beat, _, _) = timecodeReading() else { return nil }
         return (bar, beat)
     }
 
@@ -48,6 +233,12 @@ extension MCUController {
                 exposed: "the bridge is not running or Logic has not connected"
             )
         }
+        // The whole sync below reads bars and beats off the 10-digit display,
+        // which carries no mode bit — in SMPTE mode those digits are hours
+        // and minutes. Cheap shape check FIRST, before anything is selected,
+        // moved or armed, so the common case (display left in SMPTE) costs
+        // one status read and refuses with the fix named.
+        try requireBeatsDisplay(operation: "MIDI recording at bar \(startBar)")
         _ = try? setPlaying(false)
         let transport = try logic.getTransport()
         let savedBar = transport["playhead_bar"] as? Int
@@ -67,6 +258,21 @@ extension MCUController {
         // swallowed by Logic while the field is still hot — settle first.
         _ = quiescentStatus()
         Thread.sleep(forTimeInterval: 0.6)
+        // Now the decisive check: setPlayhead verified the playhead against
+        // Logic's own control bar, and the display has settled after that
+        // move — so the bar it shows must be the bar we parked at. SMPTE
+        // digits that merely LOOK like a position fail here. Still nothing
+        // recorded; restore the playhead ourselves since the cleanup `defer`
+        // below is not armed yet.
+        do {
+            try requireBeatsDisplay(
+                expectedBar: startBar - 1,
+                operation: "MIDI recording sync at bar \(startBar)"
+            )
+        } catch {
+            if let bar = savedBar { _ = try? logic.setPlayhead(barNumber: bar, beat: nil) }
+            throw error
+        }
         try press("record")
         defer {
             _ = try? MCUBridge.send(.midiAbort) // stuck-note safety

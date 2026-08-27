@@ -289,6 +289,132 @@ final class PureLogicTests: XCTestCase {
         }
     }
 
+    // MARK: - MCU timecode mode plausibility (beats vs SMPTE)
+
+    /// The bridge decodes the ten 7-segment digits into exactly ten
+    /// characters with no separators (a 10-byte buffer written right to
+    /// left), so the position fields are fixed slices: bar 3, beat 2,
+    /// division 2, ticks 3.
+    private func assertBeats(
+        _ raw: String?, bar: Int, beat: Int, division: Int, ticks: Int,
+        expectedBar: Int? = nil, _ message: String = "", line: UInt = #line
+    ) {
+        let reading = MCUController.classifyTimecode(raw, expectedBar: expectedBar)
+        guard case .beats(let b, let bt, let d, let t) = reading else {
+            return XCTFail("expected a beats reading, got \(reading). \(message)", line: line)
+        }
+        XCTAssertEqual([b, bt, d, t], [bar, beat, division, ticks], message, line: line)
+    }
+
+    private func assertImplausible(_ raw: String?, expectedBar: Int? = nil,
+                                   _ message: String = "", line: UInt = #line) {
+        let reading = MCUController.classifyTimecode(raw, expectedBar: expectedBar)
+        guard case .implausible = reading else {
+            return XCTFail("expected implausible, got \(reading). \(message)", line: line)
+        }
+    }
+
+    func testClassifyTimecodeAcceptsARealBeatsDisplay() {
+        assertBeats("0010101000", bar: 1, beat: 1, division: 1, ticks: 0)
+        // Leading-zero suppression blanks the unused digits of the bar field.
+        assertBeats(" 210101000", bar: 21, beat: 1, division: 1, ticks: 0)
+        assertBeats("  10403120", bar: 1, beat: 4, division: 3, ticks: 120)
+        // The three-digit bar field's ceiling.
+        assertBeats("9990403120", bar: 999, beat: 4, division: 3, ticks: 120)
+    }
+
+    func testClassifyTimecodeAcceptsTheSpaceSeparatedRendering() {
+        // The shape the snapshot fixture in ProtocolTests spells out. The
+        // live bridge emits no separators, but a formatter change must not
+        // turn every position into "implausible".
+        assertBeats("001 01 01 000", bar: 1, beat: 1, division: 1, ticks: 0)
+        assertBeats("128 03 02 240", bar: 128, beat: 3, division: 2, ticks: 240)
+    }
+
+    func testClassifyTimecodeToleratesBlankDivisionAndTickFields() {
+        // The 7-segment decode is only verified for digits and spaces
+        // (FINDINGS 2026-08-25), so blanks in the two fields nothing reads
+        // must not refuse a legitimate recording.
+        assertBeats("00101     ", bar: 1, beat: 1, division: 0, ticks: 0)
+        assertBeats("00101 1   ", bar: 1, beat: 1, division: 1, ticks: 0)
+    }
+
+    func testClassifyTimecodeRejectsSMPTEShapedDigits() {
+        // 00:00:00:00 — the zero-based hours field cannot be a bar number.
+        assertImplausible("  00000000", "SMPTE at zero")
+        // 01:12:34:12 right-aligned: still a zero/blank bar field.
+        assertImplausible("  01123412", "one hour in")
+        // A bar field that happens to look plausible, caught by the
+        // zero-based minutes landing in the beat field.
+        assertImplausible("0010001234", "00 minutes is not beat 0")
+        // …and by zero-based seconds landing in the division field.
+        assertImplausible("0102000345", "00 seconds is not division 0")
+    }
+
+    func testClassifyTimecodeCatchesPlausibleLookingSMPTEViaTheParkedBar() {
+        // Honest about the limit of shape alone: these digits pass every
+        // format rule, so only the cross-check against the bar the playhead
+        // was just parked at can reject them. Every guarded call site that
+        // has parked the playhead passes expectedBar for exactly this.
+        assertBeats("0102030405", bar: 10, beat: 20, division: 30, ticks: 405,
+                    "shape alone cannot rule this out")
+        assertImplausible("0102030405", expectedBar: 8, "cross-check must reject it")
+    }
+
+    func testClassifyTimecodeAppliesTheParkedBarWithinOneBarOfSlack() {
+        assertBeats("0070101000", bar: 7, beat: 1, division: 1, ticks: 0, expectedBar: 7)
+        // One bar of slack: the display can be mid-update after a park.
+        assertBeats("0070101000", bar: 7, beat: 1, division: 1, ticks: 0, expectedBar: 8)
+        assertBeats("0070101000", bar: 7, beat: 1, division: 1, ticks: 0, expectedBar: 6)
+        assertImplausible("0070101000", expectedBar: 9)
+        assertImplausible("0070101000", expectedBar: 121, "hours-as-bars is the bug this catches")
+    }
+
+    func testClassifyTimecodeReportsTheAlertSentinelSeparately() {
+        // A modal dialog freezes the whole mirror and Logic paints ALERT;
+        // that is a dismiss-the-dialog problem, not a display-mode problem.
+        XCTAssertEqual(MCUController.classifyTimecode("ALERT     "), .alert)
+        XCTAssertEqual(MCUController.classifyTimecode("  ALERT   "), .alert)
+    }
+
+    func testClassifyTimecodeReportsTheNeverPaintedDisplayAsNotReported() {
+        // The bridge's buffer starts as ten spaces, and a missing status
+        // yields nil — neither is evidence about the mode.
+        XCTAssertEqual(MCUController.classifyTimecode(nil), .notReported)
+        XCTAssertEqual(MCUController.classifyTimecode(""), .notReported)
+        XCTAssertEqual(MCUController.classifyTimecode("          "), .notReported)
+    }
+
+    func testClassifyTimecodeRejectsShortAndNonNumericDisplays() {
+        assertImplausible("001", "too short to carry a position")
+        assertImplausible("ABCDEFGHIJ", "letters are not a position")
+        assertImplausible("--- -- -- ---", "the dashes transient is not a position")
+    }
+
+    func testBeatsDisplayGuardNamesTheSMPTEFixAndRefusesWithoutWriting() {
+        let error = MCUController.beatsDisplayError(
+            for: MCUController.classifyTimecode("  00000000"),
+            operation: "MIDI recording at bar 5"
+        )
+        XCTAssertEqual(error?.code, "precondition_failed",
+                       "nothing is written by the check, so this is a precondition")
+        let message = error?.errorDescription ?? ""
+        XCTAssertTrue(message.contains("SMPTE mode"), message)
+        XCTAssertTrue(message.contains("press the SMPTE/Beats button"), message)
+        XCTAssertTrue(message.contains("MIDI recording at bar 5"), message)
+    }
+
+    func testBeatsDisplayGuardDistinguishesAlertBlankAndUsableReadings() {
+        XCTAssertNil(MCUController.beatsDisplayError(
+            for: .beats(bar: 4, beat: 1, division: 1, ticks: 0), operation: "x"
+        ))
+        let alert = MCUController.beatsDisplayError(for: .alert, operation: "x")
+        XCTAssertEqual(alert?.code, "verification_failed")
+        XCTAssertTrue((alert?.errorDescription ?? "").contains("ALERT"))
+        let blank = MCUController.beatsDisplayError(for: .notReported, operation: "x")
+        XCTAssertEqual(blank?.code, "not_exposed")
+    }
+
     // MARK: - stepToText enum search and its undo
 
     /// A stand-in for an enum parameter on the LCD. Its display only changes

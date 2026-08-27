@@ -77,6 +77,11 @@ extension MCUController {
         guard let first = sorted.first, first.bar >= 2 else {
             throw LogicianError.invalidArguments("points need bar >= 2 (one bar of pre-roll)")
         }
+        // The roll sync below anchors on `timecodeBar()`, so the 10-digit
+        // display has to be in bars/beats mode — in SMPTE mode it reports
+        // hours and the curve would be written at an arbitrary position.
+        // Shape check before the calibration pass touches the fader at all.
+        try requireBeatsDisplay(operation: "volume automation from bar \(first.bar)")
         guard let channel = try findChannel(trackName: trackName) else {
             throw LogicianError.trackNotExposed(
                 requested: "MCU channel for '\(trackName)'",
@@ -141,6 +146,15 @@ extension MCUController {
         do {
             _ = try logic.setPlayhead(barNumber: first.bar - 1, beat: 1)
             Thread.sleep(forTimeInterval: 0.5)
+            // Decisive mode check: the playhead was just parked at a bar
+            // Logic itself verified, and the display has settled after the
+            // move — so it must show that bar. Nothing is in the lane yet
+            // (the calibration writes were already restored above), and the
+            // catch below returns the track to Read and the original volume.
+            try requireBeatsDisplay(
+                expectedBar: first.bar - 1,
+                operation: "volume automation from bar \(first.bar)"
+            )
             guard (try? setPlaying(true)) != nil else {
                 throw LogicianError.writeFailed("play failed")
             }
