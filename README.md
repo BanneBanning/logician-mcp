@@ -172,3 +172,9 @@ Safety model: read before write, abort on ambiguity, verify by readback, roll ba
 - Constant tempo assumed for bar math; MIDI recording takes real time
 - Track stacks cannot be freeze-rendered (Logic limitation — `solo_bounce` covers their subtracks)
 - Roadmap: Stereo Out / master-chain addressing, plugin preset browsing via vpot, Homebrew packaging, localization
+
+---
+
+<div align="center">
+<sub>Built by <a href="https://www.linkedin.com/in/alexander-banning-663788205/"><b>Alexander Banning</b></a> — say hi on LinkedIn · Released under the <a href="LICENSE">MIT license</a></sub>
+</div>
