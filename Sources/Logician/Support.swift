@@ -5,7 +5,7 @@ import LogicMCUBridge
 
 let protocolVersion = "2025-06-18"
 let serverName = "logician"
-let serverVersion = "0.50.0"
+let serverVersion = "0.51.0"
 
 /// Schema version stamped into every on-disk cache. Deliberately tied to
 /// `serverVersion`: these files hold measurements of Logic's MCU LCD, and a
@@ -225,6 +225,113 @@ struct TempoSample {
         let parts = [clause, playheadLeak].compactMap { $0 }
         return parts.isEmpty ? nil : parts.joined(separator: ". ")
     }
+}
+
+/// What one tool invocation knows about the project's tempo across the bars it
+/// is about to slice: the MAP when Logic's Tempo List could be read, and the
+/// two-point sample when it could not.
+///
+/// The two are not equal evidence and this type never lets them look it. A read
+/// map is the whole tempo track, so the boundaries computed from it are exact
+/// for step changes and no playhead is moved to get them. A sample is two
+/// readings that cannot prove constancy. So: a readable map replaces the sample
+/// entirely (and every refusal built on the sample lifts), while an unreadable
+/// map falls back to exactly the behavior that shipped before it.
+struct TempoKnowledge {
+    let startBar: Int
+    let endBar: Int
+    let beatsPerBar: Double
+    /// Non-nil only when the Tempo List read succeeded.
+    let map: TempoMap?
+    /// Why the read did not succeed — carried into warnings so the fix is
+    /// nameable, never swallowed.
+    let mapFailure: TempoListFailure?
+    /// Taken ONLY when the map is unreadable: with a map there is nothing to
+    /// sample for, and the playhead stays where the user left it.
+    let sample: TempoSample?
+
+    /// The map, but only if it came from the Tempo List. A one-event
+    /// `.singleReading` map is the constant-tempo assumption, not knowledge.
+    var readMap: TempoMap? {
+        guard let map, map.source == .tempoList else { return nil }
+        return map
+    }
+
+    /// Does the tempo change across this range, as best this invocation knows?
+    /// Nil when nothing could be established either way.
+    var isVarying: Bool? {
+        if let readMap { return !readMap.isConstant }
+        guard let sample else { return nil }
+        switch sample.sample {
+        case .constant: return false
+        case .varying: return true
+        case .unverified: return nil
+        }
+    }
+
+    /// Seconds a tempo CURVE the Tempo List cannot report could move these
+    /// boundaries by. Zero when the map has no tempo change at all, and zero
+    /// without a read map (that case has its own, larger warning).
+    var curveUncertaintySeconds: Double {
+        readMap?.curveUncertaintySeconds(
+            startBar: startBar, endBar: endBar, beatsPerBar: beatsPerBar
+        ) ?? 0
+    }
+
+    /// The `tempo_map` block a result carries when the map was actually read.
+    var payload: [String: Any]? {
+        guard let readMap else { return nil }
+        var block: [String: Any] = [
+            "source": "tempo_list",
+            "events": readMap.events.count,
+            "tempos": readMap.tempos,
+            "constant": readMap.isConstant,
+            "integrated": true
+        ]
+        if readMap.subBeatPositions {
+            block["sub_beat_positions"] = true
+        }
+        return block
+    }
+
+    /// Everything this knowledge obliges a seconds-slicing result to say.
+    ///
+    /// A CONSTANT read map says nothing at all: it is the one case where the
+    /// boundaries are simply right and there is no caveat to carry.
+    func warning(sliced: String) -> String? {
+        if let readMap {
+            guard !readMap.isConstant else { return nil }
+            var text = "TEMPO MAP READ AND INTEGRATED: Logic's Tempo List holds"
+                + " \(readMap.events.count) tempo events"
+                + " (\(readMap.tempos.map(formattedBPM).joined(separator: ", ")) BPM), and"
+                + " \(sliced) was computed by integrating them piecewise instead of assuming one"
+                + " tempo — exact for step tempo changes."
+            let uncertainty = curveUncertaintySeconds
+            if uncertainty > 0.001 {
+                text += " CAVEAT: Logic's Tempo List publishes only Position, Tempo and SMPTE"
+                    + " Position — no curve column (probed 2026-08-27), so a pair of points joined"
+                    + " by a tempo CURVE (a continuous ramp) is read as a step. These boundaries"
+                    + " are measured from project start, so if any such pair up to bar"
+                    + " \(endBar) is actually a curve they move by up to"
+                    + " \(Int((uncertainty * 1000).rounded())) ms; check the tempo track for"
+                    + " ramps between tempo points."
+            }
+            if readMap.subBeatPositions {
+                text += " One or more tempo points sit OFF the beat; their sub-beat position was"
+                    + " converted assuming Logic's default 1/16 division and 960 ppq."
+            }
+            return text
+        }
+        guard let sample else { return nil }
+        var parts = [sample.warning(sliced: sliced)].compactMap { $0 }
+        if let mapFailure {
+            parts.append("The tempo map itself could not be read either: \(mapFailure.reason).")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+
+    /// The facts a refusal built on this knowledge should carry.
+    var refusalDetail: String? { sample?.refusalDetail }
 }
 
 /// Logic's project tempo mode (Smart Tempo): what a recording is allowed to do
