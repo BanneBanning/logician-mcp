@@ -1,0 +1,11 @@
+{
+  "name": "logician",
+  "version": "0.50.0",
+  "description": "Hands and ears for AI agents in Logic Pro — verified control-surface automation over MCP. After `gemini extensions install`, build the binary once: cd ~/.gemini/extensions/logician && swift build -c release",
+  "mcpServers": {
+    "logician": {
+      "command": "${extensionPath}${/}.build${/}release${/}logician",
+      "cwd": "${extensionPath}"
+    }
+  }
+}

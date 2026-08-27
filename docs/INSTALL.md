@@ -17,7 +17,7 @@ You need:
 
 - **macOS 13 or newer** (Apple menu → About This Mac).
 - **Logic Pro**, with a project open.
-- **An MCP client** — the app your AI runs in. This guide covers [Antigravity CLI](#option-a-antigravity-cli--gemini-recommended) (recommended, because the agent can *hear* your mix), [Claude Code](#option-b-claude-code), and [Gemini CLI](#option-c-gemini-cli).
+- **An MCP client** — the app your AI runs in. This guide covers [Antigravity CLI](#option-a-antigravity-cli--gemini-recommended) (recommended, because the agent can *hear* your mix), [Claude Code](#option-b-claude-code), [Gemini CLI](#option-c-gemini-cli), and [Cursor / VS Code / LM Studio](#option-d--cursor-vs-code-lm-studio-one-click). Anything that speaks MCP over stdio works — see [Any other client](#option-e--any-other-mcp-client).
 
 One prerequisite most Macs already have — the Swift build tools. Check by pasting this into Terminal (⌘-Space, type "Terminal", Enter):
 
@@ -83,13 +83,39 @@ claude mcp add logician -- PASTE_PATH_HERE
 
 ### Option C — Gemini CLI
 
-Open `~/.gemini/settings.json` in any text editor and add this (create the file if it does not exist):
+Two ways. As an **extension** (the repo ships a `gemini-extension.json`, so Gemini clones it for you — but the build in step 1 still has to happen, inside the extension folder):
+
+```bash
+gemini extensions install https://github.com/BanneBanning/logician-mcp
+cd ~/.gemini/extensions/logician && swift build -c release
+```
+
+Or by hand: open `~/.gemini/settings.json` in any text editor and add this (create the file if it does not exist), with the path you copied in step 1:
 
 ```json
 { "mcpServers": { "logician": { "command": "PASTE_PATH_HERE" } } }
 ```
 
 Then restart the Gemini CLI.
+
+### Option D — Cursor, VS Code, LM Studio (one-click)
+
+These buttons register Logician in the client for you:
+
+[<img src="https://cursor.com/deeplink/mcp-install-dark.svg" alt="Add Logician to Cursor" height="32">](https://cursor.com/install-mcp?name=logician&config=eyJjb21tYW5kIjoiL2Jpbi9zaCIsImFyZ3MiOlsiLWMiLCJleGVjIFwiJEhPTUUvbG9naWNpYW4tbWNwLy5idWlsZC9yZWxlYXNlL2xvZ2ljaWFuXCIiXX0%3D) &nbsp; [<img src="https://img.shields.io/badge/VS_Code-Install_Logician-0098FF" alt="Install Logician in VS Code" height="32">](https://vscode.dev/redirect/mcp/install?name=logician&config=%7B%22command%22%3A%22%2Fbin%2Fsh%22%2C%22args%22%3A%5B%22-c%22%2C%22exec%20%5C%22%24HOME%2Flogician-mcp%2F.build%2Frelease%2Flogician%5C%22%22%5D%7D) &nbsp; [<img src="https://files.lmstudio.ai/deeplink/mcp-install-dark.svg" alt="Add Logician to LM Studio" height="32">](https://lmstudio.ai/install-mcp?name=logician&config=eyJjb21tYW5kIjoiL2Jpbi9zaCIsImFyZ3MiOlsiLWMiLCJleGVjIFwiJEhPTUUvbG9naWNpYW4tbWNwLy5idWlsZC9yZWxlYXNlL2xvZ2ljaWFuXCIiXX0%3D)
+
+Two honest caveats:
+
+- They replace **only this step** — the build ([step 1](#1-build-the-app)) and the Logic setup ([step 3](#3-let-logic-see-it), [step 4](#4-check-it-works)) still have to happen. A deeplink cannot compile Swift or click through Logic's windows.
+- They register the path `$HOME/logician-mcp/.build/release/logician` — which is where step 1 puts it **if** you pasted it into a fresh Terminal window (which opens in your home folder). If you cloned somewhere else, skip the button and add the entry by hand with your real path (Cursor: `~/.cursor/mcp.json`, VS Code: `mcp.json` via the MCP: Add Server command, LM Studio: Program → Install → Edit mcp.json), in this shape:
+
+```json
+{ "mcpServers": { "logician": { "command": "PASTE_PATH_HERE" } } }
+```
+
+### Option E — any other MCP client
+
+Logician is a plain stdio MCP server with no arguments and no environment variables. Wherever your client takes an MCP server config, give it the path from step 1 as the `command` — the JSON shape above works nearly everywhere (see `mcp-config.example.json` in the repo).
 
 ---
 
