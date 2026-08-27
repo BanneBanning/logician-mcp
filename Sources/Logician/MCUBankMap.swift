@@ -115,6 +115,46 @@ extension MCUController {
         return dedupedMatches(matches, bankTops: bankTops)
     }
 
+    /// Whether the plugin-list view the surface is showing can belong to the
+    /// strip Accessibility describes.
+    ///
+    /// The PL view names no channel — that is the whole reason
+    /// `selectChannelVerified` exists — and the SELECT LED turned out not to
+    /// be sufficient either: observed 2026-08-28 with the LED on strip 8
+    /// (`Stereo Out`, confirmed on two banks) while the PL row read
+    /// `Cha EQ | *PShft | Cha EQ | Comprs`, which is the track `Bas`. A
+    /// SELECT press on a strip whose LED is ALREADY lit is a no-op, so
+    /// re-selecting cannot recover it; selecting a neighbour and coming back
+    /// does. A browser write in that state inserts into the wrong strip.
+    ///
+    /// So a write that depends on the PL view asks a third, independent
+    /// question first: does the list the surface shows agree with the one
+    /// Accessibility reads off the same strip's inspector? Slot ORDER is
+    /// deliberately not compared — it is reversed on an output strip
+    /// (FINDINGS 2026-08-27) — only the multiset of occupied names, each MCU
+    /// cell being an abbreviation of some AX name.
+    ///
+    /// `nil` means "cannot be checked": Accessibility sees only the strips an
+    /// inspector is showing, so `Master` and most auxes answer with nothing,
+    /// and an unanswerable check must never fail a working operation. The
+    /// caller reports the check as unavailable instead.
+    static func pluginListAgreesWithAX(mcuCells: [String], axNames: [String]) -> Bool? {
+        guard !axNames.isEmpty else { return nil }
+        // A leading '*' is Logic's bypass marker, not part of the name.
+        let occupied = mcuCells
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "* ")) }
+            .filter { !$0.isEmpty && $0 != "--" }
+        guard occupied.count == axNames.count else { return false }
+        var remaining = axNames
+        for cell in occupied {
+            guard let index = remaining.firstIndex(where: {
+                lcdAbbreviationPlausible(track: $0, lcd: cell)
+            }) else { return false }
+            remaining.remove(at: index)
+        }
+        return true
+    }
+
     /// Every non-empty cell in a bank map, for "not found" messages that name
     /// what the surface actually shows.
     static func bankMapCells(_ bankTops: [String]) -> [String] {

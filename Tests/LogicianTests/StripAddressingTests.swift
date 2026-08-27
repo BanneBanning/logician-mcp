@@ -261,4 +261,84 @@ final class StripAddressingTests: XCTestCase {
         XCTAssertEqual(fields["mcu_strip"] as? Int, 8)
         XCTAssertEqual(fields["selection_readback_route"] as? String, "mcu_lcd_name_and_select_led")
     }
+
+    // MARK: - The PL view's third proof
+
+    /// The SELECT LED said strip 8 (`Stereo Out`, confirmed on two banks)
+    /// while the PL row read `Cha EQ | *PShft | Cha EQ | Comprs` — the track
+    /// `Bas`. Observed live 2026-08-28. A browser write in that state inserts
+    /// into the wrong strip, and re-selecting cannot fix it: a SELECT press on
+    /// an already-lit strip is a no-op.
+    private let stereoOutMCU = ["Cha EQ", "Limitr", "Sensor", "--", "--", "--", "--", "--"]
+    private let stereoOutAX = ["Sensor", "Limiter", "Channel EQ"]
+    private let basMCU = ["Cha EQ", "*PShft", "Cha EQ", "Comprs", "--", "--", "--", "--"]
+
+    func testThePLViewAgreesWithAccessibilityOnTheRightStrip() {
+        XCTAssertEqual(
+            MCUController.pluginListAgreesWithAX(mcuCells: stereoOutMCU, axNames: stereoOutAX),
+            true
+        )
+    }
+
+    func testSlotOrderIsNotComparedBecauseAnOutputStripReversesIt() {
+        // AX reads Sensor/Limiter/Channel EQ, the surface reads the reverse.
+        // Comparing order would refuse every legitimate output-strip write.
+        XCTAssertEqual(
+            MCUController.pluginListAgreesWithAX(
+                mcuCells: stereoOutMCU, axNames: ["Channel EQ", "Limiter", "Sensor"]
+            ),
+            true
+        )
+    }
+
+    func testTheObservedWrongStripIsCaught() {
+        XCTAssertEqual(
+            MCUController.pluginListAgreesWithAX(mcuCells: basMCU, axNames: stereoOutAX),
+            false
+        )
+    }
+
+    func testABypassMarkerIsNotPartOfThePluginName() {
+        XCTAssertEqual(
+            MCUController.pluginListAgreesWithAX(
+                mcuCells: ["*Cha EQ", "Limitr", "Sensor"],
+                axNames: stereoOutAX
+            ),
+            true
+        )
+    }
+
+    func testAStripNoInspectorShowsCannotBeCheckedRatherThanFailed() {
+        // `Master` and most auxes answer Accessibility with nothing. An
+        // unanswerable check degrades to nil; it must never refuse a write
+        // that the two other proofs already allowed.
+        XCTAssertNil(MCUController.pluginListAgreesWithAX(mcuCells: basMCU, axNames: []))
+    }
+
+    func testACountMismatchIsEnoughOnItsOwn() {
+        XCTAssertEqual(
+            MCUController.pluginListAgreesWithAX(
+                mcuCells: ["Cha EQ", "Limitr", "--", "--"], axNames: stereoOutAX
+            ),
+            false
+        )
+    }
+
+    func testTwoCopiesOfOnePluginNeedTwoAXEntries() {
+        // `Bas` really does have two Channel EQs; one AX entry must not
+        // satisfy both cells.
+        XCTAssertEqual(
+            MCUController.pluginListAgreesWithAX(
+                mcuCells: ["Cha EQ", "Cha EQ"], axNames: ["Channel EQ"]
+            ),
+            false
+        )
+        XCTAssertEqual(
+            MCUController.pluginListAgreesWithAX(
+                mcuCells: ["Cha EQ", "Cha EQ"], axNames: ["Channel EQ", "Channel EQ"]
+            ),
+            true
+        )
+    }
+
 }

@@ -4,6 +4,40 @@ import Foundation
 import LogicMCUBridge
 
 extension MCUController {
+
+    /// The third proof, taken after the PL view is up and before a browser
+    /// write: the list the surface shows must agree with the one
+    /// Accessibility reads off the same strip. Throws when they disagree,
+    /// returns the evidence otherwise — `"ax_insert_list"` when the check ran,
+    /// `"unavailable"` when no inspector shows the strip and it could not.
+    /// See `pluginListAgreesWithAX` for the observation that made this
+    /// necessary: the SELECT LED can be right while the PL view is not.
+    @discardableResult
+    static func verifyPluginListStrip(
+        inserts: [String], logic: LogicAccessibility, trackName: String
+    ) throws -> String {
+        let axNames = ((try? logic.listInserts(trackName: trackName))?["inserts"] as? [[String: Any]])?
+            .compactMap { $0["plugin_display_name"] as? String } ?? []
+        switch pluginListAgreesWithAX(mcuCells: inserts, axNames: axNames) {
+        case true?:
+            return "ax_insert_list"
+        case false?:
+            exitToPan()
+            throw LogicianError.verificationFailed(
+                requested: "the control surface's plug-in list to be '\(trackName)'s",
+                actual: "it shows [\(inserts.filter { !$0.isEmpty && $0 != "--" }.joined(separator: ", "))]"
+                    + " while Accessibility reads [\(axNames.joined(separator: ", "))] on that strip"
+                    + " — the PL view is pointed at another channel (a SELECT press on an already-lit"
+                    + " strip is a no-op; select a different strip and come back). Nothing was written",
+                restored: true
+            )
+        case nil:
+            // No inspector shows this strip, so there is nothing to compare
+            // against — never a reason to refuse a working operation.
+            return "unavailable"
+        }
+    }
+
     // MARK: Plugin insertion via the MCU plugin browser (mouse-free)
 
     /// Adds a plugin to the selected track's first empty insert slot by
@@ -24,6 +58,9 @@ extension MCUController {
         // that cannot name it is entered (see selectChannelVerified).
         try selectChannelVerified(channel: channel, expectedName: trackName)
         guard let inserts = try pluginInsertNames() else { return nil }
+        let listEvidence = try verifyPluginListStrip(
+            inserts: inserts, logic: logic, trackName: trackName
+        )
         guard let emptyIndex = inserts.firstIndex(where: { $0.isEmpty || $0 == "--" }) else {
             throw LogicianError.trackNotExposed(
                 requested: "an empty insert slot",
@@ -164,6 +201,9 @@ extension MCUController {
             "mcu_slot": emptyIndex + 1,
             "write_route": "mcu_plugin_browser",
             "cross_check": axConfirmed ? "ax_insert_list" : "unavailable",
+            // Which strip the PL view was proven to belong to BEFORE the
+            // browse, independently of the SELECT LED.
+            "pl_view_check": listEvidence,
             "note": "Added via the control-surface plugin browser — no mouse, no menus."
         ]
         // A headerless output/aux/bus strip is only in the inspector while
@@ -194,6 +234,9 @@ extension MCUController {
         guard let channel = try findChannel(trackName: trackName) else { return nil }
         try selectChannelVerified(channel: channel, expectedName: trackName)
         guard let inserts = try pluginInsertNames() else { return nil }
+        let listEvidence = try verifyPluginListStrip(
+            inserts: inserts, logic: logic, trackName: trackName
+        )
         // Match the target slot by LCD name (truncated) against the request.
         let matches = inserts.enumerated().filter { _, name in
             let cleaned = name.trimmingCharacters(in: CharacterSet(charactersIn: "*"))
@@ -296,6 +339,7 @@ extension MCUController {
             "mcu_slot": slotIndex + 1,
             "write_route": "mcu_plugin_browser",
             "cross_check": axGone ? "ax_insert_list" : "unavailable",
+            "pl_view_check": listEvidence,
             "note": "Removed via the control-surface plugin browser's No Plug-in entry — no mouse, no menus."
         ]
         if !axReachable {

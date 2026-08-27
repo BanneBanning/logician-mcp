@@ -305,10 +305,79 @@ extension LogicAccessibility {
 
     func listParameters(windowTitle: String) throws -> [[String: Any]] {
         let window = try logicWindow(title: windowTitle)
+        // A plugin window is READ through its sliders and WRITTEN through its
+        // editable fields, and the two sets are not the same. Logic's "knob
+        // and field" controls (Compressor, and the rest of the older Apple
+        // effects) publish both; a knob-only plugin publishes sliders and NO
+        // text field at all — `Channel EQ` 26 sliders / 0 fields, `Limiter`
+        // 4 / 0, `Sensor` 0 / 0, measured 2026-08-28. Reporting the slider's
+        // own settability as `writable` therefore promised a write that
+        // `setParameter` cannot perform, so each parameter now says which of
+        // the two it is.
+        let fieldNames = writableParameterNames(in: window)
         return descendants(of: window)
             .filter { stringAttribute($0, kAXRoleAttribute as String) == kAXSliderRole as String }
             .compactMap(parameter(from:))
-            .map(\.dictionary)
+            .map { parameter in
+                var entry = parameter.dictionary
+                entry["ax_writable"] = fieldNames.contains {
+                    $0.localizedCaseInsensitiveCompare(parameter.name) == .orderedSame
+                }
+                return entry
+            }
+    }
+
+    /// Every parameter name this window can be WRITTEN by through
+    /// Accessibility — one per editable "knob and field" control. Empty means
+    /// the plugin is read-only from this plane, and the control surface is
+    /// the only way in.
+    func writableParameterNames(in window: AXUIElement) -> [String] {
+        descendants(of: window)
+            .filter { stringAttribute($0, kAXRoleAttribute as String) == kAXTextFieldRole as String }
+            .map { extractedParameterName(fromHelp: stringAttribute($0, kAXHelpAttribute as String)) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// Resolves the field a write would go through, or throws the reason it
+    /// cannot — WITHOUT writing anything. `evaluateChangeBounced` calls this
+    /// before its first bounce so an unwritable parameter costs a lookup
+    /// instead of a full master render.
+    @discardableResult
+    func parameterField(
+        in window: AXUIElement, named parameterName: String, windowTitle: String
+    ) throws -> AXUIElement {
+        let candidates = descendants(of: window).filter { element in
+            guard stringAttribute(element, kAXRoleAttribute as String) == kAXTextFieldRole as String else {
+                return false
+            }
+            return extractedParameterName(fromHelp: stringAttribute(element, kAXHelpAttribute as String))
+                .localizedCaseInsensitiveCompare(parameterName) == .orderedSame
+        }
+        if candidates.isEmpty {
+            let available = writableParameterNames(in: window)
+            // Told apart because the fixes are different: a plugin with NO
+            // editable fields cannot be written from this plane at all, and
+            // saying "parameter not found" sends the agent hunting for a
+            // better name that does not exist.
+            guard !available.isEmpty else {
+                throw LogicianError.trackNotExposed(
+                    requested: "an Accessibility write of '\(parameterName)'",
+                    exposed: "the plugin in window '\(windowTitle)' publishes no editable parameter fields"
+                        + " — its controls are knobs only, so Accessibility can READ every value"
+                        + " (logic_list_plugin_parameters) but write none of them."
+                        + " Use logic_mcu_set_plugin_parameter (control surface, insert_slot from"
+                        + " logic_mcu_plugin_inserts), or logic_evaluate_change method 'render'/'solo_bounce',"
+                        + " which write through the same surface"
+                )
+            }
+            throw LogicianError.parameterNotFound(
+                "\(parameterName) (writable in this window: \(available.joined(separator: ", ")))"
+            )
+        }
+        guard candidates.count == 1, let field = candidates.first else {
+            throw LogicianError.parameterAmbiguous(parameterName, candidates.count)
+        }
+        return field
     }
 
     func setParameter(
@@ -318,20 +387,7 @@ extension LogicAccessibility {
         targetValue: String
     ) throws -> [String: Any] {
         let window = try logicWindow(title: windowTitle)
-        let candidates = descendants(of: window).filter { element in
-            guard stringAttribute(element, kAXRoleAttribute as String) == kAXTextFieldRole as String else {
-                return false
-            }
-            return extractedParameterName(fromHelp: stringAttribute(element, kAXHelpAttribute as String))
-                .localizedCaseInsensitiveCompare(parameterName) == .orderedSame
-        }
-
-        guard !candidates.isEmpty else {
-            throw LogicianError.parameterNotFound(parameterName)
-        }
-        guard candidates.count == 1, let field = candidates.first else {
-            throw LogicianError.parameterAmbiguous(parameterName, candidates.count)
-        }
+        let field = try parameterField(in: window, named: parameterName, windowTitle: windowTitle)
 
         var settable = DarwinBoolean(false)
         guard AXUIElementIsAttributeSettable(field, kAXValueAttribute as CFString, &settable) == .success,

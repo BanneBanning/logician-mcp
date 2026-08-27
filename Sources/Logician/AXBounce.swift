@@ -763,6 +763,16 @@ extension LogicAccessibility {
             }
         }
 
+        // Prove the parameter can be written BEFORE the baseline bounce.
+        // The write sits between the two bounces, so a plugin that publishes
+        // no editable field (knob-only: Channel EQ, Limiter — the whole
+        // master chain of the reference project) used to fail here after a
+        // full offline master render had already run and left its A file on
+        // disk. This costs one lookup and the refusal names the surface route
+        // that does work.
+        let window = try logicWindow(title: trackName)
+        try parameterField(in: window, named: parameter, windowTitle: trackName)
+
         let bounceA = try bounceRange(
             startBar: startBar, endBar: endBar, label: "A", expectedProjectPath: nil
         )
