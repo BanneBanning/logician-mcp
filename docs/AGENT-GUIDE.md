@@ -43,7 +43,7 @@ When the Tempo List cannot be read at all, the pre-map behavior is the fallback:
 
 **8. Values follow the control's own units.** Volume/sends in dB; pan −64..+63 (0 center); plugin parameters in whatever the LCD shows (read them first). New sends start at −∞ dB — set a level after creating one. Numeric convergence lands within the control's step size (typically ±0.1 dB, ratios ±0.1).
 
-**9. Real time is real.** MIDI recording and automation recording play through the actual timeline (bars × beats × 60/BPM seconds, roughly doubled with verification). `logic_record_midi` accepts `speed: 2..8` to record at raised tempo (auto-restored) when you don't need to hear the take — still refused on a non-constant tempo, because restoring one BPM cannot restore a map (that refusal does not soften with a readable map; the map tells us the take's timing, not how to put a slider write back). Renders/bounces are offline and fast (~4–6 s regardless of length).
+**9. Real time is real.** MIDI recording and automation recording play through the actual timeline (bars × beats × 60/BPM seconds, roughly doubled with verification). `logic_record_midi` accepts `speed: 2..8` to record at raised tempo (auto-restored) when you don't need to hear the take — still refused on a non-constant tempo, because restoring one BPM cannot restore a map (that refusal does not soften with a readable map; the map tells us the take's timing, not how to put a slider write back). Renders/bounces are offline and fast, and near-constant in length: a master bounce ~6–7 s, a single-track freeze render ~9–13 s (measured on a 19-track project).
 
 **10. Warm paths are faster.** Consecutive `logic_mcu_set_plugin_parameter` calls on the same track+slot skip setup (~1.6 s vs ~4 s cold). Batch your parameter work per plugin.
 
@@ -74,10 +74,12 @@ Use the strip name directly — `logic_mcu_plugin_inserts {track_name: "Stereo O
 `logic_duplicate_project {save_first: true}` — copies the open project on disk and opens the COPY as the active project; the original is untouched. Do this FIRST whenever you intend to make changes the user has not individually approved. Tell the user which file you are working in.
 
 **Judge a change with evidence (the killer feature):**
-`logic_evaluate_change {track_name, insert_slot, parameter, expected_current_value, target_value, start_bar, end_bar, method: "render"}` — renders A, applies the change, renders B, ROLLS BACK (unless `keep_change: true`), and returns dB deltas plus listenable audio for both. ~15 s. `method: "bounce"` A/Bs against the master bus instead. `method: "solo_bounce"` solos the track around two offline bounces (solo restored after) — use it when `render` fails with "refuses to arm Freeze": subtracks inside stacks and tracks sharing a channel strip cannot be frozen, but they CAN be solo-bounced (slower, ~2-3 min). A near-zero delta is a real answer (e.g. a compressor's AutoGain compensating) — report it as such.
+`logic_evaluate_change {track_name, insert_slot, parameter, expected_current_value, target_value, start_bar, end_bar, method: "render"}` — renders A, applies the change, renders B, ROLLS BACK (unless `keep_change: true`), and returns dB deltas plus listenable audio for both. ~35–50 s (it is two freeze renders). `method: "bounce"` A/Bs against the master bus instead. `method: "solo_bounce"` solos the track around two offline bounces (solo restored after) — use it when `render` fails with "refuses to arm Freeze": subtracks inside stacks and tracks sharing a channel strip cannot be frozen, but they CAN be solo-bounced (~30 s — two offline bounces). A near-zero delta is a real answer (e.g. a compressor's AutoGain compensating) — report it as such.
+
+All three methods return the **same keys**, so you can read a result without knowing which method produced it: `decision` (`kept` / `rolled_back` / `rollback_failed`), `change` (track, parameter, `before`, `applied`), `range`, `deltas`, `baseline_metrics` / `after_metrics`, and four audio paths — `baseline_audio` / `after_audio` plus `baseline_full_audio` / `after_full_audio` and `baseline_preview` / `after_preview`. A key a method genuinely has nothing for is present and **null** (a freeze render has no compressed preview sibling), never missing. The two versions also ride along as MCP audio blocks in order: **first block = baseline, second = after**.
 
 **Deliver audio:**
-`logic_render_track {track_name, start_bar?, end_bar?}` — dialog-free track export (32-bit float AIFF + optional bar-sliced WAV with RMS/peak metrics), ~6 s. `logic_bounce_range` for the master.
+`logic_render_track {track_name, start_bar?, end_bar?}` — dialog-free track export (32-bit float AIFF + optional bar-sliced WAV with RMS/peak metrics), ~9–13 s. `logic_bounce_range` for the master.
 
 ## Listening to audio (IMPORTANT)
 
@@ -99,6 +101,7 @@ Every successful result carries the same four fields, and they mean different th
 
 - **`success`** — the operation did what it was asked to do. `false` means it did not; look at `error` and `error_code`.
 - **`verified`** — Logic's own feedback confirmed the new state (an LCD echo, a readback, a header checkbox). `success: true, verified: false` means the write went out but could not be confirmed: treat the value as unknown and re-read before building on it.
+  - **`verified` never reports on a separate *observation*.** `logic_record_midi` is the case to know: `verified` describes the recording (the transport rolled, the stream went out, the restore completed), while the proof render is reported apart from it as **`verification_render`** — `ok`, `silent`, `unreadable` or `failed`. A `silent` or `failed` render does **not** mean the notes are missing; it commonly means the instrument made no sound (muted, no patch, notes out of range). Do not re-record a take on that alone — bounce the range and listen first.
 - **`state`** — what happened, as a word you can branch on (below).
 - **`write_route`** — which mechanism did it (`bridge_converge`, `mcu_vpot_converge`, `midi_key_command_save`, `ax_value_stepwise_db_converge`, …). Useful when something is slow or a fallback fired: an `ax_*` route means the MCU path was unavailable.
 
