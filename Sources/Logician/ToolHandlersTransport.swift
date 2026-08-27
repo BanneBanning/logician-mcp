@@ -59,6 +59,34 @@ extension MCPServer {
                 exposed: "'\(trackName)' is a track stack — record on one of its subtracks"
             )
         }
+        // Smart Tempo write-protection. An Adapt-mode project REWRITES its own
+        // tempo map to follow the recording — MIDI recordings included since
+        // Logic 10.4.2 — so arming a take here does not merely misplace notes,
+        // it destroys the user's tempo track, on a constant-tempo project,
+        // with nothing in the result to say so. Read the mode BEFORE anything
+        // is armed, and treat "cannot read it" as its own answer: assuming
+        // Keep is exactly the assumption that loses the tempo track.
+        let tempoModeFix = "set the project tempo mode to KEEP: click the tempo display in the LCD (the small Project Tempo pop-up under the tempo, with the LCD in a display mode that shows it, e.g. 'Beats & Project'), or File → Project Settings → Smart Tempo, then retry."
+        let projectTempoMode = logic.projectTempoMode()
+        var smartTempoWarning: String?
+        switch projectTempoMode {
+        case .keep:
+            break
+        case .adapt:
+            throw LogicianError.projectTempoModeUnsafe(
+                mode: "ADAPT",
+                detail: "an ADAPT-mode project rewrites its tempo map to follow the recording, so this take would overwrite the project's tempo track. Nothing was recorded and nothing was written — \(tempoModeFix)"
+            )
+        case .auto:
+            throw LogicianError.projectTempoModeUnsafe(
+                mode: "AUTO",
+                detail: "AUTO can resolve to Adapt (it leans that way when the metronome is off), and which one Logic picks for this take cannot be verified from here — so this is refused for the same reason as ADAPT: the tempo track would be rewritten. Nothing was recorded and nothing was written — \(tempoModeFix)"
+            )
+        case .unreadable, .absent:
+            // Proceed, but never silently: the caller has to know that the one
+            // destructive side effect of this tool went unchecked.
+            smartTempoWarning = "SMART TEMPO NOT VERIFIED. \(projectTempoMode.explanation ?? "") If this project is in ADAPT — or in an AUTO that resolved to Adapt — this recording has REWRITTEN the project's tempo map: check the tempo track and Undo in Logic if it moved. To make later takes safe, \(tempoModeFix)"
+        }
         // Note-name parsing: Logic convention, middle C (MIDI 60) = C3.
         func parsePitch(_ value: Any) throws -> Int {
             if let number = value as? Int {
@@ -219,6 +247,12 @@ extension MCPServer {
         result["notes"] = parsed.count
         result["start_bar"] = startBar
         result["tempo"] = range.tempo
+        if let name = projectTempoMode.name {
+            result["project_tempo_mode"] = name
+        }
+        if let smartTempoWarning {
+            result["warning"] = smartTempoWarning
+        }
         if arguments["verify_render"] as? Bool ?? true {
             let endBar = startBar + Int((lastNoteEndBeats / range.beatsPerBar).rounded(.up))
             let verifyRange = try barRangeSeconds(

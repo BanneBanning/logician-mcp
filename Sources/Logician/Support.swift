@@ -70,6 +70,78 @@ func sanitizedFilenameComponent(_ raw: String, fallback: String = "clip") -> Str
     return trimmed.isEmpty ? fallback : trimmed
 }
 
+/// Logic's project tempo mode (Smart Tempo): what a recording is allowed to do
+/// to the project's tempo map. `Keep` leaves the map alone (the classic
+/// behavior), `Adapt` REWRITES it to follow the recording, and `Auto` decides
+/// per take — leaning Adapt when the metronome is off and no tempo reference
+/// exists. Since Logic 10.4.2 this applies to MIDI recordings too, which is why
+/// it is a write-protection concern for `logic_record_midi` and not merely a
+/// timing detail: an Adapt-mode take destroys the user's tempo track as a side
+/// effect, on a constant-tempo project, silently.
+///
+/// The two non-mode cases are deliberate. A mode this destructive must never be
+/// *assumed* to be Keep just because it could not be read, so "I could not
+/// read it" is a first-class answer that callers have to handle.
+enum ProjectTempoMode: Equatable {
+    case keep
+    case adapt
+    case auto
+    /// The control bar's Project Tempo pop-up button is there, but Logic
+    /// publishes no value on it (see `projectTempoMode()` for the probe).
+    case unreadable
+    /// No Project Tempo pop-up button in the control bar at all.
+    case absent
+
+    /// The mode as a result-payload string, nil when it is not known.
+    var name: String? {
+        switch self {
+        case .keep: return "keep"
+        case .adapt: return "adapt"
+        case .auto: return "auto"
+        case .unreadable, .absent: return nil
+        }
+    }
+
+    /// Why the mode is missing, in the words an agent needs to act on it.
+    /// Nil for the three real modes, which need no excuse.
+    var explanation: String? {
+        switch self {
+        case .keep, .adapt, .auto:
+            return nil
+        case .unreadable:
+            return "Logic's control bar does expose the Project Tempo pop-up button (Smart Tempo: Keep/Adapt/Auto), but publishes no value on it through Accessibility — no AXValue, no AXTitle, no AXValueDescription (probed 2026-08-27, Logic Pro 12.3.1, with the LCD in 'Beats & Project', the display mode that shows the mode) — so the mode cannot be read from here. Read it off the LCD's tempo display, or in File → Project Settings → Smart Tempo."
+        case .absent:
+            return "No Project Tempo pop-up button is present in the control bar, so the Smart Tempo mode (Keep/Adapt/Auto) cannot be read from here. Read it in File → Project Settings → Smart Tempo."
+        }
+    }
+}
+
+/// Maps whatever text Logic puts on the Project Tempo control to a mode.
+///
+/// Pure and separately tested precisely because the live AX route currently
+/// yields nothing (FINDINGS, 2026-08-27): the day Logic starts publishing that
+/// value — or the day the pop-up menu route lands — this mapping is what the
+/// guard hangs on, and it must be right before it is ever exercised.
+func normalizedProjectTempoMode(_ raw: String) -> ProjectTempoMode? {
+    let text = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard !text.isEmpty else { return nil }
+    // The LCD and the menu both label the modes with a single word; match that
+    // exactly first, so a longer sentence can never outvote the label itself.
+    switch text {
+    case "keep": return .keep
+    case "adapt": return .adapt
+    case "auto": return .auto
+    default: break
+    }
+    // Longer wordings ("Adapt Project Tempo", "Automatic") still resolve, with
+    // adapt/auto tested before keep: a string that names more than one mode
+    // then errs toward the refusal rather than toward a destructive recording.
+    if text.contains("adapt") { return .adapt }
+    if text.contains("auto") { return .auto }
+    if text.contains("keep") { return .keep }
+    return nil
+}
+
 /// The product's error taxonomy. Every tool failure is one of these, and the
 /// `code` values (not_found, precondition_failed, ambiguous,
 /// verification_failed, …) are the vocabulary agents branch on — they are
@@ -100,6 +172,7 @@ enum LogicianError: LocalizedError {
     case trackMismatch(number: Int, expected: String, actual: String)
     case selectionFailed(requested: String, actual: String, restored: Bool)
     case trackNotStack(String)
+    case projectTempoModeUnsafe(mode: String, detail: String)
 
     var code: String {
         switch self {
@@ -108,7 +181,8 @@ enum LogicianError: LocalizedError {
         case .windowNotFound, .parameterNotFound, .insertNotFound, .trackNotFound: return "not_found"
         case .parameterAmbiguous, .insertAmbiguous, .windowAmbiguous, .trackAmbiguous: return "ambiguous"
         case .valueNotWritable, .trackNotExposed, .windowNotClosable, .trackNotStack: return "not_exposed"
-        case .currentValueMismatch, .projectMismatch, .insertMismatch, .pluginNotOpen, .trackMismatch: return "precondition_failed"
+        case .currentValueMismatch, .projectMismatch, .insertMismatch, .pluginNotOpen, .trackMismatch,
+             .projectTempoModeUnsafe: return "precondition_failed"
         case .writeFailed, .confirmationFailed: return "write_failed"
         case .verificationFailed, .openVerificationFailed, .selectionFailed: return "verification_failed"
         case .invalidArguments: return "invalid_arguments"
@@ -167,6 +241,8 @@ enum LogicianError: LocalizedError {
             return "Track selection could not be verified. Requested '\(requested)', selection is '\(actual)'. Restored previous selection: \(restored)."
         case .trackNotStack(let name):
             return "Track '\(name)' exposes no track stack disclosure arrow; it is not a track stack."
+        case .projectTempoModeUnsafe(let mode, let detail):
+            return "Refusing to record: the project tempo mode is \(mode). \(detail)"
         }
     }
 }

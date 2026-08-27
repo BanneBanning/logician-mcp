@@ -53,6 +53,66 @@ extension LogicAccessibility {
         return final
     }
 
+    // MARK: - Project tempo mode (Smart Tempo write-protection)
+
+    /// Reads Logic's project tempo mode (Smart Tempo: Keep / Adapt / Auto) off
+    /// the control bar's Project Tempo pop-up button — the small control the
+    /// LCD draws right under the tempo.
+    ///
+    /// PROBE RESULT (2026-08-27, Logic Pro 12.3.1, LCD Display Mode
+    /// "Beats & Project" — the view that *does* show the mode): the button is
+    /// there, as a direct sibling of the `Tempo` slider inside the inner
+    /// "Control Bar" group, and it carries NO value of any kind. Its whole
+    /// attribute set is geometry plus `AXHelp`; `AXValue`, `AXTitle` and
+    /// `AXValueDescription` are absent and `AXDescription` is the empty string,
+    /// which is also why it can only be identified by its help text. The
+    /// neighbouring Time Signature and Key Signature pop-ups DO publish their
+    /// `AXValue` ("4/4", "B♭ Major"), so this is Logic withholding the value,
+    /// not this walk missing it.
+    ///
+    /// So `.unreadable` is what this returns in practice today. The three real
+    /// modes are the path for the day Logic starts publishing the value, and
+    /// they are covered by tests of `normalizedProjectTempoMode` rather than by
+    /// a live observation — an honest distinction, not a verified one.
+    ///
+    /// Deliberately NOT done: the button offers `AXShowMenu`/`AXPress`, and an
+    /// opened menu would presumably mark its active item. That is a UI mutation
+    /// on a read path, and this function's caller is the arming step of a
+    /// recording, where a stray open menu can swallow the transport. Making the
+    /// mode readable that way — and then settable, which would upgrade the
+    /// refusal to a guarded set-and-restore — is the next experiment.
+    func projectTempoMode() -> ProjectTempoMode {
+        guard let bar = try? controlBarGroup(),
+              let inner = children(of: bar).first(where: {
+                  stringAttribute($0, kAXDescriptionAttribute as String) == "Control Bar"
+              }) else {
+            return .absent
+        }
+        return projectTempoMode(inControlBar: inner)
+    }
+
+    /// The same read against an already-resolved inner "Control Bar" group, so
+    /// `getTransport` does not walk the window twice.
+    func projectTempoMode(inControlBar inner: AXUIElement) -> ProjectTempoMode {
+        guard let popup = children(of: inner).first(where: {
+            stringAttribute($0, kAXRoleAttribute as String) == "AXPopUpButton"
+                && stringAttribute($0, kAXHelpAttribute as String)
+                    .hasPrefix("Project Tempo menu")
+        }) else {
+            return .absent
+        }
+        for name in [
+            kAXValueAttribute as String,
+            kAXTitleAttribute as String,
+            kAXValueDescriptionAttribute as String
+        ] {
+            if let mode = normalizedProjectTempoMode(stringAttribute(popup, name)) {
+                return mode
+            }
+        }
+        return .unreadable
+    }
+
     // MARK: - Transport
 
     func getTransport() throws -> [String: Any] {
@@ -90,6 +150,16 @@ extension LogicAccessibility {
             result["key_signature"] = children(of: inner)
                 .first { stringAttribute($0, kAXDescriptionAttribute as String) == "Key Signature" }
                 .map { stringAttribute($0, kAXValueAttribute as String) } ?? NSNull()
+            // Smart Tempo: which mode a recording will apply to the project's
+            // tempo map. The key is present only when the mode is actually
+            // known — an unreadable mode reported as a value would read as
+            // "keep", and Adapt is the one that rewrites the tempo track.
+            let tempoMode = projectTempoMode(inControlBar: inner)
+            if let name = tempoMode.name {
+                result["project_tempo_mode"] = name
+            } else if let explanation = tempoMode.explanation {
+                result["project_tempo_mode_note"] = explanation
+            }
         }
         return result
     }

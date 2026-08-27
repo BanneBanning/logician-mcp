@@ -82,6 +82,65 @@ final class PureLogicTests: XCTestCase {
         XCTAssertFalse(MCUController.lcdNameMatches(track: "Bas", lcd: "-"))
     }
 
+    // MARK: - Smart Tempo mode normalisation (a write-protection control)
+
+    func testProjectTempoModeReadsTheSingleWordLabels() {
+        XCTAssertEqual(normalizedProjectTempoMode("Keep"), .keep)
+        XCTAssertEqual(normalizedProjectTempoMode("ADAPT"), .adapt)
+        XCTAssertEqual(normalizedProjectTempoMode(" auto "), .auto)
+    }
+
+    func testProjectTempoModeReadsLongerWordings() {
+        XCTAssertEqual(normalizedProjectTempoMode("Adapt Project Tempo"), .adapt)
+        XCTAssertEqual(normalizedProjectTempoMode("Keep Project Tempo"), .keep)
+        XCTAssertEqual(normalizedProjectTempoMode("Automatic"), .auto)
+    }
+
+    func testProjectTempoModeErrsTowardTheRefusalWhenAStringNamesTwoModes() {
+        // A sentence mentioning both must resolve to the destructive one:
+        // a false refusal costs a retry, a false 'keep' costs the tempo track.
+        XCTAssertEqual(
+            normalizedProjectTempoMode("Keep project tempo, do not adapt to recordings"),
+            .adapt
+        )
+    }
+
+    func testProjectTempoModeRejectsTextThatNamesNoMode() {
+        XCTAssertNil(normalizedProjectTempoMode(""))
+        XCTAssertNil(normalizedProjectTempoMode("   "))
+        XCTAssertNil(normalizedProjectTempoMode("120"))
+        // The pop-up button's help text is what the AX walk actually finds on
+        // it; the mode itself is not in there, so it must not be guessed from
+        // Apple's tooltip prose.
+        XCTAssertNil(normalizedProjectTempoMode("Project Tempo menu, Project Tempo pop-up menu."))
+    }
+
+    func testUnknownProjectTempoModesCarryNoNameButDoCarryAnExplanation() {
+        for mode in [ProjectTempoMode.unreadable, .absent] {
+            XCTAssertNil(mode.name, "an unknown mode must never serialise as a value")
+            XCTAssertNotNil(mode.explanation)
+            XCTAssertTrue(
+                mode.explanation?.contains("Smart Tempo") == true,
+                "the explanation has to name the fix's location"
+            )
+        }
+        for mode in [ProjectTempoMode.keep, .adapt, .auto] {
+            XCTAssertNotNil(mode.name)
+            XCTAssertNil(mode.explanation, "a known mode needs no excuse")
+        }
+    }
+
+    func testProjectTempoModeRefusalIsAPreconditionFailure() {
+        // Nothing is written when this throws, so it belongs to the same
+        // vocabulary agents already branch on for "your project isn't ready".
+        let error = LogicianError.projectTempoModeUnsafe(mode: "ADAPT", detail: "detail here")
+        XCTAssertEqual(error.code, "precondition_failed")
+        XCTAssertEqual(
+            error.errorDescription,
+            "Refusing to record: the project tempo mode is ADAPT. detail here"
+        )
+    }
+
     // MARK: - Filename sanitisation (a security control)
 
     func testSanitiserStripsPathTraversal() {
