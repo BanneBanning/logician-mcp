@@ -6,11 +6,12 @@ import LogicMCUBridge
 extension LogicAccessibility {
     // MARK: - Project lifecycle (AppleScript standard suite + template)
 
-    /// Logic's standard AppleScript suite is partially real: documents with
-    /// name/path/modified and `close saving yes/no` work; `save` is a stub
-    /// (event timeout) and `make new document` creates a windowless ghost.
-    /// Saving therefore goes through the Save key command, and new projects
-    /// through a bundled empty template.
+    // Logic's standard AppleScript suite is partially real: documents with
+    // name/path/modified and `close saving yes/no` work; `save` is a stub
+    // (event timeout) and `make new document` creates a windowless ghost.
+    // Saving therefore goes through the Save key command, and new projects
+    // through a bundled empty template.
+
     /// Runs an AppleScript. Any runtime value MUST be passed via `arguments`
     /// (reachable in the script as `item N of argv`), NEVER interpolated into
     /// `source` — a value that becomes code is an arbitrary-shell-execution
