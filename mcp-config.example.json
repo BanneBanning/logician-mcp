@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "logic-pro": {
-      "command": "/Users/dev/Desktop/Progg/Random Projekt/Logic MCP/.build/release/logic-mcp-demo"
+    "logician": {
+      "command": "/ABSOLUTE/PATH/TO/logician-mcp/.build/release/logician"
     }
   }
 }
