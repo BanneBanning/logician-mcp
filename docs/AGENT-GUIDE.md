@@ -125,7 +125,7 @@ Every successful result carries the same four fields, and they mean different th
 
 ## Tool reference
 
-All 57 tools, generated from the live server schemas (v0.49.0). Every write is compare-and-set with readback; every failure names what was observed.
+All 57 tools, generated from the live server schemas (v0.49.0), with the strip-addressing notes added by hand in v0.51.0 — where an entry and the live schema differ in wording, the schema is authoritative. Every write is compare-and-set with readback; every failure names what was observed.
 
 #### `logic_health`
 
