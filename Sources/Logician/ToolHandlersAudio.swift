@@ -70,8 +70,10 @@ extension MCPServer {
                         + " tempo map."
                 )
             }
-            let range = try barRangeSeconds(
-                logic: logic, startBar: startBar, endBar: endBar, arguments: arguments,
+            // The tempo and meter resolved above, not read a second time.
+            let range = try MCPServer.barRangeSeconds(
+                startBar: startBar, endBar: endBar,
+                tempo: resolvedMeter.tempo, beatsPerBar: resolvedMeter.beatsPerBar,
                 map: knowledge.readMap
             )
             var rendered = try MCUController.evaluateChangeRendered(
@@ -182,8 +184,9 @@ extension MCPServer {
                 startBar: startBar, endBar: endBar, beatsPerBar: resolvedMeter.beatsPerBar
             )
             knowledge = resolved
-            sliceRange = try barRangeSeconds(
-                logic: logic, startBar: startBar, endBar: endBar, arguments: arguments,
+            sliceRange = try MCPServer.barRangeSeconds(
+                startBar: startBar, endBar: endBar,
+                tempo: resolvedMeter.tempo, beatsPerBar: resolvedMeter.beatsPerBar,
                 map: resolved.readMap
             )
         }

@@ -265,22 +265,8 @@ extension MCPServer {
         return (lastBeat, max(startBar + Int((lastBeat / meter).rounded(.up)), startBar + 1))
     }
 
-    /// The convenience the tools use: resolve, then convert. Tempo and meter
-    /// come from the control bar unless overridden, and the boundaries are
-    /// integrated over `map` when one was read from the Tempo List — otherwise
-    /// the constant-tempo formula, which is what the two-point sample at the call
-    /// site exists to detect and report.
-    func barRangeSeconds(
-        logic: LogicAccessibility, startBar: Int, endBar: Int, arguments: [String: Any],
-        map: TempoMap? = nil
-    ) throws -> (start: Double, end: Double, tempo: Double, beatsPerBar: Double) {
-        guard startBar >= 1, endBar > startBar else {
-            throw LogicianError.invalidArguments("need start_bar >= 1 and end_bar > start_bar")
-        }
-        let resolved = try resolveTempoAndMeter(logic: logic, arguments: arguments)
-        return try MCPServer.barRangeSeconds(
-            startBar: startBar, endBar: endBar,
-            tempo: resolved.tempo, beatsPerBar: resolved.beatsPerBar, map: map
-        )
-    }
 }
+// The "resolve tempo and meter, then convert" convenience that used to live
+// here is gone: every caller now resolves the tempo and meter ITSELF, because
+// it needs them for `resolveTempoKnowledge` in the same breath, and calling
+// the convenience afterwards read the control bar a second time.
