@@ -36,10 +36,34 @@ extension MCPServer {
                     "method 'render' requires insert_slot (1-8, MCU physical slot; list with logic_mcu_plugin_inserts)"
                 )
             }
+            // Method 'render' cuts BOTH the baseline and the changed audio out
+            // of a freeze render using bar math that assumes one tempo. Under a
+            // tempo map the two cuts land on different musical material, so the
+            // A/B — the entire job of this tool — would compare two different
+            // passages and report the difference as if the plugin had caused it.
+            // A warning is not enough for a result that exists to be trusted:
+            // refuse before anything is selected or written, and name the two
+            // methods that hand Logic the bar numbers instead. This is the only
+            // sample taken here; 'bounce' and 'solo_bounce' never slice seconds,
+            // so they pay nothing for this guard.
+            let tempoSample = logic.sampleTempoAcross(startBar: startBar, endBar: endBar)
+            if let span = tempoSample.span, !span.isConstant {
+                throw LogicianError.tempoMapUnsafe(
+                    operation: "logic_evaluate_change method \"render\" over bars \(startBar)-\(endBar)",
+                    detail: "\(tempoSample.refusalDetail ?? span.mismatchClause). This method"
+                        + " slices seconds out of a freeze render with (bar - 1) x beats x 60/BPM"
+                        + " bar math, so under a tempo map the baseline slice and the changed"
+                        + " slice cover DIFFERENT music and their dB deltas would say nothing"
+                        + " about the parameter. NOTHING was changed and no render was made."
+                        + " Use method \"bounce\" (offline master A/B) or \"solo_bounce\""
+                        + " (soloed offline A/B, for tracks freeze refuses) instead: those hand"
+                        + " Logic the bar numbers and are correct under any tempo map."
+                )
+            }
             let range = try barRangeSeconds(
                 logic: logic, startBar: startBar, endBar: endBar, arguments: arguments
             )
-            payload = try MCUController.evaluateChangeRendered(
+            var rendered = try MCUController.evaluateChangeRendered(
                 logic: logic,
                 trackName: requiredString("track_name", in: arguments),
                 trackNumber: arguments["track_number"] as? Int,
@@ -52,7 +76,12 @@ extension MCPServer {
                 tempo: range.tempo,
                 keepChange: arguments["keep_change"] as? Bool ?? false
             )
-            return payload
+            // A sample that could not run gets a warning, not a refusal: the
+            // check failing must not break an A/B that works today.
+            appendWarning(
+                tempoSample.warning(sliced: "the two compared slices"), to: &rendered
+            )
+            return rendered
         }
         if (arguments["method"] as? String) == "solo_bounce" {
             guard let slot = arguments["insert_slot"] as? Int else {
@@ -130,11 +159,16 @@ extension MCPServer {
             )
         }
         var sliceRange: (start: Double, end: Double, tempo: Double, beatsPerBar: Double)?
+        // Only the SLICE does bar math; the full-track render is a freeze from
+        // project start and needs no tempo at all. So the sample is taken here
+        // and nowhere else — a render without start_bar/end_bar costs nothing.
+        var tempoSample: TempoSample?
         if let startBar = arguments["start_bar"] as? Int,
            let endBar = arguments["end_bar"] as? Int {
             sliceRange = try barRangeSeconds(
                 logic: logic, startBar: startBar, endBar: endBar, arguments: arguments
             )
+            tempoSample = logic.sampleTempoAcross(startBar: startBar, endBar: endBar)
         }
         var render = try MCUController.renderSelectedTrack(
             projectPath: projectPath, label: label,
@@ -147,6 +181,12 @@ extension MCPServer {
             render["slice_tempo"] = range.tempo
             render["slice_beats_per_bar"] = range.beatsPerBar
         }
+        // The full render is unaffected by any tempo map — only the slice's
+        // boundaries are, and the warning says exactly that much.
+        appendWarning(
+            tempoSample?.warning(sliced: "the requested bar-range slice (the FULL render is unaffected)"),
+            to: &render
+        )
         return render
     }
 

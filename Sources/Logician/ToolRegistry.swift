@@ -73,7 +73,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_evaluate_change",
-                description: "Run one complete closed-loop mix evaluation around exactly one verified plugin-parameter change, on a bar range. Three methods: 'render' (two dialog-free freeze renders of the SINGLE track, compared on the sliced bar range — fastest and most isolated; needs insert_slot, the MCU physical slot, and works for all plugins including third-party), 'bounce' (two offline MASTER renders via the bounce dialog, needs plugin_name), and 'solo_bounce' (two offline bounces with ONLY this track soloed, solo restored after; needs insert_slot like 'render' — use for tracks freeze refuses: stack subtracks and tracks sharing a channel strip). All methods roll the change back by default, return baseline/after audio paths, metrics and dB deltas, and CARRY both versions as audio content blocks.",
+                description: "Run one complete closed-loop mix evaluation around exactly one verified plugin-parameter change, on a bar range. Three methods: 'render' (two dialog-free freeze renders of the SINGLE track, compared on the sliced bar range — fastest and most isolated; needs insert_slot, the MCU physical slot, and works for all plugins including third-party), 'bounce' (two offline MASTER renders via the bounce dialog, needs plugin_name), and 'solo_bounce' (two offline bounces with ONLY this track soloed, solo restored after; needs insert_slot like 'render' — use for tracks freeze refuses: stack subtracks and tracks sharing a channel strip). All methods roll the change back by default, return baseline/after audio paths, metrics and dB deltas, and CARRY both versions as audio content blocks. TEMPO GUARD: method 'render' cuts its two slices with constant-tempo bar math, so it first samples the tempo at both ends of the range (parks the playhead, reads, restores — a couple of seconds) and REFUSES with precondition_failed when they differ, naming 'bounce'/'solo_bounce' as the tempo-accurate alternatives; those two hand Logic the bar numbers and are never sampled or refused.",
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -92,7 +92,7 @@ extension MCPServer {
                             "enum": ["render", "bounce", "solo_bounce"],
                             "description": "'render' (dialog-free single-track freeze A/B on the sliced bar range), 'bounce' (offline master A/B) or 'solo_bounce' (soloed offline A/B for tracks freeze refuses: stack subtracks, shared-channel tracks)."
                         ],
-                        "tempo": ["type": "number", "description": "Override BPM for bar math (method 'render'); default reads the control bar. Constant tempo assumed."],
+                        "tempo": ["type": "number", "description": "Override BPM for bar math (method 'render'); default reads the control bar. Constant tempo assumed — and checked: a tempo that differs between the range's first and last bar refuses the render."],
                         "beats_per_bar": ["type": "number", "description": "Override meter for bar math; default reads the control bar's time signature."],
                         "keep_change": ["type": "boolean", "description": "true keeps the change after measuring; default false rolls it back."],
                         "expected_project_path": ["type": "string", "description": "Refuse unless this is the open project."],
@@ -299,7 +299,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_record_midi",
-                description: "Compose MIDI into the project with ZERO dialogs and no files: notes are streamed in real time over the dedicated 'Logic MCP MIDI In' port while Logic records them onto the selected software-instrument track (playhead parked one bar early; the stream starts on the observed MCU-timecode crossing into start_bar, so count-in settings do not matter). Creates a normal recorded region. By default the result is verified with a dialog-free freeze render of the recorded bars (non-silent metrics prove the notes landed and sound through the instrument). Recording takes real time: bars x beats x 60/BPM seconds. The region can be removed with Undo in Logic. SMART TEMPO GUARD: a project tempo mode of ADAPT (or AUTO, which can resolve to Adapt) makes Logic rewrite the project's TEMPO MAP to follow the recording, so this refuses before arming and names the fix; when the mode cannot be read off the control bar the recording proceeds and the result carries a warning saying it went unverified.",
+                description: "Compose MIDI into the project with ZERO dialogs and no files: notes are streamed in real time over the dedicated 'Logic MCP MIDI In' port while Logic records them onto the selected software-instrument track (playhead parked one bar early; the stream starts on the observed MCU-timecode crossing into start_bar, so count-in settings do not matter). Creates a normal recorded region. By default the result is verified with a dialog-free freeze render of the recorded bars (non-silent metrics prove the notes landed and sound through the instrument). Recording takes real time: bars x beats x 60/BPM seconds. The region can be removed with Undo in Logic. SMART TEMPO GUARD: a project tempo mode of ADAPT (or AUTO, which can resolve to Adapt) makes Logic rewrite the project's TEMPO MAP to follow the recording, so this refuses before arming and names the fix; when the mode cannot be read off the control bar the recording proceeds and the result carries a warning saying it went unverified. TEMPO MAP GUARD: note placement is constant-tempo bar math, so the tempo is sampled at the take's first and last bar (playhead parked, read, restored — once per call, shared with the verification render). When the two differ the result carries a `warning` naming both readings, and speed > 1 is REFUSED with precondition_failed: speed mode overwrites the tempo slider and restores a single value, which cannot put a tempo map back. Real-time recording (speed 1) touches no tempo and stays available.",
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -580,7 +580,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_set_tempo",
-                description: "Set the project tempo in BPM via the control bar's tempo display (rapid-fire stepwise converge, ~1.3 s per 120 BPM of distance). Whole-BPM resolution. Compare-and-set with expected_current_bpm. Assumes constant project tempo.",
+                description: "Set the project tempo in BPM via the control bar's tempo display (rapid-fire stepwise converge, ~1.3 s per 120 BPM of distance). Whole-BPM resolution. Compare-and-set with expected_current_bpm. TEMPO MAP GUARD: the tempo display shows and sets the tempo AT THE PLAYHEAD, so on a project with a tempo track this write would edit one tempo node rather than the project tempo. It therefore samples the tempo at the playhead and at bar 1 (parking the playhead and restoring it — roughly 0.13 s per bar of travel, so a playhead far from bar 1 makes the call take several seconds) and REFUSES with precondition_failed when they differ: a tempo map is edited in Logic's tempo track / Tempo List, not through this slider. There is no override argument. Two agreeing samples are evidence, not proof — the result reports which bars were compared in tempo_sampled_at_bars.",
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -747,7 +747,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_render_track",
-                description: "Render ONE track offline to an audio file with ZERO dialogs, via Track Freeze: selects the track, toggles freeze over the 'Logic MCP Commands' MIDI port, presses play (Logic then renders the whole track offline, typically seconds), copies the 32-bit float AIFF out of Media/Freeze Files to the captures folder, and unfreezes again. Requires 'Toggle Track Freeze' in the key command registry and the MCU bridge running. Renders the full track from project start including all plugins and automation (freeze mode Pre Fader). If the track is already frozen the call fails safely and restores state.",
+                description: "Render ONE track offline to an audio file with ZERO dialogs, via Track Freeze: selects the track, toggles freeze over the 'Logic MCP Commands' MIDI port, presses play (Logic then renders the whole track offline, typically seconds), copies the 32-bit float AIFF out of Media/Freeze Files to the captures folder, and unfreezes again. Requires 'Toggle Track Freeze' in the key command registry and the MCU bridge running. Renders the full track from project start including all plugins and automation (freeze mode Pre Fader). If the track is already frozen the call fails safely and restores state. TEMPO GUARD: with start_bar/end_bar the slice is cut with constant-tempo bar math, so the tempo is sampled at both ends of the range (parks the playhead, reads, restores) and the result carries a `warning` naming both readings when they differ — the FULL render is unaffected either way. Without a bar range nothing is sampled.",
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -756,7 +756,7 @@ extension MCPServer {
                         "label": ["type": "string", "description": "Filename label; default is derived from the track name."],
                         "start_bar": ["type": "integer", "description": "With end_bar: also cut this bar range out of the render as a separate 32-bit float WAV with its own metrics (bar 1 = project start)."],
                         "end_bar": ["type": "integer", "description": "Exclusive: the slice ends where this bar begins."],
-                        "tempo": ["type": "number", "description": "Override BPM for the bar math; default reads the control bar. Constant tempo assumed."],
+                        "tempo": ["type": "number", "description": "Override BPM for the bar math; default reads the control bar. Constant tempo assumed — and checked: a tempo that differs across the range produces a warning on the result."],
                         "beats_per_bar": ["type": "number", "description": "Override meter; default reads the control bar's time signature."],
                         "expected_project_path": ["type": "string", "description": "Absolute .logicx path; when given, the open project's AXDocument must match before anything is changed."],
                         "include_audio": MCPServer.includeAudioProperty

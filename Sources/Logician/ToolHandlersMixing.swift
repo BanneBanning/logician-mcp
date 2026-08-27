@@ -134,14 +134,46 @@ extension MCPServer {
                 )
             }
         }
+        // The value this tool writes is POSITION-DEPENDENT. The control bar shows
+        // the tempo at the playhead, so on a project with a tempo map a slider
+        // write does not set "the project tempo" — it edits the tempo node the
+        // playhead happens to sit on, which is an edit to the user's tempo track
+        // that nothing in the result would have mentioned. Two reads answer
+        // whether such a map exists; see `sampleTempoAgainstProjectStart` for why
+        // bar 1 is the second point and what two points cannot prove.
+        let tempoSample = logic.sampleTempoAgainstProjectStart()
+        if let span = tempoSample.span, !span.isConstant {
+            throw LogicianError.tempoMapUnsafe(
+                operation: "logic_set_tempo",
+                detail: "the project has a TEMPO MAP — \(tempoSample.refusalDetail ?? span.mismatchClause)"
+                    + ", both read off the control bar, which shows the tempo AT THE PLAYHEAD."
+                    + " This tool writes ONE slider, so on a mapped project it would edit"
+                    + " whichever tempo node the playhead sits on (bar \(span.startBar)) instead"
+                    + " of the project tempo — and which node Logic edits, or whether it creates"
+                    + " a new one, has not been verified from here. NOTHING was written. Change"
+                    + " the tempo where the map lives: Logic's tempo track, or the Tempo List"
+                    + " (the Tempo tab of the List Editors, also openable as a floating window),"
+                    + " where every tempo event is an editable row. There is deliberately no"
+                    + " override argument — parking the playhead and passing expected_current_bpm"
+                    + " would still be a single-slider write with unverified semantics, so it is"
+                    + " not offered as a workaround."
+            )
+        }
         let landed = try logic.setTempo(targetBpm)
-        return [
+        var result: [String: Any] = [
             "success": true,
             "verified": true,
             "before_bpm": currentBpm.map { $0 as Any } ?? NSNull() as Any,
             "bpm": landed,
             "write_route": "control_bar_tempo_slider",
-            "note": "Whole-BPM resolution (the slider steps 1 BPM). Constant project tempo assumed; tempo-track changes are not managed."
+            "note": "Whole-BPM resolution (the slider steps 1 BPM). Refuses when a tempo map is detected: the slider is position-dependent, so on a mapped project it edits one tempo node rather than the project tempo."
         ]
+        if let span = tempoSample.span {
+            // What was actually checked, in bars — two agreeing points are
+            // evidence of a constant tempo, not proof of one.
+            result["tempo_sampled_at_bars"] = [span.startBar, span.endBar]
+        }
+        appendWarning(tempoSample.writeWarning, to: &result)
+        return result
     }
 }

@@ -147,15 +147,28 @@ extension MCPServer {
             + ((arguments["pitch_bends"] as? [[String: Any]]) ?? []).compactMap { $0["bar"] as? Int }
         let startBar = arguments["start_bar"] as? Int
             ?? min(parsed.map(\.bar).min()!, extraBars.min() ?? Int.max)
-        let lastExtraBeats = extraBars.map { Double($0 - startBar + 1) * 4 }.max() ?? 0
-        let lastNoteEndBeats = max(parsed.map {
-            Double($0.bar - startBar) * 4 + ($0.beat - 1) + $0.durationBeats
-        }.max() ?? 4, lastExtraBeats)
-        let endBarGuess = startBar + Int((lastNoteEndBeats / 4).rounded(.up))
-        let range = try barRangeSeconds(
-            logic: logic, startBar: startBar, endBar: max(endBarGuess, startBar + 1),
-            arguments: arguments
+        // Tempo and meter are resolved ONCE, before the take's length is
+        // measured in beats — that math needs the project's real beats-per-bar,
+        // which used to be hardcoded to 4 here while the verification render
+        // below already used the resolved meter. In 3/4 or 6/8 the two therefore
+        // disagreed about where the take ends, and the hardcoded one decided how
+        // long a range the tempo/meter were read for.
+        let resolved = try resolveTempoAndMeter(logic: logic, arguments: arguments)
+        let beatsPerBar = resolved.beatsPerBar
+        let endBar = MCPServer.takeEnd(
+            startBar: startBar,
+            beatsPerBar: beatsPerBar,
+            notes: parsed.map { (bar: $0.bar, beat: $0.beat, durationBeats: $0.durationBeats) },
+            extraEventBars: extraBars
+        ).endBar
+        let range = try MCPServer.barRangeSeconds(
+            startBar: startBar, endBar: endBar,
+            tempo: resolved.tempo, beatsPerBar: beatsPerBar
         )
+        // Two-point tempo sample, taken ONCE for this invocation: the note
+        // scheduling and the verification render's slice cover the same bars, so
+        // they share one answer instead of paying for two playhead round trips.
+        let tempoSample = logic.sampleTempoAcross(startBar: startBar, endBar: endBar)
         // speed > 1 records at a raised tempo and scales event times:
         // the region lands at identical bar positions in a fraction
         // of the wall time. Default 1 = real time (audible playback).
@@ -163,6 +176,26 @@ extension MCPServer {
             ?? (arguments["speed"] as? Int).map(Double.init) ?? 1.0
         let effectiveSpeed = min(max(requestedSpeed, 1.0), 8.0, 960.0 / range.tempo)
         let recordingTempo = range.tempo * effectiveSpeed
+        // Speed mode is a TEMPO WRITE: it converges the control bar's tempo
+        // slider up for the take and writes one BPM back afterwards. On a
+        // constant-tempo project that restores the project exactly; against a
+        // tempo map it does not — the slider edits whichever tempo node the
+        // playhead sits on, and the single value written back cannot restore a
+        // map. Refuse before anything is written; real-time recording (speed 1)
+        // touches no tempo at all and stays available.
+        if effectiveSpeed > 1.001, let span = tempoSample.span, !span.isConstant {
+            throw LogicianError.tempoMapUnsafe(
+                operation: "logic_record_midi at speed \(String(format: "%g", effectiveSpeed))",
+                detail: "\(tempoSample.refusalDetail ?? span.mismatchClause). Speed mode records"
+                    + " at a raised tempo by OVERWRITING the control bar's tempo slider and"
+                    + " restoring a SINGLE value afterwards — against a tempo map that write"
+                    + " lands on whichever tempo node the playhead sits on and the restore"
+                    + " cannot put the map back, so it is destructive. NOTHING was recorded and"
+                    + " no tempo was written. Record with speed 1 (real time, the default): it"
+                    + " never touches the tempo. The note timing will still be placed by"
+                    + " constant-tempo bar math, which the result's warning describes."
+            )
+        }
         let msPerBeat = 60000.0 / recordingTempo
         var events: [(offsetMs: Double, bytes: [UInt8])] = []
         for note in parsed {
@@ -250,15 +283,19 @@ extension MCPServer {
         if let name = projectTempoMode.name {
             result["project_tempo_mode"] = name
         }
-        if let smartTempoWarning {
-            result["warning"] = smartTempoWarning
-        }
+        appendWarning(smartTempoWarning, to: &result)
+        // Both honest complaints can be true at once (an unreadable Smart Tempo
+        // mode AND a tempo map), so they are appended, never assigned.
+        appendWarning(
+            tempoSample.warning(
+                sliced: "the note timing (bars x beats x 60/BPM) and the verification render's slice"
+            ),
+            to: &result
+        )
         if arguments["verify_render"] as? Bool ?? true {
-            let endBar = startBar + Int((lastNoteEndBeats / range.beatsPerBar).rounded(.up))
-            let verifyRange = try barRangeSeconds(
-                logic: logic, startBar: startBar, endBar: max(endBar, startBar + 1),
-                arguments: arguments
-            )
+            // Same range the notes were scheduled against — one resolve, one
+            // sample, one set of boundaries.
+            let verifyRange = range
             // `verified` describes THE RECORDING (the stream went out and the
             // transport rolled). The render is a separate OBSERVATION, and a
             // failed observation must never flip the operation's verdict:

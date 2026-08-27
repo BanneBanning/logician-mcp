@@ -70,6 +70,163 @@ func sanitizedFilenameComponent(_ raw: String, fallback: String = "clip") -> Str
     return trimmed.isEmpty ? fallback : trimmed
 }
 
+// MARK: - Two-point tempo sampling (tempo-map honesty)
+
+/// How far two tempo readings may differ and still count as the same tempo.
+///
+/// The control bar's Tempo slider is *written* in whole BPM (`setTempo` rounds
+/// its target, and its own compare-and-set uses 0.5), but the value it
+/// *publishes* is parsed as a Double and a project whose tempo came from the
+/// tempo track can carry decimals — so the epsilon has to sit below any real
+/// tempo step and above read noise. 0.05 BPM is that gap: a disagreement that
+/// small moves a bar-33 boundary at 120 BPM in 4/4 by roughly 27 ms — inside the
+/// ~45 ms sync compensation the MIDI path already lives with — while any
+/// deliberate tempo change is at least 0.1 BPM and lands far outside it.
+let tempoSampleEpsilonBPM = 0.05
+
+/// A BPM as a result string: "120" for a whole tempo, "120.5" when it isn't.
+func formattedBPM(_ value: Double) -> String {
+    String(format: "%g", value)
+}
+
+/// Two readings of the control bar's *position-dependent* tempo, taken at the
+/// two ends of a bar range.
+///
+/// The control bar shows the tempo AT THE PLAYHEAD, which is exactly what makes
+/// this cheap: park the playhead twice and "is the tempo constant across these
+/// bars?" becomes two reads — the position-dependence that made the bar math
+/// wrong is the sensor that detects it.
+///
+/// Two points cannot PROVE a constant tempo. A map that leaves both ends alike
+/// (up at bar 20, back down before bar 40) reads as constant here, so agreement
+/// is evidence, not a guarantee — and no message built from this claims more.
+struct TempoSpan: Equatable {
+    let startBar: Int
+    let endBar: Int
+    let startTempo: Double
+    let endTempo: Double
+
+    var isConstant: Bool { abs(startTempo - endTempo) <= tempoSampleEpsilonBPM }
+
+    /// "the tempo changes across bars 5-33 (120 BPM at bar 5, 140 BPM at bar 33)"
+    var mismatchClause: String {
+        "the tempo changes across bars \(startBar)-\(endBar) "
+            + "(\(formattedBPM(startTempo)) BPM at bar \(startBar), "
+            + "\(formattedBPM(endTempo)) BPM at bar \(endBar))"
+    }
+}
+
+/// The outcome of a two-point sample. "Could not check" is a first-class case
+/// for the same reason `ProjectTempoMode` has one: a check that silently fails
+/// open is indistinguishable from a check that passed, and the caller has to be
+/// able to say which it got.
+enum TempoSpanSample: Equatable {
+    case constant(TempoSpan)
+    case varying(TempoSpan)
+    case unverified(reason: String)
+
+    var span: TempoSpan? {
+        switch self {
+        case .constant(let span), .varying(let span): return span
+        case .unverified: return nil
+        }
+    }
+
+    var isVarying: Bool {
+        if case .varying = self { return true }
+        return false
+    }
+}
+
+/// The tempo-safe alternatives, named the same way in every message so an agent
+/// reading a warning and an agent reading a refusal are pointed at one thing.
+let tempoSafeAlternatives =
+    "use logic_bounce_range, or logic_evaluate_change method \"bounce\"/\"solo_bounce\""
+    + " — those hand Logic the bar numbers and let Logic interpret them, so they are"
+    + " correct under any tempo map"
+
+/// The `warning` a seconds-sliced result has to carry for a given sample, or nil
+/// when the sample came back constant. `sliced` names what was cut, in the words
+/// of the tool whose result this lands on.
+func tempoSpanWarning(_ sample: TempoSpanSample, sliced: String) -> String? {
+    switch sample {
+    case .constant:
+        return nil
+    case .varying(let span):
+        return "TEMPO MAP DETECTED: \(span.mismatchClause), read off the control bar with"
+            + " the playhead parked at each bar. \(sliced) was computed as"
+            + " (bar - 1) x beats x 60/BPM from ONE tempo, so its boundaries drift from the"
+            + " first tempo change onward and are unreliable — do not trust them, and do not"
+            + " compare this audio against anything cut the same way. For tempo-accurate"
+            + " ranges, \(tempoSafeAlternatives)."
+    case .unverified(let reason):
+        return "TEMPO CONSTANCY NOT VERIFIED: \(reason). \(sliced) assumed a CONSTANT project"
+            + " tempo; on a project with a tempo change its boundaries are wrong from that"
+            + " change onward. For tempo-accurate ranges, \(tempoSafeAlternatives)."
+    }
+}
+
+/// The warning a *tempo write* carries when the two-point check could not run.
+///
+/// Deliberately not `tempoSpanWarning`'s text: nothing was sliced here, and the
+/// consequence is not an unreliable boundary but a write that may have landed on
+/// a single tempo node. A `.varying` sample never reaches this — that one is
+/// refused before the write.
+func tempoWriteUnverifiedWarning(_ sample: TempoSpanSample) -> String? {
+    guard case .unverified(let reason) = sample else { return nil }
+    return "TEMPO MAP NOT VERIFIED: \(reason). The tempo was written to the control bar's"
+        + " slider, which shows and sets the tempo AT THE PLAYHEAD — so if this project has a"
+        + " tempo map, this write changed the tempo node at the playhead rather than the whole"
+        + " project. Check the tempo track (or the Tempo List) and Undo in Logic if that is not"
+        + " what you wanted."
+}
+
+/// What a live two-point sample came back with: the verdict, plus the one thing
+/// that can go wrong while taking it.
+///
+/// Sampling MOVES the playhead (twice) and puts it back. When the restore fails,
+/// the tempo verdict is still valid but the project has been left with its
+/// playhead somewhere else — and this codebase does not report a restoration
+/// that did not happen, so the leak travels with the verdict instead of being
+/// swallowed by it.
+struct TempoSample {
+    let sample: TempoSpanSample
+    let playheadLeak: String?
+
+    static func verdict(_ sample: TempoSpanSample) -> TempoSample {
+        TempoSample(sample: sample, playheadLeak: nil)
+    }
+
+    var isVarying: Bool { sample.isVarying }
+    var span: TempoSpan? { sample.span }
+
+    /// Everything this sample obliges a result to say, or nil when it obliges
+    /// nothing (constant tempo, playhead back where it started).
+    func warning(sliced: String) -> String? {
+        let parts = [tempoSpanWarning(sample, sliced: sliced), playheadLeak].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " ALSO: ")
+    }
+
+    /// The tempo-write flavour of `warning(sliced:)`, for the one caller that
+    /// writes a tempo instead of slicing seconds.
+    var writeWarning: String? {
+        let parts = [tempoWriteUnverifiedWarning(sample), playheadLeak].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " ALSO: ")
+    }
+
+    /// The same facts for a refusal's detail: no "use bounce instead" tail
+    /// (the refusal names its own alternative) but never without the leak.
+    var refusalDetail: String? {
+        // Only a VARYING sample gets the mismatch clause: a constant sample's
+        // readings would otherwise be narrated as "the tempo changes", which is
+        // the one thing it just proved they do not.
+        var clause: String?
+        if case .varying(let span) = sample { clause = span.mismatchClause }
+        let parts = [clause, playheadLeak].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: ". ")
+    }
+}
+
 /// Logic's project tempo mode (Smart Tempo): what a recording is allowed to do
 /// to the project's tempo map. `Keep` leaves the map alone (the classic
 /// behavior), `Adapt` REWRITES it to follow the recording, and `Auto` decides
@@ -173,6 +330,7 @@ enum LogicianError: LocalizedError {
     case selectionFailed(requested: String, actual: String, restored: Bool)
     case trackNotStack(String)
     case projectTempoModeUnsafe(mode: String, detail: String)
+    case tempoMapUnsafe(operation: String, detail: String)
 
     var code: String {
         switch self {
@@ -182,7 +340,7 @@ enum LogicianError: LocalizedError {
         case .parameterAmbiguous, .insertAmbiguous, .windowAmbiguous, .trackAmbiguous: return "ambiguous"
         case .valueNotWritable, .trackNotExposed, .windowNotClosable, .trackNotStack: return "not_exposed"
         case .currentValueMismatch, .projectMismatch, .insertMismatch, .pluginNotOpen, .trackMismatch,
-             .projectTempoModeUnsafe: return "precondition_failed"
+             .projectTempoModeUnsafe, .tempoMapUnsafe: return "precondition_failed"
         case .writeFailed, .confirmationFailed: return "write_failed"
         case .verificationFailed, .openVerificationFailed, .selectionFailed: return "verification_failed"
         case .invalidArguments: return "invalid_arguments"
@@ -243,7 +401,24 @@ enum LogicianError: LocalizedError {
             return "Track '\(name)' exposes no track stack disclosure arrow; it is not a track stack."
         case .projectTempoModeUnsafe(let mode, let detail):
             return "Refusing to record: the project tempo mode is \(mode). \(detail)"
+        case .tempoMapUnsafe(let operation, let detail):
+            return "Refusing \(operation): the project tempo is not constant. \(detail)"
         }
+    }
+}
+
+/// Adds a `warning` to a result without overwriting one that is already there —
+/// several results can carry more than one honest complaint at once (a silent
+/// render AND a tempo map), and the first one written must not be lost. Extra
+/// warnings are joined into the same string so an agent that reads only
+/// `warning` still sees all of them.
+func appendWarning(_ text: String?, to result: inout [String: Any]) {
+    guard let text, !text.isEmpty else { return }
+    if let existing = result["warning"] as? String, !existing.isEmpty {
+        guard !existing.contains(text) else { return }
+        result["warning"] = existing + " ALSO: " + text
+    } else {
+        result["warning"] = text
     }
 }
 

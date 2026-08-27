@@ -113,6 +113,128 @@ extension LogicAccessibility {
         return .unreadable
     }
 
+    // MARK: - Two-point tempo sampling (is the tempo constant across a range?)
+
+    /// The control bar's Tempo value — the tempo AT THE PLAYHEAD POSITION, which
+    /// is the whole basis of the sampling below. Cheap on purpose: one control
+    /// bar walk, none of `getTransport`'s document read.
+    func controlBarTempo() -> Double? {
+        guard let bar = try? controlBarGroup(),
+              let inner = children(of: bar).first(where: {
+                  stringAttribute($0, kAXDescriptionAttribute as String) == "Control Bar"
+              }),
+              let slider = children(of: inner).first(where: {
+                  stringAttribute($0, kAXDescriptionAttribute as String) == "Tempo"
+              }) else { return nil }
+        return Double(stringAttribute(slider, kAXValueAttribute as String))
+    }
+
+    /// Parks the playhead at `firstBar`, reads the tempo, parks at `secondBar`,
+    /// reads again, and puts the playhead back where it was — on the error path
+    /// too. Returns a verdict, never throws: a tool that works today must not
+    /// start failing because a *check* could not run, so an impossible sample is
+    /// reported as `.unverified` and the caller warns instead of refusing.
+    ///
+    /// COST: `setPlayhead` converges Logic's LCD bar field one step per write
+    /// (~0.12 s), so two ends 30 bars apart cost a few seconds and a range far
+    /// from the current playhead costs more. That is why this is called at most
+    /// once per tool invocation, and never on the paths that hand Logic bar
+    /// numbers instead of slicing seconds themselves.
+    ///
+    /// SAFETY: it never moves a playhead it cannot put back — with no readable
+    /// position to restore, it returns `.unverified` before touching anything.
+    func sampleTempo(firstBar: Int, secondBar: Int) -> TempoSample {
+        let cannotSample = "the tempo could not be sampled at bars \(firstBar) and \(secondBar)"
+        guard let controlBar = try? controlBarGroup(),
+              let lcd = playheadGroup(in: controlBar),
+              let savedBar = sliderValue(lcd, "bar") else {
+            return .verdict(.unverified(
+                reason: "\(cannotSample): the control bar reports no playhead position, and the"
+                    + " playhead is never moved when it cannot be put back"
+            ))
+        }
+        let savedBeat = sliderValue(lcd, "beat")
+        func read(at bar: Int) throws -> Double {
+            _ = try setPlayhead(barNumber: bar, beat: nil)
+            guard let tempo = controlBarTempo() else {
+                throw LogicianError.trackNotExposed(
+                    requested: "the control bar tempo with the playhead at bar \(bar)",
+                    exposed: "the Tempo display published no value"
+                )
+            }
+            return tempo
+        }
+        func restore() -> String? {
+            guard (try? setPlayhead(barNumber: savedBar, beat: savedBeat)) == nil else { return nil }
+            return "THE PLAYHEAD WAS NOT PUT BACK: the tempo check moved it to sample the tempo"
+                + " and could not return it to bar \(savedBar)"
+                + (savedBeat.map { ", beat \($0)" } ?? "") + " — move it yourself before"
+                + " anything that depends on the playhead position."
+        }
+        let startTempo: Double
+        let endTempo: Double
+        do {
+            startTempo = try read(at: firstBar)
+            endTempo = try read(at: secondBar)
+        } catch {
+            let leak = restore()
+            return TempoSample(
+                sample: .unverified(
+                    reason: "\(cannotSample): \(error.localizedDescription)"
+                ),
+                playheadLeak: leak
+            )
+        }
+        let span = TempoSpan(
+            startBar: firstBar, endBar: secondBar,
+            startTempo: startTempo, endTempo: endTempo
+        )
+        return TempoSample(
+            sample: span.isConstant ? .constant(span) : .varying(span),
+            playheadLeak: restore()
+        )
+    }
+
+    /// Is the tempo constant across the bars a tool is about to slice into
+    /// seconds? Both ends of the range are the sample points, because both ends
+    /// are what the `(bar - 1) x beats x 60/BPM` math places.
+    func sampleTempoAcross(startBar: Int, endBar: Int) -> TempoSample {
+        // Callers reach this through `barRangeSeconds`, which already refuses a
+        // range that is not at least one bar long; a degenerate range would
+        // sample the same bar twice and prove nothing, so say that instead of
+        // inventing a verdict.
+        guard endBar > startBar else {
+            return .verdict(.unverified(
+                reason: "bars \(startBar) and \(endBar) are not two different points, so the"
+                    + " tempo could not be compared across the range"
+            ))
+        }
+        return sampleTempo(firstBar: startBar, secondBar: endBar)
+    }
+
+    /// Does this project have a tempo map at all? The question `logic_set_tempo`
+    /// has to answer before writing a slider that only governs one tempo node.
+    ///
+    /// The second sample point is BAR 1 — the project's first tempo node, the
+    /// one point every project has, and the one a mapped project is most likely
+    /// to differ from. (A playhead already at bar 1 samples bar 2 instead: two
+    /// reads of the same bar sense nothing.) It is not a proof — a map that
+    /// happens to be back at its bar-1 value where the playhead sits reads as
+    /// constant here — and the refusal built on it says only what it knows.
+    func sampleTempoAgainstProjectStart() -> TempoSample {
+        guard let controlBar = try? controlBarGroup(),
+              let lcd = playheadGroup(in: controlBar),
+              let playheadBar = sliderValue(lcd, "bar") else {
+            return .verdict(.unverified(
+                reason: "the tempo could not be sampled at a second bar: the control bar reports"
+                    + " no playhead position, and the playhead is never moved when it cannot be"
+                    + " put back"
+            ))
+        }
+        let secondBar = playheadBar == 1 ? 2 : 1
+        return sampleTempo(firstBar: playheadBar, secondBar: secondBar)
+    }
+
     // MARK: - Transport
 
     func getTransport() throws -> [String: Any] {

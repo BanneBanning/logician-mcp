@@ -141,6 +141,250 @@ final class PureLogicTests: XCTestCase {
         )
     }
 
+    // MARK: - Two-point tempo sampling (tempo-map honesty guards)
+
+    private func span(
+        _ startTempo: Double, _ endTempo: Double, bars: (Int, Int) = (5, 33)
+    ) -> TempoSpan {
+        TempoSpan(
+            startBar: bars.0, endBar: bars.1, startTempo: startTempo, endTempo: endTempo
+        )
+    }
+
+    func testTempoSpanTreatsReadNoiseAsOneTempoAndRealChangesAsTwo() {
+        // The epsilon exists to separate display/read noise from a tempo the
+        // user actually changed: identical, and a hair apart, are the same
+        // tempo; a tenth of a BPM is not.
+        XCTAssertTrue(span(120, 120).isConstant)
+        XCTAssertTrue(span(120, 120 + tempoSampleEpsilonBPM).isConstant, "exactly at the epsilon is still constant")
+        XCTAssertTrue(span(120.5, 120.53).isConstant)
+        XCTAssertFalse(span(120, 120.1).isConstant, "0.1 BPM is a deliberate change, not noise")
+        XCTAssertFalse(span(120, 140).isConstant)
+        XCTAssertFalse(span(140, 120).isConstant, "the direction of the change is irrelevant")
+    }
+
+    func testTempoSpanEpsilonStaysBelowTheSliderResolution() {
+        // setTempo writes whole BPM and accepts +-0.5; the detector has to be
+        // strictly finer than that or a 1 BPM tempo map would read as constant.
+        XCTAssertLessThan(tempoSampleEpsilonBPM, 0.5)
+        XCTAssertFalse(span(120, 121).isConstant)
+    }
+
+    func testTempoSpanNamesBothReadingsAndBothBars() {
+        let clause = span(120, 140, bars: (5, 33)).mismatchClause
+        XCTAssertEqual(
+            clause,
+            "the tempo changes across bars 5-33 (120 BPM at bar 5, 140 BPM at bar 33)"
+        )
+        // A fractional tempo must not be rounded away in the message an agent
+        // reads to decide whether the change is real.
+        XCTAssertTrue(span(120.5, 90.25).mismatchClause.contains("120.5 BPM"))
+        XCTAssertTrue(span(120.5, 90.25).mismatchClause.contains("90.25 BPM"))
+    }
+
+    func testTempoWarningIsSilentOnAConstantTempo() {
+        XCTAssertNil(tempoSpanWarning(.constant(span(120, 120)), sliced: "this slice"))
+        XCTAssertNil(TempoSample.verdict(.constant(span(120, 120))).warning(sliced: "this slice"))
+    }
+
+    func testTempoWarningOnAMismatchNamesTheReadingsAndTheSafeAlternative() {
+        guard let warning = tempoSpanWarning(.varying(span(120, 140)), sliced: "this slice") else {
+            return XCTFail("a varying tempo must produce a warning")
+        }
+        XCTAssertTrue(warning.contains("120 BPM at bar 5"))
+        XCTAssertTrue(warning.contains("140 BPM at bar 33"))
+        XCTAssertTrue(warning.contains("this slice"))
+        // The alternative has to be named, or the warning tells an agent it is
+        // stuck instead of telling it what works.
+        XCTAssertTrue(warning.contains("logic_bounce_range"))
+        XCTAssertTrue(warning.contains("solo_bounce"))
+    }
+
+    func testTempoWarningDistinguishesUnverifiedFromVarying() {
+        guard let warning = tempoSpanWarning(
+            .unverified(reason: "the control bar reports no playhead position"),
+            sliced: "this slice"
+        ) else {
+            return XCTFail("an unverified check must say so")
+        }
+        XCTAssertTrue(warning.contains("NOT VERIFIED"))
+        XCTAssertTrue(warning.contains("the control bar reports no playhead position"))
+        XCTAssertTrue(warning.contains("logic_bounce_range"))
+        // "could not check" must never read as "checked and fine".
+        XCTAssertFalse(warning.contains("TEMPO MAP DETECTED"))
+    }
+
+    func testAPlayheadLeftBehindIsReportedEvenWhenTheTempoIsConstant() {
+        // The sample moves the playhead twice. A restore that did not happen is
+        // a state leak, and this codebase does not report restorations it did
+        // not make - so it rides along with an otherwise silent verdict.
+        let leak = "THE PLAYHEAD WAS NOT PUT BACK: ..."
+        let sample = TempoSample(sample: .constant(span(120, 120)), playheadLeak: leak)
+        XCTAssertEqual(sample.warning(sliced: "this slice"), leak)
+        let varying = TempoSample(sample: .varying(span(120, 140)), playheadLeak: leak)
+        let warning = varying.warning(sliced: "this slice") ?? ""
+        XCTAssertTrue(warning.contains("TEMPO MAP DETECTED"), "the verdict survives the leak")
+        XCTAssertTrue(warning.contains(leak), "and the leak survives the verdict")
+    }
+
+    func testRefusalDetailCarriesTheReadingsWithoutTheSliceAdvice() {
+        let detail = TempoSample.verdict(.varying(span(120, 140))).refusalDetail ?? ""
+        XCTAssertTrue(detail.contains("120 BPM at bar 5"))
+        // A refusal names its own alternative in its own words; the slice
+        // advice would be wrong for the tools that refuse.
+        XCTAssertFalse(detail.contains("logic_bounce_range"))
+        XCTAssertNil(TempoSample.verdict(.constant(span(120, 120))).refusalDetail)
+        XCTAssertNil(
+            TempoSample.verdict(.unverified(reason: "no playhead")).refusalDetail,
+            "an unverified sample refuses nothing, so it details nothing"
+        )
+    }
+
+    func testTempoWriteWarningTalksAboutTheWriteNotAboutSlices() {
+        // logic_set_tempo slices nothing: an unverified check there means the
+        // WRITE may have landed on one tempo node.
+        let sample = TempoSample.verdict(.unverified(reason: "no playhead position"))
+        guard let warning = sample.writeWarning else {
+            return XCTFail("an unverified tempo-map check must be reported")
+        }
+        XCTAssertTrue(warning.contains("TEMPO MAP NOT VERIFIED"))
+        XCTAssertTrue(warning.contains("tempo node at the playhead"))
+        XCTAssertTrue(warning.contains("Undo"))
+        XCTAssertFalse(warning.contains("logic_bounce_range"), "there is no slice to bounce instead")
+        XCTAssertNil(TempoSample.verdict(.constant(span(120, 120))).writeWarning)
+        XCTAssertNil(
+            TempoSample.verdict(.varying(span(120, 140))).writeWarning,
+            "a detected map is refused, not warned about"
+        )
+    }
+
+    func testTempoMapRefusalIsAPreconditionFailureThatNamesTheOperation() {
+        // Nothing is written when this throws, so it joins the vocabulary
+        // agents already branch on - the same code the Smart Tempo guard uses.
+        let error = LogicianError.tempoMapUnsafe(
+            operation: "logic_set_tempo", detail: "detail here"
+        )
+        XCTAssertEqual(error.code, "precondition_failed")
+        XCTAssertEqual(
+            error.errorDescription,
+            "Refusing logic_set_tempo: the project tempo is not constant. detail here"
+        )
+    }
+
+    func testWarningsAccumulateInsteadOfOverwritingEachOther() {
+        var result: [String: Any] = [:]
+        appendWarning(nil, to: &result)
+        appendWarning("", to: &result)
+        XCTAssertNil(result["warning"], "nothing to say means no warning key at all")
+        appendWarning("the render is silent", to: &result)
+        XCTAssertEqual(result["warning"] as? String, "the render is silent")
+        appendWarning("the tempo changes", to: &result)
+        // Both complaints can be true at once, and the first one written must
+        // not be lost - an agent reading only `warning` has to see both.
+        XCTAssertEqual(
+            result["warning"] as? String,
+            "the render is silent ALSO: the tempo changes"
+        )
+        appendWarning("the tempo changes", to: &result)
+        XCTAssertEqual(
+            result["warning"] as? String,
+            "the render is silent ALSO: the tempo changes",
+            "the same warning twice is one warning"
+        )
+    }
+
+    // MARK: - Bar math and end-of-take length (the meter is not always 4)
+
+    func testBarRangeSecondsIsTheConstantTempoFormula() throws {
+        let range = try MCPServer.barRangeSeconds(
+            startBar: 1, endBar: 5, tempo: 120, beatsPerBar: 4
+        )
+        XCTAssertEqual(range.start, 0, accuracy: 1e-9, "bar 1 is the project start")
+        XCTAssertEqual(range.end, 8, accuracy: 1e-9, "four bars of 2 s at 120 BPM in 4/4")
+        // The meter is what makes a bar long, not the number 4.
+        let waltz = try MCPServer.barRangeSeconds(
+            startBar: 3, endBar: 5, tempo: 120, beatsPerBar: 3
+        )
+        XCTAssertEqual(waltz.start, 3, accuracy: 1e-9)
+        XCTAssertEqual(waltz.end, 6, accuracy: 1e-9)
+    }
+
+    func testBarRangeSecondsRefusesRangesAndTemposItCannotConvert() {
+        for bad in [(0, 4), (1, 1), (5, 2)] {
+            XCTAssertThrowsError(
+                try MCPServer.barRangeSeconds(
+                    startBar: bad.0, endBar: bad.1, tempo: 120, beatsPerBar: 4
+                ),
+                "start \(bad.0), end \(bad.1) is not a range"
+            )
+        }
+        XCTAssertThrowsError(
+            try MCPServer.barRangeSeconds(startBar: 1, endBar: 5, tempo: 0, beatsPerBar: 4),
+            "a zero tempo would divide by zero and return infinity as a boundary"
+        )
+        XCTAssertThrowsError(
+            try MCPServer.barRangeSeconds(startBar: 1, endBar: 5, tempo: 120, beatsPerBar: 0)
+        )
+    }
+
+    func testTakeEndMeasuresTheTakeInTheProjectsOwnMeter() {
+        // Four 4/4 bars of whole notes starting at bar 9: the take ends where
+        // bar 13 begins.
+        let notes = (0..<4).map { (bar: 9 + $0, beat: 1.0, durationBeats: 4.0) }
+        let common = MCPServer.takeEnd(
+            startBar: 9, beatsPerBar: 4, notes: notes, extraEventBars: []
+        )
+        XCTAssertEqual(common.lastBeat, 16, accuracy: 1e-9)
+        XCTAssertEqual(common.endBar, 13)
+        // The same four bars in 3/4 are twelve beats, not sixteen - the bug
+        // this replaced measured them with a hardcoded 4 and claimed bar 13
+        // while the verification render, which already used the real meter,
+        // claimed something else.
+        let waltz = MCPServer.takeEnd(
+            startBar: 9, beatsPerBar: 3,
+            notes: (0..<4).map { (bar: 9 + $0, beat: 1.0, durationBeats: 3.0) },
+            extraEventBars: []
+        )
+        XCTAssertEqual(waltz.lastBeat, 12, accuracy: 1e-9)
+        XCTAssertEqual(waltz.endBar, 13)
+    }
+
+    func testTakeEndCountsOffbeatsPartialBarsAndCCEvents() {
+        // A note starting on beat 2.5 of the second bar, lasting half a beat,
+        // ends 1.5 beats into that bar - the take still occupies two bars.
+        let offbeat = MCPServer.takeEnd(
+            startBar: 1, beatsPerBar: 4,
+            notes: [(bar: 2, beat: 2.5, durationBeats: 0.5)], extraEventBars: []
+        )
+        XCTAssertEqual(offbeat.lastBeat, 6, accuracy: 1e-9)
+        XCTAssertEqual(offbeat.endBar, 3)
+        // A CC event carries no duration, so it claims the bar it sits in -
+        // measured in the project's meter as well.
+        let withCC = MCPServer.takeEnd(
+            startBar: 1, beatsPerBar: 3,
+            notes: [(bar: 1, beat: 1, durationBeats: 1)], extraEventBars: [4]
+        )
+        XCTAssertEqual(withCC.lastBeat, 12, accuracy: 1e-9)
+        XCTAssertEqual(withCC.endBar, 5)
+    }
+
+    func testTakeEndNeverReturnsAnEmptyRange() {
+        // A single short note still occupies a bar, and the bar math downstream
+        // refuses end <= start.
+        let tiny = MCPServer.takeEnd(
+            startBar: 4, beatsPerBar: 4,
+            notes: [(bar: 4, beat: 1, durationBeats: 0.25)], extraEventBars: []
+        )
+        XCTAssertEqual(tiny.endBar, 5)
+        XCTAssertGreaterThan(tiny.endBar, 4)
+        // An absent meter falls back to 4 rather than dividing by zero.
+        let noMeter = MCPServer.takeEnd(
+            startBar: 1, beatsPerBar: 0,
+            notes: [(bar: 1, beat: 1, durationBeats: 4)], extraEventBars: []
+        )
+        XCTAssertEqual(noMeter.endBar, 2)
+    }
+
     // MARK: - Filename sanitisation (a security control)
 
     func testSanitiserStripsPathTraversal() {

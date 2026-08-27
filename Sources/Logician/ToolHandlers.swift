@@ -86,15 +86,17 @@ extension MCPServer {
         return value
     }
 
-    /// Bar positions → seconds from project start (freeze renders begin at
-    /// bar 1). Tempo and meter come from the control bar unless overridden;
-    /// constant tempo is assumed (tempo-track changes are not followed).
-    func barRangeSeconds(
-        logic: LogicAccessibility, startBar: Int, endBar: Int, arguments: [String: Any]
-    ) throws -> (start: Double, end: Double, tempo: Double, beatsPerBar: Double) {
-        guard startBar >= 1, endBar > startBar else {
-            throw LogicianError.invalidArguments("need start_bar >= 1 and end_bar > start_bar")
-        }
+    /// Tempo and meter for bar math: the explicit arguments when they are given,
+    /// otherwise the control bar.
+    ///
+    /// The control bar's tempo is the tempo AT THE PLAYHEAD POSITION, so this
+    /// one number describes the whole range only on a constant-tempo project.
+    /// Whether it does is a separate, answerable question — see
+    /// `LogicAccessibility.sampleTempoAcross`, which every caller that slices
+    /// seconds asks before trusting the boundaries it computes here.
+    func resolveTempoAndMeter(
+        logic: LogicAccessibility, arguments: [String: Any]
+    ) throws -> (tempo: Double, beatsPerBar: Double) {
         var tempo = (arguments["tempo"] as? Double)
             ?? (arguments["tempo"] as? Int).map(Double.init) ?? 0
         var beatsPerBar = (arguments["beats_per_bar"] as? Double)
@@ -115,11 +117,77 @@ extension MCPServer {
                     .split(separator: "/").first.flatMap { Int($0) } ?? 4)
             }
         }
+        return (tempo, beatsPerBar)
+    }
+
+    /// Bar positions → seconds from project start (freeze renders begin at
+    /// bar 1), from an already-resolved tempo and meter. Pure and unit-tested:
+    /// this is the one place the constant-tempo assumption is actually made.
+    static func barRangeSeconds(
+        startBar: Int, endBar: Int, tempo: Double, beatsPerBar: Double
+    ) throws -> (start: Double, end: Double, tempo: Double, beatsPerBar: Double) {
+        guard startBar >= 1, endBar > startBar else {
+            throw LogicianError.invalidArguments("need start_bar >= 1 and end_bar > start_bar")
+        }
+        guard tempo > 0, beatsPerBar > 0 else {
+            throw LogicianError.invalidArguments(
+                "need a positive tempo and beats_per_bar for bar math (got \(tempo) BPM, \(beatsPerBar) beats/bar)"
+            )
+        }
         let secondsPerBar = beatsPerBar * 60.0 / tempo
         return (
             Double(startBar - 1) * secondsPerBar,
             Double(endBar - 1) * secondsPerBar,
             tempo, beatsPerBar
+        )
+    }
+
+    /// Where a composed take ends: the last beat any event occupies (counted
+    /// from the first beat of `startBar`) and the bar that beat falls in.
+    ///
+    /// The meter is a PARAMETER here, and that is the entire point. It used to be
+    /// the literal 4, three times, inside `logic_record_midi` — while the
+    /// verification render right below already used the project's real
+    /// beats-per-bar. In 3/4 the two disagreed about where the take ends (a
+    /// four-bar take measured as three), and the hardcoded one decided which
+    /// range the tempo was read for and how long the recording was expected to
+    /// be. Pure and unit-tested for the same reason: it is arithmetic, and
+    /// arithmetic should not need Logic running to be trusted.
+    static func takeEnd(
+        startBar: Int,
+        beatsPerBar: Double,
+        notes: [(bar: Int, beat: Double, durationBeats: Double)],
+        extraEventBars: [Int]
+    ) -> (lastBeat: Double, endBar: Int) {
+        let meter = beatsPerBar > 0 ? beatsPerBar : 4
+        // A CC or pitch-bend event carries no duration, so it claims the bar it
+        // sits in: one full bar past its own start.
+        let lastExtraBeats = extraEventBars.map { Double($0 - startBar + 1) * meter }.max() ?? 0
+        let lastBeat = max(
+            notes.map {
+                Double($0.bar - startBar) * meter + ($0.beat - 1) + $0.durationBeats
+            }.max() ?? meter,
+            lastExtraBeats
+        )
+        // At least one bar: a take shorter than a bar still occupies one, and
+        // the bar math downstream requires end > start.
+        return (lastBeat, max(startBar + Int((lastBeat / meter).rounded(.up)), startBar + 1))
+    }
+
+    /// The convenience the tools use: resolve, then convert. Tempo and meter
+    /// come from the control bar unless overridden; constant tempo is assumed
+    /// (tempo-track changes are not followed), which is exactly what the
+    /// two-point sample at each call site exists to detect and report.
+    func barRangeSeconds(
+        logic: LogicAccessibility, startBar: Int, endBar: Int, arguments: [String: Any]
+    ) throws -> (start: Double, end: Double, tempo: Double, beatsPerBar: Double) {
+        guard startBar >= 1, endBar > startBar else {
+            throw LogicianError.invalidArguments("need start_bar >= 1 and end_bar > start_bar")
+        }
+        let resolved = try resolveTempoAndMeter(logic: logic, arguments: arguments)
+        return try MCPServer.barRangeSeconds(
+            startBar: startBar, endBar: endBar,
+            tempo: resolved.tempo, beatsPerBar: resolved.beatsPerBar
         )
     }
 }
