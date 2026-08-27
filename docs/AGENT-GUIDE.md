@@ -277,6 +277,15 @@ Parameters:
 
 Compose MIDI into the project with ZERO dialogs and no files: notes are streamed in real time over the dedicated 'Logic MCP MIDI In' port while Logic records them onto the selected software-instrument track (playhead parked one bar early; the stream starts on the observed MCU-timecode crossing into start_bar, so count-in settings do not matter). Creates a normal recorded region. By default the result is verified with a dialog-free freeze render of the recorded bars (non-silent metrics prove the notes landed and sound through the instrument). Recording takes real time: bars x beats x 60/BPM seconds. The region can be removed with Undo in Logic.
 
+**Smart Tempo guard.** Logic's project tempo mode decides what a recording does to the project's *tempo map*: **Keep** leaves it alone, **Adapt** rewrites it to follow the recording, **Auto** picks one (leaning Adapt when the metronome is off). Since Logic 10.4.2 this applies to MIDI recordings too — so on an Adapt-mode project this tool would silently overwrite the user's tempo track. It therefore reads the mode before arming and:
+
+  - **ADAPT** → refuses with `precondition_failed`, nothing recorded.
+  - **AUTO** → refuses the same way: Auto can resolve to Adapt and which one Logic picked is not verifiable from here.
+  - **KEEP** → records; the result carries `project_tempo_mode: "keep"`.
+  - **mode not readable** → records, and the result carries a `warning` saying the check went unverified. Logic's control bar does expose the Project Tempo pop-up button but publishes no *value* on it through Accessibility (probed 2026-08-27, Logic Pro 12.3.1), so this is the normal case today, not an edge case. Read the mode yourself in the LCD's tempo display, or in File → Project Settings → Smart Tempo.
+
+The fix the refusal names: set the project tempo mode to KEEP — click the tempo display in the LCD (the small Project Tempo pop-up under the tempo), or File → Project Settings → Smart Tempo. `logic_get_transport` reports `project_tempo_mode` when it is readable, and `project_tempo_mode_note` explaining why when it is not.
+
 Parameters:
 
   - `beats_per_bar` (number): Override meter; default reads the control bar.
@@ -520,6 +529,8 @@ Parameters:
 #### `logic_get_transport`
 
 Read the transport state from the control bar: playing, recording, cycle, playhead bar/beat, tempo, time signature, key signature, metronome, count-in. Read-only. Fields whose control bar element is missing are null.
+
+Smart Tempo: `project_tempo_mode` ("keep"/"adapt"/"auto") is present only when the mode is actually readable. When it is not, the key is absent and `project_tempo_mode_note` says why and where to look instead — an unreadable mode is never reported as a value, because a missing value would read as "keep" and Adapt is the mode that rewrites the tempo track. See the Smart Tempo guard under `logic_record_midi`.
 
 Parameters:
 

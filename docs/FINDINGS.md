@@ -1,6 +1,6 @@
 # Logic MCP — verifierade fynd och teknisk handoff
 
-Senast uppdaterad: 2026-08-26
+Senast uppdaterad: 2026-08-27
 
 ## Syfte
 
@@ -1591,3 +1591,22 @@ Fyra parallella granskare utan projekthistorik (arkitektur, korrekthet, MCP/API,
 **Efterarbetet.** Testtarget (50 tester, 0,04 s, ingen Logic). Tool-descriptor-registry: `callTool` 1330 → 35 rader, honesty guards blev flaggor i stället för handhållna namnlistor, verifierat beteendeneutralt via identisk sha256 på schemadumpen. Cache-scoping som också avslöjade att fält 6–7 aldrig validerades (de gömmer sig bakom "Page x/y"-indikatorn), så en plugin-uppdatering kunde para cachade namn med fel värden.
 
 **En egen läxa:** mina nya framing-tester hängde 10 minuter hos en subagent. Orsaken var min testkod, inte framingen — skrivaren låg på en GCD-kö medan huvudtråden blockerade i `read()`, och med mättad trådpool schemaläggs skrivaren aldrig. En tråd som blockerar i ett syscall kan inte ge efter. Riktiga OS-trådar + läs-timeout; verifierat med tre parallella sviter under full CPU-last (1 s).
+
+### Smart Tempo-vakten: Project Tempo-knappen finns i AX men bär inget värde (2026-08-27, v0.50.x)
+
+Roadmap-punkt 1:s farligaste hål: Logics **projekttempoläge** (Smart Tempo) avgör vad en inspelning gör med projektets *tempokarta* — **Keep** lämnar den ifred, **Adapt** SKRIVER OM den så att den följer inspelningen, **Auto** väljer själv (lutar mot Adapt när metronomen är av). Sedan Logic 10.4.2 gäller det MIDI-inspelningar också, och `logic_record_midi` streamar just en MIDI-performance medan Logic spelar in. På ett Adapt-projekt förstörde verktyget alltså användarens tempospår som sidoeffekt — på ett konstant-tempo-projekt, tyst, utan ett ord i resultatet. Ingenting vaktade det.
+
+**Experimentet (skrivskyddad AX-probe mot körande Logic, `Testlåt Copy.logicx`, pid 25052, LCD i Display Mode "Beats & Project" — den vy som FAKTISKT visar läget):** knappen finns. Den ligger som direkt syskon till `Tempo`-slidern inne i den inre "Control Bar"-gruppen, i ordningen `Display Mode` → `Playhead Position` → `Tempo` → **Project Tempo** → `Time Signature` → `Key Signature`. Men den bär inget värde alls:
+
+- `AXRole` = `AXPopUpButton`, `AXRoleDescription` = "pop up button", ram 60×29 px strax under tempo-slidern.
+- `AXDescription` = **tom sträng** — till skillnad från varje annat display-element i control baren (`"Tempo"`, `"Time Signature"`, `"Key Signature"`), så knappen kan bara identifieras på sin `AXHelp`-prefix `"Project Tempo menu"`.
+- `AXValue`, `AXTitle`, `AXValueDescription`: **saknas helt** — inte tomma, attributen finns inte ens i `AXUIElementCopyAttributeNames`. Hela attributmängden är geometri + `AXHelp`.
+- Grannarna `Time Signature` och `Key Signature` publicerar däremot sina `AXValue` ("4/4", "B♭ Major"). Logic håller alltså tillbaka just detta värde; det är inte proben som missar det.
+- Sökning i HELA projektfönstret (djup 14) på keep/adapt/auto/smart gav noll element vars värde eller titel ÄR ett lägesord — bara Apples tooltip-prosa på knappen ("…whether the project tempo is maintained, adapts to the tempo of audio recordings…", statisk, inte tillståndsbärande) plus orelaterade träffar (Smart Controls, automationsläge).
+- `AXUIElementCopyActionNames` på knappen: `["AXShowMenu", "AXPress"]`, `AXChildren` tom. Menyn — och därmed förmodligen en markering av aktivt läge — materialiseras först vid tryck.
+
+**Följd för designen: läget är i praktiken OLÄSBART, och det fick bli ett förstaklassigt svar.** `ProjectTempoMode` har fem fall: `keep`/`adapt`/`auto` plus `unreadable` (knappen finns, inget värde) och `absent` (ingen knapp). Att *anta* Keep när läget inte går att läsa är exakt det antagande som kostar tempospåret, så vakten i `logic_record_midi` gör tre olika saker: ADAPT → vägran (`precondition_failed`, inget inspelat, fixen namngiven); AUTO → samma vägran, med skälet att Auto kan lösa ut till Adapt och att vi inte kan verifiera vilket; oläsbart → spelar in, men resultatet bär en `warning` som säger att kontrollen gick overifierad och att ett Adapt-projekt i så fall just fick sin tempokarta omskriven (kolla tempospåret, Undo vid behov). `logic_get_transport` lägger till `project_tempo_mode` bara när läget är känt, annars `project_tempo_mode_note` med skälet — ett oläsbart läge får aldrig serialiseras som ett värde, för ett saknat värde läses som "keep".
+
+Strängmappningen (`normalizedProjectTempoMode`) är därför ren och separat testad fastän AX-vägen i dag ger noll: den dagen Logic börjar publicera värdet — eller menyvägen landar — är det den mappningen vakten hänger på. Exakt ettordsmatchning först, sedan adapt/auto före keep i substrängfallet, så en sträng som nämner två lägen lutar mot vägran i stället för mot en destruktiv inspelning.
+
+**Nästa experiment (medvetet inte gjort här):** `AXShowMenu` + uppräkning av menyposterna via `AXMenuItemMarkChar` är den troliga läsvägen, och om posterna går att `AXPress` blir vägran i stället ett vaktat set-and-restore (sätt KEEP, spela in, återställ). Men det är en UI-mutation på en läsväg, och anropspunkten är precis där en inspelning armeras — en öppen meny där kan svälja transporten. Proben var strikt skrivskyddad (inga `AXUIElementSetAttributeValue`, inga tryck, inga klick, inga tangenttryck, inga fönster öppnade eller stängda) och `logician`-binären startades aldrig: dubbla virtuella MIDI-portar orphanar tyst alla key command-bindningar (se v0.45.0).
