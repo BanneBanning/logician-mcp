@@ -100,7 +100,7 @@ extension MCUController {
             guard let status = freshStatus(), let bottom = status["lcd_bottom"] as? String else {
                 return nil
             }
-            return parseDb(lcdFields(bottom)[channel])
+            return parseDb(lcdValueFields(bottom)[channel])
         }
         guard let startDb = currentDb() else { debugLog("setVolume: no dB readback for channel \(channel)"); return nil }
         if let fast = fastConverge(index: channel, target: targetDb,

@@ -232,7 +232,7 @@ extension MCUController {
                       let top = status["lcd_top"] as? String,
                       let bottom = status["lcd_bottom"] as? String else { return nil }
                 let liveNames = lcdFields(top)
-                let values = lcdFields(bottom)
+                let values = lcdValueFields(bottom)
                 let names = cachedNames[pageNumber - 1]
                 guard names.count == 8 else { return nil }
                 for index in 0..<6

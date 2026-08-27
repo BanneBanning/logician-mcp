@@ -93,7 +93,7 @@ extension MCUController {
                             ) == nil
                     }
                     if !shifted {
-                        return zip(names, lcdFields(bottom)).map { ($0, $1) }
+                        return zip(names, lcdValueFields(bottom)).map { ($0, $1) }
                     }
                     dropNameCache(key: key, projectPath: projectPath)
                 }

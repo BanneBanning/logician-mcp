@@ -58,4 +58,8 @@ public func readToEOF(_ fd: Int32, limit: Int = 8 * 1024 * 1024) -> Data {
 /// `>= bridgeProtocolVersion` from a running daemon and replaces older ones;
 /// keeping the literal here (instead of one copy per module) is what makes
 /// the skew check itself immune to skew.
-public let bridgeProtocolVersion = 3
+/// 4 (2026-08-28): the in-bridge convergence reads its echo through
+/// `MCULCDRow.valueCell`. Version 3 dropped the rightmost strip's minus sign
+/// and converged the wrong way, so the server refuses to converge cell 7 in a
+/// daemon older than this and runs the loop itself instead.
+public let bridgeProtocolVersion = 4

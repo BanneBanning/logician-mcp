@@ -352,13 +352,38 @@ extension MCUController {
         }
     }
 
+    /// True when the daemon that owns the socket right now is old enough to
+    /// still read the rightmost value cell literally. Cached: the answer only
+    /// ever moves upward (a daemon is replaced by a newer one, never an older
+    /// one), so a stale answer costs speed, never correctness.
+    private static func daemonPredatesSignedRightmostCell() -> Bool {
+        if let known = cachedDaemonProtocol { return known < 4 }
+        guard let pong = try? MCUBridge.send(.ping), pong.ok else { return false }
+        let version = pong.bridgeProtocol ?? 0
+        cachedDaemonProtocol = version
+        return version < 4
+    }
+
+    nonisolated(unsafe) static var cachedDaemonProtocol: Int? // single-threaded server loop
+
     /// In-bridge convergence: the whole adaptive tick loop runs next to the
     /// LCD mirror (3 ms echo polling instead of a socket round trip + fat
-    /// await per tick). Returns nil when the bridge lacks the command.
+    /// await per tick). Returns nil when the bridge lacks the command — the
+    /// callers all own a slower loop of their own, so nil is "do it here".
     static func fastConverge(
         index: Int, field: Int? = nil, target: Double,
         tolerance: Double = 0, maxMs: Int = 3000, seedRatio: Double? = nil
     ) -> (text: String, value: Double)? {
+        // A daemon older than protocol 4 reads the RIGHTMOST value cell
+        // without the sign Logic shifts into cell 6, so it mistakes its own
+        // downward step for an upward one and runs to the end stop
+        // (MCULCDRow.valueCell). Declining here hands the write back to the
+        // caller's own loop, which reads through `lcdValueFields`.
+        if (field ?? index) == MCULCDRow.cellCount - 1,
+           daemonPredatesSignedRightmostCell() {
+            debugLog("fastConverge declined on the rightmost cell: daemon protocol < 4")
+            return nil
+        }
         // `field` and `ratio` stay optional so an absent one is ABSENT on the
         // wire: the bridge defaults field to index and ratio to 2.0, and
         // sending a placeholder would override those defaults.

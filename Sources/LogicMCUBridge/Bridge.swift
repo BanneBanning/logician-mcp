@@ -41,14 +41,17 @@ final class SurfaceState {
         lock.unlock()
     }
 
-    /// One 7-char LCD cell from the bottom (value) row, trimmed.
-    func lcdBottomField(_ field: Int) -> String {
+    /// One strip's value cell from the bottom (value) row — the echo the
+    /// convergence below steers by. Sliced through `MCULCDRow.valueCell`, so
+    /// the rightmost cell keeps the sign character Logic shifts one column
+    /// left into cell 6; reading that cell literally dropped the minus and
+    /// sent the convergence the wrong way (see MCULCDRow.valueCell).
+    func lcdBottomValueField(_ field: Int) -> String {
         lock.lock()
         defer { lock.unlock() }
-        let start = 56 + field * 7
-        guard start + 7 <= 112 else { return "" }
-        return (String(bytes: lcd[start..<start + 7], encoding: .ascii) ?? "")
-            .trimmingCharacters(in: .whitespaces)
+        guard (0..<MCULCDRow.cellCount).contains(field) else { return "" }
+        let row = String(bytes: lcd[56..<112], encoding: .ascii) ?? ""
+        return MCULCDRow.valueCell(row, field)
     }
 
     func snapshot() -> SurfaceSnapshot {
@@ -553,8 +556,8 @@ func handleCommand(_ object: BridgeCommand) -> BridgeResponse {
             return Double(numeric.hasSuffix(".") ? String(numeric.dropLast()) : String(numeric))
         }
         let deadline = Date().addingTimeInterval(Double(maxMs) / 1000)
-        guard var current = parseValue(state.lcdBottomField(field)) else {
-            return .failure("field \(field) is not numeric: '\(state.lcdBottomField(field))'")
+        guard var current = parseValue(state.lcdBottomValueField(field)) else {
+            return .failure("field \(field) is not numeric: '\(state.lcdBottomValueField(field))'")
         }
         var iterations = 0
         while Date() < deadline {
@@ -573,14 +576,14 @@ func handleCommand(_ object: BridgeCommand) -> BridgeResponse {
             while Date() < echoDeadline {
                 usleep(3000)
                 if state.eventCount != before,
-                   let value = parseValue(state.lcdBottomField(field)), value != current {
+                   let value = parseValue(state.lcdBottomValueField(field)), value != current {
                     updated = value
                     break
                 }
             }
             guard let now = updated else {
                 // no movement: either done (clamped at an end stop) or stuck
-                if let value = parseValue(state.lcdBottomField(field)) { current = value }
+                if let value = parseValue(state.lcdBottomValueField(field)) { current = value }
                 if abs(current - target) <= max(tolerance, 0.5) { break }
                 continue
             }
@@ -594,7 +597,7 @@ func handleCommand(_ object: BridgeCommand) -> BridgeResponse {
             current = now
         }
         usleep(30000)
-        let finalText = state.lcdBottomField(field)
+        let finalText = state.lcdBottomValueField(field)
         var response = BridgeResponse.success
         response.finalText = finalText
         response.finalValue = parseValue(finalText) ?? current

@@ -716,7 +716,7 @@ extension MCUController {
         guard let status = freshStatus(),
               let top = status["lcd_top"] as? String,
               let bottom = status["lcd_bottom"] as? String else { return nil }
-        return zip(lcdFields(top), lcdFields(bottom)).map { ($0, $1) }
+        return zip(lcdFields(top), lcdValueFields(bottom)).map { ($0, $1) }
     }
 
 }

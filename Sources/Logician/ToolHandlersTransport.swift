@@ -452,7 +452,7 @@ extension MCPServer {
                               let bottom = status["lcd_bottom"] as? String else { return nil }
                         // parseDb handles "-oodB" (new sends start at -inf)
                         return MCUController.parseDb(
-                            MCUController.lcdFields(bottom)[levelIndex]
+                            MCUController.lcdValueFields(bottom)[levelIndex]
                         )
                     }
                     let write = try MCUController.makeVpotWriter(index: levelIndex, read: read)

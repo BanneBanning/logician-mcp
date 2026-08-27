@@ -137,7 +137,13 @@ final class ProtocolTests: XCTestCase {
         let response = try bridgeJSONDecoder.decode(BridgeResponse.self, from: data)
         XCTAssertTrue(response.ok)
         XCTAssertEqual(response.pong, true)
-        XCTAssertEqual(response.bridgeProtocol, bridgeProtocolVersion)
+        // The fixture is a version-3 daemon's reply, and it stays one: what
+        // this test proves is that the field ARRIVES, not that it happens to
+        // match today's constant. Pinning it to `bridgeProtocolVersion` made
+        // the test fail on every bump — the one moment the decode matters
+        // most, since that is when `ensureRunning()` starts replacing daemons.
+        XCTAssertEqual(response.bridgeProtocol, 3)
+        XCTAssertGreaterThanOrEqual(bridgeProtocolVersion, 3)
         XCTAssertNil(response.snapshot) // no snapshot keys in a ping
     }
 

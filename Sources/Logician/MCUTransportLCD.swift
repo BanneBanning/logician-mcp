@@ -61,14 +61,19 @@ extension MCUController {
 
     // MARK: LCD helpers
 
+    /// The eight cells as the row literally prints them — the reading for
+    /// NAMES. Shared with the daemon so one slicer serves both planes.
     static func lcdFields(_ row: String) -> [String] {
-        var fields: [String] = []
-        let characters = Array(row.padding(toLength: 56, withPad: " ", startingAt: 0))
-        for channel in 0..<8 {
-            let slice = characters[(channel * 7)..<(channel * 7 + 7)]
-            fields.append(String(slice).trimmingCharacters(in: .whitespaces))
-        }
-        return fields
+        MCULCDRow.cells(row)
+    }
+
+    /// The eight cells read as numeric VALUE echoes: identical to `lcdFields`
+    /// except on the rightmost strip, whose single-channel banner is shifted
+    /// one column left and leaves its sign character in cell 6. Every read
+    /// that a write is verified or converged against goes through this one;
+    /// reading a value literally cost `Stereo Out` 6 dB (MCULCDRow.valueCell).
+    static func lcdValueFields(_ row: String) -> [String] {
+        MCULCDRow.valueCells(row)
     }
 
     /// Logic abbreviates track names on the MCU LCD by dropping characters
