@@ -224,6 +224,13 @@ extension MCPServer {
                 logic: logic, startBar: startBar, endBar: max(endBar, startBar + 1),
                 arguments: arguments
             )
+            // `verified` describes THE RECORDING (the stream went out and the
+            // transport rolled). The render is a separate OBSERVATION, and a
+            // failed observation must never flip the operation's verdict:
+            // agents are trained that verified: false means "treat as
+            // suspect", so reporting it here made them re-record takes that
+            // had landed perfectly. A legitimately quiet passage is the same
+            // trap - silence is a fact about the music, not about the write.
             if let render = try? MCUController.renderSelectedTrack(
                 projectPath: logic.projectDocumentPath(),
                 label: "midi-verify",
@@ -231,17 +238,20 @@ extension MCPServer {
                 logic: logic, trackName: trackName
             ) {
                 let slice = render["slice"] as? [String: Any]
+                let audible = (slice?["metrics"] as? [String: Any])
+                    .flatMap { ($0["peak_db"] as? [Double])?.first }
+                    .map { $0 > -120 }
+                result["verification_render"] = audible == true ? "ok" : (audible == nil ? "unreadable" : "silent")
                 result["verification"] = [
                     "rendered_slice": slice?["path"] ?? NSNull(),
                     "metrics": slice?["metrics"] ?? NSNull(),
-                    "note": "freeze render of bars \(startBar)-\(endBar) after recording; non-silent metrics prove the notes landed and sound"
+                    "note": audible == true
+                        ? "freeze render of bars \(startBar)-\(endBar) after recording; non-silent metrics prove the notes landed and sound"
+                        : "freeze render of bars \(startBar)-\(endBar) came back silent. The recording itself completed - this can mean the instrument made no sound (muted, no patch, notes out of range), not that the notes are missing."
                 ]
-                result["verified"] = (slice?["metrics"] as? [String: Any])
-                    .flatMap { ($0["peak_db"] as? [Double])?.first }
-                    .map { $0 > -120 } ?? false
             } else {
-                result["verification"] = ["note": "verification render failed; the recording itself completed"]
-                result["verified"] = false
+                result["verification_render"] = "failed"
+                result["verification"] = ["note": "the verification render could not run; the recording itself completed. Bounce the range yourself to check the result."]
             }
         }
         return result

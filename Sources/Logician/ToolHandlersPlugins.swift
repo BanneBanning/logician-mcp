@@ -144,9 +144,14 @@ extension MCPServer {
         if openedByUs {
             _ = try? logic.closePlugin(trackName: presetTrack, pluginName: presetPlugin, insertIndex: arguments["insert_index"] as? Int)
         }
+        // success reports whether the preset actually MOVED. It used to be a
+        // literal true, so at the end of a preset list - or on a plugin with
+        // no factory settings - the agent was told the step happened and
+        // reported it to the user.
+        let stepped = labelAfter != nil && labelAfter != labelBefore
         return [
-            "success": true,
-            "verified": labelAfter != nil && labelAfter != labelBefore,
+            "success": stepped,
+            "verified": stepped,
             "direction": direction,
             "steps": steps,
             "preset_before": labelBefore.map { $0 as Any } ?? NSNull() as Any,

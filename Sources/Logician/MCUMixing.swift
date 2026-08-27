@@ -28,7 +28,7 @@ extension MCUController {
             return [
                 "success": true, "verified": true,
                 "state": "already_" + (enabled ? "on" : "off"),
-                "track": trackName, "control": control, control: enabled, "route": "mcu"
+                "track": trackName, "track_name": trackName, "control": control, control: enabled, "route": "mcu"
             ]
         }
         let response = try MCUBridge.send(.channel(strip, channel))
@@ -45,7 +45,7 @@ extension MCUController {
         return [
             "success": true, "verified": true,
             "state": enabled ? "on" : "off",
-            "track": trackName, "control": control, control: enabled,
+            "track": trackName, "track_name": trackName, "control": control, control: enabled,
             "route": "mcu", "readback_route": "mcu_channel_led"
         ]
     }
@@ -153,7 +153,7 @@ extension MCUController {
         }
         return [
             "success": true, "verified": true, "state": "volume_set",
-            "track": trackName,
+            "track": trackName, "track_name": trackName,
             "before_db": round(startDb * 10) / 10,
             "after_db": round(db * 10) / 10,
             "requested_db": targetDb,

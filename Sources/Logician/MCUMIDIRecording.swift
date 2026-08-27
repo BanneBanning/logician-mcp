@@ -146,8 +146,14 @@ extension MCUController {
         }
         Thread.sleep(forTimeInterval: (Double(durationMs) + tailMs) / 1000)
         // defer handles abort, stop and playhead restore
+        // `verified` belongs to the RECORDING: reaching here means the
+        // transport was rolling, the stream went out with host-time stamps,
+        // and the stop/restore path completed - anything less throws above.
+        // Whether the result SOUNDS is a separate observation the caller
+        // reports as verification_render.
         return [
             "success": true,
+            "verified": true,
             "events_streamed": events.count,
             "stream_duration_ms": durationMs,
             "write_route": "midi_in_record"
@@ -274,12 +280,17 @@ extension MCUController {
             "method": "render",
             "decision": decision,
             "change": [
-                "track": trackName, "insert_slot": insertSlot, "parameter": parameter,
+                "track": trackName, "track_name": trackName,
+                "insert_slot": insertSlot, "parameter": parameter,
                 "before": beforeValue, "applied": appliedValue
             ],
             "range": ["start_bar": startBar, "end_bar": endBar, "tempo": tempo],
             "baseline_audio": (renderA["slice"] as? [String: Any])?["path"] ?? renderA["path"] ?? NSNull(),
             "after_audio": (renderB["slice"] as? [String: Any])?["path"] ?? renderB["path"] ?? NSNull(),
+            // Same key set as the other two methods; a freeze render has no
+            // AAC preview sibling, so those are present and null.
+            "baseline_preview": NSNull(),
+            "after_preview": NSNull(),
             "baseline_full_audio": renderA["path"] ?? NSNull(),
             "after_full_audio": renderB["path"] ?? NSNull(),
             "baseline_metrics": metricsA ?? NSNull(),
@@ -455,12 +466,16 @@ extension MCUController {
             "decision": decision,
             "solo_restored": soloRestored || wasAlreadySoloed,
             "change": [
-                "track": trackName, "insert_slot": insertSlot, "parameter": parameter,
+                "track": trackName, "track_name": trackName,
+                "insert_slot": insertSlot, "parameter": parameter,
                 "before": beforeValue, "applied": appliedValue
             ],
             "range": ["start_bar": startBar, "end_bar": endBar],
             "baseline_audio": pathA,
             "after_audio": pathB,
+            // The bounces ARE the full renders here, so full == audio.
+            "baseline_full_audio": pathA,
+            "after_full_audio": pathB,
             "baseline_preview": bounceA["preview_path"] ?? NSNull(),
             "after_preview": bounceB["preview_path"] ?? NSNull(),
             "baseline_metrics": metricsA ?? NSNull(),

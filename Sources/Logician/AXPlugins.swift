@@ -228,7 +228,7 @@ extension LogicAccessibility {
             "success": true,
             "verified": true,
             "state": "plugin_added",
-            "track": trackName,
+            "track": trackName, "track_name": trackName,
             "plugin_display_name": slot.name,
             "insert_index": slot.index,
             "format": chosenFormat.isEmpty ? format : chosenFormat,
@@ -269,7 +269,7 @@ extension LogicAccessibility {
                     "success": true,
                     "verified": true,
                     "state": "plugin_removed",
-                    "track": trackName,
+                    "track": trackName, "track_name": trackName,
                     "removed_plugin": slot.name,
                     "was_insert_index": slot.index,
                     "write_route": "insert_menu_navigation"
@@ -363,7 +363,7 @@ extension LogicAccessibility {
         }
         return [
             "success": true,
-            "track": trackName,
+            "track": trackName, "track_name": trackName,
             "surveyed_inserts": surveyed.count,
             "plugins": surveyed,
             "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test"
@@ -450,7 +450,7 @@ extension LogicAccessibility {
                 "success": true,
                 "verified": true,
                 "state": "closed",
-                "track": trackName,
+                "track": trackName, "track_name": trackName,
                 "insert_index": slot.index,
                 "plugin_display_name": slot.name
             ]

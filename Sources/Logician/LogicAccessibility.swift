@@ -66,7 +66,7 @@ final class LogicAccessibility {
         let slots = insertSlots(of: strip)
         return [
             "project_document": (try? projectDocumentPath()) ?? NSNull(),
-            "track": trackName,
+            "track": trackName, "track_name": trackName,
             "strip_source": "left_inspector_channel_strip",
             "inserts": slots.map(\.dictionary)
         ]

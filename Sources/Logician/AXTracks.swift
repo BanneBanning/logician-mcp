@@ -405,7 +405,7 @@ extension LogicAccessibility {
             return [
                 "success": true, "verified": true,
                 "state": "already_" + (enabled ? "on" : "off"),
-                "track": trackName, "control": control, control: enabled
+                "track": trackName, "track_name": trackName, "control": control, control: enabled
             ]
         }
         let status = AXUIElementPerformAction(button, kAXPressAction as CFString)
@@ -420,7 +420,7 @@ extension LogicAccessibility {
                 return [
                     "success": true, "verified": true,
                     "state": enabled ? "on" : "off",
-                    "track": trackName, "control": control, control: enabled,
+                    "track": trackName, "track_name": trackName, "control": control, control: enabled,
                     "write_route": "ax_press_inspector_strip"
                 ]
             }
@@ -494,7 +494,7 @@ extension LogicAccessibility {
         }
         return [
             "success": true, "verified": true, "state": "volume_set",
-            "track": trackName,
+            "track": trackName, "track_name": trackName,
             "before_db": round(beforeDb * 10) / 10,
             "after_db": round(achievedDb * 10) / 10,
             "requested_db": targetDb,
@@ -542,7 +542,7 @@ extension LogicAccessibility {
         }
         return [
             "success": true, "verified": true, "state": "pan_set",
-            "track": trackName, "before": before, "after": position,
+            "track": trackName, "track_name": trackName, "before": before, "after": position,
             "write_route": "ax_value_stepwise"
         ]
     }

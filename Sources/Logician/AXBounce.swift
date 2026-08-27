@@ -810,7 +810,10 @@ extension LogicAccessibility {
             "method": "bounce",
             "decision": decision,
             "change": [
-                "track": trackName, "plugin": pluginName, "parameter": parameter,
+                // track_name matches the INPUT key so a result round-trips
+                // into the next call; `track` stays for existing readers.
+                "track": trackName, "track_name": trackName,
+                "plugin": pluginName, "parameter": parameter,
                 "before": change["before"] ?? expectedCurrentValue,
                 "applied": change["after"] ?? targetValue
             ],
@@ -818,6 +821,14 @@ extension LogicAccessibility {
             "range": ["start_bar": startBar, "end_bar": endBar],
             "baseline_audio": pathA,
             "after_audio": pathB,
+            // One shape across all three methods: keys a method genuinely has
+            // nothing for are present and null, so an agent can read the same
+            // fields regardless of how the A/B was produced. This method's
+            // bounces ARE the full renders, so full == audio here.
+            "baseline_full_audio": pathA,
+            "after_full_audio": pathB,
+            "baseline_preview": bounceA["preview_path"] ?? NSNull(),
+            "after_preview": bounceB["preview_path"] ?? NSNull(),
             "baseline_metrics": metricsA ?? NSNull(),
             "after_metrics": metricsB ?? NSNull(),
             "deltas": deltas,

@@ -357,7 +357,7 @@ extension LogicAccessibility {
         }
         return [
             "success": true, "verified": true, "state": "deleted",
-            "track": trackName,
+            "track": trackName, "track_name": trackName,
             "region": selection["name"] ?? "?",
             "start_bar": selection["start_bar"] ?? NSNull(),
             "note": "Removable mistake? Undo restores it."
@@ -417,7 +417,7 @@ extension LogicAccessibility {
         }
         return [
             "success": true, "verified": true, "state": "moved",
-            "track": trackName,
+            "track": trackName, "track_name": trackName,
             "region": selection["name"] ?? "?",
             "from_bar": oldStart,
             "to_bar": moved["start_bar"] ?? NSNull(),
@@ -468,7 +468,7 @@ extension LogicAccessibility {
             "success": true, "verified": true,
             "state": move ? "moved_via_clipboard" : "copied",
             "region": selection["name"] ?? "?",
-            "from": ["track": trackName, "start_bar": selection["start_bar"] ?? NSNull()],
+            "from": ["track": trackName, "track_name": trackName, "start_bar": selection["start_bar"] ?? NSNull()],
             "to": ["track": destinationTrack, "start_bar": landed["start_bar"] ?? toBar],
             "note": "Paste lands at the playhead on the selected track."
         ]
