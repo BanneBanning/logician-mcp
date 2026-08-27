@@ -436,7 +436,10 @@ func turnVPot(index: Int, delta: Int) {
     send([0xB0, UInt8(0x10 + index), value])
 }
 
-let buttonNames: [String: UInt8] = [
+/// Public so the server's `logic_mcu_command` schema can advertise exactly
+/// the button names this daemon accepts, instead of a hand-kept copy that
+/// could drift from the map the `press` handler actually looks in.
+public let buttonNames: [String: UInt8] = [
     "play": 0x5E, "stop": 0x5D, "record": 0x5F, "rewind": 0x5B, "forward": 0x5C,
     "cycle": 0x56, "marker": 0x54, "nudge": 0x55, "drop": 0x57, "replace": 0x58,
     "click": 0x59, "solo_global": 0x5A,

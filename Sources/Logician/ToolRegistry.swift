@@ -14,18 +14,26 @@ extension MCPServer {
                 name: "logic_health",
                 description: "Read Logic Pro process and Accessibility readiness without changing Logic.",
                 inputSchema: ["type": "object", "properties": [:], "additionalProperties": false],
+                // Starts the server's own bridge daemon if it is down; Logic
+                // itself is only read.
+                safety: .readOnly,
+                idempotent: true,
                 handler: MCPServer.handleHealth
             ),
             Tool(
                 name: "logic_list_windows",
                 description: "List Logic windows with subrole and project document path, read-only. Windows whose document is set are project windows; dialogs without a document are plugin or auxiliary windows.",
                 inputSchema: ["type": "object", "properties": [:], "additionalProperties": false],
+                safety: .readOnly,
+                idempotent: true,
                 handler: MCPServer.handleListWindows
             ),
             Tool(
                 name: "logic_list_tracks",
                 description: "List the track headers currently rendered in the Tracks area (track number, name, selected), read-only. Scrolled-out or hidden tracks are not exposed by Logic.",
                 inputSchema: ["type": "object", "properties": [:], "additionalProperties": false],
+                safety: .readOnly,
+                idempotent: true,
                 handler: MCPServer.handleListTracks
             ),
             Tool(
@@ -39,6 +47,8 @@ extension MCPServer {
                     "required": ["track_name"],
                     "additionalProperties": false
                 ],
+                safety: .readOnly,
+                idempotent: true,
                 handler: MCPServer.handleListInserts
             ),
             Tool(
@@ -55,6 +65,9 @@ extension MCPServer {
                     "required": ["start_bar", "end_bar"],
                     "additionalProperties": false
                 ],
+                // Not read-only: drives the bounce dialog and swaps the
+                // destination setting.
+                safety: .write,
                 handler: MCPServer.handleBounceRange
             ),
             Tool(
@@ -86,6 +99,9 @@ extension MCPServer {
                     "required": ["track_name", "parameter", "expected_current_value", "target_value", "start_bar", "end_bar", "method"],
                     "additionalProperties": false
                 ],
+                // Rolls the change back by default; keep_change is an explicit
+                // value write.
+                safety: .write,
                 changesSound: true,
                 listenNote: Tool.evaluateChangeListenNote,
                 handler: MCPServer.handleEvaluateChange
@@ -102,6 +118,10 @@ extension MCPServer {
                     "required": ["track_name"],
                     "additionalProperties": false
                 ],
+                // Not read-only: SELECTS the track and moves the surface into
+                // the plugin list.
+                safety: .write,
+                idempotent: true,
                 handler: MCPServer.handleMcuPluginInserts
             ),
             Tool(
@@ -111,13 +131,18 @@ extension MCPServer {
                     "type": "object",
                     "properties": [
                         "track_name": ["type": "string"],
+                        // No minimum on max_pages: the handler deliberately
+                        // clamps 0 up to 1 rather than refusing it.
                         "max_pages": ["type": "integer", "description": "Page cap, default 12 (each uncached page costs ~1.7 s; large instruments have 80+). pages_total and truncated report what was left out."],
                         "track_number": ["type": "integer"],
-                        "insert_slot": ["type": "integer"]
+                        "insert_slot": ["type": "integer", "minimum": 1, "maximum": 8, "description": "MCU physical insert slot 1-8 (list with logic_mcu_plugin_inserts)."]
                     ],
                     "required": ["track_name", "insert_slot"],
                     "additionalProperties": false
                 ],
+                // Not read-only: selects the track and enters plugin edit mode.
+                safety: .write,
+                idempotent: true,
                 handler: MCPServer.handleMcuPluginParameters
             ),
             Tool(
@@ -128,7 +153,7 @@ extension MCPServer {
                     "properties": [
                         "track_name": ["type": "string"],
                         "track_number": ["type": "integer"],
-                        "insert_slot": ["type": "integer"],
+                        "insert_slot": ["type": "integer", "minimum": 1, "maximum": 8, "description": "MCU physical insert slot 1-8 (list with logic_mcu_plugin_inserts)."],
                         "parameter": ["type": "string"],
                         "target_value": ["type": "string"],
                         "expected_current_value": ["type": "string"],
@@ -137,6 +162,8 @@ extension MCPServer {
                     "required": ["track_name", "insert_slot", "parameter", "target_value"],
                     "additionalProperties": false
                 ],
+                safety: .write,
+                idempotent: true,
                 changesSound: true,
                 handler: MCPServer.handleMcuSetPluginParameter
             ),
@@ -153,6 +180,10 @@ extension MCPServer {
                     "required": ["track_name"],
                     "additionalProperties": false
                 ],
+                // Not read-only: selects the track and enters instrument edit
+                // mode.
+                safety: .write,
+                idempotent: true,
                 handler: MCPServer.handleMcuInstrumentParameters
             ),
             Tool(
@@ -171,6 +202,8 @@ extension MCPServer {
                     "required": ["track_name", "parameter", "target_value"],
                     "additionalProperties": false
                 ],
+                safety: .write,
+                idempotent: true,
                 changesSound: true,
                 handler: MCPServer.handleMcuSetInstrumentParameter
             ),
@@ -178,6 +211,8 @@ extension MCPServer {
                 name: "logic_mcu_status",
                 description: "Read the Mackie Control bridge's mirrored state: LCD text (track names/values as data), fader positions, transport LEDs, timecode display, online status. This is Logic's documented control-surface feedback channel — no UI, no focus, no windows involved. Requires logic-mcu-bridge running and a Mackie Control configured in Logic pointing at the 'Logic MCP MCU' ports.",
                 inputSchema: ["type": "object", "properties": [:], "additionalProperties": false],
+                safety: .readOnly,
+                idempotent: true,
                 handler: MCPServer.handleMcuStatus
             ),
             Tool(
@@ -193,6 +228,9 @@ extension MCPServer {
                     "required": ["track_name"],
                     "additionalProperties": false
                 ],
+                // Not read-only: selects the track and enters the send view.
+                safety: .write,
+                idempotent: true,
                 handler: MCPServer.handleMcuSends
             ),
             Tool(
@@ -203,7 +241,7 @@ extension MCPServer {
                     "properties": [
                         "track_name": ["type": "string"],
                         "track_number": ["type": "integer"],
-                        "send": ["type": "integer", "description": "Send slot 1-8."],
+                        "send": ["type": "integer", "minimum": 1, "maximum": 8, "description": "Send slot 1-8."],
                         "level_db": ["type": "number", "description": "Target level in dB, e.g. -9.0."],
                         "expected_current_value": ["type": "string", "description": "Abort unless the current LCD value matches (e.g. '-9.0dB' or '-9.0')."],
                         "expected_project_path": ["type": "string"]
@@ -211,6 +249,8 @@ extension MCPServer {
                     "required": ["track_name", "send", "level_db"],
                     "additionalProperties": false
                 ],
+                safety: .write,
+                idempotent: true,
                 changesSound: true,
                 handler: MCPServer.handleMcuSetSend
             ),
@@ -249,6 +289,10 @@ extension MCPServer {
                     "required": ["track_name", "points"],
                     "additionalProperties": false
                 ],
+                // Destructive: a Latch pass OVERWRITES any existing curve across
+                // the range.
+                safety: .destructive,
+                idempotent: true,
                 handler: MCPServer.handleRecordAutomation
             ),
             Tool(
@@ -265,12 +309,25 @@ extension MCPServer {
                             "items": [
                                 "type": "object",
                                 "properties": [
-                                    "pitch": ["description": "MIDI number 0-127 or a name like 'C3' (= MIDI 60, Logic convention), 'F#1', 'Bb2'."],
-                                    "bar": ["type": "integer", "description": "Absolute bar position (1 = project start)."],
+                                    // A UNION type, not a bare description:
+                                    // this property accepts an int or a note
+                                    // name, and several function-calling
+                                    // backends reject a property schema that
+                                    // carries only a description. The numeric
+                                    // bounds constrain the integer branch
+                                    // only - JSON Schema's minimum/maximum
+                                    // ignore a string instance.
+                                    "pitch": [
+                                        "type": ["integer", "string"],
+                                        "minimum": 0,
+                                        "maximum": 127,
+                                        "description": "MIDI number 0-127 or a name like 'C3' (= MIDI 60, Logic convention), 'F#1', 'Bb2'."
+                                    ],
+                                    "bar": ["type": "integer", "minimum": 1, "description": "Absolute bar position (1 = project start)."],
                                     "beat": ["type": "number", "description": "Beat within the bar, 1-based; fractions allowed (1.5 = offbeat). Default 1."],
                                     "duration_beats": ["type": "number", "description": "Length in beats. Default 1."],
-                                    "velocity": ["type": "integer", "description": "1-127, default 100."],
-                                    "channel": ["type": "integer", "description": "MIDI channel 1-16, default 1."]
+                                    "velocity": ["type": "integer", "minimum": 1, "maximum": 127, "description": "1-127, default 100."],
+                                    "channel": ["type": "integer", "minimum": 1, "maximum": 16, "description": "MIDI channel 1-16, default 1."]
                                 ],
                                 "required": ["pitch", "bar"]
                             ]
@@ -283,9 +340,9 @@ extension MCPServer {
                                 "properties": [
                                     "bar": ["type": "integer"],
                                     "beat": ["type": "number", "description": "1-based, fractions allowed."],
-                                    "cc": ["type": "integer", "description": "Controller number 0-127."],
-                                    "value": ["type": "integer", "description": "0-127."],
-                                    "channel": ["type": "integer", "description": "1-16, default 1."]
+                                    "cc": ["type": "integer", "minimum": 0, "maximum": 127, "description": "Controller number 0-127."],
+                                    "value": ["type": "integer", "minimum": 0, "maximum": 127, "description": "0-127."],
+                                    "channel": ["type": "integer", "minimum": 1, "maximum": 16, "description": "1-16, default 1."]
                                 ],
                                 "required": ["bar", "cc", "value"]
                             ]
@@ -298,13 +355,13 @@ extension MCPServer {
                                 "properties": [
                                     "bar": ["type": "integer"],
                                     "beat": ["type": "number"],
-                                    "value": ["type": "integer"],
-                                    "channel": ["type": "integer"]
+                                    "value": ["type": "integer", "minimum": -8192, "maximum": 8191],
+                                    "channel": ["type": "integer", "minimum": 1, "maximum": 16]
                                 ],
                                 "required": ["bar", "value"]
                             ]
                         ],
-                        "start_bar": ["type": "integer", "description": "Recording start bar (>= 2); default = the earliest event's bar."],
+                        "start_bar": ["type": "integer", "minimum": 2, "description": "Recording start bar (>= 2); default = the earliest event's bar."],
                         "tempo": ["type": "number", "description": "Override BPM; default reads the control bar."],
                         "beats_per_bar": ["type": "number", "description": "Override meter; default reads the control bar."],
                         "verify_render": ["type": "boolean", "description": "Default true: freeze-render the recorded bars afterwards and return slice metrics as proof."],
@@ -315,6 +372,9 @@ extension MCPServer {
                     "required": ["track_name", "notes"],
                     "additionalProperties": false
                 ],
+                // Additive: a new recorded region. Not idempotent - each call
+                // records another.
+                safety: .write,
                 changesArrangement: true,
                 handler: MCPServer.handleRecordMidi
             ),
@@ -328,12 +388,15 @@ extension MCPServer {
                         "plugin_name": ["type": "string"],
                         "insert_index": ["type": "integer"],
                         "track_number": ["type": "integer"],
-                        "direction": ["type": "string", "description": "'next' (default) or 'previous'."],
+                        "direction": ["type": "string", "enum": ["next", "previous"], "description": "'next' (default) or 'previous'."],
                         "steps": ["type": "integer", "description": "How many presets to step, default 1."]
                     ],
                     "required": ["track_name", "plugin_name"],
                     "additionalProperties": false
                 ],
+                // Relative: stepping again advances further, so never
+                // idempotent.
+                safety: .write,
                 handler: MCPServer.handlePluginPreset
             ),
             Tool(
@@ -348,6 +411,8 @@ extension MCPServer {
                     "required": ["track_name", "new_name"],
                     "additionalProperties": false
                 ],
+                safety: .write,
+                idempotent: true,
                 handler: MCPServer.handleRenameTrack
             ),
             Tool(
@@ -362,6 +427,7 @@ extension MCPServer {
                     "required": ["track_name"],
                     "additionalProperties": false
                 ],
+                safety: .write,
                 handler: MCPServer.handleDuplicateTrack
             ),
             Tool(
@@ -376,6 +442,9 @@ extension MCPServer {
                     "required": ["track_name"],
                     "additionalProperties": false
                 ],
+                // Destructive, and not idempotent: a repeat deletes the NEXT
+                // track of that name.
+                safety: .destructive,
                 handler: MCPServer.handleDeleteTrack
             ),
             Tool(
@@ -390,6 +459,9 @@ extension MCPServer {
                     "required": ["track_name", "destination"],
                     "additionalProperties": false
                 ],
+                // Additive: fills the first EMPTY slot; a repeat adds another
+                // send.
+                safety: .write,
                 handler: MCPServer.handleAddSend
             ),
             Tool(
@@ -398,10 +470,15 @@ extension MCPServer {
                 inputSchema: [
                     "type": "object",
                     "properties": [
-                        "type": ["type": "string", "description": "'software_instrument' (default) or 'audio'."]
+                        "type": [
+                            "type": "string",
+                            "enum": ["software_instrument", "audio"],
+                            "description": "'software_instrument' (default) or 'audio'."
+                        ]
                     ],
                     "additionalProperties": false
                 ],
+                safety: .write,
                 handler: MCPServer.handleCreateTrack
             ),
             Tool(
@@ -414,6 +491,8 @@ extension MCPServer {
                     ],
                     "additionalProperties": false
                 ],
+                safety: .readOnly,
+                idempotent: true,
                 handler: MCPServer.handleListRegions
             ),
             Tool(
@@ -430,6 +509,9 @@ extension MCPServer {
                     "required": ["track_name"],
                     "additionalProperties": false
                 ],
+                // Not read-only: changes the project-wide region selection.
+                safety: .write,
+                idempotent: true,
                 handler: MCPServer.handleSelectRegion
             ),
             Tool(
@@ -445,6 +527,9 @@ extension MCPServer {
                     "required": ["track_name"],
                     "additionalProperties": false
                 ],
+                // Destructive, and not idempotent: a repeat deletes another
+                // region.
+                safety: .destructive,
                 changesArrangement: true,
                 handler: MCPServer.handleDeleteRegion
             ),
@@ -463,6 +548,9 @@ extension MCPServer {
                     "required": ["track_name"],
                     "additionalProperties": false
                 ],
+                // Destructive: a nudged region can overlay and trim its
+                // neighbours. Relative, so not idempotent.
+                safety: .destructive,
                 changesArrangement: true,
                 handler: MCPServer.handleMoveRegion
             ),
@@ -482,6 +570,9 @@ extension MCPServer {
                     "required": ["track_name", "to_bar"],
                     "additionalProperties": false
                 ],
+                // Destructive: the paste can overlay existing regions, and move:
+                // true cuts the source.
+                safety: .destructive,
                 changesArrangement: true,
                 handler: MCPServer.handleCopyRegion
             ),
@@ -491,12 +582,14 @@ extension MCPServer {
                 inputSchema: [
                     "type": "object",
                     "properties": [
-                        "bpm": ["type": "number", "description": "Target tempo, 5-990."],
+                        "bpm": ["type": "number", "minimum": 5, "maximum": 990, "description": "Target tempo, 5-990."],
                         "expected_current_bpm": ["type": "number", "description": "Abort unless the current tempo matches."]
                     ],
                     "required": ["bpm"],
                     "additionalProperties": false
                 ],
+                safety: .write,
+                idempotent: true,
                 handler: MCPServer.handleSetTempo
             ),
             Tool(
@@ -509,6 +602,9 @@ extension MCPServer {
                     ],
                     "additionalProperties": false
                 ],
+                // A repeat answers already_saved; nothing is removed.
+                safety: .write,
+                idempotent: true,
                 handler: MCPServer.handleSaveProject
             ),
             Tool(
@@ -518,11 +614,18 @@ extension MCPServer {
                     "type": "object",
                     "properties": [
                         "path": ["type": "string", "description": "Absolute destination path ending in .logicx; must not already exist."],
-                        "if_current_modified": ["type": "string", "description": "'fail' (default), 'save' or 'dont_save' — what to do with the currently open project's unsaved changes."]
+                        "if_current_modified": [
+                            "type": "string",
+                            "enum": ["fail", "save", "dont_save"],
+                            "description": "'fail' (default), 'save' or 'dont_save' — what to do with the currently open project's unsaved changes."
+                        ]
                     ],
                     "required": ["path"],
                     "additionalProperties": false
                 ],
+                // Destructive: CLOSES the current project, and
+                // if_current_modified 'dont_save' discards its changes.
+                safety: .destructive,
                 handler: MCPServer.handleNewProject
             ),
             Tool(
@@ -532,11 +635,20 @@ extension MCPServer {
                     "type": "object",
                     "properties": [
                         "path": ["type": "string", "description": "Absolute path to an existing .logicx."],
-                        "if_current_modified": ["type": "string", "description": "'fail' (default), 'save' or 'dont_save'."]
+                        "if_current_modified": [
+                            "type": "string",
+                            "enum": ["fail", "save", "dont_save"],
+                            "description": "'fail' (default), 'save' or 'dont_save'."
+                        ]
                     ],
                     "required": ["path"],
                     "additionalProperties": false
                 ],
+                // Destructive for the same reason as logic_new_project;
+                // idempotent because reopening the same path changes nothing
+                // further.
+                safety: .destructive,
+                idempotent: true,
                 handler: MCPServer.handleOpenProject
             ),
             Tool(
@@ -548,10 +660,19 @@ extension MCPServer {
                         "destination_path": ["type": "string", "description": "Optional .logicx path for the copy."],
                         "save_first": ["type": "boolean", "description": "Save the open project before copying so the copy includes unsaved changes. Default false."],
                         "open_copy": ["type": "boolean", "description": "Open the copy after duplicating. Default true."],
-                        "if_current_modified": ["type": "string", "description": "'save' (default here) or 'dont_save' for closing the original when opening the copy."]
+                        // 'fail' is listed because the shared openProject
+                        // guard still honours it; the DEFAULT differs here.
+                        "if_current_modified": [
+                            "type": "string",
+                            "enum": ["fail", "save", "dont_save"],
+                            "description": "'save' (default here) or 'dont_save' for closing the original when opening the copy."
+                        ]
                     ],
                     "additionalProperties": false
                 ],
+                // Destructive: opening the copy closes the original, with the
+                // same discard choice.
+                safety: .destructive,
                 handler: MCPServer.handleDuplicateProject
             ),
             Tool(
@@ -560,12 +681,18 @@ extension MCPServer {
                 inputSchema: [
                     "type": "object",
                     "properties": [
-                        "saving": ["type": "string", "description": "'yes' saves before closing; 'no' discards unsaved changes."],
+                        "saving": [
+                            "type": "string",
+                            "enum": ["yes", "no"],
+                            "description": "'yes' saves before closing; 'no' discards unsaved changes."
+                        ],
                         "expected_project_path": ["type": "string"]
                     ],
                     "required": ["saving"],
                     "additionalProperties": false
                 ],
+                // Destructive: saving 'no' throws unsaved work away.
+                safety: .destructive,
                 handler: MCPServer.handleCloseProject
             ),
             Tool(
@@ -575,10 +702,25 @@ extension MCPServer {
                     "type": "object",
                     "properties": [
                         "relearn": ["type": "boolean", "description": "Force re-learning of every standard command even when an assignment is already shown. Repairs bindings orphaned by MIDI-port changes. Default false."],
-                        "commands": ["type": "array", "items": ["type": "string"], "description": "Limit to these standard command names (default: all)."]
+                        // Enumerated FROM the registry, never a copy of it:
+                        // the handler filters against exactly this list and
+                        // refuses when nothing matches, so a hand-kept
+                        // duplicate here could only ever drift out of date.
+                        "commands": [
+                            "type": "array",
+                            "items": [
+                                "type": "string",
+                                "enum": KeyCommandRegistry.standardCommands.map(\.name)
+                            ],
+                            "description": "Limit to these standard command names (default: all)."
+                        ]
                     ],
                     "additionalProperties": false
                 ],
+                // Additive to the user's key command set, and idempotent by
+                // construction.
+                safety: .write,
+                idempotent: true,
                 handler: MCPServer.handleSetupKeyCommands
             ),
             Tool(
@@ -587,12 +729,18 @@ extension MCPServer {
                 inputSchema: [
                     "type": "object",
                     "properties": [
+                        // No enum on `name`: the registry also holds whatever
+                        // the user learned beyond the standard set, and the
+                        // handler resolves against that live file.
                         "name": ["type": "string", "description": "Registered command name, e.g. 'Toggle Track Freeze'."],
-                        "note": ["type": "integer", "description": "MIDI note of a registered command."],
-                        "channel": ["type": "integer", "description": "MIDI channel, default 16."]
+                        "note": ["type": "integer", "minimum": 0, "maximum": 127, "description": "MIDI note of a registered command."],
+                        "channel": ["type": "integer", "minimum": 1, "maximum": 16, "description": "MIDI channel, default 16."]
                     ],
                     "additionalProperties": false
                 ],
+                // Destructive: the registry holds Delete, Cut and Delete Track -
+                // the effect is whatever the caller names.
+                safety: .destructive,
                 handler: MCPServer.handleTriggerKeyCommand
             ),
             Tool(
@@ -613,6 +761,8 @@ extension MCPServer {
                     "required": ["track_name"],
                     "additionalProperties": false
                 ],
+                // Freezes and unfreezes the track; a new file per call.
+                safety: .write,
                 handler: MCPServer.handleRenderTrack
             ),
             Tool(
@@ -621,18 +771,31 @@ extension MCPServer {
                 inputSchema: [
                     "type": "object",
                     "properties": [
-                        "cmd": ["type": "string"],
-                        "button": ["type": "string"],
+                        // The daemon's whole vocabulary, taken FROM the shared
+                        // enum so the two can never drift. A few of these
+                        // (await, converge, midi_stream) carry arguments this
+                        // schema has no properties for and additionalProperties
+                        // is false — they are listed because the daemon
+                        // accepts them, not because they are useful here.
+                        "cmd": ["type": "string", "enum": BridgeCommandName.allCases.map(\.rawValue).sorted()],
+                        "button": ["type": "string", "enum": buttonNames.keys.sorted()],
+                        // NO bounds on channel: the accepted range depends on
+                        // cmd (0-7 for select/mute/solo, 0-8 for fader, 1-16
+                        // for keycmd), and one schema range would refuse calls
+                        // the daemon accepts.
                         "channel": ["type": "integer"],
-                        "index": ["type": "integer"],
-                        "value": ["type": "integer"],
-                        "delta": ["type": "integer"],
-                        "note": ["type": "integer"],
-                        "bytes": ["type": "array", "items": ["type": "integer"]]
+                        "index": ["type": "integer", "minimum": 0, "maximum": 7, "description": "Vpot/channel-strip index 0-7."],
+                        "value": ["type": "integer", "minimum": 0, "maximum": 16383, "description": "14-bit fader value 0-16383."],
+                        "delta": ["type": "integer", "description": "Vpot ticks, positive = clockwise; magnitudes above 63 are clamped."],
+                        "note": ["type": "integer", "minimum": 0, "maximum": 127],
+                        "bytes": ["type": "array", "items": ["type": "integer", "minimum": 0, "maximum": 255]]
                     ],
                     "required": ["cmd"],
                     "additionalProperties": false
                 ],
+                // Destructive: a raw byte stream to the control surface can do
+                // anything Logic exposes.
+                safety: .destructive,
                 handler: MCPServer.handleMcuCommand
             ),
             Tool(
@@ -642,18 +805,28 @@ extension MCPServer {
                     "type": "object",
                     "properties": [
                         "path": ["type": "string", "description": "Absolute path to a local audio file (AIFF/WAV/etc)."],
-                        "start_seconds": ["type": "number", "description": "Offset into the file, default 0."],
-                        "duration_seconds": ["type": "number", "description": "Clip length, default 8, max 20."]
+                        "start_seconds": ["type": "number", "minimum": 0, "description": "Offset into the file, default 0."],
+                        // 20 s is the ceiling the handler clamps to and the
+                        // description already promises; making it machine-
+                        // readable turns a silently shortened clip into an
+                        // argument error the model can act on.
+                        "duration_seconds": ["type": "number", "minimum": 0, "maximum": 20, "description": "Clip length, default 8, max 20."]
                     ],
                     "required": ["path"],
                     "additionalProperties": false
                 ],
+                // Read-only: reads a file the caller already has. The clip it
+                // writes is its own result artifact - see ToolSafety.readOnly.
+                safety: .readOnly,
+                idempotent: true,
                 handler: MCPServer.handleGetAudioClip
             ),
             Tool(
                 name: "logic_get_transport",
                 description: "Read the transport state from the control bar: playing, recording, cycle, playhead bar/beat, tempo, time signature, key signature, metronome, count-in. Read-only. Fields whose control bar element is missing are null.",
                 inputSchema: ["type": "object", "properties": [:], "additionalProperties": false],
+                safety: .readOnly,
+                idempotent: true,
                 handler: MCPServer.handleGetTransport
             ),
             Tool(
@@ -667,6 +840,8 @@ extension MCPServer {
                     "required": ["enabled"],
                     "additionalProperties": false
                 ],
+                safety: .write,
+                idempotent: true,
                 handler: MCPServer.handleSetCycle
             ),
             Tool(
@@ -680,6 +855,8 @@ extension MCPServer {
                     "required": ["playing"],
                     "additionalProperties": false
                 ],
+                safety: .write,
+                idempotent: true,
                 handler: MCPServer.handleSetPlaying
             ),
             Tool(
@@ -694,6 +871,8 @@ extension MCPServer {
                     "required": ["bar"],
                     "additionalProperties": false
                 ],
+                safety: .write,
+                idempotent: true,
                 handler: MCPServer.handleSetPlayhead
             ),
             Tool(
@@ -709,6 +888,8 @@ extension MCPServer {
                     "required": ["start_bar", "end_bar"],
                     "additionalProperties": false
                 ],
+                safety: .write,
+                idempotent: true,
                 handler: MCPServer.handleSetCycleRange
             ),
             Tool(
@@ -724,6 +905,9 @@ extension MCPServer {
                     "required": ["track_name"],
                     "additionalProperties": false
                 ],
+                // Not read-only: changes the track selection.
+                safety: .write,
+                idempotent: true,
                 handler: MCPServer.handleSelectTrack
             ),
             Tool(
@@ -740,6 +924,8 @@ extension MCPServer {
                     "required": ["track_name", "expanded"],
                     "additionalProperties": false
                 ],
+                safety: .write,
+                idempotent: true,
                 handler: MCPServer.handleSetTrackStack
             ),
             Tool(
@@ -754,6 +940,9 @@ extension MCPServer {
                     "required": ["track_name"],
                     "additionalProperties": false
                 ],
+                // Not read-only: opens and closes plugin windows.
+                safety: .write,
+                idempotent: true,
                 handler: MCPServer.handleSurveyPlugins
             ),
             Tool(
@@ -772,6 +961,9 @@ extension MCPServer {
                     "required": ["track_name", "plugin_name"],
                     "additionalProperties": false
                 ],
+                // Additive: fills the first EMPTY slot; a repeat adds another
+                // instance.
+                safety: .write,
                 handler: MCPServer.handleAddPlugin
             ),
             Tool(
@@ -790,6 +982,10 @@ extension MCPServer {
                     "required": ["track_name", "plugin_name"],
                     "additionalProperties": false
                 ],
+                // Destructive: the plugin and its settings go. Idempotent: the
+                // target state is 'absent'.
+                safety: .destructive,
+                idempotent: true,
                 handler: MCPServer.handleRemovePlugin
             ),
             Tool(
@@ -805,6 +1001,8 @@ extension MCPServer {
                     "required": ["track_name", "enabled"],
                     "additionalProperties": false
                 ],
+                safety: .write,
+                idempotent: true,
                 changesSound: true,
                 handler: MCPServer.handleSetTrackMute
             ),
@@ -821,6 +1019,8 @@ extension MCPServer {
                     "required": ["track_name", "enabled"],
                     "additionalProperties": false
                 ],
+                safety: .write,
+                idempotent: true,
                 changesSound: true,
                 handler: MCPServer.handleSetTrackSolo
             ),
@@ -838,6 +1038,8 @@ extension MCPServer {
                     "required": ["track_name", "db"],
                     "additionalProperties": false
                 ],
+                safety: .write,
+                idempotent: true,
                 changesSound: true,
                 handler: MCPServer.handleSetTrackVolume
             ),
@@ -854,6 +1056,8 @@ extension MCPServer {
                     "required": ["track_name", "position"],
                     "additionalProperties": false
                 ],
+                safety: .write,
+                idempotent: true,
                 changesSound: true,
                 handler: MCPServer.handleSetTrackPan
             ),
@@ -871,6 +1075,8 @@ extension MCPServer {
                     "required": ["track_name", "plugin_name"],
                     "additionalProperties": false
                 ],
+                safety: .write,
+                idempotent: true,
                 handler: MCPServer.handleOpenPlugin
             ),
             Tool(
@@ -886,6 +1092,8 @@ extension MCPServer {
                     "required": ["track_name", "plugin_name"],
                     "additionalProperties": false
                 ],
+                safety: .write,
+                idempotent: true,
                 handler: MCPServer.handleClosePlugin
             ),
             Tool(
@@ -899,6 +1107,8 @@ extension MCPServer {
                     "required": ["window_title"],
                     "additionalProperties": false
                 ],
+                safety: .write,
+                idempotent: true,
                 handler: MCPServer.handleClosePluginWindow
             ),
             Tool(
@@ -912,6 +1122,8 @@ extension MCPServer {
                     "required": ["window_title"],
                     "additionalProperties": false
                 ],
+                safety: .readOnly,
+                idempotent: true,
                 handler: MCPServer.handleListPluginParameters
             ),
             Tool(
@@ -928,6 +1140,8 @@ extension MCPServer {
                     "required": ["window_title", "parameter", "expected_current_value", "target_value"],
                     "additionalProperties": false
                 ],
+                safety: .write,
+                idempotent: true,
                 handler: MCPServer.handleSetPluginParameter
             ),
         ]
