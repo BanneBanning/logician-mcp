@@ -145,6 +145,51 @@ extension MCPServer {
         // that nothing in the result would have mentioned. Two reads answer
         // whether such a map exists; see `sampleTempoAgainstProjectStart` for why
         // bar 1 is the second point and what two points cannot prove.
+        //
+        // The Tempo List answers it OUTRIGHT when it can be read (item 3): the
+        // whole map, exactly, with no playhead travel at all — where the sample
+        // costs ~0.13 s per bar between the playhead and bar 1. So the map is
+        // tried first, and the sample is only the fallback.
+        let resolvedMap = resolveTempoMap()
+        if let map = resolvedMap.map, map.source == .tempoList {
+            if !map.isConstant {
+                throw LogicianError.tempoMapUnsafe(
+                    operation: "logic_set_tempo",
+                    detail: "the project has a TEMPO MAP — Logic's Tempo List holds"
+                        + " \(map.events.count) tempo events"
+                        + " (\(map.tempos.map(formattedBPM).joined(separator: ", ")) BPM), read row"
+                        + " by row out of the Tempo tab of the List Editors. This tool writes ONE"
+                        + " slider, and that slider shows and sets the tempo AT THE PLAYHEAD, so"
+                        + " on a mapped project it would edit whichever tempo node the playhead"
+                        + " sits on instead of the project tempo — and which node Logic edits, or"
+                        + " whether it creates a new one, has not been verified from here."
+                        + " NOTHING was written. Change the tempo where the map lives: Logic's"
+                        + " tempo track, or the Tempo List (View > List Editors > Tempo), where"
+                        + " every tempo event is an editable row. There is deliberately no"
+                        + " override argument — parking the playhead and passing"
+                        + " expected_current_bpm would still be a single-slider write with"
+                        + " unverified semantics, so it is not offered as a workaround."
+                )
+            }
+            let landed = try logic.setTempo(targetBpm)
+            // The write moved a tempo node; whatever the cache holds describes
+            // the map as it was BEFORE it.
+            invalidateTempoMapCache()
+            return [
+                "success": true,
+                "verified": true,
+                "before_bpm": currentBpm.map { $0 as Any } ?? NSNull() as Any,
+                "bpm": landed,
+                "write_route": "control_bar_tempo_slider",
+                "tempo_map": [
+                    "source": "tempo_list",
+                    "events": map.events.count,
+                    "tempos": map.tempos,
+                    "constant": true
+                ],
+                "note": "Whole-BPM resolution (the slider steps 1 BPM). Logic's Tempo List was read and holds a single tempo, so this write set the project tempo rather than one node of a map. No playhead was moved."
+            ]
+        }
         let tempoSample = logic.sampleTempoAgainstProjectStart()
         if let span = tempoSample.span, !span.isConstant {
             throw LogicianError.tempoMapUnsafe(
@@ -164,6 +209,9 @@ extension MCPServer {
             )
         }
         let landed = try logic.setTempo(targetBpm)
+        // Same reason as above: a tempo write can have edited a node of a map
+        // that a later call would otherwise read out of the cache.
+        invalidateTempoMapCache()
         var result: [String: Any] = [
             "success": true,
             "verified": true,
@@ -172,6 +220,9 @@ extension MCPServer {
             "write_route": "control_bar_tempo_slider",
             "note": "Whole-BPM resolution (the slider steps 1 BPM). Refuses when a tempo map is detected: the slider is position-dependent, so on a mapped project it edits one tempo node rather than the project tempo."
         ]
+        if let failure = resolvedMap.failure {
+            result["tempo_map_read"] = "unavailable: \(failure.reason)"
+        }
         if let span = tempoSample.span {
             // What was actually checked, in bars — two agreeing points are
             // evidence of a constant tempo, not proof of one.

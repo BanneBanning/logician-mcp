@@ -121,10 +121,20 @@ extension MCPServer {
     }
 
     /// Bar positions → seconds from project start (freeze renders begin at
-    /// bar 1), from an already-resolved tempo and meter. Pure and unit-tested:
-    /// this is the one place the constant-tempo assumption is actually made.
+    /// bar 1), from an already-resolved tempo and meter. Pure and unit-tested.
+    ///
+    /// With a `map` READ from Logic's Tempo List this integrates the map
+    /// piecewise and is correct under a tempo track. Without one it is the
+    /// constant-tempo formula that has always been here — the same arithmetic,
+    /// down to the operation order, so a project with no readable map takes
+    /// bit-for-bit the same path it did before tempo maps existed.
+    ///
+    /// The METER is still one number. Logic's signature changes live in their own
+    /// list and this server does not read them, so a project whose meter changes
+    /// mid-song still gets bar boundaries from one beats-per-bar. That
+    /// assumption is unchanged, and now it is the only one left.
     static func barRangeSeconds(
-        startBar: Int, endBar: Int, tempo: Double, beatsPerBar: Double
+        startBar: Int, endBar: Int, tempo: Double, beatsPerBar: Double, map: TempoMap? = nil
     ) throws -> (start: Double, end: Double, tempo: Double, beatsPerBar: Double) {
         guard startBar >= 1, endBar > startBar else {
             throw LogicianError.invalidArguments("need start_bar >= 1 and end_bar > start_bar")
@@ -134,11 +144,92 @@ extension MCPServer {
                 "need a positive tempo and beats_per_bar for bar math (got \(tempo) BPM, \(beatsPerBar) beats/bar)"
             )
         }
+        if let map, map.source == .tempoList {
+            let integrated = map.rangeSeconds(
+                startBar: startBar, endBar: endBar, beatsPerBar: beatsPerBar
+            )
+            return (integrated.start, integrated.end, tempo, beatsPerBar)
+        }
         let secondsPerBar = beatsPerBar * 60.0 / tempo
         return (
             Double(startBar - 1) * secondsPerBar,
             Double(endBar - 1) * secondsPerBar,
             tempo, beatsPerBar
+        )
+    }
+
+    // MARK: - Tempo map: acquisition, caching, and what one invocation knows
+
+    /// Where the read tempo map is cached, per project.
+    static var tempoMapCacheURL: URL {
+        MCUBridge.directory.appendingPathComponent("tempo-map-cache.json")
+    }
+
+    /// Forgets the cached tempo map. Called after anything that can rewrite the
+    /// map behind our back: a `logic_set_tempo` write (the slider edits whichever
+    /// tempo node the playhead sits on), and any recording made while the Smart
+    /// Tempo project mode was not verifiably Keep (Adapt REWRITES the map). A
+    /// cache that outlives the map it describes is worse than no cache: it is
+    /// confidently wrong, which is the one failure mode this server exists to
+    /// prevent.
+    func invalidateTempoMapCache() {
+        try? FileManager.default.removeItem(at: MCPServer.tempoMapCacheURL)
+    }
+
+    /// The project's tempo map, read from the Tempo List and cached per project.
+    ///
+    /// Only SUCCESS is cached: a read that failed (pane not found, rows
+    /// unreadable, a row count that disagreed with the list's own item count)
+    /// must be retried next time rather than remembered as "this project has no
+    /// map". The cache exists because the read costs ~2 s of UI toggling and one
+    /// tool invocation can want the answer more than once.
+    /// A cached map is only used when the control bar still agrees with it.
+    ///
+    /// The cache's real risk is not our own writes (those invalidate it
+    /// explicitly) but the USER editing the tempo track in Logic between two
+    /// tool calls — a stale map would integrate confidently wrong boundaries,
+    /// which is the one failure mode this server exists to prevent. The control
+    /// bar publishes the tempo at the playhead for free (no playhead motion, no
+    /// pane to open), so every cache hit is checked against it and a tempo the
+    /// map cannot account for discards the cache. What that catches and what it
+    /// cannot is documented on `TempoMap.couldProduceTempo`.
+    func resolveTempoMap() -> (map: TempoMap?, failure: TempoListFailure?) {
+        let projectPath = try? logic.projectDocumentPath()
+        if let cached = loadScopedCache(
+            MCPServer.tempoMapCacheURL, projectPath: projectPath, as: TempoMap.self
+        ) {
+            let live = logic.controlBarTempo()
+            if live == nil || cached.couldProduceTempo(live ?? 0) {
+                return (cached, nil)
+            }
+            invalidateTempoMapCache()
+        }
+        let read = logic.readTempoMap()
+        if let map = read.map {
+            saveScopedCache(map, to: MCPServer.tempoMapCacheURL, projectPath: projectPath)
+        }
+        return (read.map, read.failure)
+    }
+
+    /// What this invocation knows about the tempo across `startBar`–`endBar`:
+    /// the map when the Tempo List can be read, the two-point sample when it
+    /// cannot. AT MOST ONE of the two is paid for — the sample's playhead travel
+    /// (~0.13 s per bar) is skipped entirely once the map is known, which also
+    /// means the playhead is not touched at all on a project with a readable map.
+    func resolveTempoKnowledge(
+        startBar: Int, endBar: Int, beatsPerBar: Double
+    ) -> TempoKnowledge {
+        let resolved = resolveTempoMap()
+        if resolved.map != nil {
+            return TempoKnowledge(
+                startBar: startBar, endBar: endBar, beatsPerBar: beatsPerBar,
+                map: resolved.map, mapFailure: nil, sample: nil
+            )
+        }
+        return TempoKnowledge(
+            startBar: startBar, endBar: endBar, beatsPerBar: beatsPerBar,
+            map: nil, mapFailure: resolved.failure,
+            sample: logic.sampleTempoAcross(startBar: startBar, endBar: endBar)
         )
     }
 
@@ -174,20 +265,8 @@ extension MCPServer {
         return (lastBeat, max(startBar + Int((lastBeat / meter).rounded(.up)), startBar + 1))
     }
 
-    /// The convenience the tools use: resolve, then convert. Tempo and meter
-    /// come from the control bar unless overridden; constant tempo is assumed
-    /// (tempo-track changes are not followed), which is exactly what the
-    /// two-point sample at each call site exists to detect and report.
-    func barRangeSeconds(
-        logic: LogicAccessibility, startBar: Int, endBar: Int, arguments: [String: Any]
-    ) throws -> (start: Double, end: Double, tempo: Double, beatsPerBar: Double) {
-        guard startBar >= 1, endBar > startBar else {
-            throw LogicianError.invalidArguments("need start_bar >= 1 and end_bar > start_bar")
-        }
-        let resolved = try resolveTempoAndMeter(logic: logic, arguments: arguments)
-        return try MCPServer.barRangeSeconds(
-            startBar: startBar, endBar: endBar,
-            tempo: resolved.tempo, beatsPerBar: resolved.beatsPerBar
-        )
-    }
 }
+// The "resolve tempo and meter, then convert" convenience that used to live
+// here is gone: every caller now resolves the tempo and meter ITSELF, because
+// it needs them for `resolveTempoKnowledge` in the same breath, and calling
+// the convenience afterwards read the control bar a second time.

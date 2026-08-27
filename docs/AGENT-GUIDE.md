@@ -24,14 +24,16 @@ Run `logic_health` first. It starts the bridge daemon, checks every setup requir
   - **Insert numbering can differ between the planes, and on an output it was observed REVERSED**: on `Stereo Out`, Accessibility listed `Sensor, Limiter, Channel EQ` while MCU slots 1-3 read `Channel EQ, Limiter, Sensor`. Never translate an AX `insert_index` into an MCU `insert_slot`; list with the tool you are about to use (`logic_mcu_plugin_inserts` for the MCU tools).
   - **Ambiguity refuses.** Two strips whose names abbreviate to the same six LCD characters produce `ambiguous` with the cells listed, and nothing is written.
 
-**4. Bars and beats are 1-based; end bars are exclusive.** `start_bar: 5, end_bar: 9` = bars 5–8 (the range ends where bar 9 begins). Beats accept fractions (`beat: 2.5` = the off-beat after 2). Bar 1 = project start. Constant project tempo is assumed for all bar math; read it with `logic_get_transport`.
+**4. Bars and beats are 1-based; end bars are exclusive.** `start_bar: 5, end_bar: 9` = bars 5–8 (the range ends where bar 9 begins). Beats accept fractions (`beat: 2.5` = the off-beat after 2). Bar 1 = project start. Tempo **changes are followed** (the tempo map is read and integrated, see 4b); the project **meter** is still assumed constant for all bar math — signature changes are not read. Read tempo and meter with `logic_get_transport`.
 
-**4b. Under a tempo map, prefer the tools that hand Logic the bar numbers.** Two families of tools take bars, and they behave differently on a project with tempo changes:
+**4b. Tempo maps are read and integrated; the fallback still warns.** Two families of tools take bars:
 
-  - **Logic interprets the bars** — `logic_bounce_range`, `logic_evaluate_change` methods `bounce`/`solo_bounce`, `logic_set_cycle_range`, the region tools. Correct under any tempo map, always. Nothing to check, nothing to warn about.
-  - **Logician slices seconds itself** — `logic_render_track`'s bar-range slice, `logic_evaluate_change` method `render`, `logic_record_midi`'s note placement and verification slice. These convert bars with `(bar − 1) × beats × 60/BPM` from ONE tempo reading, which is wrong from a project's first tempo change onward.
+  - **Logic interprets the bars** — `logic_bounce_range`, `logic_evaluate_change` methods `bounce`/`solo_bounce`, `logic_set_cycle_range`, the region tools. Correct under any tempo map, always. Nothing to read, nothing to warn about.
+  - **Logician converts bars to seconds itself** — `logic_render_track`'s bar-range slice, `logic_evaluate_change` method `render`, `logic_record_midi`'s note placement and verification slice, `logic_record_automation`'s point placement. These now read the project's **tempo map** out of Logic's Tempo List (`View > List Editors > Tempo`: one row per tempo event, position + BPM) and **integrate it piecewise** — exact for step tempo changes, and reported back in a `tempo_map` block. The read costs ~2 s, moves **no** playhead, and is cached per project (invalidated by `logic_set_tempo`, by any recording whose Smart Tempo mode was not verifiably Keep, and whenever the control bar reports a tempo the cached map cannot account for — so editing a tempo in Logic between calls does not leave a stale map behind).
 
-The control bar shows the tempo *at the playhead*, so the second family now checks itself: it parks the playhead at the range's first bar, reads the tempo, parks at the last bar, reads again, and puts the playhead back (roughly 0.13 s per bar of playhead travel — measured; a range far from the playhead costs a few seconds). When the two readings differ you get a `warning` naming both, or a `precondition_failed` refusal where a warning would not be enough (`method: "render"`, and `speed > 1` on `logic_record_midi`). When the check itself cannot run, the result says *that* instead of pretending it passed. Two agreeing readings are evidence, not proof: a map that returns to its old value between the sample points reads as constant.
+Two honest limits remain on the read. **Tempo curves** (two points joined by a continuous ramp) are not distinguishable in the Tempo List — it publishes only Position, Tempo and SMPTE Position — so a curve is integrated as a step; when a range could be affected the `warning` says by how many ms. And the **meter** is still one number.
+
+When the Tempo List cannot be read at all, the pre-map behavior is the fallback: the tool parks the playhead at the range's first bar, reads the control-bar tempo, parks at the last bar, reads again, and restores (~0.13 s per bar of travel). Differing readings then give a `warning` naming both, or a `precondition_failed` refusal where a warning would not be enough (`method: "render"`, and `speed > 1` on `logic_record_midi`). Two agreeing readings are evidence, not proof: a map that returns to its old value between the sample points reads as constant.
 
 **5. Single-project mode.** Opening/creating a project closes the current one. If the current project has unsaved changes you MUST pass `if_current_modified: "save"` or `"dont_save"` — an explicit decision, otherwise the call refuses. Nothing ever saves except `logic_save_project` (and lifecycle calls where you explicitly chose saving).
 
@@ -41,7 +43,7 @@ The control bar shows the tempo *at the playhead*, so the second family now chec
 
 **8. Values follow the control's own units.** Volume/sends in dB; pan −64..+63 (0 center); plugin parameters in whatever the LCD shows (read them first). New sends start at −∞ dB — set a level after creating one. Numeric convergence lands within the control's step size (typically ±0.1 dB, ratios ±0.1).
 
-**9. Real time is real.** MIDI recording and automation recording play through the actual timeline (bars × beats × 60/BPM seconds, roughly doubled with verification). `logic_record_midi` accepts `speed: 2..8` to record at raised tempo (auto-restored) when you don't need to hear the take — refused when a tempo map is detected, because restoring one BPM cannot restore a map. Renders/bounces are offline and fast (~4–6 s regardless of length).
+**9. Real time is real.** MIDI recording and automation recording play through the actual timeline (bars × beats × 60/BPM seconds, roughly doubled with verification). `logic_record_midi` accepts `speed: 2..8` to record at raised tempo (auto-restored) when you don't need to hear the take — still refused on a non-constant tempo, because restoring one BPM cannot restore a map (that refusal does not soften with a readable map; the map tells us the take's timing, not how to put a slider write back). Renders/bounces are offline and fast (~4–6 s regardless of length).
 
 **10. Warm paths are faster.** Consecutive `logic_mcu_set_plugin_parameter` calls on the same track+slot skip setup (~1.6 s vs ~4 s cold). Batch your parameter work per plugin.
 
@@ -109,7 +111,7 @@ Every successful result carries the same four fields, and they mean different th
 ## Error taxonomy
 
 - `not_found` / `not_exposed` — the target does not exist or is not reachable; the message lists what IS visible. Check names/slots.
-- `precondition_failed` — a precondition for the write was not met; nothing was written. Usually your `expected_current_value` did not match reality — re-read and decide. It is also the code for the project-state guards: an Adapt/Auto Smart Tempo mode (`logic_record_midi`), a detected tempo map (`logic_set_tempo`, `logic_evaluate_change` method `render`, `logic_record_midi` with `speed > 1`), and an MCU display left in SMPTE mode. Those messages name the fix or the alternative tool; that is the next step, not a retry.
+- `precondition_failed` — a precondition for the write was not met; nothing was written. Usually your `expected_current_value` did not match reality — re-read and decide. It is also the code for the project-state guards: an Adapt/Auto Smart Tempo mode (`logic_record_midi`), a non-constant tempo where it cannot be worked around (`logic_set_tempo`, `logic_record_midi` with `speed > 1`, and `logic_evaluate_change` method `render` *only when the tempo map could not be read*), and an MCU display left in SMPTE mode. Those messages name the fix or the alternative tool; that is the next step, not a retry.
 - `ambiguous` — multiple candidates matched; the message lists them. Disambiguate (track_number, start_bar). For a headerless strip there is no number to pass: the message lists the LCD cells that matched, and the fix is a rename.
 - `verification_failed` — the write happened but Logic's feedback did not confirm; the message says what was observed and whether state was restored. Treat the operation as suspect, re-read before continuing.
 - `invalid_arguments` — schema-level problem; fix the call.
@@ -174,7 +176,7 @@ Parameters:
 
 Run one complete closed-loop mix evaluation around exactly one verified plugin-parameter change, on a bar range. Three methods: 'render' (two dialog-free freeze renders of the SINGLE track, compared on the sliced bar range — fastest and most isolated; needs insert_slot, the MCU physical slot, and works for all plugins including third-party), 'bounce' (two offline MASTER renders via the bounce dialog, needs plugin_name), and 'solo_bounce' (two offline bounces with ONLY this track soloed, solo restored after; needs insert_slot like 'render' — use for tracks freeze refuses: stack subtracks and tracks sharing a channel strip). All methods roll the change back by default, return baseline/after audio paths, metrics and dB deltas, and CARRY both versions as audio content blocks.
 
-**Tempo guard (method `render` only).** `render` cuts both compared slices out of a freeze render using constant-tempo bar math, so under a tempo map the baseline slice and the changed slice cover *different music* — and the dB delta would report that difference as if the plugin had caused it. The tool therefore samples the tempo at both ends of the range before anything is selected or written, and **refuses with `precondition_failed`** when the readings differ, naming `bounce` (offline master A/B) and `solo_bounce` (soloed offline A/B) as the alternatives. Those two hand Logic the bar numbers, so they are correct under any tempo map and are never sampled — switching method is the whole fix. When the sample itself cannot run, the A/B proceeds and the result carries a `warning` saying the check went unverified: a failed check must not break an evaluation that works.
+**Tempo (method `render` only).** `render` cuts both compared slices out of a freeze render itself, so under a tempo map constant-tempo math would make the baseline slice and the changed slice cover *different music* — and the dB delta would report that difference as if the plugin had caused it. So the tool reads the project's tempo map out of the Tempo List first and **integrates** it: both slices then cover the same bars and the A/B is sound on a mapped project (the result reports the map in `tempo_map`, and a `warning` if a tempo curve could have moved the boundaries). Only when the Tempo List cannot be read does it fall back to sampling the tempo at both ends of the range and **refusing with `precondition_failed`** if the readings differ, naming `bounce` (offline master A/B) and `solo_bounce` (soloed offline A/B) as the alternatives. Those two hand Logic the bar numbers, so they are correct under any tempo map and read no tempo at all. When the sample itself cannot run, the A/B proceeds and the result carries a `warning` saying the check went unverified: a failed check must not break an evaluation that works.
 
 Parameters:
 
@@ -191,7 +193,7 @@ Parameters:
   - `settle_seconds` (number): Extra settle time after each phase, default 2.
   - `start_bar` (integer) **(required)**
   - `target_value` (string) **(required)**
-  - `tempo` (number): Override BPM for bar math (method 'render'); default reads the control bar. Constant tempo assumed — and checked (see the tempo guard above).
+  - `tempo` (number): Override BPM for bar math (method 'render'); default reads the control bar. Used only when the tempo map cannot be read (see the tempo section above); constant *meter* is still assumed.
   - `track_name` (string) **(required)**
   - `verify_rollback` (boolean): Measure a third control window after rollback (default false; rollback accuracy has been verified at ~0.0 dB residual repeatedly).
 
@@ -287,6 +289,8 @@ Parameters:
 
 Write an automation curve on a track — volume (absolute fader), pan, a send level (send: 1-8) or ANY plugin parameter (insert_slot + plugin_parameter) — with no mouse and no automation-lane clicking. The value scale follows the parameter: dB for volume/sends, -64..63 for pan, the plugin's own units otherwise. Mechanism: calibrate the control near the working range, switch the track to Latch over the control surface, roll playback placing calibrated moves at each musical moment, return to Read, restore the original value, and verify by REPLAYING the range while sampling Logic's own echo at every point. ramp (default true) interpolates between points. Points need bar >= 2. Takes real time (the automated range, twice with verify)
 
+**Tempo map.** Each point's musical moment, the pre-roll bar's length and the per-point convergence budgets are integrated over the project's tempo map (read from Logic's Tempo List, cached, no playhead movement; reported in `tempo_map`), so a curve that crosses a tempo change lands on the beats you asked for. Without a readable map it falls back to one `msPerBeat` from the control bar. The verification is bar-based either way — it chases the playhead — so it is the proof the points landed, not a restatement of the same math.
+
 Parameters:
 
   - `parameter` (string): v1: 'volume' only.
@@ -308,11 +312,12 @@ Compose MIDI into the project with ZERO dialogs and no files: notes are streamed
 
 The fix the refusal names: set the project tempo mode to KEEP — click the tempo display in the LCD (the small Project Tempo pop-up under the tempo), or File → Project Settings → Smart Tempo. `logic_get_transport` reports `project_tempo_mode` when it is readable, and `project_tempo_mode_note` explaining why when it is not.
 
-**Tempo map guard.** Separate from Smart Tempo, and about *reading* the tempo rather than Logic rewriting it: notes are placed by `bars × beats × 60/BPM` from one tempo reading, so a project with tempo changes puts them off the grid. The tempo is sampled at the take's first and last bar (once per call — the verification render reuses the same answer) and:
+**Tempo map handling.** Separate from Smart Tempo, and about *reading* the tempo rather than Logic rewriting it. Every note's ms offset is the **integral of the project's tempo map** from the take's first bar line to that note, with the map read out of Logic's Tempo List (once per call — the verification render shares the same answer, and no playhead is moved). A take that crosses a tempo change therefore lands on the grid, and the result reports the map in `tempo_map`. When the Tempo List cannot be read, the pre-map behavior is the fallback — one `msPerBeat` from one control-bar reading, plus the two-point sample:
 
-  - **readings differ** → records anyway at speed 1, with a `warning` naming both readings; the notes are on the timeline but their positions drift from the first tempo change onward. Quantize, or record shorter takes between tempo changes.
-  - **readings differ AND `speed` > 1** → refuses with `precondition_failed`, nothing recorded. Speed mode raises the control bar's tempo slider for the take and writes a *single* BPM back afterwards, which cannot restore a tempo map — it would flatten whichever node it touched. Re-run without `speed`.
-  - **check could not run** → records, with a `warning` saying the tempo constancy went unverified.
+  - **map read, more than one tempo** → records at speed 1 with the offsets integrated; the `warning` names the map and, if a tempo *curve* could have moved the timing, by how much.
+  - **`speed` > 1 on a non-constant tempo** → refuses with `precondition_failed`, nothing recorded — with or without a readable map. Speed mode raises the control bar's tempo slider for the take and writes a *single* BPM back afterwards, which cannot restore a tempo map. Re-run without `speed`.
+  - **map unreadable, sampled readings differ** → records anyway at speed 1, with a `warning` naming both readings and why the map could not be read; the notes are on the timeline but their positions drift from the first tempo change onward. Quantize, or record shorter takes between tempo changes.
+  - **map unreadable and the sample could not run** → records, with a `warning` saying the tempo went unverified.
 
 Both guards can fire at once, and then the result's `warning` carries both, joined by `ALSO:`.
 
@@ -326,7 +331,7 @@ Parameters:
   - `speed` (number): Optional fast mode: record at speed x tempo (1-8, default 1) and scale event times — same bar positions in a fraction of the wall time. Default 1 keeps real-time recording so the take is audible as it happens; higher speeds trade timing precision (jitter scales with speed) and chipmunked monitoring.
   - `start_bar` (integer): Recording start bar (>= 2); default = the earliest event's bar.
   - `sync_compensation_ms` (number): Timecode display latency compensated in the beat-edge sync, default 45 ms (measured). Raise if notes land early, lower if late.
-  - `tempo` (number): Override BPM; default reads the control bar. An override does not switch the tempo-map check off — a project with tempo changes still warns.
+  - `tempo` (number): Override BPM; default reads the control bar. Used only when the tempo map cannot be read, and it never switches the tempo checks off.
   - `track_name` (string) **(required)**: Software instrument track to record onto (not a track stack).
   - `track_number` (integer)
   - `verify_render` (boolean): Default true: freeze-render the recorded bars afterwards and return slice metrics as proof.
@@ -446,9 +451,11 @@ Parameters:
 
 Set the project tempo in BPM via the control bar's tempo display (rapid-fire stepwise converge, ~1.3 s per 120 BPM of distance). Whole-BPM resolution. Compare-and-set with expected_current_bpm.
 
-**Tempo map guard.** The display this tool writes shows and sets the tempo **at the playhead**. On a project with a tempo track, a single write to it therefore edits whichever tempo node the playhead happens to sit on — an edit to the user's tempo map that no result would have mentioned. So the tool samples the tempo at the playhead and at **bar 1** (the project's first tempo node, the one point every project has) and **refuses with `precondition_failed`** when they differ. `tempo_sampled_at_bars` in the result says which two bars were compared; when the check cannot run the write proceeds with a `warning` telling you to check the tempo track.
+**Tempo map guard.** The display this tool writes shows and sets the tempo **at the playhead**. On a project with a tempo track, a single write to it therefore edits whichever tempo node the playhead happens to sit on — an edit to the user's tempo map that no result would have mentioned. So the tool reads the project's tempo map out of Logic's Tempo List and **refuses with `precondition_failed`** when it holds more than one tempo. That read costs ~2 s, moves **no playhead**, and is exact: it names how many tempo events the project has.
 
-There is deliberately **no override argument**, and "park the playhead somewhere deliberate and pass `expected_current_bpm`" is *not* offered as a workaround: which node Logic edits — or whether it creates a new one — has not been verified from here, so it would be a guess dressed as consent. Edit a tempo map where it lives: Logic's tempo track, or the Tempo List (the Tempo tab of the List Editors, also openable as a floating window), where every tempo event is an editable row. Note the cost of the check: roughly 0.13 s per bar of playhead travel, both ways, so a playhead far from bar 1 makes the call take several seconds.
+When the Tempo List cannot be read, the fallback is the two-point sample: the tempo at the playhead and at **bar 1** (the project's first tempo node, the one point every project has), refusing the same way when they differ. `tempo_sampled_at_bars` in the result then says which two bars were compared, and when even that check cannot run the write proceeds with a `warning` telling you to check the tempo track. The sample costs roughly 0.13 s per bar of playhead travel, both ways, so a playhead far from bar 1 makes that path take several seconds.
+
+There is deliberately **no override argument**, and "park the playhead somewhere deliberate and pass `expected_current_bpm`" is *not* offered as a workaround: which node Logic edits — or whether it creates a new one — has not been verified from here, so it would be a guess dressed as consent. Edit a tempo map where it lives: Logic's tempo track, or the Tempo List (`View > List Editors > Tempo`), where every tempo event is an editable row.
 
 Parameters:
 
@@ -524,7 +531,7 @@ Parameters:
 
 Render ONE track offline to an audio file with ZERO dialogs, via Track Freeze: selects the track, toggles freeze over the 'Logic MCP Commands' MIDI port, presses play (Logic then renders the whole track offline, typically seconds), copies the 32-bit float AIFF out of Media/Freeze Files to the captures folder, and unfreezes again. Requires 'Toggle Track Freeze' in the key command registry and the MCU bridge running. Renders the full track from project start including all plugins and automation (freeze mode Pre Fader). If the track is already frozen the call fails safely and restores state.
 
-**Tempo guard (only with `start_bar`/`end_bar`).** The full render is a freeze from project start and needs no tempo at all — it is correct under any tempo map. The optional bar-range *slice* is cut with constant-tempo bar math, so when you ask for one the tempo is sampled at both ends of the range and the result carries a `warning` naming both readings if they differ. The render and the file are still valid; it is the slice's boundaries that are not. For a tempo-accurate range, bounce it instead (`logic_bounce_range`).
+**Tempo (only with `start_bar`/`end_bar`).** The full render is a freeze from project start and needs no tempo at all — it is correct under any tempo map. The optional bar-range *slice* has boundaries **integrated over the project's tempo map**, read out of Logic's Tempo List (~2 s, no playhead movement, cached; reported in `tempo_map`), so a slice across a tempo change lands on the bars you asked for. When the Tempo List cannot be read the slice falls back to constant-tempo math and the tempo is sampled at both ends of the range instead, with a `warning` naming both readings if they differ — the render and the file are still valid, it is only the slice's boundaries that are not. For a tempo-accurate range in that case, bounce it instead (`logic_bounce_range`).
 
 Parameters:
 
@@ -533,7 +540,7 @@ Parameters:
   - `expected_project_path` (string): Absolute .logicx path; when given, the open project's AXDocument must match before anything is changed.
   - `label` (string): Filename label; default is derived from the track name.
   - `start_bar` (integer): With end_bar: also cut this bar range out of the render as a separate 32-bit float WAV with its own metrics (bar 1 = project start).
-  - `tempo` (number): Override BPM for the bar math; default reads the control bar. Constant tempo assumed — and checked (see the tempo guard above).
+  - `tempo` (number): Override BPM for the bar math; default reads the control bar. Used only when the tempo map cannot be read; constant *meter* is still assumed.
   - `track_name` (string) **(required)**: Track to render, matched against MCU LCD names or AX track headers.
   - `track_number` (integer): Optional AX row number to disambiguate duplicates.
 
