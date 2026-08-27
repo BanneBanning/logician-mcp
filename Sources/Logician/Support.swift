@@ -5,7 +5,7 @@ import LogicMCUBridge
 
 let protocolVersion = "2025-06-18"
 let serverName = "logician"
-let serverVersion = "0.51.0"
+let serverVersion = "0.52.0"
 
 /// Schema version stamped into every on-disk cache. Deliberately tied to
 /// `serverVersion`: these files hold measurements of Logic's MCU LCD, and a
@@ -446,15 +446,22 @@ enum LogicianError: LocalizedError {
     case stripNotFound(name: String, tracks: [String], cells: [String])
     case projectTempoModeUnsafe(mode: String, detail: String)
     case tempoMapUnsafe(operation: String, detail: String)
+    /// The requested plugin setting is not in the setting menu. Carries the
+    /// names that ARE there, so the agent's retry is informed instead of a
+    /// second guess — the list is capped, because a Compressor offers 156.
+    case presetNotFound(plugin: String, requested: String, available: [String])
+    /// Two categories of the same plugin hold a setting with this name; the
+    /// qualified `Category/Name` paths say which.
+    case presetAmbiguous(requested: String, paths: [String])
 
     var code: String {
         switch self {
         case .accessibilityNotTrusted: return "not_trusted"
         case .logicNotRunning: return "not_running"
         case .windowNotFound, .parameterNotFound, .insertNotFound, .trackNotFound,
-             .stripNotFound: return "not_found"
+             .stripNotFound, .presetNotFound: return "not_found"
         case .parameterAmbiguous, .insertAmbiguous, .windowAmbiguous, .trackAmbiguous,
-             .stripAmbiguous: return "ambiguous"
+             .stripAmbiguous, .presetAmbiguous: return "ambiguous"
         case .valueNotWritable, .trackNotExposed, .windowNotClosable, .trackNotStack: return "not_exposed"
         case .currentValueMismatch, .projectMismatch, .insertMismatch, .pluginNotOpen, .trackMismatch,
              .projectTempoModeUnsafe, .tempoMapUnsafe: return "precondition_failed"
@@ -529,6 +536,16 @@ enum LogicianError: LocalizedError {
             return "Refusing to record: the project tempo mode is \(mode). \(detail)"
         case .tempoMapUnsafe(let operation, let detail):
             return "Refusing \(operation): the project tempo is not constant. \(detail)"
+        case .presetNotFound(let plugin, let requested, let available):
+            return "'\(plugin)' has no setting named '\(requested)'. Nothing was loaded. "
+                + (available.isEmpty
+                    ? "Its setting menu lists no factory settings at all."
+                    : "It lists: \(presetNameSample(available)).")
+                + " Call logic_plugin_preset with action 'list' for the full menu."
+        case .presetAmbiguous(let requested, let paths):
+            return "'\(requested)' names \(paths.count) settings of this plugin "
+                + "(\(paths.joined(separator: ", "))). Nothing was loaded. "
+                + "Pass the qualified 'Category/Name' instead."
         }
     }
 }

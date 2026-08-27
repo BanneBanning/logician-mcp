@@ -110,21 +110,218 @@ extension MCPServer {
         )
     }
 
+    /// Which of the three things `logic_plugin_preset` can do this call means.
+    ///
+    /// Backward compatibility is the reason this is inferred rather than
+    /// required: every argument set that worked before v2 (`track_name` +
+    /// `plugin_name`, with or without `direction`/`steps`) still means `step`
+    /// and still behaves identically. A `name` with no `action` means `select`,
+    /// because there is nothing else a caller could have meant by it.
+    static func presetAction(_ arguments: [String: Any]) throws -> String {
+        if let explicit = arguments["action"] as? String {
+            guard ["list", "select", "step"].contains(explicit) else {
+                throw LogicianError.invalidArguments("action must be 'list', 'select' or 'step'")
+            }
+            if explicit == "select", (arguments["name"] as? String) == nil {
+                throw LogicianError.invalidArguments("action 'select' needs name (the setting to load)")
+            }
+            return explicit
+        }
+        return (arguments["name"] as? String) == nil ? "step" : "select"
+    }
+
     func handlePluginPreset(_ arguments: [String: Any]) throws -> Any {
         let presetTrack = try requiredString("track_name", in: arguments)
         let presetPlugin = try requiredString("plugin_name", in: arguments)
+        let insertIndex = arguments["insert_index"] as? Int
+        let action = try MCPServer.presetAction(arguments)
+
+        // Routed exactly like every other plugin tool, so "Stereo Out" and the
+        // aux/bus strips work wherever a track name does (item 2). The plugin
+        // WINDOW is still an Accessibility object, so a headerless strip also
+        // has to be showing in an inspector for the window to open at all —
+        // that limit belongs to openPlugin and is stated in the tool schema.
+        let target = try selectStripTarget(arguments)
+        let opened = try logic.openPlugin(
+            trackName: presetTrack, pluginName: presetPlugin,
+            insertIndex: insertIndex, expectedProjectPath: nil
+        )
+        let openedByUs = (opened["state"] as? String) == "opened"
+        // The window this call opened is closed again on every exit, including
+        // the throwing ones: leaving windows behind changes what the user
+        // sees, and on the master chain it changes what the NEXT call can read.
+        defer {
+            if openedByUs {
+                _ = try? logic.closePlugin(
+                    trackName: presetTrack, pluginName: presetPlugin, insertIndex: insertIndex
+                )
+            }
+        }
+        var payload: [String: Any]
+        switch action {
+        case "list":
+            payload = try presetListPayload(track: presetTrack, plugin: presetPlugin)
+        case "select":
+            payload = try presetSelectPayload(
+                track: presetTrack, plugin: presetPlugin,
+                requested: try requiredString("name", in: arguments)
+            )
+        default:
+            payload = try presetStepPayload(track: presetTrack, arguments: arguments)
+        }
+        payload["action"] = action
+        payload["track"] = presetTrack
+        payload["track_name"] = presetTrack
+        payload["plugin_name"] = presetPlugin
+        payload["window_title"] = opened["window_title"] ?? presetTrack
+        payload.merge(target.resultFields) { current, _ in current }
+        return payload
+    }
+
+    /// `action: "list"` — enumerate the setting menu without touching it.
+    ///
+    /// An unreadable menu is reported as `presets: null` plus the reason, never
+    /// as an empty list: "this plugin has no factory settings" (Sensor,
+    /// Trilian — a real, observed answer) and "its preset UI is invisible to
+    /// Accessibility" are different facts, and an agent that cannot tell them
+    /// apart will either give up on a working plugin or loop on a hopeless one.
+    private func presetListPayload(track: String, plugin: String) throws -> [String: Any] {
+        let label = logic.pluginPresetLabel(windowTitle: track)
+        guard logic.presetPopUpButton(windowTitle: track) != nil else {
+            return [
+                "success": false,
+                "verified": false,
+                "presets": NSNull(),
+                "preset_count": NSNull(),
+                "current_preset": NSNull(),
+                "reason": PresetMenuFailure.noPresetPopUp.reason,
+                "note": "Fall back to action 'step', which needs no preset names — it reports"
+                    + " honestly when the label cannot be read either."
+            ]
+        }
+        let items: [PresetMenuItem]
+        do {
+            items = try logic.readPresetMenu(windowTitle: track)
+        } catch {
+            return [
+                "success": false,
+                "verified": false,
+                "presets": NSNull(),
+                "preset_count": NSNull(),
+                "current_preset": label.map { $0 as Any } ?? NSNull() as Any,
+                "reason": PresetMenuFailure.menuDidNotOpen.reason,
+                "detail": error.localizedDescription
+            ]
+        }
+        let entries = flattenPresetMenu(items)
+        let categories = entries.compactMap(\.category).reduce(into: [String]()) { unique, name in
+            if !unique.contains(name) { unique.append(name) }
+        }
+        var payload: [String: Any] = [
+            "success": true,
+            "verified": true,
+            "presets": entries.map(\.dictionary),
+            "preset_count": entries.count,
+            "categories": categories,
+            // The header pop-up's own value, which is what `step` verifies
+            // against; the ✓-marked entry is Logic's own answer to the same
+            // question and the two can disagree (a setting loaded from disk
+            // and then edited keeps the name but loses the mark).
+            "current_preset": label.map { $0 as Any } ?? NSNull() as Any,
+            "current_preset_marked": entries.first(where: \.active)
+                .map { $0.qualifiedName as Any } ?? NSNull() as Any
+        ]
+        if entries.isEmpty {
+            payload["note"] = "The setting menu opened and lists no factory settings at all"
+                + " (observed on Sensor and on third-party plugins). Read-only enumeration is"
+                + " therefore complete, not failed; 'Load…' in Logic's own menu is the only way in."
+        }
+        return payload
+    }
+
+    /// `action: "select"` — load a setting by name, verified by the label.
+    private func presetSelectPayload(
+        track: String, plugin: String, requested: String
+    ) throws -> [String: Any] {
+        guard logic.presetPopUpButton(windowTitle: track) != nil else {
+            throw LogicianError.trackNotExposed(
+                requested: "loading the setting '\(requested)' by name",
+                exposed: PresetMenuFailure.noPresetPopUp.reason + ". Nothing was loaded."
+            )
+        }
+        let labelBefore = logic.pluginPresetLabel(windowTitle: track)
+        let entries = flattenPresetMenu(try logic.readPresetMenu(windowTitle: track))
+        let entry: PresetEntry
+        switch matchPresetName(requested, in: entries) {
+        case .resolved(let hit):
+            entry = hit
+        case .ambiguous(let paths):
+            throw LogicianError.presetAmbiguous(requested: requested, paths: paths)
+        case .notFound(let available):
+            throw LogicianError.presetNotFound(
+                plugin: plugin, requested: requested, available: available
+            )
+        }
+        // Already there: say so and press nothing. Re-loading the same setting
+        // would overwrite any tweak made on top of it for no gain.
+        if labelBefore?.compare(entry.name, options: [.caseInsensitive, .diacriticInsensitive])
+            == .orderedSame {
+            return [
+                "success": true,
+                "verified": true,
+                "state": "already_loaded",
+                "preset_before": labelBefore.map { $0 as Any } ?? NSNull() as Any,
+                "preset_after": labelBefore.map { $0 as Any } ?? NSNull() as Any,
+                "preset": entry.qualifiedName,
+                "note": "The setting was already loaded; nothing was pressed."
+            ]
+        }
+        try logic.pressPresetMenuItem(
+            windowTitle: track, category: entry.category, name: entry.name
+        )
+        let labelAfter = logic.pluginPresetLabel(windowTitle: track)
+        let landed = labelAfter?.compare(entry.name, options: [.caseInsensitive, .diacriticInsensitive])
+            == .orderedSame
+        guard landed else {
+            throw LogicianError.verificationFailed(
+                requested: entry.qualifiedName,
+                actual: labelAfter ?? "no readable setting label",
+                // Honest: the press happened, so the plugin may well be on
+                // another setting now. There is no restore to claim.
+                restored: false
+            )
+        }
+        var payload: [String: Any] = [
+            "success": true,
+            "verified": true,
+            "state": "loaded",
+            "preset": entry.qualifiedName,
+            "preset_category": entry.category.map { $0 as Any } ?? NSNull() as Any,
+            "preset_before": labelBefore.map { $0 as Any } ?? NSNull() as Any,
+            "preset_after": labelAfter.map { $0 as Any } ?? NSNull() as Any,
+            "note": "Loaded by pressing the item in the plugin window's setting menu;"
+                + " verified against the header label."
+        ]
+        appendWarning(presetOverwriteWarning, to: &payload)
+        return payload
+    }
+
+    /// `action: "step"` — unchanged from v1, including its semantics: relative
+    /// only, verified by the label, `success: false` when nothing moved.
+    ///
+    /// It stays the fallback because it is the only route that needs no
+    /// readable menu. What it does NOT need any more is the old label reader:
+    /// `pluginPresetLabel` used to take the rightmost pop-up in the header,
+    /// which on Channel EQ / Limiter / Pitch Shifter is a PARAMETER pop-up
+    /// whose value never moves when the setting does — so a successful step
+    /// was reported as `stepped: false`. Same code path, correct sensor.
+    private func presetStepPayload(track: String, arguments: [String: Any]) throws -> [String: Any] {
         let direction = (arguments["direction"] as? String) ?? "next"
         guard ["next", "previous"].contains(direction) else {
             throw LogicianError.invalidArguments("direction must be 'next' or 'previous'")
         }
         let steps = max(arguments["steps"] as? Int ?? 1, 1)
-        _ = try selectStripTarget(arguments)
-        let opened = try logic.openPlugin(
-            trackName: presetTrack, pluginName: presetPlugin,
-            insertIndex: arguments["insert_index"] as? Int, expectedProjectPath: nil
-        )
-        let openedByUs = (opened["state"] as? String) == "opened"
-        let labelBefore = logic.pluginPresetLabel(windowTitle: presetTrack)
+        let labelBefore = logic.pluginPresetLabel(windowTitle: track)
         let presetCommand = try MCUController.resolveKeyCommand(
             named: direction == "next"
                 ? "Next Plug-in Setting for topmost Plug-in Window"
@@ -136,16 +333,13 @@ extension MCPServer {
             Thread.sleep(forTimeInterval: 0.5)
         }
         Thread.sleep(forTimeInterval: 0.5)
-        let labelAfter = logic.pluginPresetLabel(windowTitle: presetTrack)
-        if openedByUs {
-            _ = try? logic.closePlugin(trackName: presetTrack, pluginName: presetPlugin, insertIndex: arguments["insert_index"] as? Int)
-        }
+        let labelAfter = logic.pluginPresetLabel(windowTitle: track)
         // success reports whether the preset actually MOVED. It used to be a
         // literal true, so at the end of a preset list - or on a plugin with
         // no factory settings - the agent was told the step happened and
         // reported it to the user.
         let stepped = labelAfter != nil && labelAfter != labelBefore
-        return [
+        var payload: [String: Any] = [
             "success": stepped,
             "verified": stepped,
             "direction": direction,
@@ -156,6 +350,8 @@ extension MCPServer {
                 ? "The preset label did not change (end of the list, or the plugin has no factory settings)."
                 : "Preset stepped via the topmost-plugin-window key command."
         ]
+        if stepped { appendWarning(presetOverwriteWarning, to: &payload) }
+        return payload
     }
 
     func handleMcuPluginInserts(_ arguments: [String: Any]) throws -> Any {

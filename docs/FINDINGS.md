@@ -1731,3 +1731,65 @@ Roadmap-punkt 3. Punkt 1 gjorde matematiken ärlig; den här gör den **rätt**.
 **Kvar som antagande:** **taktarten**. Signaturändringar bor i sin egen lista (Signature-fliken i samma List Editors, och den HAR en egen menypost) och läses inte — all takt→slag-omräkning använder fortfarande ett enda slag-per-takt. Det är nu det enda kvarvarande antagandet i bar-matematiken, och det är dokumenterat i `TempoMap` och i AGENT-GUIDE.
 
 **Overifierat, för ärlighetens skull:** allt om FLERA rader och om kurvor. Testprojektet har en enda tempohändelse, och att bygga en karta hade betytt att skriva i användarens projekt. Radgrammatiken är alltså verifierad för en rad; parsningen av flera rader, integrationen över steg och ramper, trunkeringskontrollen och varningstexterna är enhetstestade. Kurvor kan inte läsas alls (se ovan). Att `readTempoMap` beter sig när Logic rullar är overifierat — panelen togglades bara i stillastående transport.
+=======
+
+### Pluginpresets: fel popup lästes, och menyn går att räkna upp helt (2026-08-27, v0.52.0)
+
+Roadmap-punkt 4. Frågan var om pluginfönstrets **inställningsmeny** går att räkna upp via Accessibility, som Bounce-menyn gör. Svaret är ja — men experimentet hittade först en bugg i den kod som redan fanns.
+
+**Miljö:** körande Logic (`Testlåt Copy.logicx`, pid 25052), tillfälligt XCTest som togs bort efteråt, `logician`-binären startades aldrig (dubbla virtuella MIDI-portar orphanar tyst alla key command-bindningar, se v0.45.0). Bryggan frågades inte alls: hela punkten ligger i AX-planet.
+
+**Fynd 1 — `AXShowMenu` finns INTE på presetpopupen, `AXPress` gör det.** Första försöket gjorde precis vad roadmapen föreslog: `AXShowMenu` på elementet. Svaret var `AXError -25206` (*action unsupported*) och ingen meny. Elementets hela aktionsmängd är `["AXPress"]`. Ett tryck öppnade menyn direkt — och rapporterade `AXError -25204` medan det gjorde det, exakt som pluginväljaren i insertsslotten (v0.31.0). Statuskoden får alltså aldrig avgöra om menyn öppnades; närvaron av menyn gör det. Menyn hittas av den befintliga `popupMenus()` (djup 2 under applikationselementet).
+
+**Fynd 2 — och det viktiga: `pluginPresetLabel` läste FEL popup på flera Logic-plugins.** Den gamla regeln var "den högraste `AXPopUpButton` i headern som bär ett värde". I pluginfönstrets header sitter det tre sorters popup, och de går bara att skilja på sin *aktionsmängd*:
+
+| kontroll | roll | aktioner | textattribut |
+|---|---|---|---|
+| inställningspopupen (presetnamnet) | `AXPopUpButton` | `AXPress` | 6 av 6 |
+| View/zoom-menyn | `AXMenuButton` | `AXShowMenu`, `AXPress` | 0 |
+| en PARAMETER-popup | `AXPopUpButton` | `AXShowMenu`, `AXPress` | 0 |
+
+Mätt på fem plugins. På `Compressor` låg inställningspopupen sist och den gamla regeln råkade träffa rätt. På `Channel EQ` låg den **först**, och den gamla regeln returnerade stereoläget (`Stereo`); på `Limiter` algoritmen (`Precision`); på `Pitch Shifter` läget (`Vocals`). De värdena rör sig inte när presetet byts — så `logic_plugin_preset`s stegverifiering rapporterade `stepped: false` på ett steg som faktiskt fungerade, på tre av de fem plugins vi tittade på. Ny regel: **den `AXPopUpButton` vars aktionsmängd är exakt `["AXPress"]`**. Att inställningspopupen dessutom är den enda som publicerar textfältsattribut (`AXSelectedText`, `AXNumberOfCharacters`, `AXPlaceholderValue`, `AXSelectedTextRange`, `AXInsertionPointLineNumber`, `AXVisibleCharacterRange`) och saknar `AXHelp` är stödjande bevis, inte nödvändigt.
+
+**Fynd 3 — menyns form är identisk i varje plugin: ett FAST kommandoblock på 20 poster, sedan inställningarna.**
+
+```
+[0]  "Setting"    (disabled, rubrik)      [10] "Paste"
+[1]  ""           (separator)             [11] ""
+[2]  "Undo"                               [12] "Load…"
+[3]  "Redo"                               [13] "Save"
+[4]  "Include Plug-in Undo Steps in       [14] "Save As…"
+      Project Undo History"               [15] "Save A Copy As…"
+[5]  ""                                   [16] "Save As Default"
+[6]  "Next"                               [17] "Recall Default"
+[7]  "Previous"                           [18] "Delete"
+[8]  ""                                   [19] ""
+[9]  "Copy"                               [20…] INSTÄLLNINGARNA
+```
+
+Bekräftat post för post på `Compressor`, `Channel EQ`, `Limiter`, `Sensor`, `PShft` och tredjeparts-`Trilian`. Efter [19] kommer antingen **kategorier** (undermenyer) eller **platta** poster, aldrig blandat, och aldrig djupare än en nivå:
+
+- `Compressor` (spår `Bas`): 6 kategorier / **156** inställningar (`01 Drums` 22, `02 Keyboards` 9, `03 Guitars` 25, `04 Voice` 32, `05 Compressor Tools` 18, `06 Compressor By Type` 50).
+- `Channel EQ` (**`Stereo Out`**): 7 kategorier / **114** (`01 Drums` 25 … `07 EQ Tools` 18).
+- `Limiter` (`Stereo Out`): **11 platta** poster, ingen kategori (`Classic Soft Knee` … `Warm Master`).
+- `Sensor` (`Stereo Out`) och `Trilian` (`Bas`): **ingenting** efter [19]. Det är ett riktigt svar, inte ett fel — pluginet levererar inga fabriksinställningar, och `Load…` är enda vägen in.
+
+Gränsen mellan kommandon och inställningar bestäms av två regler i ordning: `Delete` är sista kommandot i varje observerad meny (exakt ankare, tål att Logic lägger till ett kommando i blocket), och som reserv den strukturella regeln att kommandoblocket är den enda del av menyn som innehåller separatorer, alltså slutar blocket vid den **sista** separatorn. Båda ger samma svar på alla sex menyer.
+
+**Fynd 4 — `AXMenuItemMarkChar` FINNS, och den är hela spåret till aktiv inställning.** Den laddade posten bär `✓` på sitt löv, och dess kategori bär `-`. På `Compressor` blev det `03 Guitars[-]` → `FET Electric Bass[✓]`. Att läsa kategorins märke som "aktiv" hade rapporterat `03 Guitars` som den laddade inställningen, vilket inte är en inställning; bara lövets märke räknas. När headern visar `Default Preset` (Channel EQ, Limiter) är **ingenting** märkt — vilket är korrekt, för det tillståndet är ingen namngiven inställning, och `current_preset_marked` blir `null`.
+
+**Fynd 5 — `AXPress` på ett löv FUNGERAR här, till skillnad från i pluginväljaren.** v0.31.0 slog fast att `AXPress` på poster inne i *stängda* undermenyer är en tyst nolloperation i Logics pluginväljare, och därför drivs den med riktiga musrörelser. Inställningsmenyn materialiserar sina undermenyers barn direkt — lövet är ett riktigt element utan att någon hovrat fram undermenyn — och `AXPress` på `03 Guitars > Rock Bass` returnerade `.success` med headeretiketten som följde efter. Ingen mus behövs, alltså ingen pekarövertagning.
+
+**Fynd 6 — och det obehagliga: ett presetnamn är INTE ett löfte om tillståndet.** Rundturen (steg bort, steg tillbaka, allt verifierat) kördes på spårets `Compressor` med Logics egen Compare-knapp som vakt: den var `AXEnabled='0'`, vilket är dess "orört"-läge. Etiketten gick `FET Electric Bass` → `Rock Bass` → `FET Electric Bass`, och **tio av elva** parametrar kom tillbaka på exakt sina utgångsvärden. Den elfte, `Output Gain`, stod på råvärde **54** före och **60** efter — fabriksvärdet. Utgångstillståndet var alltså `FET Electric Bass` *med en avvikelse ovanpå*, och Compare-knappen sa inget om det: den är sessionsbunden, inte en jämförelse mot det sparade tillståndet över tid. Slutsatsen står i produktkoden som `presetOverwriteWarning` och följer med VARJE presetändring, `step` inkluderat: att ladda en inställning skriver över samtliga parametrar, och att välja tillbaka det gamla namnet återställer inte en onämnd justering. Vägen tillbaka är pluginfönstrets egen `Setting ▸ Undo`.
+
+**Fynd 7 — masterkedjan fungerar, med item 2:s förbehåll.** `Stereo Out` går hela vägen: `selectStripTarget` → `openPlugin` → inställningspopupen → 114 uppräknade inställningar på Channel EQ. Men menyn sitter i pluginfönstret, som är ett AX-objekt, så samma asymmetri som i v0.51.0 gäller: en huvudlös stripp måste **visas i en inspektor** för att fönstret ska gå att öppna. `Stereo Out` syntes som valda spårets utgång; `Master` och `Aux 1` gör det inte utan att man öppnar Mixern.
+
+**Fynd 8 — MCU-vägen är fortfarande inte funnen, och letades inte efter med skrivningar.** Ingen observation av en kontrollytevy som listar presets finns; att leta efter en hade krävt vpot-tryck inne i en plugin-EDIT-vy, vilket är parameterskrivningar. Punkten avgörs alltså av AX-vägen, precis som roadmapen gissade. Sidoobservation som kan bli en genväg: menyn har egna `Next`/`Previous`-poster (index 6 och 7), så relativ stegning finns i AX-planet också och skulle inte behöva ett inlärt key command — otestat, och `step` lämnades oförändrat.
+
+**Vad som ändrades i koden.** `PluginPresets.swift` (rent: kommandoblockets gräns, plattning, namnmatchning, varningstexterna) och `AXPresets.swift` (`presetPopUpButton`, den omskrivna `pluginPresetLabel`, `readPresetMenu`, `pressPresetMenuItem` — menyn stängs alltid, även på kast, för en öppen meny sväljer Logics tangentbord och nästa verktygs key command med det). `logic_plugin_preset` fick `action` (`list`/`select`/`step`) och `name`; standardvärdet är `step`, eller `select` när `name` finns, så varje anrop som fungerade före v2 betyder exakt samma sak. Verktyget bär nu också `selection_route` från item 2:s routning, vilket det tidigare kastade bort. Nya felkoder: `presetNotFound` (not_found, med namnen listade och kapade) och `presetAmbiguous` (ambiguous, med `Kategori/Namn`-vägarna). Matchningen är medvetet **inte** luddig: en nära miss vägras, för ett felaktigt laddat preset skriver över hela pluginet.
+
+**Overifierat, för ärlighetens skull:** `action: "select"` är live-bevisad på `Compressor` på ett SPÅR (tryck + etikettverifiering + återställning), men **aldrig körd på en huvudlös stripp** — `Stereo Out`-vägen är bevisad till och med uppräkningen (`list`), inte förbi den. `list` på ett plugin utan inställningspopup (`presets: null`-grenen) är enhetstestad men inte live-sedd; alla fem plugins vi öppnade hade en popup, även `Trilian`. Och den nya popupregeln är mätt på fem plugins — ett plugin som publicerar `AXShowMenu` även på sin inställningspopup skulle få `null` i stället för ett fel värde, vilket är rätt riktning men inte samma sak som täckning.
+
+**Kvar att städa i användarens projekt:** rundturen i fynd 6 lämnade `Bas` → `Compressor` (insert 1) med `Output Gain` på råvärde 60 i stället för 54. Återställningen kunde inte köras (behörighetsspärr i sessionen). Fixen är pluginfönstrets `Setting ▸ Undo` två gånger, eller att skruva `Output Gain` tillbaka; projektet är osparat, så ingenting har nått disken.
+
+`swift test`: 220 tester gröna (31 nya), 1,4 s, ingen Logic behövs.

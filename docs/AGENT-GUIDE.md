@@ -56,7 +56,7 @@ When the Tempo List cannot be read at all, the pre-map behavior is the fallback:
 `logic_create_track {type: "software_instrument"}` → `logic_record_midi {track_name, notes: [{pitch: "C3", bar: 5, beat: 1, duration_beats: 1, velocity: 100}, ...], cc_events: [...], pitch_bends: [...]}`. Verification renders the recorded bars and returns metrics + a listenable WAV path. Notes: pitch as MIDI number or name (Logic convention: C3 = 60). start_bar must be ≥ 2 (one pre-roll bar).
 
 **Shape a sound:**
-`logic_add_plugin {track_name, plugin_name}` (mouse-free via the control-surface browser; exact catalog names like "Compressor", "Channel EQ") → `logic_mcu_plugin_parameters {insert_slot}` to read (page-capped; pass `max_pages` for giants) → `logic_mcu_set_plugin_parameter` per change → or step factory presets with `logic_plugin_preset`.
+`logic_add_plugin {track_name, plugin_name}` (mouse-free via the control-surface browser; exact catalog names like "Compressor", "Channel EQ") → `logic_mcu_plugin_parameters {insert_slot}` to read (page-capped; pass `max_pages` for giants) → `logic_mcu_set_plugin_parameter` per change → or browse factory settings with `logic_plugin_preset` (`action: "list"` to see the names, `action: "select"` with `name` to load one).
 
 **Mix moves:**
 `logic_set_track_volume {db}` / `logic_set_track_pan {position}` / mute/solo `{enabled}` / `logic_add_send {destination: "Bus 1"}` + `logic_mcu_set_send {send, level_db}`.
@@ -127,7 +127,7 @@ Every successful result carries the same four fields, and they mean different th
 
 ## Tool reference
 
-All 57 tools, generated from the live server schemas (v0.49.0), with the strip-addressing notes added by hand in v0.51.0 — where an entry and the live schema differ in wording, the schema is authoritative. Every write is compare-and-set with readback; every failure names what was observed.
+All 57 tools, generated from the live server schemas (v0.49.0), with the strip-addressing notes added by hand in v0.51.0 and the `logic_plugin_preset` section rewritten by hand in v0.52.0 — where an entry and the live schema differ in wording, the schema is authoritative. Every write is compare-and-set with readback; every failure names what was observed.
 
 #### `logic_health`
 
@@ -338,14 +338,28 @@ Parameters:
 
 #### `logic_plugin_preset`
 
-Step a plugin's factory/user preset (next/previous, N steps) via Logic's topmost-plugin-window key command: the plugin window is opened (and closed again if this call opened it), the command fired, and the change verified against the window's preset label. Preset before/after names are returned. **Strips without a track header** (`Stereo Out`, `Master`, aux and bus channels) are accepted: they resolve on the control surface (LCD name + SELECT LED verified before any write). Use the Mixer name, not the 6-character LCD abbreviation.
+Browse and load a plugin's settings (what Logic's own menu calls *settings* and everyone else calls presets). Three actions:
+
+  - **`list`** — read-only enumeration of the plugin window's setting menu: every name, the category it sits in, and which one Logic marks as loaded. Changes nothing.
+  - **`select`** — load one by name, verified against the window's setting label. `name` takes the bare name (`"Rock Bass"`) or a qualified path (`"03 Guitars/Rock Bass"`, also `>` or ` - `) when two categories of the same plugin share a name. Case- and diacritic-insensitive, and **never fuzzy**: a near miss is refused with the available names rather than guessed at, because loading the wrong setting overwrites the plugin.
+  - **`step`** — the v1 behaviour, unchanged: walk next/previous N settings via Logic's topmost-plugin-window key command. The only route that needs no readable menu, so it is the fallback for plugins whose UI hides everything.
+
+The default action is `step`, or `select` when `name` is given — so every call that worked before this tool grew actions still means exactly what it did. The plugin window is opened and closed again if the call opened it. Reading the menu brings Logic frontmost for a moment: a macOS menu cannot open in a background app.
+
+**⚠️ Loading a setting overwrites EVERY parameter of the plugin, and a setting *name* is not a promise about the current *state*.** A plugin whose header reads `FET Electric Bass` may hold that setting with tweaks on top; loading any setting throws those away, and re-selecting the old name does **not** bring them back (measured 2026-08-27: one of eleven Compressor parameters did not return). Logic's own Compare button is not a reliable modified-indicator across sessions. The way back is the plugin window's own **Setting ▸ Undo**. This applies to `step` as much as to `select` — both carry the warning in their result.
+
+**Honest failures.** `list` returns `presets: null` plus a `reason` when the plugin exposes no Logic setting pop-up at all (a fully custom UI — `step` is then the only route), and `presets: []` — an empty list, which is a *result*, not a failure — for plugins that genuinely ship no factory settings (observed on Sensor and on third-party instruments). `select` refuses with `not_found` (available names listed) or `ambiguous` (qualified paths listed) without pressing anything. `step` reports `success: false` when the label did not move (end of the list, or nothing readable).
+
+**Strips without a track header** (`Stereo Out`, `Master`, aux and bus channels) are accepted: they resolve on the control surface (LCD name + SELECT LED verified before any write). Use the Mixer name, not the 6-character LCD abbreviation. One limit worth knowing: the setting menu lives in the plugin **window**, which is an Accessibility object, so a headerless strip also has to be *showing in an inspector* for the window to open — verified working on `Stereo Out` (its Channel EQ enumerated 114 settings in 7 categories), but `Master` and `Aux 1` are only reachable while an inspector shows them.
 
 Parameters:
 
-  - `direction` (string): 'next' (default) or 'previous'.
+  - `action` (string): `'list'`, `'select'` or `'step'`. Default: `'step'`, or `'select'` when `name` is given.
+  - `direction` (string): For `step`: 'next' (default) or 'previous'.
   - `insert_index` (integer)
+  - `name` (string): For `select`: the setting to load, as `list` reports it.
   - `plugin_name` (string) **(required)**
-  - `steps` (integer): How many presets to step, default 1.
+  - `steps` (integer): For `step`: how many settings to step, default 1.
   - `track_name` (string) **(required)**
   - `track_number` (integer)
 

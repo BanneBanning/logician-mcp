@@ -182,22 +182,10 @@ extension LogicAccessibility {
         return nil
     }
 
-    /// The preset label from a plugin window's header (the rightmost popup).
-    func pluginPresetLabel(windowTitle: String) -> String? {
-        guard let windows = try? logicWindows() else { return nil }
-        for window in windows
-        where stringAttribute(window, kAXTitleAttribute as String) == windowTitle
-            && stringAttribute(window, kAXSubroleAttribute as String) != "AXStandardWindow" {
-            var popups: [String] = []
-            collect(from: window, maximumDepth: AXDepth.pluginWindowHeader) { element in
-                if stringAttribute(element, kAXRoleAttribute as String) == "AXPopUpButton" {
-                    popups.append(stringAttribute(element, kAXValueAttribute as String))
-                }
-            }
-            return popups.last { !$0.isEmpty }
-        }
-        return nil
-    }
+    // `pluginPresetLabel` used to live here and took "the rightmost pop-up
+    // that has a value", which picked PARAMETER pop-ups on several stock
+    // plugins. It now lives in `AXPresets.swift` and identifies the setting
+    // pop-up by its action set; see `presetPopUpButton`.
 
     /// Renames a track by writing the channel strip's name field.
     func renameTrack(trackName: String, newName: String) throws -> [String: Any] {
