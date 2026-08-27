@@ -118,6 +118,25 @@ extension LogicAccessibility {
         return items
     }
 
+    /// Raises a plugin window and makes it the application's focused window,
+    /// so a press on a control inside it is delivered. Best effort by design:
+    /// every failure here is silent because the press that follows is verified
+    /// by whether the menu appeared, and a window that cannot be raised is not
+    /// on its own a reason to refuse.
+    func focusPluginWindow(titled title: String) {
+        guard let window = try? logicWindow(title: title) else { return }
+        _ = AXUIElementPerformAction(window, "AXRaise" as CFString)
+        if let application = NSRunningApplication
+            .runningApplications(withBundleIdentifier: bundleIdentifier).first {
+            AXUIElementSetAttributeValue(
+                AXUIElementCreateApplication(application.processIdentifier),
+                kAXFocusedWindowAttribute as CFString, window
+            )
+        }
+        AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
+        Thread.sleep(forTimeInterval: 0.15)
+    }
+
     /// Opens the setting menu, hands it to `body`, and dismisses it.
     private func withPresetMenu<Result>(
         windowTitle: String,
@@ -133,11 +152,28 @@ extension LogicAccessibility {
         // Any menu left over from an earlier call would be found instead of
         // ours and read as this plugin's settings.
         dismissPopupMenus()
-        _ = AXUIElementPerformAction(popup, kAXPressAction as CFString)
+        // A press on a control in a window that does not hold the focus is
+        // SWALLOWED, and `ensureLogicFrontmost` cannot see that: it returns as
+        // soon as the APPLICATION is frontmost, which says nothing about which
+        // of Logic's windows is focused. Measured 2026-08-28: two consecutive
+        // `list` calls on `Stereo Out`'s Channel EQ failed with "the menu did
+        // not open" while the terminal held the front, and every call after a
+        // first successful one — same plugin, same window — opened on the
+        // FIRST poll. Waiting longer does not help; the press never arrived.
+        //
+        // So the plugin window is raised and focused first, and the press is
+        // retried. `dismissPopupMenus` between attempts keeps a press that DID
+        // work but was polled too early from being toggled shut by the retry.
         var opened: AXUIElement?
-        for _ in 0..<25 {
-            Thread.sleep(forTimeInterval: 0.15)
-            if let menu = popupMenus().first { opened = menu; break }
+        pressing: for attempt in 0..<3 {
+            if attempt > 0 { try? ensureLogicFrontmost(for: "the plugin setting menu") }
+            focusPluginWindow(titled: windowTitle)
+            _ = AXUIElementPerformAction(popup, kAXPressAction as CFString)
+            for _ in 0..<(attempt == 2 ? 20 : 8) {
+                Thread.sleep(forTimeInterval: 0.15)
+                if let menu = popupMenus().first { opened = menu; break pressing }
+            }
+            dismissPopupMenus()
         }
         guard let menu = opened else {
             dismissPopupMenus()

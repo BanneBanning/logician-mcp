@@ -119,8 +119,8 @@ extension MCPServer {
     /// because there is nothing else a caller could have meant by it.
     static func presetAction(_ arguments: [String: Any]) throws -> String {
         if let explicit = arguments["action"] as? String {
-            guard ["list", "select", "step"].contains(explicit) else {
-                throw LogicianError.invalidArguments("action must be 'list', 'select' or 'step'")
+            guard ["list", "select", "step", "undo"].contains(explicit) else {
+                throw LogicianError.invalidArguments("action must be 'list', 'select', 'step' or 'undo'")
             }
             if explicit == "select", (arguments["name"] as? String) == nil {
                 throw LogicianError.invalidArguments("action 'select' needs name (the setting to load)")
@@ -166,6 +166,8 @@ extension MCPServer {
                 track: presetTrack, plugin: presetPlugin,
                 requested: try requiredString("name", in: arguments)
             )
+        case "undo":
+            payload = try presetUndoPayload(track: presetTrack)
         default:
             payload = try presetStepPayload(track: presetTrack, arguments: arguments)
         }
@@ -304,6 +306,53 @@ extension MCPServer {
         ]
         appendWarning(presetOverwriteWarning, to: &payload)
         return payload
+    }
+
+    /// `action: "undo"` — the way back from a setting change, and the only
+    /// one there is.
+    ///
+    /// Re-selecting the previous NAME does not undo a load: it overwrites
+    /// again, from the factory values, and an unnamed tweak that sat on top of
+    /// the old setting is gone either way — worse, a plugin that was on no
+    /// named setting at all (`Default Preset`) has no name to select back.
+    /// The setting menu's own `Undo` is Logic's own history for that plugin,
+    /// and it restores the STATE rather than a name.
+    ///
+    /// Verified live 2026-08-28 on `Stereo Out`'s `Limiter` (a headerless
+    /// strip): `Default Preset` → `Warm Master` moved four of its eight MCU
+    /// parameters (Gain 0.0 → +12.0 dB, Lookahead 5.0 → 0.5 ms, Output Level
+    /// -0.0 → -0.1 dB, Release 250.0 → 6.0 ms), and one `Undo` brought back
+    /// all eight EXACTLY, label included — the unnamed `Default Preset` state
+    /// that no `select` could have recovered.
+    ///
+    /// The label is reported before and after but is deliberately NOT a
+    /// verdict: an Undo between two unnamed states leaves the label identical
+    /// while the parameters move, so claiming `verified` off the label would
+    /// be claiming more than was seen. Read the parameters back
+    /// (logic_mcu_plugin_parameters) when the state matters.
+    private func presetUndoPayload(track: String) throws -> [String: Any] {
+        guard logic.presetPopUpButton(windowTitle: track) != nil else {
+            throw LogicianError.trackNotExposed(
+                requested: "the setting menu's Undo",
+                exposed: PresetMenuFailure.noPresetPopUp.reason + ". Nothing was undone."
+            )
+        }
+        let labelBefore = logic.pluginPresetLabel(windowTitle: track)
+        try logic.pressPresetMenuItem(windowTitle: track, category: nil, name: presetUndoItemTitle)
+        let labelAfter = logic.pluginPresetLabel(windowTitle: track)
+        return [
+            "success": true,
+            "verified": false,
+            "state": "undone",
+            "preset_before": labelBefore.map { $0 as Any } ?? NSNull() as Any,
+            "preset_after": labelAfter.map { $0 as Any } ?? NSNull() as Any,
+            "label_changed": labelBefore != labelAfter,
+            "note": "Pressed the plugin window's own Setting ▸ Undo — Logic's per-plugin history,"
+                + " which restores the parameter STATE, not a setting name. The label is reported"
+                + " but proves nothing on its own: an undo between two unnamed states leaves it"
+                + " unchanged. Read the parameters back with logic_mcu_plugin_parameters when the"
+                + " state matters. Repeat the call to step further back."
+        ]
     }
 
     /// `action: "step"` — unchanged from v1, including its semantics: relative

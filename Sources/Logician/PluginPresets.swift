@@ -214,8 +214,16 @@ let presetOverwriteWarning =
     + " a promise about the current state: unnamed tweaks made on top of a named setting are"
     + " lost, and re-selecting the previous name does NOT bring them back (verified"
     + " 2026-08-27 — one of eleven Compressor parameters did not return). Logic's Compare"
-    + " button is not a reliable modified-indicator across sessions. Use the plugin window's"
-    + " own Setting > Undo to get back."
+    + " button is not a reliable modified-indicator across sessions. To get back, call this"
+    + " tool again with action 'undo' — the setting menu's own Undo, which restores the"
+    + " parameter STATE (verified 2026-08-28: it brought back all eight of a Limiter's"
+    + " parameters exactly, from a named setting to the unnamed state it started in)."
+
+/// The setting menu's own Undo item. Index 2 of the fixed 20-entry command
+/// block every observed plugin's setting menu opens with, but matched by
+/// TITLE, not index: the block is stable across six plugins and two Logic
+/// versions, and an index would break silently if Logic ever adds a command.
+let presetUndoItemTitle = "Undo"
 
 /// Why a preset list could not be produced. Kept as a type so every refusal
 /// names the same reasons the same way.

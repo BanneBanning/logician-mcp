@@ -339,6 +339,20 @@ final class PluginPresetTests: XCTestCase {
         }
     }
 
+    func testUndoIsAnActionAndNeedsNoName() {
+        // The way back from a select. It takes no name on purpose: it
+        // restores the parameter STATE, and the state it returns to may well
+        // have no name at all (`Default Preset`).
+        XCTAssertEqual(try? MCPServer.presetAction(["action": "undo"]), "undo")
+    }
+
+    func testUndoIsNeverInferredFromArgumentsAlone() {
+        // Every pre-'undo' argument set keeps its old meaning; an undo has to
+        // be asked for, because it changes the plugin.
+        XCTAssertEqual(try? MCPServer.presetAction([:]), "step")
+        XCTAssertEqual(try? MCPServer.presetAction(["name": "Warm Master"]), "select")
+    }
+
     func testAnUnknownActionIsRefused() {
         XCTAssertThrowsError(try MCPServer.presetAction(["action": "delete"])) { error in
             XCTAssertEqual((error as? LogicianError)?.code, "invalid_arguments")
@@ -363,14 +377,14 @@ final class PluginPresetTests: XCTestCase {
         XCTAssertTrue(PresetMenuFailure.menuDidNotOpen.reason.contains("nothing was changed"))
     }
 
-    func testTheToolSchemaOffersTheThreeActionsAndKeepsTheOldArguments() {
+    func testTheToolSchemaOffersEveryActionAndKeepsTheOldArguments() {
         guard let tool = MCPServer().toolRegistry()
             .first(where: { $0.name == "logic_plugin_preset" }),
             let properties = tool.inputSchema["properties"] as? [String: Any] else {
             return XCTFail("logic_plugin_preset is missing from the registry")
         }
         let actions = (properties["action"] as? [String: Any])?["enum"] as? [String]
-        XCTAssertEqual(actions, ["list", "select", "step"])
+        XCTAssertEqual(actions, ["list", "select", "step", "undo"])
         for old in ["track_name", "plugin_name", "insert_index", "track_number", "direction", "steps"] {
             XCTAssertNotNil(properties[old], "\(old) must keep working")
         }
