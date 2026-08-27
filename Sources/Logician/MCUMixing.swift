@@ -11,9 +11,17 @@ extension MCUController {
         control: String, // "mute" | "solo"
         enabled: Bool
     ) throws -> [String: Any]? {
+        // Resolve the string to a real command name ONCE, up front: the two
+        // branches below (LED base and the bridge command) then cannot drift
+        // apart, and an unexpected value fails here instead of quietly
+        // driving the other control.
+        guard let strip = BridgeCommandName(rawValue: control), strip == .mute || strip == .solo
+        else {
+            throw DemoError.invalidArguments("control must be mute or solo")
+        }
         guard freshStatus() != nil else { return nil }
         guard let channel = try findChannel(trackName: trackName) else { return nil }
-        let ledBase = control == "mute" ? 0x10 : 0x08
+        let ledBase = strip == .mute ? 0x10 : 0x08
         let note = ledBase + channel
         guard let before = freshStatus() else { return nil }
         if ledLit(note, in: before) == enabled {
@@ -23,9 +31,9 @@ extension MCUController {
                 "track": trackName, "control": control, control: enabled, "route": "mcu"
             ]
         }
-        let response = try MCUBridge.send(["cmd": control, "channel": channel])
-        guard response["ok"] as? Bool == true else {
-            throw DemoError.writeFailed("MCU \(control) failed: \(response["error"] ?? "?")")
+        let response = try MCUBridge.send(.channel(strip, channel))
+        guard response.ok else {
+            throw DemoError.writeFailed("MCU \(control) failed: \(response.error ?? "?")")
         }
         guard pollStatus(until: { ledLit(note, in: $0) == enabled }) != nil else {
             throw DemoError.verificationFailed(
@@ -113,11 +121,11 @@ extension MCUController {
             if abs(difference) <= toleranceDb { break }
             let ticks = max(1, min(60, Int((abs(difference) * ticksPerDb).rounded())))
             let before = freshStatus()?["received_events"] as? Int ?? -1
-            let response = try MCUBridge.send([
-                "cmd": "vpot", "index": channel, "delta": difference > 0 ? ticks : -ticks
-            ])
-            guard response["ok"] as? Bool == true else {
-                throw DemoError.writeFailed("MCU vpot failed: \(response["error"] ?? "?")")
+            let response = try MCUBridge.send(
+                .vpot(index: channel, delta: difference > 0 ? ticks : -ticks)
+            )
+            guard response.ok else {
+                throw DemoError.writeFailed("MCU vpot failed: \(response.error ?? "?")")
             }
             _ = awaitEvents(since: before, timeoutMs: 300)
             guard let updated = currentDb() else { break }

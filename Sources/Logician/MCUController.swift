@@ -34,7 +34,7 @@ enum MCUController {
     static func freshStatus() -> [String: Any]? {
         // In-memory status straight from the bridge socket (no file throttle);
         // fall back to the state file if the socket round trip fails.
-        let status = (try? MCUBridge.send(["cmd": "status"])) ?? MCUBridge.status()
+        let status = (try? MCUBridge.sendForDictionary(.status)) ?? MCUBridge.status()
         guard status["ok"] as? Bool == true || status["bridge_running"] as? Bool == true else { return nil }
         // A silent Logic sends nothing, so do not require recent traffic —
         // only that Logic has ever talked this session. Every write verifies
@@ -48,7 +48,7 @@ enum MCUController {
     /// Event-driven wait: blocks in the bridge until new MIDI arrived from
     /// Logic (or timeout), then returns the fresh in-memory status.
     static func awaitEvents(since: Int, timeoutMs: Int) -> [String: Any]? {
-        try? MCUBridge.send(["cmd": "await", "since": since, "timeout_ms": timeoutMs])
+        try? MCUBridge.sendForDictionary(.awaitEvents(since: since, timeoutMs: timeoutMs))
     }
 
     /// Waits until `check` passes, driven by actual MIDI events rather than
@@ -78,9 +78,9 @@ enum MCUController {
     }
 
     static func press(_ button: String) throws {
-        let response = try MCUBridge.send(["cmd": "press", "button": button])
-        guard response["ok"] as? Bool == true else {
-            throw DemoError.writeFailed("MCU press \(button) failed: \(response["error"] ?? "?")")
+        let response = try MCUBridge.send(.press(button: button))
+        guard response.ok else {
+            throw DemoError.writeFailed("MCU press \(button) failed: \(response.error ?? "?")")
         }
     }
 

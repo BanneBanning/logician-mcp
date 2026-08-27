@@ -9,6 +9,14 @@ enum MCUBridge {
             .appendingPathComponent("Library/Application Support/LogicMCPMCU")
     }
 
+    /// The state FILE mirror, not the socket — the fallback when the daemon
+    /// cannot be reached, and the body of the `logic_mcu_status` tool result.
+    ///
+    /// Stays a verbatim dictionary on purpose. The file is written by
+    /// whatever daemon build happens to be running, which during an upgrade
+    /// is not necessarily this one; passing its contents through unchanged
+    /// means a newer daemon's fields still reach the agent. Use
+    /// `SurfaceSnapshot` when you want the typed view of the same bytes.
     static func status() -> [String: Any] {
         let stateURL = directory.appendingPathComponent("state.json")
         guard let data = try? Data(contentsOf: stateURL),
@@ -28,8 +36,8 @@ enum MCUBridge {
     /// practice is that the server manages its own sidecars. Looks for the
     /// logic-mcu-bridge binary next to this executable.
     static func ensureRunning() {
-        if let pong = try? send(["cmd": "ping"]), pong["ok"] as? Bool == true {
-            if (pong["bridge_protocol"] as? Int ?? 0) >= bridgeProtocolVersion { return }
+        if let pong = try? send(.ping), pong.ok {
+            if (pong.bridgeProtocol ?? 0) >= bridgeProtocolVersion { return }
             // An outdated daemon owns the socket (pre-versioned builds kept
             // answering pings and silently lacked newer commands) — replace it.
             FileHandle.standardError.write(Data("[logician] replacing outdated bridge daemon\n".utf8))
@@ -61,27 +69,68 @@ enum MCUBridge {
         guard (try? process.run()) != nil else { return }
         for _ in 0..<30 {
             usleep(100_000)
-            if (try? send(["cmd": "ping"]))?["ok"] as? Bool == true {
+            if (try? send(.ping))?.ok == true {
                 FileHandle.standardError.write(Data("[logician] started bridge daemon\n".utf8))
                 return
             }
         }
     }
 
-    static func send(_ command: [String: Any]) throws -> [String: Any] {
+    /// The typed path: every command is built from `BridgeCommand`'s
+    /// factories, so a key name is a compiler-checked identifier rather than
+    /// a string literal repeated at 35 call sites.
+    static func send(_ command: BridgeCommand) throws -> BridgeResponse {
+        let data = try transact(try bridgeJSONEncoder.encode(command), isPing: command.name == .ping)
+        guard let response = try? bridgeJSONDecoder.decode(BridgeResponse.self, from: data) else {
+            throw DemoError.openVerificationFailed("no response from the MCU bridge")
+        }
+        return response
+    }
+
+    /// Same typed command, but the reply is handed back as the raw parsed
+    /// dictionary.
+    ///
+    /// Deliberate: `MCUController.freshStatus()` feeds dozens of call sites
+    /// that read the snapshot as a dictionary, and `logic_mcu_status` hands
+    /// the object to agents. Returning the parsed JSON verbatim means a
+    /// NEWER daemon's extra keys survive an older server instead of being
+    /// silently dropped by our decoder — which matters precisely because the
+    /// two processes can be at different versions during an upgrade.
+    static func sendForDictionary(_ command: BridgeCommand) throws -> [String: Any] {
+        let data = try transact(try bridgeJSONEncoder.encode(command), isPing: command.name == .ping)
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw DemoError.openVerificationFailed("no response from the MCU bridge")
+        }
+        return object
+    }
+
+    /// Untyped passthrough for `logic_mcu_command`, which forwards an
+    /// agent-authored object verbatim. There is no type to check here by
+    /// construction: the whole point of that tool is to reach commands the
+    /// server does not model. Everything else goes through `send(_:)`.
+    static func sendRaw(_ command: [String: Any]) throws -> [String: Any] {
+        let payload = try JSONSerialization.data(withJSONObject: command)
+        let data = try transact(payload, isPing: (command["cmd"] as? String) == "ping")
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw DemoError.openVerificationFailed("no response from the MCU bridge")
+        }
+        return object
+    }
+
+    private static func transact(_ payload: Data, isPing: Bool) throws -> Data {
         do {
-            return try sendOnce(command)
+            return try sendOnce(payload)
         } catch DemoError.writeFailed(let detail) where detail.hasPrefix("could not reach") {
             // The daemon died mid-session. Self-healing is the stated
             // philosophy everywhere else; do it here instead of making the
             // agent guess that logic_health is the cure.
-            guard command["cmd"] as? String != "ping" else { throw DemoError.writeFailed(detail) }
+            guard !isPing else { throw DemoError.writeFailed(detail) }
             ensureRunning()
-            return try sendOnce(command)
+            return try sendOnce(payload)
         }
     }
 
-    private static func sendOnce(_ command: [String: Any]) throws -> [String: Any] {
+    private static func sendOnce(_ payload: Data) throws -> Data {
         let path = directory.appendingPathComponent("command.sock").path
         let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else {
@@ -107,7 +156,6 @@ enum MCUBridge {
                     + "run logic_health if this persists)"
             )
         }
-        let payload = try JSONSerialization.data(withJSONObject: command)
         // Write ALL of it (retrying short writes) and half-close so the
         // bridge sees a clean EOF; then read the whole reply until it closes.
         guard writeAll(fd, payload) else {
@@ -115,11 +163,10 @@ enum MCUBridge {
         }
         Darwin.shutdown(fd, SHUT_WR)
         let data = readToEOF(fd)
-        guard !data.isEmpty,
-              let response = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        guard !data.isEmpty else {
             throw DemoError.openVerificationFailed("no response from the MCU bridge")
         }
-        return response
+        return data
     }
 }
 

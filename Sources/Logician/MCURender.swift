@@ -71,7 +71,7 @@ extension MCUController {
         // Play does NOTHING when the playhead sits at/past the project end,
         // so the freeze render would never start. Stop-when-stopped jumps
         // to the project start — pure MCU, position-safe.
-        _ = try? MCUBridge.send(["cmd": "press", "button": "stop"])
+        _ = try? MCUBridge.send(.press(button: "stop"))
         Thread.sleep(forTimeInterval: 0.4)
         if let logic, let trackName {
             try ensureUnfrozen(logic: logic, trackName: trackName)

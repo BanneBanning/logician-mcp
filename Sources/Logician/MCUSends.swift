@@ -80,8 +80,8 @@ extension MCUController {
         var found = false
         for _ in 0..<80 {
             let before = freshStatus()?["received_events"] as? Int ?? -1
-            let response = try MCUBridge.send(["cmd": "vpot", "index": destIndex, "delta": 1])
-            guard response["ok"] as? Bool == true else { return nil }
+            let response = try MCUBridge.send(.vpot(index: destIndex, delta: 1))
+            guard response.ok else { return nil }
             _ = awaitEvents(since: before, timeoutMs: 300)
             _ = quiescentStatus()
             let name = shownDestination()
@@ -111,8 +111,8 @@ extension MCUController {
                 restored: true
             )
         }
-        let confirm = try MCUBridge.send(["cmd": "vpot_press", "index": destIndex])
-        guard confirm["ok"] as? Bool == true else { return nil }
+        let confirm = try MCUBridge.send(.vpotPress(index: destIndex))
+        guard confirm.ok else { return nil }
         Thread.sleep(forTimeInterval: 1.0)
         guard let sends = try readSends(),
               sends.contains(where: {
@@ -239,9 +239,9 @@ extension MCUController {
         }
         func turn(_ ticks: Int) throws {
             let before = freshStatus()?["received_events"] as? Int ?? -1
-            let response = try MCUBridge.send(["cmd": "vpot", "index": levelIndex, "delta": ticks])
-            guard response["ok"] as? Bool == true else {
-                throw DemoError.writeFailed("MCU vpot failed: \(response["error"] ?? "?")")
+            let response = try MCUBridge.send(.vpot(index: levelIndex, delta: ticks))
+            guard response.ok else {
+                throw DemoError.writeFailed("MCU vpot failed: \(response.error ?? "?")")
             }
             _ = awaitEvents(since: before, timeoutMs: 350)
         }

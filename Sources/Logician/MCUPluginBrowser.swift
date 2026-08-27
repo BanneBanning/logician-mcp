@@ -61,8 +61,8 @@ extension MCUController {
         for step in 0..<500 {
             let before = freshStatus()?["received_events"] as? Int ?? -1
             // The list advances one entry per TWO vpot ticks — send both at once.
-            let response = try MCUBridge.send(["cmd": "vpot", "index": emptyIndex, "delta": 2])
-            guard response["ok"] as? Bool == true else { abortBrowse(); return nil }
+            let response = try MCUBridge.send(.vpot(index: emptyIndex, delta: 2))
+            guard response.ok else { abortBrowse(); return nil }
             _ = awaitEvents(since: before, timeoutMs: 250)
             if step % 4 == 3 { _ = quiescentStatus() }
             guard let name = browseName(), !name.isEmpty, name != "--" else { continue }
@@ -93,7 +93,7 @@ extension MCUController {
         var settledName = browseName()
         var corrections = 0
         while let drifted = settledName, !matches(drifted), corrections < 4 {
-            _ = try? MCUBridge.send(["cmd": "vpot", "index": emptyIndex, "delta": -2])
+            _ = try? MCUBridge.send(.vpot(index: emptyIndex, delta: -2))
             Thread.sleep(forTimeInterval: 0.4)
             _ = quiescentStatus()
             settledName = browseName()
@@ -109,8 +109,8 @@ extension MCUController {
         }
         let shownName = settled
         // Confirm: vpot press instantiates and drops into the edit view.
-        let response = try MCUBridge.send(["cmd": "vpot_press", "index": emptyIndex])
-        guard response["ok"] as? Bool == true else { abortBrowse(); return nil }
+        let response = try MCUBridge.send(.vpotPress(index: emptyIndex))
+        guard response.ok else { abortBrowse(); return nil }
         Thread.sleep(forTimeInterval: 1.0)
         _ = quiescentStatus()
         // Verify: back in the plugin list the slot is occupied.
@@ -202,8 +202,8 @@ extension MCUController {
         var reached = false
         for step in 0..<400 {
             let before = freshStatus()?["received_events"] as? Int ?? -1
-            let response = try MCUBridge.send(["cmd": "vpot", "index": slotIndex, "delta": -2])
-            guard response["ok"] as? Bool == true else { exitToPan(); return nil }
+            let response = try MCUBridge.send(.vpot(index: slotIndex, delta: -2))
+            guard response.ok else { exitToPan(); return nil }
             _ = awaitEvents(since: before, timeoutMs: 250)
             if step % 4 == 3 { _ = quiescentStatus() }
             if browseName() == "--" { reached = true; break }
@@ -219,7 +219,7 @@ extension MCUController {
         Thread.sleep(forTimeInterval: 0.3)
         var corrections = 0
         while browseName() != "--", corrections < 4 {
-            _ = try? MCUBridge.send(["cmd": "vpot", "index": slotIndex, "delta": 2])
+            _ = try? MCUBridge.send(.vpot(index: slotIndex, delta: 2))
             Thread.sleep(forTimeInterval: 0.4)
             _ = quiescentStatus()
             corrections += 1
@@ -232,8 +232,8 @@ extension MCUController {
                 restored: true
             )
         }
-        let response = try MCUBridge.send(["cmd": "vpot_press", "index": slotIndex])
-        guard response["ok"] as? Bool == true else { exitToPan(); return nil }
+        let response = try MCUBridge.send(.vpotPress(index: slotIndex))
+        guard response.ok else { exitToPan(); return nil }
         Thread.sleep(forTimeInterval: 1.0)
         _ = quiescentStatus()
         guard let after = try pluginInsertNames() else { return nil }

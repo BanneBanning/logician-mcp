@@ -27,8 +27,8 @@ extension MCUController {
         guard let note = automationModeNote(mode) else {
             throw DemoError.invalidArguments("mode must be read/touch/latch/write/trim")
         }
-        let response = try MCUBridge.send(["cmd": "press", "note": note])
-        guard response["ok"] as? Bool == true else {
+        let response = try MCUBridge.send(.press(note: note))
+        guard response.ok else {
             throw DemoError.writeFailed("automation mode press failed")
         }
         for _ in 0..<10 {
@@ -98,7 +98,7 @@ extension MCUController {
         for db in Set(sorted.map(\.db)) {
             guard try setVolume(trackName: trackName, targetDb: db, toleranceDb: 0.15) != nil,
                   let position = currentFader14(channel) else {
-                _ = try? MCUBridge.send(["cmd": "fader", "channel": channel, "value": originalFader])
+                _ = try? MCUBridge.send(.fader(channel: channel, value: originalFader))
                 throw DemoError.verificationFailed(
                     requested: "calibration of \(db) dB",
                     actual: "volume converge or fader echo failed; original volume restored",
@@ -107,7 +107,7 @@ extension MCUController {
             }
             calibration[db] = position
         }
-        _ = try? MCUBridge.send(["cmd": "fader", "channel": channel, "value": originalFader])
+        _ = try? MCUBridge.send(.fader(channel: channel, value: originalFader))
         Thread.sleep(forTimeInterval: 0.3)
 
         // Timed schedule relative to the crossing into the first point's bar.
@@ -160,16 +160,16 @@ extension MCUController {
             for entry in schedule {
                 let wait = entry.ms / 1000 - Date().timeIntervalSince(start)
                 if wait > 0 { Thread.sleep(forTimeInterval: wait) }
-                _ = try MCUBridge.send(["cmd": "fader", "channel": channel, "value": entry.value])
+                _ = try MCUBridge.send(.fader(channel: channel, value: entry.value))
             }
             Thread.sleep(forTimeInterval: 0.5)
             _ = try? setPlaying(false)
             try setAutomationMode("read", logic: logic, trackName: trackName)
-            _ = try? MCUBridge.send(["cmd": "fader", "channel": channel, "value": originalFader])
+            _ = try? MCUBridge.send(.fader(channel: channel, value: originalFader))
         } catch {
             _ = try? setPlaying(false)
             _ = try? setAutomationMode("read", logic: logic, trackName: trackName)
-            _ = try? MCUBridge.send(["cmd": "fader", "channel": channel, "value": originalFader])
+            _ = try? MCUBridge.send(.fader(channel: channel, value: originalFader))
             throw error
         }
 
@@ -207,7 +207,7 @@ extension MCUController {
                 }
             }
             _ = try? setPlaying(false)
-            _ = try? MCUBridge.send(["cmd": "fader", "channel": channel, "value": originalFader])
+            _ = try? MCUBridge.send(.fader(channel: channel, value: originalFader))
             let allPass = !samples.isEmpty && samples.allSatisfy { $0["pass"] as? Bool == true }
             report["verified"] = allPass
             report["verification"] = [
@@ -228,8 +228,8 @@ extension MCUController {
         var remaining = delta
         while remaining != 0 {
             let chunk = max(-63, min(63, remaining))
-            let response = try MCUBridge.send(["cmd": "vpot", "index": index, "delta": chunk])
-            guard response["ok"] as? Bool == true else {
+            let response = try MCUBridge.send(.vpot(index: index, delta: chunk))
+            guard response.ok else {
                 throw DemoError.writeFailed("vpot failed mid-automation")
             }
             remaining -= chunk
@@ -284,16 +284,16 @@ extension MCUController {
         index: Int, field: Int? = nil, target: Double,
         tolerance: Double = 0, maxMs: Int = 3000, seedRatio: Double? = nil
     ) -> (text: String, value: Double)? {
-        var command: [String: Any] = [
-            "cmd": "converge", "index": index, "target": target,
-            "tolerance": tolerance, "max_ms": maxMs
-        ]
-        if let field { command["field"] = field }
-        if let seedRatio { command["ratio"] = seedRatio }
-        guard let response = try? MCUBridge.send(command),
-              response["ok"] as? Bool == true,
-              let text = response["final_text"] as? String,
-              let value = response["final_value"] as? Double else { return nil }
+        // `field` and `ratio` stay optional so an absent one is ABSENT on the
+        // wire: the bridge defaults field to index and ratio to 2.0, and
+        // sending a placeholder would override those defaults.
+        let command = BridgeCommand.converge(
+            index: index, field: field, target: target,
+            tolerance: tolerance, maxMs: maxMs, ratio: seedRatio
+        )
+        guard let response = try? MCUBridge.send(command), response.ok,
+              let text = response.finalText,
+              let value = response.finalValue else { return nil }
         return (text, value)
     }
 

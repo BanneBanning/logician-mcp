@@ -28,8 +28,8 @@ extension MCUController {
                 return nil
             }
         }
-        let response = try MCUBridge.send(["cmd": "vpot_press", "index": channel])
-        guard response["ok"] as? Bool == true else {
+        let response = try MCUBridge.send(.vpotPress(index: channel))
+        guard response.ok else {
             exitToPan()
             return nil
         }
@@ -197,9 +197,9 @@ extension MCUController {
         }
         func turn(_ ticks: Int) throws {
             let before = freshStatus()?["received_events"] as? Int ?? -1
-            let response = try MCUBridge.send(["cmd": "vpot", "index": index, "delta": ticks])
-            guard response["ok"] as? Bool == true else {
-                throw DemoError.writeFailed("MCU vpot failed: \(response["error"] ?? "?")")
+            let response = try MCUBridge.send(.vpot(index: index, delta: ticks))
+            guard response.ok else {
+                throw DemoError.writeFailed("MCU vpot failed: \(response.error ?? "?")")
             }
             _ = awaitEvents(since: before, timeoutMs: 350)
         }

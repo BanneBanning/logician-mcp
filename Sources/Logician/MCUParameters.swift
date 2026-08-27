@@ -7,9 +7,9 @@ extension MCUController {
     // MARK: Parameter paging (cursor left/right, note 0x62/0x63)
 
     static func pressNote(_ note: Int) throws {
-        let response = try MCUBridge.send(["cmd": "press", "note": note])
-        guard response["ok"] as? Bool == true else {
-            throw DemoError.writeFailed("MCU note press failed: \(response["error"] ?? "?")")
+        let response = try MCUBridge.send(.press(note: note))
+        guard response.ok else {
+            throw DemoError.writeFailed("MCU note press failed: \(response.error ?? "?")")
         }
     }
 
