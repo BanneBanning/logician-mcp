@@ -20,7 +20,9 @@ extension MCUController {
         // (this once put plugins on Stereo Out). Bind the MCU selection to
         // the target track explicitly before entering the view.
         guard let channel = try findChannel(trackName: trackName) else { return nil }
-        guard try selectFoundChannel(channel) else { return nil }
+        // Prove the surface is pointed at the intended strip BEFORE the view
+        // that cannot name it is entered (see selectChannelVerified).
+        try selectChannelVerified(channel: channel, expectedName: trackName)
         guard let inserts = try pluginInsertNames() else { return nil }
         guard let emptyIndex = inserts.firstIndex(where: { $0.isEmpty || $0 == "--" }) else {
             throw LogicianError.trackNotExposed(
@@ -127,11 +129,13 @@ extension MCUController {
             )
         }
         // Cross-verify through Accessibility — an independent source that
-        // names the track, so a wrong-channel insertion cannot pass silently.
+        // names the strip, so a wrong-channel insertion cannot pass silently.
         var axConfirmed = false
+        var axReachable = false
         for _ in 0..<10 {
             if let axInserts = (try? logic.listInserts(trackName: trackName))?["inserts"]
                 as? [[String: Any]] {
+                axReachable = true
                 let names = axInserts.compactMap { $0["plugin_display_name"] as? String }
                 if names.contains(where: {
                     $0.lowercased().hasPrefix(pluginName.lowercased())
@@ -144,14 +148,14 @@ extension MCUController {
             }
             Thread.sleep(forTimeInterval: 0.4)
         }
-        guard axConfirmed else {
+        guard axConfirmed || !axReachable else {
             throw LogicianError.verificationFailed(
-                requested: "'\(pluginName)' on track '\(trackName)' (AX cross-check)",
-                actual: "the LCD claimed success but the track's AX insert list never showed the plugin — it may have landed on another channel; check the mixer",
+                requested: "'\(pluginName)' on '\(trackName)' (AX cross-check)",
+                actual: "the LCD claimed success but the strip's AX insert list never showed the plugin — it may have landed on another channel; check the mixer",
                 restored: false
             )
         }
-        return [
+        var result: [String: Any] = [
             "success": true,
             "verified": true,
             "state": "added",
@@ -159,8 +163,24 @@ extension MCUController {
             "browser_entry": shownName,
             "mcu_slot": emptyIndex + 1,
             "write_route": "mcu_plugin_browser",
+            "cross_check": axConfirmed ? "ax_insert_list" : "unavailable",
             "note": "Added via the control-surface plugin browser — no mouse, no menus."
         ]
+        // A headerless output/aux/bus strip is only in the inspector while
+        // something is showing it, so the independent check can be MISSING
+        // rather than failed. Degrade the check, never the honesty: the write
+        // stands on the surface's own evidence and the result says so.
+        if !axReachable {
+            appendWarning(
+                "The independent Accessibility cross-check could not run: no inspector strip named "
+                    + "'\(trackName)' is on screen. The insertion is confirmed only by the control "
+                    + "surface's own echo (the strip was LCD/LED-verified as selected before the write, "
+                    + "and its MCU slot now names the plugin). Open the Mixer or select a track routed "
+                    + "to it and re-read the inserts if you want a second source.",
+                to: &result
+            )
+        }
+        return result
     }
 
     /// Removes a plugin mouse-free: browse the occupied slot to the "--"
@@ -172,7 +192,7 @@ extension MCUController {
     ) throws -> [String: Any]? {
         guard freshStatus() != nil else { return nil }
         guard let channel = try findChannel(trackName: trackName) else { return nil }
-        guard try selectFoundChannel(channel) else { return nil }
+        try selectChannelVerified(channel: channel, expectedName: trackName)
         guard let inserts = try pluginInsertNames() else { return nil }
         // Match the target slot by LCD name (truncated) against the request.
         let matches = inserts.enumerated().filter { _, name in
@@ -240,11 +260,13 @@ extension MCUController {
         exitToPan()
         let nowEmpty = !after.indices.contains(slotIndex)
             || after[slotIndex].isEmpty || after[slotIndex] == "--"
-        // AX cross-check: the plugin must be gone from the track's inserts.
+        // AX cross-check: the plugin must be gone from the strip's inserts.
         var axGone = false
+        var axReachable = false
         for _ in 0..<10 {
             if let axInserts = (try? logic.listInserts(trackName: trackName))?["inserts"]
                 as? [[String: Any]] {
+                axReachable = true
                 let names = axInserts.compactMap { $0["plugin_display_name"] as? String }
                 if !names.contains(where: {
                     $0.lowercased().hasPrefix(pluginName.lowercased())
@@ -257,7 +279,7 @@ extension MCUController {
             }
             Thread.sleep(forTimeInterval: 0.4)
         }
-        guard nowEmpty, axGone else {
+        guard nowEmpty, axGone || !axReachable else {
             throw LogicianError.verificationFailed(
                 requested: "'\(pluginName)' removed from '\(trackName)'",
                 actual: nowEmpty
@@ -266,15 +288,26 @@ extension MCUController {
                 restored: false
             )
         }
-        return [
+        var result: [String: Any] = [
             "success": true,
             "verified": true,
             "state": "removed",
             "plugin": pluginName,
             "mcu_slot": slotIndex + 1,
             "write_route": "mcu_plugin_browser",
+            "cross_check": axGone ? "ax_insert_list" : "unavailable",
             "note": "Removed via the control-surface plugin browser's No Plug-in entry — no mouse, no menus."
         ]
+        if !axReachable {
+            appendWarning(
+                "The independent Accessibility cross-check could not run: no inspector strip named "
+                    + "'\(trackName)' is on screen. The removal is confirmed only by the control "
+                    + "surface's own echo (the strip was LCD/LED-verified as selected before the write, "
+                    + "and its MCU slot now reads empty).",
+                to: &result
+            )
+        }
+        return result
     }
 
 }
