@@ -11,7 +11,9 @@
 [![MCP](https://img.shields.io/badge/MCP-57_tools-4be37a)](docs/AGENT-GUIDE.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
-[Install](#install) · [What it can do](#what-it-can-do-measured) · [Agent guide](docs/AGENT-GUIDE.md) · [Architecture](docs/ARCHITECTURE.md)
+[**📦 Installation Guide**](docs/INSTALL.md) · [What it can do](#what-it-can-do-measured) · [Agent guide](docs/AGENT-GUIDE.md) · [Architecture](docs/ARCHITECTURE.md)
+
+**New here? → [Follow the step-by-step Installation Guide](docs/INSTALL.md).** ~10 minutes, foolproof, with a built-in checker that names the fix for anything wrong.
 
 </div>
 
@@ -51,33 +53,16 @@ Logician assumes the model on the other end is fallible and designs for it:
 
 ## Install
 
-```bash
-swift build -c release
-```
+**→ [Full step-by-step Installation Guide](docs/INSTALL.md)** — start here if you have not set up an MCP server before. It walks every click, tells you what you should see, and leans on a built-in checker that names the fix for anything wrong.
 
-Then register the single binary with your MCP client:
-
-**Claude Code**
+**Quick version** (if you already run MCP servers):
 
 ```bash
-claude mcp add logician -- /path/to/.build/release/logician
+git clone https://github.com/BanneBanning/logician-mcp.git
+cd logician-mcp && swift build -c release
 ```
 
-**Antigravity CLI** — use the CLI's own registration (hand-editing settings.json is not picked up reliably):
-
-```bash
-agy mcp add logician /path/to/.build/release/logician
-```
-
-Restart the session (MCP servers load at session start) and verify with `agy mcp list`. Have the agent confirm it sees the `logic_*` tools before starting work.
-
-**Gemini CLI** — add to `~/.gemini/settings.json`:
-
-```json
-{ "mcpServers": { "logician": { "command": "/path/to/.build/release/logician" } } }
-```
-
-**Other MCP clients:** the same `mcpServers` JSON shape, or the client's own `mcp add` command where one exists (prefer it).
+Register the binary with your client — Antigravity `agy mcp add logician <path>`, Claude Code `claude mcp add logician -- <path>`, or the `mcpServers` JSON shape for others — then restart the client. Two one-time setup steps remain: grant Accessibility to your client, and add a Mackie Control in Logic → Control Surfaces → Setup pointing at the `Logic MCP MCU` ports. Ask the agent to run `logic_health`; it verifies every step and names any fix. The [Installation Guide](docs/INSTALL.md) covers all of this in detail.
 
 ### Which client to use — the ears decide
 
