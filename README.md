@@ -11,39 +11,87 @@
 [![MCP](https://img.shields.io/badge/MCP-57_tools-4be37a)](docs/AGENT-GUIDE.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
-[Get started](#get-started) · [What it can do](#what-it-can-do-measured) · [Agent guide](docs/AGENT-GUIDE.md) · [Architecture](docs/ARCHITECTURE.md)
+[Install](#install) · [What it can do](#what-it-can-do-measured) · [Agent guide](docs/AGENT-GUIDE.md) · [Architecture](docs/ARCHITECTURE.md)
 
 </div>
 
 An MCP server that gives Claude, Gemini, Cursor — any MCP client — real, verified control over Logic Pro on macOS: every plugin parameter (third-party included), mixing, MIDI composition, arrangement editing, automation, and dialog-free audio export. Results that produce sound **carry the sound**: bounces and A/B evaluations return the audio itself, so a multimodal agent hears what it just did in the same reply it decides from. No UI scripting, no synthetic keypresses, no mouse takeover.
 
-## Get started
+## Install
 
-> Needs **macOS 13+**, **Logic Pro**, and Apple's command-line tools (`xcode-select --install` if `swift --version` fails).
+> [!NOTE]
+> **You need:** macOS 13+ · Logic Pro · Apple's command-line tools — if `swift --version` fails, run `xcode-select --install` first.
 
-**1 · Download & build** — paste into Terminal (compile takes a minute):
+### 1 · Download & build
+
+Paste into Terminal — the compile takes a minute or two:
 
 ```bash
 git clone https://github.com/BanneBanning/logician-mcp.git
 cd logician-mcp && swift build -c release
 ```
 
-**2 · Connect it to your AI** — from inside that folder, one line for your client, then **restart the client**:
+**You should see** `Build complete!` on the last line.
+
+### 2 · Connect your AI
+
+From inside that same folder — `$(pwd)` fills in the path so you never copy one by hand. One line for your client, then **restart the client**:
+
+**Antigravity + Gemini** &nbsp;*(recommended — the agent can actually hear your mix)*
 
 ```bash
-agy mcp add logician "$(pwd)/.build/release/logician"          # Antigravity + Gemini (recommended — the agent can hear your mix)
-claude mcp add logician -- "$(pwd)/.build/release/logician"    # Claude Code
+agy mcp add logician "$(pwd)/.build/release/logician"
 ```
 
-**3 · Let Logic see it** *(once)* — in Logic:
+**Claude Code**
 
-> **Logic Pro → Control Surfaces → Setup → New → Install → Mackie Control**, then set **Input Port** and **Output Port** to **`Logic MCP MCU`**.
+```bash
+claude mcp add logician -- "$(pwd)/.build/release/logician"
+```
 
-And grant Accessibility to your client when macOS asks (or System Settings → Privacy & Security → Accessibility).
+<details>
+<summary><b>Other clients — Cursor · VS Code · LM Studio · Gemini CLI · anything MCP</b></summary>
+<br>
 
-**4 · Check it** — ask your agent:
+One-click registration for these clients — **after** step 1 above:
 
-> **"Run logic_health"** — it verifies every step above and names the fix for anything still wrong. Then try: *"Bounce bars 1–4 and tell me what you hear."*
+[<img src="https://cursor.com/deeplink/mcp-install-dark.svg" alt="Add Logician to Cursor" height="32">](https://cursor.com/install-mcp?name=logician&config=eyJjb21tYW5kIjoiL2Jpbi9zaCIsImFyZ3MiOlsiLWMiLCJleGVjIFwiJEhPTUUvbG9naWNpYW4tbWNwLy5idWlsZC9yZWxlYXNlL2xvZ2ljaWFuXCIiXX0%3D) &nbsp; [<img src="https://img.shields.io/badge/VS_Code-Install_Logician-0098FF" alt="Install Logician in VS Code" height="32">](https://vscode.dev/redirect/mcp/install?name=logician&config=%7B%22command%22%3A%22%2Fbin%2Fsh%22%2C%22args%22%3A%5B%22-c%22%2C%22exec%20%5C%22%24HOME%2Flogician-mcp%2F.build%2Frelease%2Flogician%5C%22%22%5D%7D) &nbsp; [<img src="https://files.lmstudio.ai/deeplink/mcp-install-dark.svg" alt="Add Logician to LM Studio" height="32">](https://lmstudio.ai/install-mcp?name=logician&config=eyJjb21tYW5kIjoiL2Jpbi9zaCIsImFyZ3MiOlsiLWMiLCJleGVjIFwiJEhPTUUvbG9naWNpYW4tbWNwLy5idWlsZC9yZWxlYXNlL2xvZ2ljaWFuXCIiXX0%3D)
+
+Straight talk about what these buttons do: they **only** register the server in the client — the one step they replace is the command in step 2. No button can compile Swift or click through Logic's Control Surfaces window, so steps 1, 3 and 4 are still yours. They also assume you cloned into your home folder (`~/logician-mcp` — where step 1 lands if you pasted it into a fresh Terminal). Cloned somewhere else? Use the JSON below instead.
+
+**Gemini CLI** — installs as an extension (this repo ships a `gemini-extension.json`), then build inside it:
+
+```bash
+gemini extensions install https://github.com/BanneBanning/logician-mcp
+cd ~/.gemini/extensions/logician && swift build -c release
+```
+
+**Any other MCP client** — point it at the binary. Print the exact path with `echo "$(pwd)/.build/release/logician"`, then:
+
+```json
+{ "mcpServers": { "logician": { "command": "/ABSOLUTE/PATH/TO/logician-mcp/.build/release/logician" } } }
+```
+
+</details>
+
+### 3 · Let Logic see it *(one-time, ~5 clicks)*
+
+First, ask your agent to **"Run logic_health"** once — that wakes Logician's helper and creates the MIDI port Logic is about to look for. Then, in Logic:
+
+> [!IMPORTANT]
+> **Logic Pro → Control Surfaces → Setup… → New ▾ → Install… → Mackie Control → Add**, then set **Input Port** *and* **Output Port** to **`Logic MCP MCU`**.
+
+And grant **Accessibility** to your client when macOS asks (or: System Settings → Privacy & Security → Accessibility → switch on your client).
+
+### 4 · Check it
+
+Ask your agent one more time:
+
+> **"Run logic_health"**
+
+**You should see** `mcu_connected: true` and `accessibility_trusted: true` — it verifies every step above and names the exact fix for anything still missing. Then try the fun one:
+
+> *"Bounce bars 1–4 and tell me what you hear."* 🎧
 
 📖 **First time setting up an MCP server?** The [**step-by-step Installation Guide**](docs/INSTALL.md) walks every single click, with a troubleshooting table.
 
