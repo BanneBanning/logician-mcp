@@ -93,13 +93,12 @@ extension MCPServer {
                 usedSearch = firstWord
                 rows = try logic.searchKeyCommands(firstWord)
             }
-            let search = usedSearch
             let exact = rows.contains {
                 ($0["name"] as? String)?.caseInsensitiveCompare(name) == .orderedSame
             }
             return [
                 "success": true, "verified": true, "state": "searched",
-                "requested_name": name, "search": search,
+                "requested_name": name, "search": usedSearch,
                 "exact_match": exact,
                 "match_count": rows.count,
                 "matches": rows,
