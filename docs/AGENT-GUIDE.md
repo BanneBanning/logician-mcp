@@ -16,6 +16,8 @@ Run `logic_health` first. It starts the bridge daemon, checks every setup requir
 
 **3. Track names: use what `logic_list_tracks` shows — and read its `partial` field.** Tools take the full Accessibility names ("Lofi Pad"), not the MCU's 7-char truncations ("LofPad"). Duplicate names: pass `track_number` too. **The list can be incomplete**: Accessibility publishes only the track headers Logic has RENDERED (13 of 27 on the reference project). The result therefore carries `partial`, `partial_evidence` (headers scrolled out above, gaps in the numbering, collapsed stacks, a scrollable Tracks area), `missing_track_numbers` where the numbering names them, and `completeness` — which is `"partial"` or `"unknown"` and never `"complete"`, because a row Logic has not rendered publishes nothing at all. `partial: false` means nothing proved rows missing; it is not a census. Expand stacks with `logic_set_track_stack`, and remember that headerless strips are never in this list at all (3b).
 
+  **`logic_list_tracks` is a PARTIAL view and looks complete.** It returns only the track headers Logic has currently rendered — 20 of the reference project's 26 strips on 2026-08-28 — with a plain `success: true` and nothing saying what it could not see. Use **`logic_list_strips`** for the census: it walks the control surface, which reaches every strip in the project regardless of scrolling, and marks any strip it cannot tie to a rendered header as `unresolved` instead of omitting it.
+
 **3b. The master chain and the buses are strips too — address them by name.** `Stereo Out`, `Master`, `Aux 1`, bus channels: `logic_list_tracks` does NOT list them (they have no track header in the Tracks area), but the mixing, send and plugin tools take their names anyway. Pass the name Logic shows in the Mixer (`"Stereo Out"`), never the 6-character LCD abbreviation (`St Out`). What differs from a track:
 
   - **Which plane resolves them.** A track is selected through Accessibility; a headerless strip is resolved and selected on the control surface, so those calls need the MCU bridge. Results say which was used in `selection_route` (`ax_track_header` / `mcu_channel`).
@@ -52,10 +54,16 @@ When the Tempo List cannot be read at all, the pre-map behavior is the fallback:
 ## Workflows (recipes)
 
 **Understand a project:**
-`logic_health` → `logic_list_tracks` (**check `partial`** — if it is true, the project has tracks you cannot see) → `logic_list_regions` (the arrangement map: every region's name, bars, type) → `logic_get_transport` (tempo/meter) → `logic_markers {action: "list"}` for the song's sections → per interesting track: `logic_mcu_plugin_inserts` + `logic_mcu_sends`.
+`logic_health` → **`logic_list_strips`** (the complete census — every strip including the ones `logic_list_tracks` cannot see) → `logic_list_regions` (the arrangement map: every region's name, bars, type) → `logic_get_transport` (tempo/meter) → `logic_markers {action: "list"}` for the song's sections → per interesting track: `logic_mcu_plugin_inserts` + `logic_mcu_sends`. `logic_list_tracks` is still the right call when you need the *rendered* rows specifically (selection state, stacks, expansion — and **check `partial`**: if it is true, the project has tracks you cannot see), but it is a partial view of the project and `logic_list_strips` is the complete one.
+
+**Read a mix you did not build:**
+**`logic_mixer_snapshot`** — one call gives every strip's dB, mute, solo, selection, record-arm and pan, so you can plan before touching anything instead of making one call per track per property. Pair it with `logic_read_automation` on any track whose balance looks deliberate: automation is invisible in a snapshot, and `logic_record_automation` OVERWRITES the range it rides. Read the lane, then decide.
 
 **Compose a part:**
-`logic_create_track {type: "software_instrument"}` → `logic_record_midi {track_name, notes: [{pitch: "C3", bar: 5, beat: 1, duration_beats: 1, velocity: 100}, ...], cc_events: [...], pitch_bends: [...]}`. Verification renders the recorded bars and returns metrics + a listenable WAV path. Notes: pitch as MIDI number or name (Logic convention: C3 = 60). start_bar must be ≥ 2 (one pre-roll bar).
+`logic_create_track {type: "software_instrument"}` → **`logic_load_instrument {track_name, instrument}`** (the instrument slot is a different mechanism from `logic_add_plugin`, which fills an *insert*; a new track without this step usually makes no sound) → `logic_record_midi {track_name, notes: [{pitch: "C3", bar: 5, beat: 1, duration_beats: 1, velocity: 100}, ...], cc_events: [...], pitch_bends: [...]}`. Verification renders the recorded bars and returns metrics + a listenable WAV path. Notes: pitch as MIDI number or name (Logic convention: C3 = 60). start_bar must be ≥ 2 (one pre-roll bar).
+
+**Track a human (a singer, a guitarist):**
+`logic_create_track {type: "audio"}` → `logic_set_metronome {enabled: true}` if they want a click → **`logic_set_track_record_arm {track_name, enabled: true}`** → tell the user you are rolling → `logic_set_playhead {bar}` → `logic_set_playing {playing: true}` → …the take happens in real time… → `logic_set_playing {playing: false}` → **`logic_set_track_record_arm {enabled: false}`**. Two things to know before you roll: Logic lets several tracks be armed at once and arming one does not disarm another, so check `logic_mixer_snapshot`'s `record_armed` column first; and input assignment and input monitoring are still not reachable from this server, so the user has to set the mic input and monitoring by hand. Always disarm afterwards — an armed track left behind records the next time anyone presses record.
 
 **Shape a sound:**
 `logic_add_plugin {track_name, plugin_name}` (mouse-free via the control-surface browser; exact catalog names like "Compressor", "Channel EQ") → `logic_mcu_plugin_parameters {insert_slot}` to read (page-capped; pass `max_pages` for giants) → `logic_mcu_set_plugin_parameter` per change → or browse factory settings with `logic_plugin_preset` (`action: "list"` to see the names, `action: "select"` with `name` to load one).
@@ -76,6 +84,7 @@ When the Tempo List cannot be read at all, the pre-map behavior is the fallback:
 Use the strip name directly — `logic_mcu_plugin_inserts {track_name: "Stereo Out"}` to see the MCU slots → `logic_mcu_plugin_parameters {track_name: "Stereo Out", insert_slot}` → `logic_mcu_set_plugin_parameter {...}`. `logic_list_tracks` will not mention `Stereo Out`; that is expected (see concept 3b). A/B a master change with `logic_evaluate_change` method `bounce`, which captures the whole mix and needs no solo.
 
 **Automate:**
+**Read the lane first** — `logic_read_automation {track_name, parameter, start_bar, end_bar}` samples what is already there, which matters because the write below overwrites the whole range it rides (that is why it is flagged `destructive`). A flat result is ambiguous by nature: an unautomated lane and a genuinely flat curve look the same from a playhead chase, and the result says so. Then:
 `logic_record_automation {track_name, parameter: "volume"|"pan"|"send"|"plugin", points: [{bar, beat?, value}], ramp: true}` — for sends add `send: N`, for plugins add `insert_slot` + `plugin_parameter`. Values: dB for volume/send, −64..63 for pan, the parameter's own units for plugins. Verification replays or playhead-chases each point and reports expected vs observed. First point needs bar ≥ 2.
 
 **Edit the arrangement:**
@@ -149,6 +158,8 @@ Every successful result carries the same four fields, and they mean different th
 - On a headerless strip (`Stereo Out`, an aux, a bus) the independent Accessibility cross-check that `logic_add_plugin` / `logic_remove_plugin` normally run can be UNAVAILABLE — no inspector is showing that strip. The write then stands on the control surface's own echo alone and the result carries a `warning` plus `cross_check: "unavailable"`. Open the Mixer (or select a track routed to the strip) and re-read the inserts if you want a second source.
 - Logic sometimes SUBSTITUTES words when it abbreviates a name onto the LCD (the track "Ivan Effect" appears as `IvanFx`). Such a name cannot be resolved on the control surface at all: you get `not_found` with the visible strips listed — never a write on the wrong strip. Rename the track, or reach it via a track-plane tool.
 - A rendered file that is honestly EMPTY (a track with no regions, or MIDI with no instrument) comes back with a `warning`, not fake success.
+- **A record-armed strip's LED BLINKS** (~640 ms on, ~640 ms off). `logic_mcu_status` is one instant of the mirror, so its `leds_lit` reports an armed strip as unarmed about half the time — never conclude "not armed" from a single snapshot. `logic_set_track_record_arm` and `logic_mixer_snapshot` sample across a whole blink cycle for exactly this reason; use them rather than decoding notes `0x00`–`0x07` yourself.
+- **`logic_load_instrument` replaces, it does not add.** The instrument slot holds one plug-in; loading a second one discards the first and all of its settings, and this server cannot put a plug-in's state back. Only Logic's Undo can.
 - Modal dialogs freeze most operations; tools detect and answer their own dialogs, and `logic_health` flags Logic's state. If something looks stuck, check for a dialog in Logic. **The symptom is worth memorising**: while a modal is up, key commands sent over MIDI are swallowed, so every tool that uses one reports "the command fired and nothing happened" — several calls in a row failing that way means a dialog, not a broken tool. `logic_split_region` raises exactly such a modal on a MIDI region ("Notes Crossing Split Point") and answers it for you.
 - **Learning a key command writes into the user's own Logic.** `logic_learn_key_command` binds a MIDI note to a command in the user's active key command set — additive (their keyboard shortcut is untouched), removable in Logic's Key Commands window under Delete Assignment, and recorded in the registry with the tool that bound it and when (`logic_list_key_commands` reads it back; the registry is also the consent record `logic_trigger_key_command` checks before firing anything). Three habits follow. **Say what you are binding** before you bind a batch of them — this is the user's editing environment, not a scratch space. **Look first** with `dry_run: true` when you are unsure of a name: Logic 12.3.1 spells things its own way (there is no "Strip Silence" — the command is `Remove Silence from Audio Region…`; the selection command is `Select All Following of Same Track/Pitch`), and the dry run lists the real rows without binding anything. And **know which tools learn on their own**: `logic_select_regions` and `logic_remove_silence` learn the one command they need if it is missing, and say so in the result (`learned_key_command`, `consent_note`).
 - **A blind Undo is worse than it looks.** `logic_trigger_key_command {name: "Undo"}` undoes whatever is on top of Logic's stack, which is not necessarily yours — in one session an Undo fired after a tool had *failed* removed an empty track someone else had just made, and nothing could tell it apart from a no-op. Fire Undo only when a tool reported `success: true` for the edit you want back, and re-read the arrangement map afterwards. To remove something you created, address it (`logic_delete_region`) instead.
@@ -156,7 +167,7 @@ Every successful result carries the same four fields, and they mean different th
 
 ## Tool reference
 
-All 69 tools, generated from the live server schemas (v0.49.0), with the strip-addressing notes added by hand in v0.51.0, the `logic_plugin_preset` section rewritten by hand in v0.52.0, and the v0.54.0 additions added by hand — the five List-Editors/bypass/window tools, the key-command / region / delivery tools, and the composability corrections — where an entry and the live schema differ in wording, the schema is authoritative. Every write is compare-and-set with readback; every failure names what was observed.
+All 75 tools, generated from the live server schemas (v0.49.0), with the strip-addressing notes added by hand in v0.51.0, the `logic_plugin_preset` section rewritten by hand in v0.52.0, and the v0.54.0 additions added by hand — the five List-Editors/bypass/window tools, the key-command / region / delivery tools, the six control-surface tools, and the composability corrections — where an entry and the live schema differ in wording, the schema is authoritative. Every write is compare-and-set with readback; every failure names what was observed.
 
 #### `logic_health`
 
@@ -940,3 +951,66 @@ Open or close Logic's Mixer window (`Window > Open Mixer`), verified against the
 Parameters:
 
   - `open` (boolean) **(required)**: true opens the Mixer, false closes it.
+#### `logic_list_strips`
+
+The CENSUS: every channel strip the control surface can reach, in project order — audio and instrument tracks, auxes, buses, the output and the master. Unlike `logic_list_tracks`, which can only see the track headers Logic has currently RENDERED (20 of 26 strips on the reference project), this walks the surface's banks, so nothing is hidden by scrolling or by a collapsed stack. Each row carries the strip's position, its bank/channel address and Logic's own 6-character LCD name cell; `track_name`/`track_number` are filled in only where exactly one rendered track header abbreviates to that cell, and everything else is `kind: "unresolved"` (an output/aux/bus, or a track scrolled out) rather than guessed at. Address strips by their full Mixer name, never by the abbreviation.
+
+Parameters:
+
+  - `rescan` (boolean): Force a fresh bank scan instead of using the cached map (a few seconds). Default false — pass true after adding, deleting or reordering tracks.
+
+#### `logic_mixer_snapshot`
+
+The whole mixer in ONE call, off Logic's own control-surface feedback: per strip the fader value in dB, mute/solo/select/record-arm state, the raw 14-bit fader echo and (by default) pan. `volume_db` is the dB string Logic paints in its channel-strip Volume view — the same readout `logic_set_track_volume` converges against — **not** a conversion of the fader position, which is reported separately and raw as `fader_14bit`; a cell that does not parse comes back `null` with the LCD text beside it, never interpolated. `record_armed` is sampled across a full blink cycle because Logic FLASHES an armed strip's record LED (~640 ms on / 640 ms off, measured), so a single instant would report half the armed strips as unarmed. Costs a bank walk per view (~2–4 s per bank). Leaves the surface in the pan view at the leftmost bank. Strip identity follows the same rule as `logic_list_strips`.
+
+Parameters:
+
+  - `include_pan` (boolean): Also walk the pan view for each strip's pan position and vpot ring. Default true; false halves the cost.
+
+#### `logic_set_track_record_arm`
+
+Arm or disarm a track for recording — the control surface's rec/ready button (MCU note `0x00`–`0x07`), verified by Logic's own record LED AND, independently, by the track header's `Record Enable` checkbox. Compare-and-set: a track already in the requested state is reported as `already_armed`/`already_disarmed` and nothing is pressed. Logic FLASHES the record LED of an armed strip, so the LED evidence is a window rather than an instant: seen lit once means armed, and only a whole quiet window is read as disarmed. Several tracks can be armed at once, so arming one does **not** disarm another. Output, aux, bus and master strips have no record enable and are refused before anything is pressed. Needs the MCU bridge: there is no Accessibility-only route.
+
+Parameters:
+
+  - `enabled` (boolean) **(required)**: true arms the track, false disarms it.
+  - `track_name` (string) **(required)**: Exact track name as Logic shows it (not the 6-character LCD abbreviation).
+  - `track_number` (integer): 1-based track number; disambiguates duplicate track names.
+
+#### `logic_set_metronome`
+
+Turn the metronome click on or off via the control surface's click button, verified by reading the control bar's own `Metronome Click` checkbox back (the same field `logic_get_transport` reports), with the surface's click LED as a second source. Compare-and-set: already-correct is reported and nothing is pressed; a press that does not land is undone. Count-in is a separate setting and is not touched.
+
+Parameters:
+
+  - `enabled` (boolean) **(required)**
+
+#### `logic_load_instrument`
+
+Load a software instrument into a track's INSTRUMENT slot — mouse-free via the control surface's instrument browser (the `IN` bank view's vpot), the slot `logic_add_plugin` cannot reach because it fills an *insert* instead. One vpot tick per browser entry, the shown entry re-verified after settling, and a vpot press instantiates; leaving the view cancels a browse without loading anything. Entries carry Logic's channel format (`Drum Kit Designer Stereo`, `Drum Kit Designer Multi-Output`, `Abbey Road Saturator (m) Mono`), so `instrument` may be given bare or with the format, or the format passed separately; matching is case-insensitive and exact on the name — a near miss is refused with the entries seen, never guessed at. Verified by the instrument slot's own name in the `IN` bank view; read the loaded instrument's parameters with `logic_mcu_instrument_parameters` as an independent second look. REPLACES any instrument already on the track, settings and all — Logic's Undo is the only way back.
+
+Parameters:
+
+  - `expected_project_path` (string): Refuse unless this is the open project.
+  - `format` (string): Channel format to pick when a plugin offers several: 'Stereo', 'Mono' or 'Multi-Output'. Default: the first entry whose name matches, and the result reports which format that was.
+  - `instrument` (string) **(required)**: Instrument name as Logic's browser shows it, e.g. 'Drum Kit Designer', 'Sampler', 'Analog Lab V'. May include the format.
+  - `max_steps` (integer): How many browser entries to step through before giving up, default 1200 (~0.11 s each). The list is not alphabetical, so a "never showed" refusal at a low cap usually means the browse had not reached the name yet, not that it is wrong.
+  - `track_name` (string) **(required)**: Software-instrument track to load onto.
+
+#### `logic_read_automation`
+
+READ an existing automation curve before you overwrite it — volume, pan, a send level or any plugin parameter — over a bar range. Read-only: no automation mode is changed, no fader or vpot is moved, and the playhead is returned to where it started. Mechanism: park the playhead at each sampled position and read the value Logic chases the lane to, which is the verification pass `logic_record_automation` already runs, with the writing half removed. HONESTY: these are SAMPLES, not the lane's breakpoints — a move that happens entirely between two samples is invisible, so lower `resolution_beats` when the shape matters — and an unautomated lane reads as a flat line at the track's static value, which the result says rather than implying a curve exists. Positions run from `start_bar` beat 1 to `end_bar` beat 1 inclusive; if the grid would exceed `max_points` the step is widened rather than the range truncated. Costs roughly a second per sampled position.
+
+Parameters:
+
+  - `end_bar` (integer) **(required)**: Inclusive: the last sampled position is this bar's beat 1.
+  - `insert_slot` (integer 1–8): Required when `parameter` is 'plugin' (list with `logic_mcu_plugin_inserts`).
+  - `max_points` (integer 1–200): Cap on sampled positions, default 64. Exceeding it widens the step; the range is never truncated.
+  - `parameter` (string): 'volume' (default), 'pan', 'send' or 'plugin'.
+  - `plugin_parameter` (string): Parameter name as shown on the MCU; required when `parameter` is 'plugin'.
+  - `resolution_beats` (integer ≥ 1): Beats between samples, default 1 (whole beats only — the playhead is parked on the beat grid).
+  - `send` (integer 1–8): Required when `parameter` is 'send'.
+  - `settle_seconds` (number): How long to let Logic's echo settle at each position, default 0.8 s.
+  - `start_bar` (integer ≥ 1) **(required)**
+  - `track_name` (string) **(required)**
+

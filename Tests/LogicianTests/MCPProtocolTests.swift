@@ -285,7 +285,7 @@ final class MCPProtocolTests: XCTestCase {
     func testToolsListIsWellFormedAndComplete() throws {
         let response = try XCTUnwrap(server.handle(request("tools/list", id: 1)))
         let tools = try XCTUnwrap((response["result"] as? [String: Any])?["tools"] as? [[String: Any]])
-        XCTAssertEqual(tools.count, 69)
+        XCTAssertEqual(tools.count, 75)
         let names = tools.compactMap { $0["name"] as? String }
         XCTAssertEqual(Set(names).count, tools.count, "duplicate tool name")
         XCTAssertTrue(names.allSatisfy { $0.hasPrefix("logic_") })

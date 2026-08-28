@@ -1429,6 +1429,110 @@ extension MCPServer {
                 idempotent: true,
                 handler: MCPServer.handleSetPluginParameter
             ),
+            Tool(
+                name: "logic_list_strips",
+                description: "The CENSUS: every channel strip the control surface can reach, in project order — audio and instrument tracks, auxes, buses, the output and the master. Unlike logic_list_tracks, which can only see the track headers Logic has currently RENDERED (19 of 25 strips on the reference project), this walks the surface's banks, so nothing is hidden by scrolling or by a collapsed stack. Each row carries the strip's position, its bank/channel address and Logic's own 6-character LCD name cell; track_name and track_number are filled in only where exactly one rendered track header abbreviates to that cell, and everything else is reported as kind 'unresolved' (an output/aux/bus, a track scrolled out, or two tracks that share a name) rather than guessed at. Address strips by their full Mixer name, never by the abbreviation. Always walks the surface fresh — a census that could be stale would be the very failure this tool exists to fix — which costs a few seconds and refreshes the bank map every other control-surface tool uses.",
+                inputSchema: ["type": "object", "properties": [:], "additionalProperties": false],
+                // Not read-only: banks the surface and leaves it in the pan
+                // view. Nothing in the project changes.
+                safety: .write,
+                idempotent: true,
+                handler: MCPServer.handleListStrips
+            ),
+            Tool(
+                name: "logic_mixer_snapshot",
+                description: "The whole mixer in ONE call, off Logic's own control-surface feedback: per strip the fader value in dB, pan, mute/solo/select/record-arm state and the raw 14-bit fader echo. volume_db is the dB string Logic paints in its channel-strip Volume view — the same readout logic_set_track_volume converges against — NOT a conversion of the fader position, which is reported separately and raw as fader_14bit; a cell that does not parse comes back null with the LCD text beside it, never interpolated. record_armed is sampled across a full blink cycle because Logic FLASHES an armed strip's record LED (~640 ms on / 640 ms off, measured), so a single instant would report half the armed strips as unarmed. Two bank walks (names and pan, then dB and LEDs), about 16 s on a 25-strip project; the surface is left in the pan view at the leftmost bank."
+                    + " Strip identity is established by a fresh scan, never from the cached bank map, and follows the same track_name/'unresolved' rule as logic_list_strips.",
+                inputSchema: ["type": "object", "properties": [:], "additionalProperties": false],
+                // Not read-only: banks the surface and switches its view.
+                safety: .write,
+                idempotent: true,
+                handler: MCPServer.handleMixerSnapshot
+            ),
+            Tool(
+                name: "logic_set_track_record_arm",
+                description: "Arm or disarm a track for recording — the control surface's rec/ready button (MCU note 0x00-0x07), verified by Logic's own record LED AND, independently, by the track header's Record Enable checkbox. Compare-and-set: a track already in the requested state is reported as already_armed/already_disarmed and nothing is pressed. Logic FLASHES the record LED of an armed strip (~640 ms on / 640 ms off), so the LED evidence is a window rather than an instant: seen lit once means armed, and only a whole quiet window is read as disarmed. Several tracks can be armed at once, so arming one does NOT disarm another — read logic_mixer_snapshot before rolling if that matters. Output, aux, bus and master strips have no record enable and are refused before anything is pressed. Needs the MCU bridge: there is no Accessibility-only route.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "track_name": ["type": "string", "description": "Exact track name as Logic shows it (not the 6-character LCD abbreviation)."],
+                        "track_number": ["type": "integer", "description": "1-based track number; disambiguates duplicate track names."],
+                        "enabled": ["type": "boolean", "description": "true arms the track, false disarms it."]
+                    ],
+                    "required": ["track_name", "enabled"],
+                    "additionalProperties": false
+                ],
+                safety: .write,
+                idempotent: true,
+                handler: MCPServer.handleSetTrackRecordArm
+            ),
+            Tool(
+                name: "logic_set_metronome",
+                description: "Turn the metronome click on or off via the control surface's click button, verified by reading the control bar's own Metronome Click checkbox back (the same field logic_get_transport reports), with the surface's click LED as a second source. Compare-and-set: already-correct is reported and nothing is pressed; a press that does not land is undone. Count-in is a separate setting and is not touched.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "enabled": ["type": "boolean"]
+                    ],
+                    "required": ["enabled"],
+                    "additionalProperties": false
+                ],
+                safety: .write,
+                idempotent: true,
+                handler: MCPServer.handleSetMetronome
+            ),
+            Tool(
+                name: "logic_load_instrument",
+                description: "Load a software instrument into a track's INSTRUMENT slot — mouse-free via the control surface's instrument browser (the IN bank view's vpot), the slot logic_add_plugin cannot reach because it fills an insert instead. One vpot tick per browser entry, the shown entry re-verified after settling, and a vpot press instantiates; leaving the view cancels a browse without loading anything. Entries carry Logic's channel format ('Drum Kit Designer Stereo', 'Drum Kit Designer Multi-Output', 'Abbey Road Saturator (m) Mono'), so instrument may be given bare or with the format, or the format passed separately; matching is case-insensitive and exact on the name — a near miss is refused with the entries seen, never guessed at. Verified by the instrument slot's own name in the IN bank view; read the loaded instrument's parameters with logic_mcu_instrument_parameters as an independent second look. REPLACES any instrument already on the track, settings and all — Logic's Undo is the only way back.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "track_name": ["type": "string", "description": "Software-instrument track to load onto."],
+                        "instrument": ["type": "string", "description": "Instrument name as Logic's browser shows it, e.g. 'Drum Kit Designer', 'Sampler', 'Analog Lab V'. May include the format ('Drum Kit Designer Stereo')."],
+                        "format": ["type": "string", "description": "Channel format to pick when a plugin offers several: 'Stereo', 'Mono' or 'Multi-Output'. Default: the first entry whose name matches, and the result reports which format that was."],
+                        "max_steps": ["type": "integer", "description": "How many browser entries to step through before giving up, default 1200 (~0.11 s each, so a full sweep of a large plug-in library can take a couple of minutes). The list holds every installed instrument in every channel format and is NOT alphabetical, so a 'never showed' refusal at a low cap usually means the browse had not reached it yet, not that the name is wrong."],
+                        "expected_project_path": ["type": "string", "description": "Refuse unless this is the open project."]
+                    ],
+                    "required": ["track_name", "instrument"],
+                    "additionalProperties": false
+                ],
+                // Replaces whatever instrument the track had, with its settings.
+                safety: .destructive,
+                idempotent: true,
+                changesSound: true,
+                handler: MCPServer.handleLoadInstrument
+            ),
+            Tool(
+                name: "logic_read_automation",
+                description: "READ an existing automation curve before you overwrite it — volume, pan, a send level or any plugin parameter — over a bar range. Read-only: no automation mode is changed, no fader or vpot is moved, and the playhead is returned to where it started. Mechanism: park the playhead at each sampled position and read the value Logic chases the lane to, which is the verification pass logic_record_automation already runs, with the writing half removed. HONESTY: these are SAMPLES, not the lane's breakpoints — a move that happens entirely between two samples is invisible, so lower resolution_beats when the shape matters — and an unautomated lane reads as a flat line at the track's static value, which the result says rather than implying a curve exists. Positions run from start_bar beat 1 to end_bar beat 1 inclusive; if the grid would exceed max_points the step is widened rather than the range truncated. Costs roughly a second per sampled position.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "track_name": ["type": "string"],
+                        "parameter": [
+                            "type": "string",
+                            "enum": ["volume", "pan", "send", "plugin"],
+                            "description": "What to read. 'send' also needs send; 'plugin' also needs insert_slot and plugin_parameter. Default 'volume'."
+                        ],
+                        "send": ["type": "integer", "minimum": 1, "maximum": 8, "description": "Send slot 1-8, required when parameter is 'send'."],
+                        "insert_slot": ["type": "integer", "minimum": 1, "maximum": 8, "description": "MCU physical insert slot 1-8, required when parameter is 'plugin' (list with logic_mcu_plugin_inserts)."],
+                        "plugin_parameter": ["type": "string", "description": "Parameter name as shown on the MCU, required when parameter is 'plugin'."],
+                        "start_bar": ["type": "integer", "minimum": 1],
+                        "end_bar": ["type": "integer", "description": "Inclusive: the last sampled position is this bar's beat 1."],
+                        "resolution_beats": ["type": "integer", "minimum": 1, "description": "Beats between samples, default 1 (whole beats only — the playhead is parked on the beat grid)."],
+                        "max_points": ["type": "integer", "minimum": 1, "maximum": 200, "description": "Cap on sampled positions, default 64. Exceeding it widens the step; the range is never truncated."],
+                        "settle_seconds": ["type": "number", "description": "How long to let Logic's echo settle at each position, default 0.8 s. Raise if values look like the previous position's."]
+                    ],
+                    "required": ["track_name", "start_bar", "end_bar"],
+                    "additionalProperties": false
+                ],
+                // Not read-only: selects the strip, switches the surface view
+                // and moves the playhead (restored). Nothing in the project
+                // changes.
+                safety: .write,
+                idempotent: true,
+                handler: MCPServer.handleReadAutomation
+            ),
         ]
     }
 

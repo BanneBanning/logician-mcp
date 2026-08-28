@@ -113,16 +113,37 @@ extension MCUController {
             // banner ("Pan/Surround parameter: ...") contains sub-second
             // paint pauses that fool shorter windows into classifying a
             // frame that is still on its way somewhere else.
+            //
+            // But silence is not the only proof of a settled display, and
+            // insisting on it was a real deadlock: with any track RECORD-ARMED
+            // Logic flashes that strip's rec LED forever (~640 ms on, ~640 ms
+            // off, measured 2026-08-28), so `timed_out` never comes true and
+            // this whole function returned nil — taking findChannel, and with
+            // it every MCU tool, down for as long as a track was armed. LED
+            // traffic never touches the LCD, so a top row that has been
+            // IDENTICAL for a full second is settled whether or not Logic is
+            // still talking. Both proofs are accepted; the quiet one first,
+            // because it is the stronger of the two.
             let deadline = Date().addingTimeInterval(5.0)
             var lastTop: String?
+            var unchangedSince: Date?
             while Date() < deadline {
                 guard let status = freshStatus(), let top = status["lcd_top"] as? String else { return nil }
                 let events = status["received_events"] as? Int ?? -1
-                if top == lastTop,
-                   let after = awaitEvents(since: events, timeoutMs: 1000),
-                   after["timed_out"] as? Bool == true,
-                   let fresh = freshStatus(), (fresh["lcd_top"] as? String) == top {
-                    return (top, status["assignment"] as? String ?? "")
+                if top == lastTop {
+                    let since = unchangedSince ?? Date()
+                    unchangedSince = since
+                    if let after = awaitEvents(since: events, timeoutMs: 1000),
+                       after["timed_out"] as? Bool == true,
+                       let fresh = freshStatus(), (fresh["lcd_top"] as? String) == top {
+                        return (top, status["assignment"] as? String ?? "")
+                    }
+                    if Date().timeIntervalSince(since) >= 1.0,
+                       let fresh = freshStatus(), (fresh["lcd_top"] as? String) == top {
+                        return (top, status["assignment"] as? String ?? "")
+                    }
+                } else {
+                    unchangedSince = nil
                 }
                 lastTop = top
                 _ = awaitEvents(since: events, timeoutMs: 200)
@@ -319,17 +340,32 @@ extension MCUController {
     static func settledTop(previous: String? = nil) throws -> String? {
         let deadline = Date().addingTimeInterval(3.0)
         var quietRepeats = 0
+        // Same hazard as `stableState`: a record-armed strip's blinking LED is
+        // MIDI traffic that never touches the LCD, so "quiet" can never arrive.
+        // An unchanged top row held for a second is the second proof.
+        var unchangedSince: Date?
+        var lastSeenTop: String?
         while Date() < deadline {
             guard let status = freshStatus(), let top = status["lcd_top"] as? String else { return nil }
             let events = status["received_events"] as? Int ?? -1
+            if top == lastSeenTop {
+                if unchangedSince == nil { unchangedSince = Date() }
+            } else {
+                unchangedSince = nil
+            }
+            lastSeenTop = top
             // ">= 4 dash fields" = the display is being cleared; "parameter:"
             // = a single-channel view label (or a half-repainted hybrid of
             // one) - neither is ever part of the multi-channel names row.
             let transient = lcdFields(top).filter { $0 == "-" }.count >= 4
                 || top.contains("parameter:")
             if !transient {
+                let heldASecond = unchangedSince.map { Date().timeIntervalSince($0) >= 1.0 } ?? false
                 if previous == nil || top != previous {
-                    // stable = 120 ms without new MIDI from Logic
+                    // stable = 120 ms without new MIDI from Logic, or a row
+                    // that has not moved for a second while Logic keeps
+                    // blinking a record LED at us.
+                    if heldASecond { return top }
                     if let after = awaitEvents(since: events, timeoutMs: 120),
                        after["timed_out"] as? Bool == true {
                         return top
@@ -338,6 +374,7 @@ extension MCUController {
                 }
                 // same as previous: two quiet rounds means the display will not
                 // change (e.g. rightmost bank reached)
+                if heldASecond { return previous }
                 if let after = awaitEvents(since: events, timeoutMs: 200),
                    after["timed_out"] as? Bool == true {
                     quietRepeats += 1
