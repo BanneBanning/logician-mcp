@@ -42,7 +42,8 @@ final class LogicAccessibility {
     }
 
     func listTracks() throws -> [String: Any] {
-        let tracks: [[String: Any]] = try parsedTrackHeaders().map { header in
+        let headers = try parsedTrackHeaders()
+        let tracks: [[String: Any]] = headers.map { header in
             var entry: [String: Any] = [
                 "track_number": header.number,
                 "track_name": header.name,
@@ -54,11 +55,36 @@ final class LogicAccessibility {
             }
             return entry
         }
-        return [
+        // Is this every track? The honest answer is "provably not" or "cannot
+        // tell", never "yes" — see TrackListCompleteness for why, and for the
+        // audit finding that made this the loudest field in the result instead
+        // of a footnote on a successful one.
+        let scroll = tracksAreaScrollable()
+        let verdict = TrackListCompleteness.evaluate(
+            rows: headers.map {
+                TrackListCompleteness.Row(
+                    number: $0.number, name: $0.name,
+                    isStack: $0.disclosure != nil, expanded: $0.expanded
+                )
+            },
+            scrollable: scroll.scrollable
+        )
+        var result: [String: Any] = [
             "project_document": (try? projectDocumentPath()) ?? NSNull(),
             "tracks": tracks,
-            "note": "Only track headers currently rendered in the Tracks area are exposed through Accessibility. Subtracks of collapsed track stacks and scrolled-out tracks are not listed; use logic_set_track_stack to expand a stack."
+            "visible_tracks": tracks.count,
+            "partial": verdict.partial,
+            "completeness": verdict.completeness,
+            "partial_evidence": verdict.evidence,
+            "note": TrackListCompleteness.standingNote
         ]
+        if !verdict.missingTrackNumbers.isEmpty {
+            result["missing_track_numbers"] = verdict.missingTrackNumbers
+        }
+        if let scrollable = scroll.scrollable {
+            result["tracks_area_scrollable"] = scrollable
+        }
+        return result
     }
 
     func listInserts(trackName: String) throws -> [String: Any] {

@@ -55,9 +55,10 @@ extension MCPServer {
     }
 
     func handleAddSend(_ arguments: [String: Any]) throws -> Any {
+        let track = try requiredString("track_name", in: arguments)
         guard let addedSend = try MCUController.addSend(
             logic: logic,
-            trackName: requiredString("track_name", in: arguments),
+            trackName: track,
             destination: requiredString("destination", in: arguments)
         ) else {
             throw LogicianError.trackNotExposed(
@@ -66,7 +67,45 @@ extension MCPServer {
             )
         }
         var sendPayload = addedSend
-        sendPayload["track"] = try requiredString("track_name", in: arguments)
+        sendPayload["track"] = track
+        // "Send the snare to the plate at -12" is ONE thought and used to be two
+        // calls, with the mix silently wrong in between: a new send lands at
+        // -oo dB, so an agent that stopped after this tool had created an
+        // inaudible send and reported success (COVERAGE U5). The level is set
+        // through the same tool logic_mcu_set_send uses, on the strip this call
+        // has already selected.
+        let level = (arguments["level_db"] as? Double)
+            ?? (arguments["level_db"] as? Int).map(Double.init)
+        guard let level, let slot = addedSend["send"] as? Int else { return sendPayload }
+        do {
+            guard let levelled = try MCUController.setSendLevel(
+                sendNumber: slot, targetDb: level, expectedCurrentValue: nil
+            ) else {
+                throw LogicianError.trackNotExposed(
+                    requested: "the send level vpot", exposed: "the send view did not answer"
+                )
+            }
+            sendPayload["level"] = levelled["after"] ?? NSNull()
+            sendPayload["level_db_requested"] = level
+            sendPayload["level_verified"] = levelled["verified"] ?? false
+            sendPayload["level_write_route"] = levelled["write_route"] ?? NSNull()
+            sendPayload["state"] = "added_and_levelled"
+        } catch {
+            // The SEND EXISTS — that write is verified and must not be reported
+            // as a failure. What failed is the level, so the send is sitting at
+            // -oo dB and the result says exactly that rather than letting an
+            // agent assume the whole intent landed.
+            sendPayload["level_verified"] = false
+            sendPayload["level_db_requested"] = level
+            sendPayload["level"] = "-oo dB (unchanged)"
+            appendWarning(
+                "The send WAS created and verified, but its level could not be set to"
+                    + " \(formattedBPM(level)) dB (\(error.localizedDescription)). It is therefore"
+                    + " still at -oo dB and inaudible: set it with logic_mcu_set_send"
+                    + " {send: \(slot), level_db: \(level)} before judging the mix.",
+                to: &sendPayload
+            )
+        }
         return sendPayload
     }
 

@@ -34,6 +34,48 @@ extension LogicAccessibility {
         }
     }
 
+    /// Does the Tracks area hold more rows than it is showing?
+    ///
+    /// Three answers, and the third is the point: `true` (Logic's own scroll bar
+    /// says there is content outside the viewport), `false` (it says there is
+    /// not) and `nil` (the question could not be asked — no scroll area, no
+    /// scroll bar, no readable value). A scroll bar this code cannot find must
+    /// never be reported as "everything fits", which is the failure
+    /// `logic_list_tracks` shipped with; see `TrackListCompleteness`.
+    ///
+    /// The signal is the scroll bar's own visibility and range. A scroll area
+    /// whose content fits either publishes no vertical scroll bar at all or
+    /// publishes a disabled one; a scrolled or scrollable one publishes an
+    /// enabled bar, and its `AXValue` (0…1) additionally says whether the top of
+    /// the list is even on screen.
+    func tracksAreaScrollable() -> (scrollable: Bool?, position: Double?) {
+        guard let group = try? trackHeaderGroup() else { return (nil, nil) }
+        // Walk UP to the enclosing scroll area: the header column sits under
+        // several split/layout wrappers whose depth is not worth hardcoding.
+        var current: AXUIElement? = group
+        var scrollArea: AXUIElement?
+        for _ in 0..<AXDepth.trackHeaderGroup {
+            guard let element = current else { break }
+            if stringAttribute(element, kAXRoleAttribute as String) == "AXScrollArea" {
+                scrollArea = element
+                break
+            }
+            current = elementAttribute(element, kAXParentAttribute as String)
+        }
+        guard let area = scrollArea else { return (nil, nil) }
+        guard let bar = elementAttribute(area, kAXVerticalScrollBarAttribute as String) else {
+            // No bar published. That USUALLY means the content fits — but this
+            // is exactly the inference that would turn "I cannot see" into "there
+            // is nothing", so it stays unknown.
+            return (nil, nil)
+        }
+        let enabled = stringAttribute(bar, kAXEnabledAttribute as String)
+        let position = Double(stringAttribute(bar, kAXValueAttribute as String))
+        if enabled == "0" { return (false, position) }
+        if enabled == "1" { return (true, position) }
+        return (nil, position)
+    }
+
     func resolveTrack(
         _ headers: [TrackHeader],
         name: String,
