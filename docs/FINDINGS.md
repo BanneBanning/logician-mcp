@@ -2973,3 +2973,207 @@ Ingen daemon dödades under arbetet: matchningen verifierades mot verklig `ps`-u
 `swift test`: **453 tester gröna** (46 nya: mätargrammatiken och dess parserväg, protokollskevheten i båda riktningarna, `fader verify`-ramen, serverns mätaravläsning, och daemonidentifieringens båda felriktningar), ingen Logic behövs. `swift build -c release` grön. `serverVersion` är medvetet **inte** bumpad; `bridgeProtocolVersion` är det (4 → 5), och den är en annan sak.
 
 Tre saker lämnas öppna och namnges hellre än att döljas: **den levande mätaravkodningen** (kräver daemonomstart — receptet står i fynd 1), **`pluginListAgreesWithAX`:s blinda fläck på tomma strippar** (fynd 3), och **själva fel-stripp-mekanismen**, som fortfarande inte är framkallad — men som nu har en trolig förklaring i Logics självbankning och en automatisk reparation bakom verifieringen.
+
+### Smart Tempo-läget GÅR att läsa — i Project Settings, inte i kontrollraden (2026-08-28, v0.54.x)
+
+COVERAGE:s öppna fråga 8 och roadmap-punkt 1:s sista hål, stängda på en halv sekund. Kontrollradens **Project Tempo**-popup bär inget värde alls (probat 2026-08-27, se den entryn) — men `File > Project Settings > Smart Tempo…` publicerar läget som ett helt vanligt `AXValue` på en märkt popup.
+
+**Miljö:** körande Logic Pro 12.3.1 (`Testlåt Copy.logicx`, pid 13183 — sandlådekopian), ingen `logician --bridge` startad av den här sessionen, projektet **sparades aldrig**. Tillfällig XCTest-sele (`LiveProbe.swift`, `LOGICIAN_LIVE=1`), borttagen före commit; alla verktyg kördes IN-PROCESS mot `MCPServer()`, av samma skäl som förra sessionens fynd 0. Dokumentsökvägen kontrollerades innehålla "Copy" före varje batch. Rådgivande lås taget och släppt i tre omgångar (PRIORITET 1-agenten höll det däremellan). **Ingen blind Ångra fyrades.**
+
+#### Fyndet, ordagrant
+
+`File > Project Settings > Smart Tempo…` (posten ligger i undermenyn `Project Settings`, som inte är byggd förrän den tryckts — `pressMenuItem`:s befintliga "tryck föräldern och gå igenom igen"-fallback räckte) öppnar fönstret **`"<projekt> - Project Settings"`**, `AXWindow` med subrole `AXDialog`, INTE app-modalt, direkt på Smart Tempo-panelen. Panelen är en platt lista av statisk text och kontroller utan gruppering, och den bärande raden är:
+
+```
+AXStaticText  val="Project Tempo Mode:"
+AXPopUpButton val="Keep Project Tempo"  help="Project Tempo Mode pop-up menu. Choose the Project Tempo mode (Keep, Adapt, or Automatic). "
+```
+
+Identiteten är **hjälptexten**, inte positionen: fyra andra popupar i samma panel (`Set Imported Files To`, `Set New Recordings To`, `Export Tempo Resolution`, `Default Tempo Behavior`) är syskon utan grupp emellan. Logics egna lägesord är `Keep Project Tempo` / `Adapt Project Tempo` / `Automatic` — alltså exakt det `normalizedProjectTempoMode` skrevs för, och skälet till att den mappningen testar delsträngar i stället för bara orden.
+
+**Live-bevis:** `logic_get_transport {read_smart_tempo_mode: true}` gav `"project_tempo_mode":"keep"`, `"project_tempo_mode_route":"project_settings_window"` på **0,57 s** första gången och 0,84 s andra gången, och fönsterlistan var `["Testlåt Copy - Tracks"]` både före och efter — fönstret öppnades, lästes och stängdes, och läget lämnades som det hittades.
+
+#### Vad som shippades
+
+- `projectTempoModeViaSettings()` (`AXProjectSettings.swift`, ny): öppnar via menyn om inget Project Settings-fönster står öppet, läser popupen, stänger igen. Står ett fönster redan öppet på en ANNAN panel byts panelen till Smart Tempo och fönstret **lämnas öppet** — Logic publicerar inte vilken panel som visades, och att gissa vore en andra ändring. `ProjectSettingsVisit` bär den skillnaden ut i resultatet i stället för att dölja den.
+- `projectTempoMode(allowingSettingsWindow:)`: den billiga kontrollradsläsningen först (noll sidoeffekt), fönstret bara när den kommer tillbaka oläsbar. Opt-in per anropsplats, för ett statuspoll ska inte resa fönster.
+- **`logic_record_midi` skickar `true`.** Det var hela poängen: vakten kunde tidigare bara varna, och ett Adapt-projekt fick sin tempokarta omskriven av taket utan att någon kunde veta det. Nu är Adapt/Auto-vägran **nåbar**. Den oläsbara grenen finns kvar och bär numera BÅDA skälen (kontrollradens tomma popup OCH varför fönsterläsningen misslyckades).
+- `logic_get_transport` fick `read_smart_tempo_mode` (förval `false`) plus `project_tempo_mode_route`.
+
+Kvar, medvetet oprövat: om menyposterna i den popupen går att **trycka** — då blir vägran ett vaktat set-and-restore i stället. Läsningen räckte för att stänga roadmappunkten, och en skrivning i projektinställningarna är en annan sorts beslut.
+
+### Kanalremsan säger vad ett spår ÄR: typ, routning, grupp, instrument (2026-08-28, v0.54.x)
+
+COVERAGE G03, plus läshalvorna av G11 (input/monitoring), G38 (output) och G39 (grupp) — och skrivsidan av G38 på köpet. Före det här kunde agenten läsa ett spårs NAMN och ingenting annat om vad spåret är. Samma miljö och samma disciplin som entryn ovan.
+
+#### Fynd 1 — spårhuvudet och remsan bär olika saker, och båda behövs
+
+Spårhuvudet (`AXLayoutItem`, desc `Track 1 "Lofi Pad"`) publicerar sina kryssrutor med engelska beskrivningar: `Mute`, `Solo`, **`Freeze`**, **`Record Enable`**, **`Input Monitoring`**, plus pan- och volymreglage och namnfältet. Kanalremsan (`inspectorStrip`) publicerar mycket mer — men **inte** record/monitoring på en mjukvaruinstrumentremsa, bara på en ljudremsa. Därför läser `logic_track_info` båda: huvudet ger frysning och inspelningsberedskap för alla spårtyper, remsan ger routningen.
+
+#### Fynd 2 — en tom slot heter något, och det är hjälptexten som är identiteten
+
+En OCKUPERAD slot är en `AXGroup` vars beskrivning är pluginets namn och som inte bär någon hjälptext alls. En TOM slot är en `AXButton` med en platshållarbeskrivning (`audio plug-in`, `send button`, `MIDI plug-in`, `Instrument`, `Input`, `Output`). Varken rollen eller beskrivningen kan alltså namnge en slot — det kan bara Logics egen hjälptext, uppmätt ordagrant:
+
+| hjälptextens prefix | vad det är |
+|---|---|
+| `Output slot.` | utgången; **beskrivningen ÄR destinationen** (`Stereo Output`, `Bus 4`) |
+| `Input slot.` | ingången; beskrivningen är `Input 1` eller bara `Input` när inget är valt |
+| `Send slot.` | tom sändslot |
+| `Audio Effect slot.` | tom insert |
+| `MIDI Effect slot.` | MIDI-FX-sloten (finns bara på instrumentremsor) |
+| `Input Gain field and knob.` | ingångsförstärkningen |
+| `Group slot.` | gruppen; värdet ligger i `AXTitle` som `"group, <etikett>"` |
+| `Setting button.` | kanalremsinställningen |
+
+#### Fynd 3 — spårtypen är inte publicerad, men den går att SLUTA SIG TILL, och en tredje typ fanns
+
+Ingen etikett säger "audio" eller "software instrument". Vilka SLOTAR remsan publicerar gör det:
+
+- **ljudspår**: har en Input-slot, ett `channel mode`-reglage (`Mono`/`Stereo`), `input gain`, och `record`/`monitoring` på själva remsan.
+- **mjukvaruinstrument**: har en MIDI Effect-slot och en instrumentslot; ingen Input-slot alls.
+- **`reduced`** — den som inte var förutsedd: `Drums` och `Vocals` publicerar **SJU barn** och inget mer (namn, mute, solo, volymfader, dess nivåfält, automationsgruppen, grupp-popupen). Ingen utgång, inga inserts, ingen panorering, ingen mätare. Det är mappstackarnas huvudspår, och att läsa dem som "ett ljudspår utan routning" hade varit fel i två led — därför är `reduced` ett eget svar med `kind_evidence: ["no Output slot"]`, och varje fält som Logic inte publicerar är `null`, aldrig `false`.
+
+Ett fjärde utfall finns och är ärligt: `unknown` (utgång men varken Input- eller MIDI-FX-slot) — `Drum Synth Kit`, alltså en summeringsstacks aux.
+
+#### Fynd 4 — instrumentsloten går bara att hitta på GEOMETRIN, och första regeln hade fel
+
+En ockuperad instrumentslot är en `AXGroup` med samma bypass/open-barn som en insert. `AXChildren`-ordningen följer inte remsans layout, men `AXPosition` gör det (y växer NEDÅT):
+
+```
+setting 319 · EQ 351 · MIDI plug-in 386 · INSTRUMENT 413 · inserts 438,455,472,489 · sends 525
+· output 551 · group 574 · automation 597 · pan 622 · volym 682 · mute/solo 864 · namn 892
+```
+
+Första regeln var "det plugin som ligger mellan MIDI-FX-sloten och den första audio-effect-sloten", och den gav fel svar live: på `Lofi Pad` ligger de OCKUPERADE inserterna (`Channel EQ` 427, `AutoFilter` 445) OVANFÖR de tomma platshållarna (461, 478), så regeln utsåg `Channel EQ` till instrument på ett spår vars instrumentslot är TOM. Rätt regel: det första plugin-bärande elementet under MIDI-FX-sloten — och är det `AXButton desc="Instrument"` är sloten tom (`instrument: null`, `has_instrument_slot: true`). Live efter fixen: `Bas` → `Trilian`, `808`/`Crash` → `Q-Sampler`, `Acke Slagverk`/`Ivan Slagverk` → `Sampler`, `Lofi Pad`/`Inst 2` → `null`.
+
+#### Fynd 5 — sändningar och deras nivåer ligger också i remsan
+
+`AXGroup desc="Bus 2"` följd av `AXSlider desc="send knob" vdesc="-9,0"`. Paret är identiteten (en insert-grupp följs inte av en send knob), och det ger `sends: [{destination: "Bus 2", level: "-9,0"}]` utan att röra styrytan.
+
+#### Fynd 6 — routningsmenyerna räknar upp sig själva, och de bär vart de leder
+
+Ett tryck på en routningsslot öppnar en meny (`AXError -25204`, samma "fel" som pluginväljaren och presetmenyn svarar med medan de öppnar sig). Menyn materialiserar sina undermenyer, `AXMenuItemMarkChar` är `✓` på destinationen i kraft och `-` på kategorin — och posterna är **dekorerade med vart de leder**:
+
+```
+utgång: Stereo Output ✓ · No Output · Output - · Surround · Mono · Bus ▸
+        Bus 1 → Aux 1 · Bus 2 → Aux 2 · Bus 5 → Small Plate/1.3s Nice Plate · Bus 6 · …
+        · 33 - 64 ▸ … 225 - 256 ▸
+ingång: Input 1 ✓ · No Input · Bus ▸ Bus 1 ← Ivan Vocals · Bus 2 ← Lofi Pad
+        · Bus 5 ← Acke Slagverk , Ivan Slagverk · …
+grupp:  Open Group Settings… · No Group ✓ · Group 1: (new)
+```
+
+Pilhalvan är Logic som förklarar sig; huvudet är identiteten (`ChannelStrip.routingHead`, samma tanke som `RegionInspector.popupShortForm`). Ett kolon avslutar huvudet också, så `Group 1: (new)` matchar en begäran om `Group 1`.
+
+#### Fynd 7 — tre saker som gjorde en fungerande skrivning till ett falskt misslyckande
+
+1. **Remsan RITAS OM efter en routningsändring** och publicerar en tom beskrivning medan den gör det. En fast väntan på 0,35 s läste `''` och kallade en skrivning som landat perfekt för `verification_failed` — nästa verktygsanrop, två sekunder senare, läste `Bus 4`. Nu pollas ett satt, icke-tomt värde, och **strippelementet slås upp på nytt varje gång**: det gamla svarar på allt med ingenting.
+2. **Menyn säger `No Group`, sloten läser sedan `Group`.** Samma sak för `No Input`/`Input`. En bokstavlig jämförelse kallade en korrekt no-op för ett fel; nu paras de tre tomma formerna ihop.
+3. **En stripp som gått med i en grupp tappar ordet:** menyposten heter `Group 1: (new)`, sloten läser efteråt bara `1`. Ett ensamt tal är ett gruppnummer.
+
+#### Fynd 8 — pressen är INTERMITTENT, och en Escape löser upp den
+
+Det dyraste fyndet i det här passet, och det är inte löst — bara hanterat. Ett tryck på en routningsslot svarar ibland `.success` (0) och öppnar **ingenting**, reproducerbart i minutlånga stråk: sex tryck i rad, med och utan att Logic hämtats fram, med och utan `AXFocused` på sloten och på remsan, med och utan omval av spåret — noll menyer. Sedan **en enda Escape till Logic**, och nästa tryck öppnade menyn, och varje tryck därefter fungerade. Escape ensamt öppnar ingen meny (kontrollerat — Logics Esc kan resa verktygspaletten, och det gjorde den inte här), så det kostar ingenting när trycket ändå hade fungerat. Vad Logic tror sig avbryta är okänt; att det avbryter det är uppmätt.
+
+Två sidospår som INTE var förklaringen, och som är värda att veta: `AXEnabled` är **0 på hela inspektorsremsan och varje slot i den, alltid** — det är ingen verklig aktiveringsflagga och kan inte användas som förutsättning. Och en djupare menysökning (djup 14 från applikationselementet, som Region-inspektorn behövde) gjorde det **sämre**, inte bättre: den vandringen går genom hela projektfönstret och tar så lång tid att menyn hinner stängas. Djup 7 (`popupMenus()`) hittar menyn när den finns.
+
+Verktyget försöker därför fem gånger med en Escape mellan försöken och **vägrar med `the routing slot's menu did not open` när menyn ändå inte kommer** — ingenting skrivet, säkert att försöka igen. Utgångssloten var den pålitliga i mätningarna; ingångs- och gruppsloten faller oftare.
+
+#### Fynd 9 — att routa till en buss SKAPAR auxen, och att routa bort tar inte bort den
+
+`Bus 4` stod som bar `Bus 4` i menyn före skrivningen och som `Bus 4 → Aux 4` efter. Logic skapar aux-kanalremsan bakom en buss första gången något skickas dit, och att lägga tillbaka utgången river den inte. Resultatet bär `side_effect_note` om det.
+
+#### Live-bevis
+
+```
+logic_track_info {track_names:[Ivan Effect, Crash, Drums, Lofi Pad]}   2,69 s
+logic_track_info {all:true}   19 spår, 11,63 s, selection_restored true
+  Ivan Effect     audio                Stereo Output  Input 1  5 inserts
+  Crash           software_instrument  Stereo Output  —        instrument Q-Sampler
+  Drums           reduced              —              —        7 barn
+  Lofi Pad        software_instrument  Stereo Output  —        instrument null, send Bus 2 -9,0
+  Drum Synth Kit  unknown              Stereo Output  —        9 inserts
+logic_set_track_routing {track_name:Sweeps, output:"Bus 4"}
+  -> confirmed, before "Stereo Output", after "Bus 4", menu_item_pressed "Bus 4 → Aux 4", side_effect_note
+logic_set_track_routing {track_name:Sweeps, output:"Bus 4"}   -> already_set, ingen press
+logic_set_track_routing {track_name:Sweeps, output:"Stereo Output"}
+  -> confirmed, before "Bus 4", after "Stereo Output"
+logic_set_track_routing {track_name:Sweeps, group:"Group 1"}  -> pressen landade, Sweeps gick med i grupp 1
+logic_set_track_routing {track_name:Sweeps, output:"Bus 999999"} -> not_found, hela menyn listad
+logic_set_track_routing {track_name:Sweeps, output:"Bus 4", expected_current:{output:"Bus 7"}}
+  -> precondition_failed, ingenting skrivet
+```
+
+#### En incident, och vad den ändrade
+
+Första skarpkörningen av routningsronden ANTOG att `logic_create_track` hade lyckats. Det hade det inte — bryggdaemonen låg nere (en annan agents SIGBUS-krasch) och `logic_create_track` går via ett key command över MIDI — så "kladdspåret" var det som råkade vara valt: **`Lofi Pad`, ett riktigt spår**, som därmed routades till Bus 4 och tillbaka. Det kom tillbaka (verifierat `Stereo Output`), och `logic_delete_track` på samma namn misslyckades av exakt samma bryggskäl, vilket var tur. Selen kontrollerar sedan dess att namnet efter skapandet är ett namn som INTE fanns före det, och vägrar experimentera på ett befintligt spår. Det är samma läxa som låsprotokollet redan lär ut, i en ny förklädnad: **ett verktygs resultat måste läsas, inte antas.**
+
+### Tempokartan går att SKRIVA: skapa, ändra och ta bort tempohändelser (2026-08-28, v0.54.x)
+
+COVERAGE G49, roadmap-punkt 3:s skrivsida. Kartan har kunnat LÄSAS sedan 2026-08-27; nu kan en agent lägga en nedslagstakt där filmklippet kräver den. Samma miljö som de två entryna ovan.
+
+#### Fynd 1 — kontrollradens temporeglage är INTE en tempokarteredigerare, och Logic säger det i en modal
+
+Första designen skrev BPM:en genom kontrollradens Tempo-slider, på resonemanget att den redigerar tempohändelsen i kraft vid playheaden. Logic svarade med en **app-modal ruta**:
+
+```
+AXWindow sub=AXDialog desc=alert
+  AXStaticText "Multiple Tempo Events detected!"
+  AXStaticText "Use the tempo track for further tempo editing."
+  AXButton "OK"
+```
+
+Den frös hela hjälpmedelsplanet — varje efterföljande läsning svarade "the List Editors pane opened but exposes no Tempo tab" — tills OK trycktes. Det stänger också, ur Logics egen mun, den öppna frågan bakom `logic_set_tempo`:s vägran: på ett projekt med karta redigerar slidern ingen nod, den vägrar.
+
+#### Fynd 2 — radens egen tempocell är vägen, och dess grammatik är egendomlig
+
+En **markerad** rad publicerar sina celler som `Segment N`-reglage — men de är **inte direkta barn** till cellen, de ligger ett steg till ner bredvid den `AXGroup` som bär texten. Ett `children(of:)`-filter hittade noll av dem och rapporterade "the row published 0 position steppers" om en rad som hade fyra; `descendants(of:maximumDepth: 3)` hittar dem.
+
+Positionscellen: fyra segment = takt, slag, division, tick. Tempocellen: **sju** segment för `121,0000` — de tre första rapporterar hela BPM:en med `min`/`max` klampade till ±1 runt den (`val 121, min 120, max 122`), de fyra sista är decimalerna (`val 0, min -1, max 1`). En skrivning utanför klampen flyttar alltså exakt **ETT** BPM i den riktningen, och **ingen modal kommer**. Elementet blir STALE efter varje skrivning (värdet läses tomt), så raden slås upp på nytt per steg i stället för att reglaget hamras.
+
+#### Fynd 3 — `Create new Tempo Event` lägger händelsen på playheaden, och playheaden ligger inte där man tror
+
+Känt sedan tempoentryn ovan, nu åtgärdat: `setPlayhead` konvergerar bara kontrollradens TAKT- och SLAG-reglage, så vilken division och tick playheaden råkade bära följer med. Parkerad på "takt 17 slag 1" landade händelsen på `17 1 2 29`. Fixen är billig och exakt: **`Go to Beginning` först** (playheaden till 1 1 1 1), sedan hela takter och hela slag ut till målet, vilket lämnar division och tick på 1. Live efteråt: `created at '17 1 1 1'`. Radens positionssteppare finns kvar som andra chans, och kan inte ens den rätta positionen **tas händelsen bort igen** i stället för att lämnas i användarens tempospår på en position ingen bett om.
+
+#### Fynd 4 — att matcha en händelse på exakt slag var fel, och det syntes som en röra
+
+Första versionen matchade `bar == X && beat == Y`. Eftersom skapandet landar på ett SUB-slag matchade den nyss skapade händelsen (`takt 17 slag 1,28`) inte en senare fråga om `takt 17 slag 1` — så vakten som skulle ha vägrat ett andra `create` släppte igenom det, och två händelser hamnade på samma takt. Matchningen går nu på TAKT, med slaget som särskiljare först när flera händelser delar takt. De två felskapade raderna togs bort med radens egen Delete-åtgärd och kartan verifierades tillbaka till sina två ursprungliga händelser.
+
+Samma incident visade en till: **cacherna måste tömmas även när skrivningen KASTAR.** Ett halvt misslyckat `create` hade ändå gjort en rad, och `list` rakt efteråt serverade den cachade kartan — två händelser rapporterade medan Tempo List höll fyra. `defer` i handlern nu.
+
+#### Live-bevis
+
+```
+logic_tempo_events {}                                  -> [1:120, 9:121]  (0,03 s varm)
+logic_tempo_events {create, bar 17, bpm 100}  13,48 s  -> created at '17 1 1 1', tempocellen stegad
+                                                          till 100 på 21 skrivningar,
+                                                          karta [1:120, 9:121, 17:100]
+logic_tempo_events {set, bar 17, bpm 132, expected 100}  9,83 s -> confirmed, 32 skrivningar, [.., 17:132]
+logic_tempo_events {set, bar 17, bpm 90,  expected 100}  -> precondition_failed (132 mot 100), inget skrivet
+logic_tempo_events {create, bar 17, bpm 70}              -> precondition_failed, "använd set"
+logic_tempo_events {delete, bar 1}                       -> precondition_failed, grundtempot går inte att ta bort
+logic_tempo_events {delete, bar 17}            6,50 s    -> deleted, 3 till 2 händelser, karta [1:120, 9:121]
+```
+
+Verifieringen är hela kartan, läst om och jämförd mot kartan före: antalet händelser måste stämma med åtgärden, vår händelse ligga på begärd position och tempo, och **varje annan händelse ligga kvar oförändrad** — annars `warning` som namnger vilka som rörde sig.
+
+#### Vad som är kvar
+
+- **Decimaltempon.** Verktyget skriver hela BPM (samma upplösning som `logic_set_tempo`); de fyra decimalsegmenten är uppmätta men aldrig skrivna.
+- **Tempokurvor** är fortfarande osynliga för den här vägen, precis som för läsningen — Tempo List har ingen kurvkolumn.
+- **Gränskontrollen mot en bounce** (roadmap-punkt 3:s sista bit) kördes inte här heller.
+
+#### Vad som lämnades i användarens projekt (osparat, ingenting har nått disken)
+
+`Testlåt Copy` stängdes eller sparades aldrig av den här sessionen. Kvar:
+
+1. **`Sweeps` ligger i `Group 1`**, och gruppen `Group 1` finns nu i projektet. Skrivningen var avsiktlig (verifiering av G39:s skrivsida) men gick inte att ta tillbaka: gruppslotens meny vägrade öppna sig i tio efterföljande försök (fynd 8 i entryn ovan). Åtgärd i Logic: klicka gruppsloten på `Sweeps` och välj `No Group`.
+2. **`Aux 4` finns**, skapad av Logic när `Sweeps` (och innan dess `Lofi Pad`) routades till `Bus 4`. Båda spåren är tillbaka på `Stereo Output`; auxen försvinner inte av sig själv.
+3. Tempokartan är **tillbaka i sitt ursprungsläge** (takt 1 = 120, takt 9 = 121); kladdhändelsen på takt 17 är borttagen och verifierad borta.
+4. Valt spår: `Sweeps`. List Editors-panelen stängd, Project Settings-fönstret stängt, inga modaler öppna.
+
+#### Vad som ändrades i koden
+
+`AXProjectSettings.swift` (ny) · `ChannelStrip.swift` (ny, ren: remsgrammatiken, typinferensen, routningsetiketterna) · `AXChannelStrip.swift` (ny: läsningen, `logic_track_info`, `logic_set_track_routing`, menyöppnandet med Escape-knepet) · `AXTempoEvents.swift` (ny: `logic_tempo_events`, tempocellens stegning) · `AXTransport.swift` (`projectTempoMode(allowingSettingsWindow:)`, `getTransport(readSmartTempoMode:)`) · `AXTreeWalk.swift` (två djupkonstanter) · `ToolHandlersTracks.swift`, `ToolHandlersTransport.swift`, `ToolRegistry.swift` (tre nya verktyg, två utökade) · AGENT-GUIDE (tre nya avsnitt, två uppdaterade) · ROADMAP (punkt 1 stängd).
+
+`swift test`: **503 tester gröna** (20 nya i `ChannelStripTests`, plus de 4 som följde med `MIDIPacketWalkTests` i cherry-picken av bryggfixen `ea24a49`), ingen Logic behövs. `swift build -c release` grön. `serverVersion` medvetet **inte** bumpad.
