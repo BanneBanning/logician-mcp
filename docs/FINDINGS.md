@@ -2524,7 +2524,7 @@ Efter fixen: `logic_delete_track {track_name: "LogicianScratchBIP"}` → `confir
 4. **Den soloade/mutade världen är orörd**: inget spår soloat efter stems-körningen, inga muteringar kvar (de mutade källorna raderades med kladden).
 5. **`5/4`-händelsen vid takt 41 och tempohändelsen vid takt 9 ligger kvar** sedan tidigare sessioner. De togs medvetet INTE bort: användaren har sagt att kvarlämnat tillstånd får ligga, och 5/4-takten är dessutom det enda kända fixturet där bugg C reproducerar — den är nu regressionsbeviset för positionskonvergeraren.
 6. **Nya filer på disk** i `~/Library/Application Support/Logician/captures/`: två testbouncar (`g53wave`, `g53restore`) och två stems (`g54-808`, `g54-Crash`), plus deras m4a-förhandsvisningar. Projektet självt har inte rörts på disken.
-7. Logic lämnas dialogfritt, med Mixern stängd och projektfönstret framme.
+7. Logic lämnas med Mixern stängd och projektfönstret framme, och utan någon dialog som den här sessionen orsakat. **En dialog som INTE är vår står dock uppe vid överlämningen**: Logics egen «Do you want to use the audio device “Banne – iPhone-mikrofon”?» (knappar `Don't Use` / `Use`, plus "visa inte igen"). Den dök upp av sig själv mot slutet — MCU-spegeln såg den först (`timecode: "ALERT"`, `lcd_bottom: "Device Don'tU Use"`, samma modal-detektor som `Notes Crossing Split Point` avslöjades av) medan Logic låg i bakgrunden och publicerade noll fönster. Den besvarades medvetet inte: valet byter ljudenhet mitt i användarens session och är användarens beslut, inte agentens. Så länge den står uppe sväljer Logic key command-planet.
 
 #### Vad som ändrades i koden
 
