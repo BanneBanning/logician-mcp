@@ -8,7 +8,7 @@
 
 [![macOS](https://img.shields.io/badge/macOS-13%2B-black?logo=apple)](#requirements)
 [![Swift](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](Package.swift)
-[![MCP](https://img.shields.io/badge/MCP-75_tools-4be37a)](docs/AGENT-GUIDE.md)
+[![MCP](https://img.shields.io/badge/MCP-83_tools-4be37a)](docs/AGENT-GUIDE.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
 [Install](#install) · [What it can do](#what-it-can-do-measured) · [Agent guide](docs/AGENT-GUIDE.md) · [Architecture](docs/ARCHITECTURE.md)
@@ -135,17 +135,17 @@ Logician assumes the model on the other end is fallible and designs for it:
 - Swift toolchain (to build from source)
 - One-time: Accessibility permission for your MCP client, and a Mackie Control device in Logic pointing at the `Logic MCP MCU` ports (Logic Pro → Control Surfaces → Setup → New → Mackie Control — `logic_health` walks you through it)
 
-## Tool overview (75 tools)
+## Tool overview (83 tools)
 
 - **Diagnostics** — `logic_health` (doctor with fixes), `logic_setup_key_commands` (incl. `relearn` repair)
-- **Project lifecycle** — open/close/save/duplicate projects; new projects from a bundled template
-- **Reading & orientation** — tracks, regions, windows, inserts, sends, plugin parameter survey (third-party included); `logic_list_strips` (the full mixer census incl. auxes/buses/outputs), `logic_mixer_snapshot` (every strip's dB/mute/solo/arm/pan in one call), `logic_list_events` (read a region's MIDI), `logic_markers`, `logic_list_signatures`, `logic_read_automation`
+- **Project lifecycle** — open/close/save/duplicate projects; new projects from a bundled template; `logic_reset_to` (verified episode reset: close without saving, reopen a fixture — built for eval harnesses)
+- **Reading & orientation** — tracks, regions, windows, inserts, sends, plugin parameter survey (third-party included); `logic_list_strips` (the full mixer census incl. auxes/buses/outputs), `logic_mixer_snapshot` (every strip's dB/mute/solo/arm/pan in one call), `logic_track_info` (type/instrument/routing/groups), `logic_list_events` (read a region's MIDI), `logic_markers`, `logic_list_signatures`, `logic_read_automation`, `logic_project_snapshot` (the whole project as one structured truth document)
 - **Transport** — play/stop, playhead, cycle range, metronome, verified via MCU LEDs and timecode
-- **Mixing** — volume (dB-converged), pan, mute, solo, record-arm, sends (level + destination), insert bypass; **the master chain and buses address by name** (`Stereo Out`, auxes)
+- **Mixing** — volume (dB-converged), pan, mute, solo, record-arm, sends (level + destination), insert bypass, output/group routing (`logic_set_track_routing`); **the master chain and buses address by name** (`Stereo Out`, auxes)
 - **Plugins** — add/remove (data-driven, no mouse), open/close windows, read/write **any** parameter, preset browsing (`list`/`select`/`step`/`undo`), `logic_load_instrument`
 - **Tracks** — create, rename, duplicate, delete, stacks
 - **Regions** — select (incl. multi-select), move, copy, delete, split (dialog-aware), nudge, remove silence
-- **Composition** — `logic_record_midi`: notes/CC/pitch-bend streamed with CoreMIDI timestamps while Logic records, render-verified; **tempo and meter maps are read and integrated** (tempo track / signature changes followed)
+- **Composition** — `logic_record_midi`: notes/CC/pitch-bend streamed with CoreMIDI timestamps while Logic records, render-verified; **tempo and meter maps are read, integrated and editable** (`logic_tempo_events` creates/edits/deletes tempo-map events; signature changes followed); Smart Tempo mode read before recording so an Adapt-mode project is refused, never rewritten
 - **Automation** — read existing curves; record volume/pan/send/plugin curves in any mode, playhead-chase verified
 - **Audio out & evaluation** — bounce (format/depth/dither options), bounce-in-place, stem export, freeze render with bar slicing, `logic_evaluate_change` (render / bounce / solo_bounce), `logic_get_audio_clip`
 - **Key commands** — trigger any learned Logic key command over MIDI; learn new ones by name (`logic_learn_key_command`, consent-recorded)
