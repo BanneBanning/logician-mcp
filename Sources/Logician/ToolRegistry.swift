@@ -12,6 +12,7 @@ extension MCPServer {
         [
             Tool(
                 name: "logic_health",
+                title: "Check readiness",
                 description: "Read Logic Pro process and Accessibility readiness without changing Logic.",
                 inputSchema: ["type": "object", "properties": [:], "additionalProperties": false],
                 // Starts the server's own bridge daemon if it is down; Logic
@@ -22,6 +23,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_list_windows",
+                title: "List Logic windows",
                 description: "List Logic windows with subrole and project document path, read-only. Windows whose document is set are project windows; dialogs without a document are plugin or auxiliary windows.",
                 inputSchema: ["type": "object", "properties": [:], "additionalProperties": false],
                 safety: .readOnly,
@@ -30,6 +32,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_list_tracks",
+                title: "List tracks",
                 description: "List the track headers currently rendered in the Tracks area (track number, name, selected), read-only. THIS LIST CAN BE INCOMPLETE AND SAYS SO: Accessibility publishes only the rows Logic has rendered, so the result carries `partial` (true when rows are PROVABLY missing), `partial_evidence` (one sentence per signal: headers scrolled out above, gaps in the numbering, collapsed track stacks, a scrollable Tracks area), `missing_track_numbers` where the numbering names them, and `completeness` ('partial' or 'unknown'). There is no 'complete' verdict, because a row Logic has not rendered publishes nothing at all - `partial: false` means nothing proved any missing, never that this is every track. Do not build a mental model of the project on this alone. Output/aux/bus strips (Stereo Out, Master, Aux 1, buses) have no track header and are NEVER listed here, yet the mixing, send and plugin tools accept their names.",
                 inputSchema: ["type": "object", "properties": [:], "additionalProperties": false],
                 safety: .readOnly,
@@ -38,6 +41,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_track_info",
+                title: "Read a track's full state",
                 description: "What each track IS, beyond its name: type, output routing, input, group, monitoring, automation mode, instrument, inserts and sends — everything Logic's track header and inspector channel strip publish. This is the orientation read logic_list_tracks cannot give you: it answers 'is this an audio track or a software instrument', 'where does it go', 'is anything already grouped', 'what is on it' before you plan a single write. IT IS ALSO THE CHEAP SINGLE-TRACK MIX READ: each strip's current volume_db, pan, mute, solo and record_armed come back with it, so one track's fader state costs one call instead of logic_mixer_snapshot's two bank walks. COSTS A SELECTION, ~0.7 s per track: Logic's left inspector shows the SELECTED track's strip and nothing else, so each track is selected in turn and the original selection is put back (selection_restored says whether it worked). Pass track_name for one, track_names for several, or all: true for every rendered header (mind logic_list_tracks' partiality — a track Logic has not rendered cannot be read here either). THREE THINGS THE RESULT MEANS. A field that is ABSENT (null) means Logic published nothing for it — never that it is off; `input: null` on a software instrument is a strip with no input slot, not an unrouted track. `kind` is INFERRED from which slots the strip publishes and `kind_evidence` says which: 'audio' (an Input slot), 'software_instrument' (a MIDI Effect slot), 'reduced' (no Output slot at all — measured on folder-stack main tracks, which publish only name/mute/solo/volume/automation/group), 'unknown'. And on a software instrument the INSTRUMENT slot carries the same bypass/open controls as an insert, so it appears in `inserts` too, flagged `is_instrument_slot` and named separately as `instrument`. Output/aux/bus strips (Stereo Out, Master, Aux 1) have no track header and cannot be read here; use logic_list_inserts route 'mcu' and logic_mixer_snapshot for those.",
                 inputSchema: [
                     "type": "object",
@@ -59,6 +63,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_set_track_routing",
+                title: "Route a track",
                 description: "Route a track: its OUTPUT (where the strip's signal goes), its INPUT (what an audio track records from) and its GROUP. Each is one of Logic's own channel-strip slots, written by opening the slot's pop-up menu and pressing the destination, then verified by reading the slot's label back — the same compare-and-set contract as every other write here. This is how 'group the drums to a bus' is done: set each drum track's output to 'Bus 4' and Logic creates the aux; the send tools (logic_add_send) are the parallel path, not the same one. DESTINATION NAMES are Logic's own menu titles, and Logic decorates them with where they already lead — 'Bus 2 → Aux 2' on the output side, 'Bus 2 ← Lofi Pad' on the input side. Pass either form: the HEAD ('Bus 2') is the identity and the arrow half is Logic explaining itself. Other output values: 'Stereo Output', 'No Output', 'Surround', 'Mono'. Inputs: 'Input 1', 'No Input', a bus. Groups: 'No Group', 'Group 1', or the '(new)' item Logic offers to create one. A name that matches nothing is REFUSED with the slot's actual menu listed rather than guessed at. REFUSED, on purpose: a slot this strip does not publish (a software instrument has no input slot; a folder-stack main track publishes a reduced strip with no routing slots at all — logic_track_info's `kind` and `kind_evidence` say which you have), and any mismatch against expected_current, checked for EVERY named slot before the first one is written so a two-slot call cannot half-apply. Changing an output CHANGES WHAT YOU HEAR and can silence a track (route it to a bus with no aux behind it); the before value is always reported so it can be set straight back. Two live-measured caveats. Routing to a BUS makes Logic CREATE the aux behind it, and routing away again does not remove that aux — the result says so in side_effect_note. And the press that opens a slot's menu is INTERMITTENT: Logic sometimes answers it with 'success' and opens nothing, so this retries (five times, clearing Logic's pending UI state with an Escape between attempts) and, if the menu still refuses, fails with 'the routing slot's menu did not open' having written NOTHING. That failure is safe to retry. The output slot was the reliable one in testing; the input and group slots hit it more often.",
                 inputSchema: [
                     "type": "object",
@@ -83,6 +88,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_list_inserts",
+                title: "List insert slots",
                 description: "List a strip's audio-effect insert slots (plugin display name, and bypass state on the Accessibility route). ONE tool, TWO routes, and `route_used` says which ran — with it the numbering the result carries. Route 'ax' reads the left inspector's channel strip and numbers the OCCUPIED slots as `index`, the insert_index logic_open_plugin / logic_close_plugin / logic_remove_plugin / logic_set_insert_bypass take; it needs the strip shown in an inspector. Route 'mcu' walks the control surface's plugin list and numbers the PHYSICAL slots 1-8 as `slot`, the insert_slot every logic_mcu_* tool takes; it reaches every strip and every plugin, custom-UI third-party included, and it selects the strip first. Default 'auto' tries ax and falls back to mcu when the inspector cannot reach the strip. The two numberings are DIFFERENT and were observed reversed on an output strip — read `route_used`, use the number it gave you, and never convert one into the other."
                     + Tool.stripAddressingNote,
                 inputSchema: [
@@ -110,6 +116,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_bounce_range",
+                title: "Bounce a bar range",
                 description: "Offline-bounce a bar range of the master output to an audio file, many times faster than realtime playback. Drives Logic's bounce dialog and its XPC save panel entirely through verified accessibility (no playback). Switches the bounce destination to Uncompressed. DELIVERY OPTIONS: file_type, bit_depth, sample_rate, dithering and normalize drive the dialog's own pop-ups (values are matched leniently - '48k', '48000' and '48 kHz' all reach '48 kHz' - and an unknown one is refused with the real list BEFORE anything is bounced), and include_audio_tail drives its checkbox. Whatever is not passed is left exactly as the user set it, and the result reports the full delivery state in `delivered_as`, read off the dialog just before OK. These are the USER'S OWN settings and Logic keeps them for the next bounce: they are changed, not borrowed, and nothing puts them back — `options_changed` says what moved. MP3 and M4A destinations exist in the dialog with their own option set and are NOT implemented here. ONE CONSEQUENCE OF CHANGING file_type: the metrics reader parses AIFF/AIFC only, so a WAVE or CAF bounce comes back with no `metrics` and therefore WITHOUT the silent-bounce warning — keep the default AIFF when you intend to judge the file by its numbers, and switch format only for the delivery itself. Returns the file path.",
                 inputSchema: [
                     "type": "object",
@@ -140,6 +147,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_bounce_in_place",
+                title: "Bounce a track in place",
                 description: "PRINT a region (or a whole track) back INTO the project as audio — the resampling verb. This is the one logic_render_track is not: render_track writes a file to DISK, this creates a new audio REGION in the arrangement that you can then chop, reverse, load into a sampler or bounce again. Drives 'File > Bounce > Regions in Place…' (scope 'region', the default) or 'Tracks in Place…' (scope 'track') and answers the sheet. Every sheet control is left exactly as the user set it unless you pass the matching argument, and the result reports the whole sheet state it used. ONE THING TO WATCH: 'Bypass Effect Plug-ins' is a real Logic setting that may be ON, which makes the print DRY — the result warns when it was, and bypass_effect_plugins: false is how you print the sound as you hear it. Verified against the arrangement map: a region that was not there before, with its track and bars reported - and the muted SOURCE is not mistaken for it (Logic renames a muted region, which the first live run reported as the print). Undo removes it. The sheet is modal and is always cancelled on any failure path.",
                 inputSchema: [
                     "type": "object",
@@ -171,6 +179,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_export_stems",
+                title: "Export stems",
                 description: "Export ALIGNED STEMS: one offline bounce per named track over the SAME bar range, each with only that track soloed, solo restored after every one. The shared range contract is what makes these stems rather than a loop of renders, and the tool verifies it - the frame counts of the files are compared and 'aligned' says whether they really line up. WHAT A STEM CONTAINS: the full master output heard one track at a time - post-fader, post-pan, post-insert, WITH the return of anything that track sends to a bus, and with the master chain applied. Two consequences it will report but you must plan around: summing the stems reproduces the mix only while the master chain is linear (a master limiter reacts to the whole mix and cannot react to one stem), and a bus fed by several of these tracks is counted once per stem. logic_render_track is the OTHER kind of file - a pre-fader freeze of the track alone, no sends, no master chain - and it is not a stem. Refuses before the first render when any track is already soloed (every stem would contain it). Costs one full offline bounce per track; the limit is 16 per call. No audio is attached - the result carries paths. Alignment is measured from the files' frame counts, which the metrics reader gets from AIFF/AIFC only: if the bounce dialog's File Type has been switched to WAVE or CAF (logic_bounce_range can do that), the stems still render but `aligned` comes back false with 'UNVERIFIED' in the note rather than a claim.",
                 inputSchema: [
                     "type": "object",
@@ -197,6 +206,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_evaluate_change",
+                title: "A/B a change by ear",
                 description: "A/B A CHANGE AND HEAR BOTH VERSIONS: one complete closed-loop mix evaluation around exactly one verified plugin-parameter change, on a bar range - this is the tool for 'is this better?', and it returns the two renders as audio you can listen to. Takes 30-50 s. Three methods: 'render' (two dialog-free freeze renders of the SINGLE track, compared on the sliced bar range — fastest and most isolated; needs insert_slot, the MCU physical slot, and works for all plugins including third-party), 'bounce' (two offline MASTER renders via the bounce dialog, needs plugin_name), and 'solo_bounce' (two offline bounces with ONLY this track soloed, solo restored after; needs insert_slot like 'render' — use for tracks freeze refuses: stack subtracks and tracks sharing a channel strip). All methods roll the change back by default, return baseline/after audio paths, metrics and dB deltas, and CARRY both versions as audio content blocks. TEMPO: method 'render' cuts its two slices itself, so it first reads the project's tempo map out of Logic's Tempo List (View > List Editors > Tempo; ~2 s, no playhead movement, cached per project) and INTEGRATES it — exact for step tempo changes, and the result reports the map in tempo_map. Only when the Tempo List cannot be read does it fall back to sampling the tempo at both ends of the range (parking the playhead) and REFUSE with precondition_failed if the readings differ, naming 'bounce'/'solo_bounce' as the tempo-accurate alternatives; those two hand Logic the bar numbers and are never sampled or refused. MASTER CHAIN: method 'bounce' accepts a strip without a track header ('Stereo Out', an aux, a bus) — it bounces the whole mix, so no track needs selecting; the strip must be visible in an inspector (see logic_list_inserts) because the parameter is written through the plugin WINDOW, which also means the plugin must publish an editable field for it (`ax_writable` in logic_list_plugin_parameters). A knob-only plugin is refused BEFORE the baseline bounce, naming the surface route; the reference project's whole master chain — Channel EQ, Limiter, Sensor — is knob-only, so 'bounce' cannot A/B it and only logic_bounce_range plus a separate logic_set_plugin_parameter can. 'render' (freeze) and 'solo_bounce' (solo) are track-only by nature.",
                 inputSchema: [
                     "type": "object",
@@ -235,6 +245,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_mcu_instrument_parameters",
+                title: "Read instrument parameters",
                 description: "Read the INSTRUMENT slot's parameter names and formatted values (all MCU pages) for a track via host automation — reaches software instruments whose UIs expose nothing to Accessibility (Q-Sampler, Trilian, ...). PAGE-CAPPED: `truncated: true` with `pages` and `pages_total` means parameters were left unread - raise max_pages or treat the list as partial, never as the instrument's whole parameter set.",
                 inputSchema: [
                     "type": "object",
@@ -254,6 +265,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_mcu_set_instrument_parameter",
+                title: "Set an instrument parameter",
                 description: "Set one INSTRUMENT parameter through host automation (MCU vpot) with LCD echo readback, same converge/step semantics and compare-and-set contract as logic_set_plugin_parameter.",
                 inputSchema: [
                     "type": "object",
@@ -275,6 +287,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_mcu_status",
+                title: "Read the control surface",
                 description: "Read the Mackie Control bridge's mirrored state: LCD text (track names/values as data), fader positions, transport LEDs, timecode display, online status. This is Logic's documented control-surface feedback channel — no UI, no focus, no windows involved. Requires logic-mcu-bridge running and a Mackie Control configured in Logic pointing at the 'Logic MCP MCU' ports.",
                 inputSchema: ["type": "object", "properties": [:], "additionalProperties": false],
                 safety: .readOnly,
@@ -283,6 +296,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_mcu_sends",
+                title: "List a track's sends",
                 description: "List a track's sends as data via the Mackie Control channel send view: slot number, destination bus, level in dB, position (pre/post fader) and status. UI-independent; competitors' MCPs do not expose sends at all."
                     + Tool.stripAddressingNote,
                 inputSchema: [
@@ -302,6 +316,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_mcu_set_send",
+                title: "Set a send level",
                 description: "Set the LEVEL in dB of a send that ALREADY EXISTS, verified through the MCU LCD echo (compare-and-set with expected_current_value, readback, same discipline as plugin parameters). Only the level vpot is touched — never the destination, and no send is created: to make a new send, use logic_add_send (which can set the level in the same call). List sends first with logic_mcu_sends."
                     + Tool.stripAddressingNote,
                 inputSchema: [
@@ -324,6 +339,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_record_automation",
+                title: "Record an automation curve",
                 description: "DESTRUCTIVE: a Latch pass OVERWRITES any automation already written across this range - read what is there first with logic_read_automation, because nothing but Undo puts it back. TAKES REAL WALL-CLOCK TIME (the automated range is played through, twice with verification). Writes an automation curve on a track — volume (absolute fader), pan, a send level (send: 1-8) or ANY plugin parameter (insert_slot + plugin_parameter) — with no mouse and no automation-lane clicking. The value scale follows the parameter: dB for volume/sends, -64..63 for pan, the plugin's own units otherwise. Mechanism: calibrate the control near the working range, switch the track to Latch over the control surface, roll playback placing calibrated moves at each musical moment, return to Read, restore the original value, and verify by REPLAYING the range while sampling Logic's own echo at every point. ramp (default true) interpolates between points. Points need bar >= 2 and carry value (or db for volume). Takes real time (the automated range, twice with verify). TEMPO MAP: each point's moment, the pre-roll bar and the per-point convergence budgets are integrated over the project's tempo map, read out of Logic's Tempo List (~2 s, no playhead movement, cached per project and reported in tempo_map), so a curve across a tempo change lands on the beats asked for; without a readable map it falls back to one msPerBeat from the control bar. The verification is bar-based either way, so it is the proof.",
                 inputSchema: [
                     "type": "object",
@@ -366,6 +382,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_record_midi",
+                title: "Record MIDI",
                 description: "TAKES REAL WALL-CLOCK TIME (the music plays through: bars x beats x 60/BPM seconds, roughly doubled with the verification render). Composes MIDI into the project with ZERO dialogs and no files: notes are streamed in real time over the dedicated 'Logic MCP MIDI In' port while Logic records them onto the selected software-instrument track (playhead parked one bar early; the stream starts on the observed MCU-timecode crossing into start_bar, so count-in settings do not matter). Creates a normal recorded region. By default the result is verified with a dialog-free freeze render of the recorded bars (non-silent metrics prove the notes landed and sound through the instrument). The region can be removed with Undo in Logic. SMART TEMPO GUARD: a project tempo mode of ADAPT (or AUTO, which can resolve to Adapt) makes Logic rewrite the project's TEMPO MAP to follow the recording, so this refuses before arming and names the fix; when the mode cannot be read off the control bar the recording proceeds and the result carries a warning saying it went unverified. TEMPO MAP: note offsets are integrated over the project's tempo map, read out of Logic's Tempo List (View > List Editors > Tempo; ~2 s, no playhead movement, cached per project and reported in tempo_map), so notes land on the grid across a tempo change. When the Tempo List cannot be read, placement falls back to constant-tempo bar math and the tempo is sampled at the take's first and last bar instead (playhead parked, read, restored — once per call, shared with the verification render); differing readings then produce a `warning`. Either way speed > 1 is REFUSED with precondition_failed on a non-constant tempo: speed mode overwrites the tempo slider and restores a single value, which cannot put a tempo map back. Real-time recording (speed 1) touches no tempo and stays available.",
                 inputSchema: [
                     "type": "object",
@@ -450,6 +467,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_plugin_preset",
+                title: "Browse plugin settings",
                 description: "Browse and load a plugin's settings (presets). action 'list' enumerates the setting menu — every name, its category, and which one is marked as loaded — WITHOUT changing anything; action 'select' loads one by name (bare 'Rock Bass' or qualified '03 Guitars/Rock Bass'), verified against the plugin window's setting label; action 'step' walks next/previous N settings via Logic's topmost-plugin-window key command, the only route that needs no readable menu; action 'undo' presses the setting menu's own Undo, which is the ONLY way back from a load — it restores the parameter state rather than a name, so it also recovers a plugin that was on no named setting at all (measured on a headerless strip: all eight of a Limiter's parameters came back exactly). The plugin window is opened and closed again if this call opened it. Reading the menu needs Logic frontmost for a moment (a menu cannot open in a background app). Honesty contract: 'list' returns presets: null plus a reason when the plugin's UI exposes no Logic setting pop-up (fully custom UIs), and presets: [] — an empty list, not a failure — for plugins that genuinely ship no factory settings; 'step' reports success: false when the label did not move. WARNING: loading a setting overwrites EVERY parameter of the plugin, and a setting name is not a promise about the current state — unnamed tweaks on top of a named setting are lost and re-selecting the old name does not bring them back. Use action 'undo' to get back."
                     // The AX note alone: selection routes through the surface,
                     // but OPENING the plugin window is an Accessibility action
@@ -482,6 +500,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_rename_track",
+                title: "Rename a track",
                 description: "Rename a track by writing the channel strip's name field (element-addressed AX). Verified against the track headers.",
                 inputSchema: [
                     "type": "object",
@@ -498,6 +517,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_duplicate_track",
+                title: "Duplicate a track",
                 description: "Duplicate a track via Logic's Duplicate Track key command (learned automatically). Verified by the track count increasing.",
                 inputSchema: [
                     "type": "object",
@@ -513,6 +533,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_delete_track",
+                title: "Delete a track",
                 description: "DESTRUCTIVE: delete a track via the Delete Track key command. The selection is re-verified to be the named track immediately before firing, and the result is verified against the track list. Undo restores. A track that still holds REGIONS raises Logic's modal 'Delete Track and Regions?' confirmation: it is detected and answered here (Delete only while the selection still names the requested track, Cancel otherwise, and the alert's own text comes back in `confirmation`), because a modal left standing swallows every key command after it.",
                 inputSchema: [
                     "type": "object",
@@ -530,6 +551,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_add_send",
+                title: "Create a send",
                 description: "CREATE a send on a track to a bus/output — this is the tool that makes a send that was not there; to change the LEVEL of one that already exists, use logic_mcu_set_send instead. Mouse-free via the control surface's send-destination browser (first empty slot, browsed to the named destination, settle-verified, confirmed). Destination names as Logic shows them, e.g. 'Bus 1', 'Bus 2'. LEVEL: a new send lands at -oo dB and is INAUDIBLE, so pass level_db to set it in the same call (the same converge-and-read-back write logic_mcu_set_send does, on the strip already selected). Without level_db the send is created silent and the result says so; if the level write fails the send still exists and the result carries a warning naming the follow-up call. TWO VERIFICATIONS, TWO KEYS: top-level `verified` is about the SEND being created, while the level write is reported separately as `level_verified` (with `level`, `level_db_requested` and `level_write_route`) - read that one before assuming the send is audible."
                     + Tool.stripAddressingNote,
                 inputSchema: [
@@ -550,6 +572,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_create_track",
+                title: "Create a track",
                 description: "Create a new track (software_instrument or audio) via Logic's key command, answering the Create New Track dialog automatically. Verified by the track count increasing. IT DOES NOT LOAD AN INSTRUMENT: a software-instrument track is created EMPTY and makes no sound until one is put in its instrument slot, which is a different mechanism from the insert slots - logic_add_plugin fills the first empty audio-effect INSERT, never the instrument, so 'create a software instrument track' + 'add a plugin' both report success on a silent track. THE SECOND CALL IS logic_load_instrument {track_name, instrument}. The alternative, when a track already carries the instrument you want, is logic_duplicate_track, which copies its settings and its content with it.",
                 inputSchema: [
                     "type": "object",
@@ -567,6 +590,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_list_regions",
+                title: "List regions",
                 description: "The arrangement map: every region on every visible track row, with name, start/end bar (and beat when off the barline), type (midi/audio) and selection state — parsed from Logic's own accessibility descriptions. Read-only. Optionally filter to one track. REGIONS HAVE NO STABLE HANDLE: they are addressed by (track_name, region_name, start_bar), and start_bar is exactly what an edit changes - so re-read this map between two edits of the same region instead of reusing the first read's start_bar. Duplicate region names make verification count occurrences rather than identify a region, which is why every edit tool selects exclusively first. Only regions on rendered track rows are listed, with the same caveat as logic_list_tracks.",
                 inputSchema: [
                     "type": "object",
@@ -581,6 +605,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_select_region",
+                title: "Select a region",
                 description: "Select exactly one region (by track + region_name and/or start_bar; ambiguity is refused with candidates listed). exclusive (default true) clears all other region selections first, so a following edit key command (cut/copy/delete/nudge) touches only this region. Verified via the element's selection state. To select SEVERAL regions at once use logic_select_regions (with the s) - a different tool with modes 'track', 'following', 'following_same_track', 'all' and 'none'; this one is single and exclusive on purpose.",
                 inputSchema: [
                     "type": "object",
@@ -600,6 +625,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_delete_region",
+                title: "Delete a region",
                 description: "DESTRUCTIVE: delete one region (selected exclusively first; refuses unless exactly ONE region is selected project-wide right before Delete fires). Verified against the arrangement map; Undo restores.",
                 inputSchema: [
                     "type": "object",
@@ -619,6 +645,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_remove_silence",
+                title: "Strip silence from a region",
                 description: "Cut the silence out of ONE audio region — the first move of every audio-post session, and what other DAWs call strip silence. Logic Pro 12.3.1 has no command by that name: the real one is 'Remove Silence from Audio Region…' and it opens a floating window with a LIVE PREVIEW of how many regions the current settings would leave. That preview is why apply defaults to FALSE: the first call opens the window, reads Logic's own count and the current threshold/time settings, closes it again and changes nothing, so an agent can ask 'what would this do?' before doing it. apply: true presses OK and verifies against the arrangement map (one region becomes N; Undo restores it, and the audio FILE is never touched). Refuses on a MIDI region. NOT IMPLEMENTED: the window's four numeric fields (threshold in dB, minimum silence, pre-attack, post-release) are per-digit steppers and this server does not write them — the result reports their current values, and changing them means touching Logic's window.",
                 inputSchema: [
                     "type": "object",
@@ -641,6 +668,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_select_regions",
+                title: "Select several regions",
                 description: "Select MANY regions at once — the thing logic_select_region deliberately cannot do (it is exclusive and single). Modes, each one a real Logic command: 'track' (every region on the anchor's track), 'following' (the anchor and everything after it, on EVERY track), 'following_same_track' (the anchor and everything after it on that track only), 'all' (every region in the project), 'none' (clear the selection). The relative modes need an anchor: track_name, plus region_name and/or start_bar when the track holds more than one region — the anchor is selected exclusively first, then the command extends from it. VERIFICATION: the number of selected regions is counted before and after off the arrangement map, and a mode that moved nothing comes back success: false rather than pretending. The count sees VISIBLE track rows only, while the selection itself is project-wide — a following edit acts on every selected region, counted or not. Uses learned key commands (Logic 12.3.1 names: 'Select All Regions/Cells of Same Track', 'Select All Following', 'Select All Following of Same Track/Pitch', 'Select All', 'Deselect All'). THIS CAN WRITE INTO THE USER'S OWN LOGIC: a command missing from the registry is LEARNED on the spot, which adds a MIDI-note assignment to the user's active key command set (additive, removable in Logic's Key Commands window), and the result then carries `learned_key_command`, `learned_note` and a `consent_note` saying exactly that. Say so when you report the result.",
                 inputSchema: [
                     "type": "object",
@@ -666,6 +694,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_split_region",
+                title: "Split a region",
                 description: "Split ONE region at a bar (and optional beat) - the three-call recipe (select, park the playhead, fire 'Split Regions/Events at Playhead Position') as a single call with one verdict. Three failure modes are named and checked in order, and the first two refuse BEFORE anything is written: (1) the split point is not inside the named region - refused with the region's own bar span, nothing moved; (2) the playhead did not land where it was asked to - this parks the sub-beat fields of the control bar's position display as well, which logic_set_playhead does not, because a 'verified' bar/beat can still sit almost a whole beat late and for a split that is a wrong cut rather than a rounding error; (3) the command fired and the arrangement map still shows one region - reported as verification_failed with nothing undone. Success is proven by the map: two regions where one was, both reported. A MIDI SPLIT IS NOT SILENT: when a note crosses the cut, Logic raises a modal ('Notes Crossing Split Point') and freezes until it is answered - this answers it with notes_crossing (default 'split', Logic's own pre-selection) and reports which branch it took, and it cancels any dialog left over on a failure path, because an unanswered modal makes every later tool report 'the command fired and nothing happened'. Undo restores the single region. The halves are NEW regions - re-read logic_list_regions before addressing either of them.",
                 inputSchema: [
                     "type": "object",
@@ -694,6 +723,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_move_region",
+                title: "Move a region",
                 description: "Move one region by whole bars and/or beats via Logic's nudge key commands (no dragging, no mouse). Whole-bar moves are verified exactly against the arrangement map. DESTRUCTIVE: a nudged region can land ON TOP of its neighbours, and Logic trims whatever it overlays - the region that was there loses the overlapped part and only Undo brings it back. Read logic_list_regions first to see what is in the way. Relative, so a repeat moves again.",
                 inputSchema: [
                     "type": "object",
@@ -715,6 +745,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_copy_region",
+                title: "Copy a region",
                 description: "Copy (or move, with move: true = Cut) one region to a target bar, optionally onto another track: exclusive select, Copy/Cut, select destination track, park playhead, Paste. Verified by the region appearing at the target bar in the arrangement map. DESTRUCTIVE: the paste can land ON TOP of a region already at the target bar, and Logic trims what it overlays; move: true CUTS the source instead of copying it, so the original is gone from where it was. Only Undo puts either back - read logic_list_regions first.",
                 inputSchema: [
                     "type": "object",
@@ -737,6 +768,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_get_region_params",
+                title: "Read region parameters",
                 description: "Read a region's own parameters out of Logic's Region inspector — the panel at the top of the left inspector that says 'Region: <name>'. This is the read side of logic_set_region_params and the only way to see a region's quantize, transpose, velocity, loop, mute, gain, fades or delay. Pass track_name (plus region_name and/or start_bar) and the region is selected first; call it with no arguments to read whatever is selected. THREE THINGS THE RESULT TELLS YOU BEFORE THE VALUES. `subject` says whose parameters these are: a region, 'multiple' when several are selected (values that differ read as mixed), or 'defaults' — with NOTHING selected the panel shows the TRACK's region defaults ('MIDI Defaults' / 'Audio Defaults'), which is a different thing entirely and is never written by this server. `region_type` is read off the rows Logic published, independently of the arrangement map: a MIDI region has Velocity Offset, Dynamics, Gate Time and the Q-rows, an audio region has Gain, Fine Tune, Fade-In/Out, Reverse and Smart Tempo. And `enabled` per row is load-bearing: Logic greys out every Q-row while Quantize is Off, and a disabled control cannot be written. `display` is Logic's own text for the value and is ABSENT at a parameter's default, because Logic prints the default blank. The panel is opened (and its 'More' section with it) and put back exactly as it was found.",
                 inputSchema: [
                     "type": "object",
@@ -759,6 +791,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_set_region_params",
+                title: "Set region parameters",
                 description: "Set a region's own parameters through Logic's Region inspector. MIDI: quantize (with its swing and strength), transpose, velocity offset, dynamics, gate time, delay. AUDIO: gain, fine tune, transpose, fade-in and fade-out with their curves and the fade/crossfade type, reverse, delay. Both: loop and mute. These are Logic's NON-DESTRUCTIVE playback parameters — no notes are rewritten and no audio file is touched, so every one of them is reversible by setting it back, and logic_list_events keeps showing the recorded positions rather than the quantized ones. Pass as many as you like in one call; they are applied in a fixed order with QUANTIZE FIRST, because Logic disables every Q-row while Quantize is Off (so 'quantize to 1/16 with 75% swing' is one call, not two), and each fade LENGTH before its curve and type. Each write is read back off Logic's own control and reported as before/after with the row it landed on; a parameter already at the requested value is a verified no-op in `unchanged` and nothing is pressed (with every named parameter already right, the whole call comes back as state: \"already_set\"). Compare-and-set with `expected_current` per parameter. VALUES: units and ranges are on each property below, and an out-of-range number is REFUSED rather than clamped. Four parameters take Logic's OWN MENU SPELLING — quantize, dynamics, gate_time, fade_type — and a near miss is refused with the real list rather than guessed at; read the quantize list with logic_get_region_params include_quantize_values. SCOPE: the default 'region' selects the named region exclusively and writes to it alone. scope 'selection' writes to every region currently selected (set that up with logic_select_regions) — measured, not assumed: two selected regions both took the write — and it leaves the selection alone. A parameter whose value DIFFERS between the selected regions reads as mixed and cannot be compare-and-set. REFUSED, on purpose: with nothing selected the panel shows the track's region defaults and a write there would change what every future region inherits; a MIDI-only parameter on an audio region (or the reverse) is refused by name BEFORE anything is written; under scope 'selection' every numeric parameter is refused, because Logic makes those controls relative over a multi-selection; and a fade row whose label pop-up has been switched to 'Speed Up'/'Slow Down' is refused, because its value is then a ramp length and not a fade.",
                 inputSchema: [
                     "type": "object",
@@ -808,6 +841,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_rename_region",
+                title: "Rename a region",
                 description: "Rename ONE region. Logic's Region inspector publishes the region's name as an editable text field, so this is a single write and a confirm — no dialog, no key command, and the inspector's disclosure triangles are not even touched. The region is selected exclusively first (track_name plus region_name and/or start_bar; ambiguity is refused with the candidates listed) and the rename is verified TWICE: the inspector reads the new name back, and the arrangement map shows it on the region at that position. Names are the ARRANGEMENT's, not the audio file's — renaming an audio region never touches the file on disk, and Undo restores the old name. Compare-and-set with expected_current_name. Two notes worth knowing: a MUTED region reads as '<name>, muted' in the arrangement map while the inspector shows the bare name, and this tool compares the bare names; and if Logic renumbers OTHER regions on the track as a side effect (the way it renumbers default marker names by position), the ones that moved are reported in `also_renamed`. To rename a TRACK use logic_rename_track; to rename several regions call this once per region.",
                 inputSchema: [
                     "type": "object",
@@ -830,6 +864,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_set_tempo",
+                title: "Set the tempo",
                 description: "Set the project tempo in BPM via the control bar's tempo display (rapid-fire stepwise converge, ~1.3 s per 120 BPM of distance). Whole-BPM resolution. Compare-and-set with expected_current_bpm. TEMPO MAP GUARD: the tempo display shows and sets the tempo AT THE PLAYHEAD, so on a project with a tempo track this write would edit one tempo node rather than the project tempo. It therefore reads the project's tempo map out of Logic's Tempo List (View > List Editors > Tempo; ~2 s, no playhead movement) and REFUSES with precondition_failed when the map holds more than one tempo: a tempo map is edited in Logic's tempo track / Tempo List, not through this slider. When the Tempo List cannot be read it falls back to sampling the tempo at the playhead and at bar 1 (parking the playhead and restoring it — roughly 0.13 s per bar of travel) and refuses the same way; two agreeing samples are evidence, not proof, so the result then reports which bars were compared in tempo_sampled_at_bars. There is no override argument.",
                 inputSchema: [
                     "type": "object",
@@ -847,6 +882,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_save_project",
+                title: "Save the project",
                 description: "Save the open Logic project — the ONLY way this server ever saves; no other tool saves as a side effect. Fires the Save key command and verifies via the document's modified flag. Refuses when more than one project is open, when the project has never been saved, or when expected_project_path does not match. Returns state: \"already_saved\" when there is nothing to save - a verified no-op, not a failure.",
                 inputSchema: [
                     "type": "object",
@@ -862,6 +898,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_new_project",
+                title: "New project",
                 description: "Create a NEW Logic project at the given .logicx path — dialog-free, from a bundled empty project template — and open it. Logic runs single-project: if the current project has unsaved changes the call fails unless if_current_modified explicitly chooses 'save' or 'dont_save'. The created project is already saved on disk.",
                 inputSchema: [
                     "type": "object",
@@ -883,6 +920,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_open_project",
+                title: "Open a project",
                 description: "Open an existing .logicx project. Single-project semantics as logic_new_project: unsaved changes in the current project require an explicit if_current_modified decision.",
                 inputSchema: [
                     "type": "object",
@@ -906,6 +944,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_duplicate_project",
+                title: "Duplicate the project",
                 description: "Duplicate the OPEN project on disk and (by default) open the copy — the safe sandbox for destructive experiments: the original stays untouched. The copy is the on-disk state; pass save_first: true to save unsaved changes into it first. Default destination: '<name> Copy.logicx' next to the original. Opening the copy closes the current project (single-project mode; if_current_modified defaults to 'save' here since the original is the project being closed).",
                 inputSchema: [
                     "type": "object",
@@ -931,6 +970,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_close_project",
+                title: "Close the project",
                 description: "Close the open project via AppleScript. 'saving' must be an explicit 'yes' or 'no' — there is no default, because discarding versus persisting changes is always the caller's decision.",
                 inputSchema: [
                     "type": "object",
@@ -951,6 +991,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_reset_to",
+                title: "Reset the project",
                 description: "**THIS TOOL DISCARDS THE OPEN PROJECT'S UNSAVED CHANGES. THAT IS ITS CONTRACT, NOT A SIDE EFFECT.** The episode-reset primitive: close whatever is open WITHOUT saving, open the .logicx at `path`, and prove the world is in a known state. Built for eval harnesses and for any agent that wants a clean slate between attempts — reset to the same file it was already in and every experiment of the last episode is gone. `confirm_discard: true` is REQUIRED and has no default, so this cannot be tripped into; call logic_save_project first if the changes matter. Refuses BEFORE touching Logic when the target file does not exist, so a bad path never costs you the open project. IT OWNS THE DIALOGS: the close runs off-thread (Logic's AppleScript blocks while a modal is up) while an Accessibility loop walks whatever appears, answers 'Do you want to save the changes…?' with **Don't Save** and the auto-save recovery prompt with **Saved**, and reports every dialog it saw in `dialogs`. A dialog whose grammar it does not recognise is REPORTED AND NEVER PRESSED — the reset then fails on the timeout with the alert's own text and buttons in the log, rather than clicking a button whose consequence was never measured. CACHES: all four per-project caches (bank map, tempo map, meter map, plugin parameter names) are cleared explicitly while nothing is open. They are scoped by project path, which already covers switching to a DIFFERENT project — but reopening the SAME path keeps the scope token identical, so a bank map measured against tracks that only existed unsaved would otherwise survive the reset and be trusted. VERIFICATION: the frontmost document window matches the target path, exactly one document is open, it is unmodified, logic_health's Accessibility and process checks pass, and no dialog is left on screen. Every check is reported individually and `verified` is the AND of all of them. If the open fails after the close, the error says so explicitly — the previous project is already gone at that point and Logic has nothing open.",
                 inputSchema: [
                     "type": "object",
@@ -976,6 +1017,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_project_snapshot",
+                title: "Snapshot the project",
                 description: "The TRUTH DOCUMENT: one call that aggregates the existing readers into a structured, diffable picture of the project. Pair it with logic_reset_to to diff an episode's start and end state, or call it once to understand a project you did not build instead of making twenty reads. SCOPE decides the cost, not the capability — each level is a superset of the one before. 'structure' (default) is Accessibility-only and never touches the control surface: transport (tempo, meter, playhead, project path), the tempo map, the meter map, markers, the rendered track list and the region map. 'mix' adds the control-surface strip census and the full mixer snapshot (two bank walks — the expensive part). 'full' adds per-track MCU inserts and sends, one strip selection each, capped by max_tracks. COMPLETENESS IS THE CONTRACT: every section named in `sections` is present in the result, and one that could not be read comes back as {\"unavailable\": \"<reason>\"} — never a missing key, because a diff would read a missing section as an empty project rather than a failed reader. `complete` is false whenever any section is unavailable, and `unavailable_sections` names them. Deterministic by design: fixed section and array ordering, keys serialized sorted, so two snapshots of the same project diff cleanly. `timing_ms` carries the per-section cost and is the ONE nondeterministic block — drop it before diffing. Composes the same functions the individual tools call (logic_get_transport, logic_list_signatures' meter map, logic_markers, logic_list_tracks, logic_list_regions, logic_list_strips, logic_mixer_snapshot, logic_list_inserts route 'mcu', logic_mcu_sends), so their caveats apply here unchanged — in particular the track list is only the RENDERED rows, and the MCU sections degrade honestly against an old bridge daemon.",
                 inputSchema: [
                     "type": "object",
@@ -1000,6 +1042,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_setup_key_commands",
+                title: "Set up key commands",
                 description: "One-time onboarding: learn MIDI-note assignments for all standard key commands (Toggle Track Freeze, Undo, Redo, Flashback Capture as Recording, Split at Playhead, Create Marker) into the user's Logic via the Key Commands window automation. Additive to the user's key command set and removable there; collisions with existing assignments get alternate notes automatically. Idempotent — already-learned commands are verified and skipped, each reported in `results` as state: \"already_learned\" (the same entries also carry the older key `status`, which will be dropped in a later release). Runs automatically the first time a tool needs a missing command, so calling this explicitly is optional. Pass relearn: true to force re-learning even for commands that look bound — the repair when key commands silently stopped firing (e.g. after the MIDI ports were recreated: Logic scopes the assignments to the port identity).",
                 inputSchema: [
                     "type": "object",
@@ -1028,6 +1071,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_learn_key_command",
+                title: "Learn a key command",
                 description: "Learn ANY command in Logic's Key Commands window - not just the standard set - onto a MIDI note, so logic_trigger_key_command can fire it. Give the command's name EXACTLY as the Key Commands window spells it (e.g. 'Strip Silence…', 'Bounce Regions in Place', 'Select All Following of Same Track'); the search field is driven with the first words of that name unless you pass 'search' yourself. THIS WRITES INTO THE USER'S OWN LOGIC KEY COMMAND SET: the command gains an additional assignment on the dedicated 'Logic MCP Commands' MIDI port. It is additive - the user's existing keyboard shortcut is untouched - and removable in the same window (select the command, Delete Assignment). The MIDI note is chosen automatically from a range reserved for learned commands (60-99, then 122-127, then 21-59), so it can never take a note the product's own standard commands want; pass 'note' only to force one. The registry file is the consent record and records the name, note, timestamp, search term and that THIS tool bound it - read it back with logic_list_key_commands. Already-registered commands answer immediately without opening the window, as state: \"already_registered\" (or \"already_learned\" when the window confirmed an existing assignment); pass relearn: true to bind again, the repair after MIDI ports were recreated. When no row matches, the failure is not_found and it LISTS the rows the panel was showing: command names drift between Logic versions, so a near miss is answered with the real spellings rather than a guess.",
                 inputSchema: [
                     "type": "object",
@@ -1051,6 +1095,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_list_key_commands",
+                title: "List key commands",
                 description: "List what the key command registry holds: every command name that has been learned onto the 'Logic MCP Commands' MIDI port, its note and channel, when it was learned, and which tool bound it. Read-only and Logic-free - this reads the registry FILE, so an entry it lists can still have been orphaned inside Logic (recreated MIDI ports do that silently; logic_setup_key_commands with relearn: true repairs it). The registry is what logic_trigger_key_command checks before firing anything, so this is also the list of commands an agent may fire. Also reports which standard commands are not learned yet.",
                 inputSchema: ["type": "object", "properties": [:], "additionalProperties": false],
                 safety: .readOnly,
@@ -1059,6 +1104,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_trigger_key_command",
+                title: "Trigger a key command",
                 description: "Fire a Logic key command that was learned onto the dedicated 'Logic MCP Commands' MIDI port. Pass name (e.g. 'Toggle Track Freeze', 'Undo') or note+channel. Standard commands missing from the registry are learned automatically first; unknown notes are refused because they could be bound to anything. CAUTION with Undo: the menu shows no operation name, so only fire it right after a known edit.",
                 inputSchema: [
                     "type": "object",
@@ -1079,6 +1125,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_render_track",
+                title: "Render a track to a file",
                 description: "Render ONE track offline to an audio file ON DISK with ZERO dialogs, via Track Freeze. NOT bounce-in-place: it produces a FILE, it does not commit a new audio region into the project, so it is not the tool for 'print that so I can chop it' - resampling a part back into the arrangement has no route in this server yet. Mechanism: selects the track, toggles freeze over the 'Logic MCP Commands' MIDI port, presses play (Logic then renders the whole track offline, typically seconds), copies the 32-bit float AIFF out of Media/Freeze Files to the captures folder, and unfreezes again. Requires 'Toggle Track Freeze' in the key command registry and the MCU bridge running. WHAT `verified` MEANS HERE: it reports the CLEANUP, not the render. `verified` aliases `unfrozen`, so a perfectly good render whose freeze could not be undone comes back verified: false with the track still frozen in Logic (unfreeze it there). Judge the render itself by `path` and `metrics`. Renders the full track from project start including all plugins and automation (freeze mode Pre Fader). If the track is already frozen the call fails safely and restores state. TEMPO: with start_bar/end_bar the slice's boundaries are integrated over the project's tempo map, read out of Logic's Tempo List (View > List Editors > Tempo; ~2 s, no playhead movement, cached per project and reported in tempo_map). When the Tempo List cannot be read the slice falls back to constant-tempo bar math and the tempo is sampled at both ends of the range instead (parks the playhead, reads, restores), with a `warning` naming both readings when they differ — the FULL render is unaffected either way. Without a bar range no tempo is read at all.",
                 inputSchema: [
                     "type": "object",
@@ -1103,6 +1150,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_mcu_command",
+                title: "Send a raw surface command",
                 description: "Send a command to Logic through the Mackie Control bridge (UI-independent). cmd is one of: press {button: play|stop|record|rewind|forward|cycle|click|bank_left|bank_right|channel_left|channel_right|flip|name_value|assign_track|assign_send|assign_pan|assign_plugin|assign_eq|assign_instrument|...}, select/mute/solo {channel: 0-7}, fader {channel: 0-8, value: 0-16383, verify: true}, vpot {index: 0-7, delta: +-n}, vpot_press {index}, raw {bytes: [..]}, ping. Read logic_mcu_status afterwards to verify via Logic's feedback. FADER: Logic does follow an absolute fader write (measured, with and without the fader-touch note), but it SNAPS the position to its own resolution — 5631 through 5635 all landed on 5628 — so never compare the echo to the value you asked for with ==. Pass verify: true to get final_value (where Logic actually settled) and followed back; to restore a fader exactly, write back a value Logic itself reported, which is on its grid by construction. Channel 8 is the dedicated master fader, which is Logic's `Master` strip and NOT `Stereo Out`.",
                 inputSchema: [
                     "type": "object",
@@ -1136,6 +1184,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_get_audio_clip",
+                title: "Fetch an audio clip",
                 description: "LISTEN to rendered audio: returns a short clip (default 8 s, max 20 s) of a local audio file as an MCP audio content block (mono AAC, roughly 64 KB per 8 s) that multimodal models can hear. Use this on the file paths returned by logic_render_track / logic_bounce_range / logic_evaluate_change. NEVER read raw audio files with a text/file tool - megabytes of binary will overflow the model context and can crash the client. Also writes the clip to disk (clip_path in the result): if the audio block does NOT reach you, your client drops MCP audio - open clip_path with your client's file viewer instead, which most clients pass to the model as real audio.",
                 inputSchema: [
                     "type": "object",
@@ -1163,6 +1212,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_get_transport",
+                title: "Read the transport",
                 description: "Read the transport state from the control bar: playing, recording, cycle, playhead bar/beat, tempo, time signature, key signature, metronome, count-in. Read-only. Fields whose control bar element is missing are null. The Smart Tempo project tempo mode (Keep/Adapt/Auto) is NOT in the cheap read — Logic publishes no value on the control bar's Project Tempo pop-up — so it comes back as project_tempo_mode_note saying why. Pass read_smart_tempo_mode: true to get the real value: that opens File > Project Settings on the Smart Tempo pane, reads the mode off its pop-up and closes the window again (~1.6 s, nothing written), and the result then carries project_tempo_mode plus project_tempo_mode_route. Worth knowing before recording: an ADAPT-mode project rewrites its own tempo map to follow a recording, and logic_record_midi runs this same read and refuses on Adapt/Auto.",
                 inputSchema: [
                     "type": "object",
@@ -1180,6 +1230,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_tempo_events",
+                title: "Read the tempo map",
                 description: "Read and WRITE the project's tempo map — the tempo track, as rows in Logic's Tempo List. This is what makes a tempo map buildable: 'land a downbeat on the hit at 1:12' is create-an-event, and until now the map could only be read. action 'list' returns every event (bar, beat, BPM) and writes nothing. 'create' makes a new event at bar/beat with bpm; 'set' retunes the event already there; 'delete' removes it. HOW THE WRITE WORKS, because two parts of it are surprising. Logic's own 'Create new Tempo Event' button places the event AT THE PLAYHEAD, not on a bar line, and parking the playhead only sets its bar and beat — the division and tick it already carried come along — so this tool creates the event and then steps the new row's own position fields back to the exact bar/beat you asked for. And the BPM is written through the CONTROL BAR's tempo slider, which edits the tempo event in force at the playhead: with the playhead parked on the event, that is this event. Neither half is trusted: the whole map is re-read afterwards and the result reports it, so a create that produced two events, or moved a neighbour, comes back as a failure (or a warning naming which other events moved) rather than as a success. Compare-and-set with expected_current_bpm on 'set' and 'delete'. REFUSED: 'create' where an event already sits (use 'set'), 'set'/'delete' where none does, deleting bar 1 (the project's base tempo — retune it instead), and any write at all while the Tempo List cannot be read, because a tempo write is not made blind. COST: a few seconds, dominated by the playhead travel to the bar (~0.13 s per bar) and by the tempo slider's one-BPM-per-step convergence. AFTER A WRITE the server's cached tempo and meter maps are dropped, so every later bar->seconds conversion re-reads the new map.",
                 inputSchema: [
                     "type": "object",
@@ -1207,6 +1258,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_set_cycle",
+                title: "Turn cycle on or off",
                 description: "Turn cycle (loop) mode on or off via the control bar Cycle button and verify the new state.",
                 inputSchema: [
                     "type": "object",
@@ -1222,6 +1274,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_set_playing",
+                title: "Start or stop playback",
                 description: "Start or stop playback via the control bar Play button and verify the new state. Starting plays from the current playhead position (or the cycle range when cycle is on).",
                 inputSchema: [
                     "type": "object",
@@ -1237,6 +1290,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_set_playhead",
+                title: "Move the playhead",
                 description: "Move the playhead to a 1-based bar (and optional beat) by stepping the control bar position display, then verify. Requires the control bar display mode that exposes bar/beat (Beats & Project).",
                 inputSchema: [
                     "type": "object",
@@ -1253,6 +1307,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_set_cycle_range",
+                title: "Set the cycle range",
                 description: "Set the cycle (loop) locators to a whole-bar range, e.g. bars 5-9. Anchors the ruler's grid-snapped cycle region to a bar line via the playhead thumb, moves the region start by writing its AXPosition, adjusts the length by dragging its right edge (hit-test guarded), verifies via the region's bar-denominated size description, and restores the playhead. The target range must be visible in the ruler. Optionally turns cycle on/off afterwards via 'enabled'.",
                 inputSchema: [
                     "type": "object",
@@ -1270,6 +1325,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_select_track",
+                title: "Select a track",
                 description: "Select a track by name (and optional 1-based track number) so its channel strip is exposed in the inspector. Writes AXSelectedChildren on the Tracks header group, falls back to the header's Has Focus button, and verifies through both the header's selected state and the inspector strip. Fails with ambiguous when several visible tracks share the name, and restores the previous selection if verification fails. Only tracks whose headers are currently rendered can be selected.",
                 inputSchema: [
                     "type": "object",
@@ -1288,6 +1344,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_set_track_stack",
+                title: "Fold a track stack",
                 description: "Expand or collapse a track stack by pressing its disclosure triangle, verifying the new state, and reporting which subtracks were revealed or hidden. Fails with not_exposed if the track is not a stack. Subtracks of a collapsed stack are otherwise invisible to logic_list_tracks and logic_select_track.",
                 inputSchema: [
                     "type": "object",
@@ -1306,6 +1363,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_survey_plugins",
+                title: "Survey a track's plugins",
                 description: "Inventory every insert on a track: open each plugin window, list its accessible parameters (name, raw range, writability), classify the exposure, and close windows that were opened. Takes a few seconds per insert. Use to map which plugins are controllable through this MCP."
                     + Tool.stripAddressingAXNote,
                 inputSchema: [
@@ -1324,6 +1382,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_add_plugin",
+                title: "Add a plugin",
                 description: "Add a plugin to a track's first empty insert slot — mouse-free via the Mackie Control plugin browser (vpot-stepped, LCD-verified, vpot-press instantiates). Works for every plugin in Logic's browser including third-party. If the MCU bridge is down, the AX chooser fallback requires allow_mouse: true because it briefly takes over the pointer. `cross_check` names the SECOND, independent source: \"ax_insert_list\" (the inspector strip's insert list agreed) or \"unavailable\" (no inspector is showing that strip, so the control surface's own echo is the only evidence - the result warns when that happens)."
                     + Tool.stripAddressingNote,
                 inputSchema: [
@@ -1347,6 +1406,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_remove_plugin",
+                title: "Remove a plugin",
                 description: "Remove a plugin from a track — mouse-free via the Mackie Control plugin browser's No Plug-in entry (can take up to ~60 s of vpot stepping; verified via LCD and an AX cross-check on the named track). If the MCU bridge is down, the AX chooser fallback requires allow_mouse: true because it briefly takes over the pointer. `cross_check` names that second source: \"ax_insert_list\" (the inspector strip's insert list agreed the plugin is gone) or \"unavailable\" (no inspector is showing that strip, so the control surface's own echo is the only evidence - the result warns when that happens)."
                     + Tool.stripAddressingNote,
                 inputSchema: [
@@ -1371,6 +1431,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_set_track_mute",
+                title: "Mute a track",
                 description: "Mute or unmute a track via its inspector channel strip mute button, verified by readback (control surface first, inspector strip as fallback). A track already in the requested state is a verified no-op (state: \"already_on\" / \"already_off\") and nothing is pressed."
                     + Tool.stripAddressingNote,
                 inputSchema: [
@@ -1391,6 +1452,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_set_track_solo",
+                title: "Solo a track",
                 description: "Solo or unsolo a track via its inspector channel strip solo button, verified by readback (control surface first, inspector strip as fallback). A track already in the requested state is a verified no-op (state: \"already_on\" / \"already_off\") and nothing is pressed. A solo left on silently empties every later bounce, so unsolo before judging a mix."
                     + Tool.stripAddressingNote,
                 inputSchema: [
@@ -1411,6 +1473,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_set_track_volume",
+                title: "Set track volume",
                 description: "Set a track's volume fader to a dB value, converging against Logic's own dB readout and reporting before_db / after_db / requested_db. `db` is ABSOLUTE, never an offset - read the current value first (logic_track_info and logic_mixer_snapshot both report volume_db), or pass relative_db instead, which computes the target from the value read immediately before the write ('2 dB louder' is relative_db: 2). The two are mutually exclusive and one of them is required. Compare-and-set with expected_current_db. Fader steps are about 0.1-0.3 dB apart; default tolerance 0.15 dB. WHAT `verified` MEANS HERE: on the control-surface fast path it means the landed value is within max(tolerance_db, 0.6) dB of the target - deliberately WIDER than the tolerance asked for, so verified: true can still sit up to 0.6 dB off. Read after_db for where the fader actually is."
                     + Tool.stripAddressingNote,
                 inputSchema: [
@@ -1433,6 +1496,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_set_track_pan",
+                title: "Set track pan",
                 description: "Set a track's pan/balance knob position via the inspector strip, verified by readback. `position` is ABSOLUTE, not an offset: read the current value first (logic_track_info or logic_mixer_snapshot both report `pan`) and pass the number you want it to end on. Reports `before` and `after`."
                     + Tool.stripAddressingNote,
                 inputSchema: [
@@ -1453,6 +1517,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_open_plugin",
+                title: "Open a plugin window",
                 description: "Open the plugin window for one insert on the named (selected) track by pressing the insert's open button, then verify that the window appeared. If the window was already open it is identified via its toggle behaviour and restored. Fails closed on not_found, ambiguous (two inserts with the same plugin), not_exposed and verification_failed.",
                 inputSchema: [
                     "type": "object",
@@ -1471,6 +1536,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_close_plugin",
+                title: "Close a plugin",
                 description: "Close the plugin window of one insert on the named (selected) track by toggling the insert's open button, verifying that a window disappeared. Precise even when several plugin windows share the same title. If the plugin was not open, the accidentally opened window is closed again and precondition_failed is returned.",
                 inputSchema: [
                     "type": "object",
@@ -1488,6 +1554,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_close_plugin_window",
+                title: "Close a plugin window",
                 description: "Close one plugin window by pressing its close button and verifying it disappeared. Refuses to close project windows (any window with a document) and fails with ambiguous when several windows share the title.",
                 inputSchema: [
                     "type": "object",
@@ -1503,6 +1570,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_list_plugin_parameters",
+                title: "List plugin parameters",
                 description: "Read a plugin's parameter names and current formatted values. ONE tool, TWO routes, and `route_used` says which ran. Pass window_title for the ACCESSIBILITY route: it reads an already-open plugin window and adds `ax_writable` per parameter — whether logic_set_plugin_parameter can write it through a text field. Logic reads a plugin through its sliders and writes it through editable \"knob and field\" controls, and knob-only plugins publish sliders but no field at all (measured: Channel EQ 26 sliders / 0 fields, Limiter 4 / 0), so an all-false list means the plugin is read-only from that plane. Pass track_name + insert_slot for the CONTROL-SURFACE route: host automation reads every MCU page, needs no window, and works for plugins whose UI exposes nothing to Accessibility (Decapitator, Trilian, ...) — it selects the strip and enters plugin edit mode. That route is PAGE-CAPPED: `truncated: true` with `pages` and `pages_total` means parameters were left unread — raise max_pages or treat the list as partial, never as the plugin's whole parameter set."
                     + Tool.stripAddressingNote,
                 inputSchema: [
@@ -1531,6 +1599,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_list_events",
+                title: "List a region's MIDI events",
                 description: "Read the MIDI events of a region out of Logic's Event List (View > List Editors > Event) — position, type, pitch, velocity and length, as Logic's own cells print them. This closes the asymmetry where logic_record_midi could WRITE MIDI that nothing could read back. SCOPE, and it matters: the Event List shows the SELECTED region (or the selected track's region at the playhead), never the project's MIDI as a whole — pass track_name (plus region_name and/or start_bar) to select one first, or select with logic_select_region and call this with no arguments to read whatever is showing. An EMPTY list means nothing is selected, not that the project has no MIDI, and the result says so. Every row carries Logic's published columns verbatim plus parsed bar/beat/pitch/velocity/length where the columns were recognised. The row count is cross-checked against the list's own 'Number of Items' and a mismatch REFUSES rather than returning a truncated take on the region (an AX table publishes only realised rows). Opens the List Editors pane if it was closed, restores the previously selected tab, and closes what it opened.",
                 inputSchema: [
                     "type": "object",
@@ -1551,6 +1620,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_edit_event",
+                title: "Edit one MIDI note",
                 description: "Fix ONE MIDI note in place — its pitch, velocity, position or length — or delete it, or add one, through Logic's Event List. This is the SURGICAL editor, not a composer: logic_record_midi plays a whole part in and is the tool for writing music, while this one is for the single flubbed note in a take you want to keep. SCOPE: the Event List edits the SELECTED region — pass track_name (plus region_name and/or start_bar) to select one first, or select with logic_select_region — and read the region first with logic_list_events, because that is where the addresses come from. ADDRESSING: bar plus pitch, because a chord publishes several rows on the same position; add beat/division/tick to narrow further. An address that matches two events REFUSES with both listed rather than editing the nearer one. MOVING a note: any to_* field you leave out keeps its current value, so to_beat alone moves the note without quantizing its sub-beat feel. Compare-and-set with expected_current_velocity and expected_current_length; an edit that asks for what is already there is a verified no-op (state 'already_set') and presses nothing. VERIFICATION, every time: the list is re-read and must show the event count the action implies, the event reading exactly what was asked, and EVERY OTHER EVENT UNTOUCHED — a write that disturbed a neighbour comes back with a warning naming which. WORTH KNOWING: every cell is a one-step-per-write stepper, so a big velocity or pitch move costs a few seconds; the table RE-SORTS on every position and pitch write, so row numbers from an earlier read are stale; and Logic's 'Create new Event' places the note at the PLAYHEAD, which this tool parks and then corrects. REFUSED: writing while the Event List is showing the project's REGIONS instead of a region's events (nothing there is editable); a row that is not a Note, because Logic's Num/Val columns mean controller number and value there; creating a duplicate of a note already at that position and pitch, which nothing could address afterwards; and creating OUTSIDE the selected region's bars, because Logic adds the note and does not grow the region, leaving an event that exists and never sounds. NOT writable from this plane at all: the Status column (an event's type) and the MIDI channel.",
                 inputSchema: [
                     "type": "object",
@@ -1598,6 +1668,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_markers",
+                title: "Read and write markers",
                 description: "Markers: list, create, goto, rename or delete them. 'list' reads Logic's Marker List (View > List Editors > Marker) with each marker's bar and name. 'create' fires Logic's own Create Marker key command at the PLAYHEAD (pass bar to park the playhead there first) and verifies against a fresh read of the list; note that Logic's position stepping lands inside the bar rather than exactly on its line, so a marker can sit a fraction of a beat late. 'goto' parks the playhead at a named marker's bar. 'delete' uses the list row's own Delete action and verifies the marker is gone (Undo restores it). 'rename' writes the row's name cell IF Logic publishes a settable one and REFUSES with the reason if not — the Tempo List's cells turned out to be steppers rather than fields, so this is checked at runtime rather than assumed. Address a marker by name (exact, case-insensitive — never fuzzy, because renaming or deleting the wrong marker is silent damage) or by bar; ambiguity refuses with the candidates listed.",
                 inputSchema: [
                     "type": "object",
@@ -1621,6 +1692,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_list_signatures",
+                title: "List time signatures",
                 description: "Read the project's time signatures out of Logic's Signature List (View > List Editors > Signature): each signature, the bar it starts on, and its bar length in QUARTER-note beats (what Logic's BPM counts — 6/8 is three beats a bar, 7/8 three and a half). This is the meter map, the last assumption that was left in this server's bar math after the tempo map landed. HOW IT IS USED: a map with more than one bar length is INTEGRATED by every tool that converts bars to seconds itself (logic_render_track's slice, logic_evaluate_change method 'render', logic_record_midi's note placement and verification slice, logic_record_automation's point placement) — those results then carry a meter_map block and a warning, and an explicit beats_per_bar argument no longer overrides the project's own grid. A map with ONE bar length is reported and deliberately not used, so a constant-meter project's boundaries are bit-for-bit what they have always been. The Signature List also holds KEY signatures; those rows are counted for the truncation cross-check and skipped. Read cost ~2 s, no playhead movement, cached per project.",
                 inputSchema: ["type": "object", "properties": [:], "additionalProperties": false],
                 // Not read-only: it toggles the List Editors pane and switches
@@ -1631,6 +1703,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_set_insert_bypass",
+                title: "Bypass an insert",
                 description: "Bypass or un-bypass one insert — the fastest honest A/B in mixing, and the write side of the bypass state logic_list_inserts has always been able to READ. Address the insert by plugin_name, by insert_index, or both (both is safest: a name that does not match the slot at that index is refused). insert_index is the ACCESSIBILITY ordinal from logic_list_inserts, NOT the Mackie insert_slot the logic_mcu_* tools take. Compare-and-set with expected_current_bypassed; an insert already in the requested state is a verified no-op (state: \"already_bypassed\" / \"already_active\") rather than a blind toggle, because this control publishes only AXPress and no absolute write. Verified by re-reading the same checkbox. Pass expected_current_bypassed anyway; it is what turns a stale idea of the state into a refusal instead of a wrong toggle."
                     + Tool.stripAddressingAXNote,
                 inputSchema: [
@@ -1653,6 +1726,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_set_mixer",
+                title: "Open or close the Mixer",
                 description: "WINDOW MANAGEMENT: opens or closes the Mixer WINDOW (Window > Open Mixer), verified against the window list. It does not set any mixer VALUE - faders, pans, mutes and sends are logic_set_track_volume, logic_set_track_pan, logic_set_track_mute/solo and logic_mcu_set_send, none of which need this window. Returns state already_open / already_closed when the window is already the way you asked for. WHAT THE MIXER DOES AND DOES NOT DO (measured, not hoped): the Mixer window publishes EVERY channel strip to Accessibility - the result lists them in `mixer_strips`, Master, Stereo Out and the auxes included - but they are NOT inspector strips, and the Accessibility strip tools (logic_list_inserts, logic_survey_plugins, logic_open_plugin, logic_plugin_preset, logic_set_insert_bypass) still cannot address them: with the Mixer open, logic_list_inserts on Master fails exactly as it does with the Mixer closed. `inspector_strips` is the list those tools CAN reach (the selected track and its output). For Master, an aux or a bus, use the logic_mcu_* tools, which never needed a window. AND IT COSTS SOMETHING: the Mixer is a second document window carrying the same project, so it can shadow the project window - while Logic is in the background it may be the only window Accessibility publishes, and then every track-header read fails. This server skips Mixer windows when it resolves the project window, but close the Mixer when you are done anyway. What it is genuinely good for: putting the Mixer in front of a HUMAN, and reading the complete strip census out of the window.",
                 inputSchema: [
                     "type": "object",
@@ -1669,6 +1743,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_set_plugin_parameter",
+                title: "Set a plugin parameter",
                 description: "Set ONE plugin parameter, verified by readback. ONE tool, TWO routes, and `route_used` says which ran. Pass window_title for the ACCESSIBILITY route: the parameter's formatted text field is written and read back, and the prior value is restored on verification failure; it needs expected_current_value (compare-and-set) and only reaches parameters logic_list_plugin_parameters marks `ax_writable`. Pass track_name + insert_slot for the CONTROL-SURFACE route: host automation (MCU vpot) with the LCD value echo as readback — it reaches EVERY plugin, custom-UI third-party included, needs no window, converges numeric targets adaptively, steps text targets (e.g. 'On', 'B') until exact match, matches the parameter against the MCU's abbreviated names ('Thrs' matches 'Threshold'), and rolls back on failed verification; expected_current_value is optional there. Give BOTH and a knob-only plugin no longer dead-ends: the write starts on the Accessibility route and falls back to the surface when the parameter publishes no field, reporting route_used 'mcu' and fallback_from 'ax'."
                     + Tool.stripAddressingNote,
                 inputSchema: [
@@ -1698,6 +1773,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_list_strips",
+                title: "List every channel strip",
                 description: "The CENSUS: every channel strip the control surface can reach, in project order — audio and instrument tracks, auxes, buses, the output and the master. Unlike logic_list_tracks, which can only see the track headers Logic has currently RENDERED (19 of 25 strips on the reference project), this walks the surface's banks, so nothing is hidden by scrolling or by a collapsed stack. Each row carries the strip's position, its bank/channel address and Logic's own 6-character LCD name cell; track_name and track_number are filled in only where exactly one rendered track header abbreviates to that cell, and everything else is reported as kind 'unresolved' (an output/aux/bus, a track scrolled out, or two tracks that share a name) rather than guessed at. Address strips by their full Mixer name, never by the abbreviation. Always walks the surface fresh — a census that could be stale would be the very failure this tool exists to fix — which costs a few seconds and refreshes the bank map every other control-surface tool uses.",
                 inputSchema: ["type": "object", "properties": [:], "additionalProperties": false],
                 // Not read-only: banks the surface and leaves it in the pan
@@ -1708,6 +1784,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_mixer_snapshot",
+                title: "Snapshot the whole mixer",
                 description: "The whole mixer in ONE call, off Logic's own control-surface feedback: per strip the fader value in dB, pan, mute/solo/select/record-arm state and the raw 14-bit fader echo. volume_db is the dB string Logic paints in its channel-strip Volume view — the same readout logic_set_track_volume converges against — NOT a conversion of the fader position, which is reported separately and raw as fader_14bit; a cell that does not parse comes back null with the LCD text beside it, never interpolated. record_armed is sampled across a full blink cycle because Logic FLASHES an armed strip's record LED (~640 ms on / 640 ms off, measured), so a single instant would report half the armed strips as unarmed. Two bank walks (names and pan, then dB and LEDs), about 16 s on a 25-strip project; the surface is left in the pan view at the leftmost bank."
                     + " Strip identity is established by a fresh scan, never from the cached bank map, and follows the same track_name/'unresolved' rule as logic_list_strips."
                     + " METERS: where the bridge daemon publishes it, each strip also carries meter_level (0-12) and meter_overload — Logic's OWN control-surface meter, the segment count it would light on a Mackie Control. That is a state read of a value Logic published, exactly like the fader echo; it is NOT an audio measurement, has no dB calibration, and must never be reported as loudness. MEASURED: Logic does NOT feed this virtual surface meters during playback in the default Control Surfaces configuration — 8 s of rolling transport through real audio produced zero meter events (a handful of 0xD0 bytes arrive sporadically at idle, all level 0). Expect meter_level to be 0/absent until a way to enable Logic's MCU meter mode is found (candidate: the Mackie Control device's settings in Control Surfaces Setup — an open research item). Each bank is sampled at a different instant during the walk, so any values are eight-strip snapshots rather than a comparison across the mixer. When the running daemon predates this feature the fields are ABSENT rather than zero and meter_feed says 'unavailable'.",
@@ -1720,6 +1797,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_set_track_record_arm",
+                title: "Arm a track to record",
                 description: "Arm or disarm a track for recording — the control surface's rec/ready button (MCU note 0x00-0x07), verified by Logic's own record LED AND, independently, by the track header's Record Enable checkbox. Compare-and-set: a track already in the requested state is reported as state: \"already_armed\" / \"already_disarmed\" and nothing is pressed. `cross_check` names the SECOND, independent source: \"ax_record_enable_checkbox\" (the track header agreed), \"disagreed\" (it did not - treat the arm state as unknown and re-read) or \"unavailable\" (no track header could be read, so the surface's LED is the only evidence). Logic FLASHES the record LED of an armed strip (~640 ms on / 640 ms off), so the LED evidence is a window rather than an instant: seen lit once means armed, and only a whole quiet window is read as disarmed. Several tracks can be armed at once, so arming one does NOT disarm another — read logic_mixer_snapshot before rolling if that matters. Output, aux, bus and master strips have no record enable and are refused before anything is pressed. Needs the MCU bridge: there is no Accessibility-only route.",
                 inputSchema: [
                     "type": "object",
@@ -1738,6 +1816,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_set_metronome",
+                title: "Set the metronome",
                 description: "Turn the metronome click on or off via the control surface's click button, verified by reading the control bar's own Metronome Click checkbox back (the same field logic_get_transport reports), with the surface's click LED as a second source. Compare-and-set: already-correct is reported as state: \"already_on\" / \"already_off\" and nothing is pressed; a press that does not land is undone. Count-in is a separate setting and is not touched.",
                 inputSchema: [
                     "type": "object",
@@ -1754,6 +1833,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_load_instrument",
+                title: "Load an instrument",
                 description: "Load a software instrument into a track's INSTRUMENT slot — mouse-free via the control surface's instrument browser (the IN bank view's vpot), the slot logic_add_plugin cannot reach because it fills an insert instead. One vpot tick per browser entry, the shown entry re-verified after settling, and a vpot press instantiates; leaving the view cancels a browse without loading anything. Entries carry Logic's channel format ('Drum Kit Designer Stereo', 'Drum Kit Designer Multi-Output', 'Abbey Road Saturator (m) Mono'), so instrument may be given bare or with the format, or the format passed separately; matching is case-insensitive and exact on the name — a near miss is refused with the entries seen, never guessed at. Verified by the instrument slot's own name in the IN bank view; read the loaded instrument's parameters with logic_mcu_instrument_parameters as an independent second look. REPLACES any instrument already on the track, settings and all — Logic's Undo is the only way back.",
                 inputSchema: [
                     "type": "object",
@@ -1776,6 +1856,7 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_read_automation",
+                title: "Read an automation curve",
                 description: "READ an existing automation curve before you overwrite it — volume, pan, a send level or any plugin parameter — over a bar range. NOTHING IN THE PROJECT CHANGES: no automation mode is switched, no fader or vpot is moved, and the playhead is put back where it started (`playhead_restored` says whether that worked). It is not free of side effects, though, which is why it is not flagged read-only: it SELECTS the strip it reads and leaves the control surface in its Pan view. Mechanism: park the playhead at each sampled position and read the value Logic chases the lane to, which is the verification pass logic_record_automation already runs, with the writing half removed. HONESTY: these are SAMPLES, not the lane's breakpoints — a move that happens entirely between two samples is invisible, so lower resolution_beats when the shape matters — and an unautomated lane reads as a flat line at the track's static value, which the result says rather than implying a curve exists. Positions run from start_bar beat 1 to end_bar beat 1 inclusive; if the grid would exceed max_points the step is widened rather than the range truncated. Costs roughly a second per sampled position.",
                 inputSchema: [
                     "type": "object",

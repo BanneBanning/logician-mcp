@@ -38,6 +38,13 @@ enum ToolSafety {
 /// "unknown tool".
 struct Tool {
     let name: String
+    /// A short human name for approval dialogs and tool pickers, e.g. "Bounce
+    /// a bar range". Required, not defaulted: without it a client renders the
+    /// raw `logic_set_track_volume` at the human who has to decide whether to
+    /// allow it, and a snake_case identifier is not what a person reads
+    /// fastest under a permission prompt. Terse on purpose — it is a label,
+    /// and the description is one field away.
+    let title: String
     let description: String
     let inputSchema: [String: Any]
     /// How this tool touches Logic. Required on purpose: see `ToolSafety`.
@@ -73,6 +80,7 @@ struct Tool {
 
     init(
         name: String,
+        title: String,
         description: String,
         inputSchema: [String: Any],
         safety: ToolSafety,
@@ -84,6 +92,7 @@ struct Tool {
         handler: @escaping (MCPServer) -> ([String: Any]) throws -> Any
     ) {
         self.name = name
+        self.title = title
         self.description = description
         self.inputSchema = inputSchema
         self.safety = safety
@@ -103,6 +112,12 @@ struct Tool {
     /// still not trust them for security decisions.
     var annotations: [String: Any] {
         [
+            // The spec's own home for a human-readable name (ToolAnnotations
+            // .title, 2025-06-18). Here rather than as a top-level `title`
+            // because that field arrived later, and this server negotiates
+            // down to 2024-11-05: annotations are the version every client it
+            // talks to already reads.
+            "title": title,
             "readOnlyHint": safety == .readOnly,
             // Only meaningful when readOnlyHint is false; emitted regardless
             // so a client never has to fall back to the `true` default.
