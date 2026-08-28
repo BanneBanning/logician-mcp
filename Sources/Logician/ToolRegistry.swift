@@ -1563,6 +1563,52 @@ extension MCPServer {
                 handler: MCPServer.handleListEvents
             ),
             Tool(
+                name: "logic_edit_event",
+                description: "Fix ONE MIDI note in place — its pitch, velocity, position or length — or delete it, or add one, through Logic's Event List. This is the SURGICAL editor, not a composer: logic_record_midi plays a whole part in and is the tool for writing music, while this one is for the single flubbed note in a take you want to keep. 'set' edits the note you address; 'delete' removes it; 'create' adds one at bar/beat with a pitch. SCOPE: the Event List edits the SELECTED region — pass track_name (plus region_name and/or start_bar) to select one first, or select with logic_select_region — and read the region first with logic_list_events, because that is where the addresses come from. ADDRESSING: bar plus pitch, because a chord publishes several rows on the same position; add beat/division/tick to narrow further. An address that matches two events REFUSES with both listed rather than editing the nearer one. MOVING a note: to_bar/to_beat/to_division/to_tick, and any field you leave out keeps its current value — so to_beat alone moves the note without quantizing its sub-beat feel. LENGTH is Logic's own four-field spelling, the same text logic_list_events prints ('0 1 0 0' is a quarter note). Compare-and-set with expected_current_velocity and expected_current_length; an edit that asks for what is already there is a verified no-op (state 'already_set') and presses nothing. VERIFICATION, every time: the list is re-read and must show the event count the action implies, the event reading exactly what was asked, and EVERY OTHER EVENT UNTOUCHED — a write that disturbed a neighbour comes back with a warning naming which. WORTH KNOWING: every cell is a one-step-per-write stepper, so a big velocity or pitch move costs a few seconds; the table RE-SORTS on every position and pitch write, so row numbers from an earlier read are stale; and Logic's 'Create new Event' places the note at the PLAYHEAD, which this tool parks and then corrects. REFUSED: writing while the Event List is showing the project's REGIONS instead of a region's events (nothing there is editable); a row that is not a Note, because Logic's Num/Val columns mean controller number and value there; creating a duplicate of a note already at that position and pitch, which nothing could address afterwards; and creating OUTSIDE the selected region's bars, because Logic adds the note and does not grow the region, leaving an event that exists and never sounds. NOT writable from this plane at all: the Status column (an event's type) and the MIDI channel.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "action": [
+                            "type": "string",
+                            "enum": ["set", "create", "delete"],
+                            "description": "'set' edits an existing note, 'create' adds one, 'delete' removes one."
+                        ],
+                        "track_name": ["type": "string", "description": "Select this track's region first (exclusive). Omit to edit whatever region is showing."],
+                        "region_name": ["type": "string", "description": "With track_name: which region."],
+                        "start_bar": ["type": "integer", "description": "With track_name: the region's current start bar."],
+                        "bar": ["type": "integer", "minimum": 1, "description": "The event's bar (for 'create', the bar to put it on). Required."],
+                        "beat": ["type": "integer", "minimum": 1, "description": "The event's beat within the bar. Narrows the address; for 'create' it is where the note goes (default 1)."],
+                        "division": ["type": "integer", "minimum": 1, "description": "Third position field. Narrows the address; for 'create', default 1."],
+                        "tick": ["type": "integer", "minimum": 1, "description": "Fourth position field. Narrows the address; for 'create', default 1."],
+                        "pitch": [
+                            "type": ["string", "integer"],
+                            "description": "For 'set'/'delete': WHICH note at that position, which is how a chord is told apart. For 'create': the note to make. A MIDI number 0-127 or Logic's own name, where C3 is middle C (60): 'D#2', 'A♯2', 'C3'."
+                        ],
+                        "new_pitch": [
+                            "type": ["string", "integer"],
+                            "description": "Transpose the addressed note to this pitch. Same spelling as pitch."
+                        ],
+                        "velocity": ["type": "integer", "minimum": 1, "maximum": 127, "description": "The new velocity (1-127)."],
+                        "length": ["type": "string", "description": "The new length in Logic's own 'bars beats divisions ticks' spelling — the text logic_list_events prints. '0 1 0 0' is a quarter note."],
+                        "to_bar": ["type": "integer", "minimum": 1, "description": "Move the note to this bar. Omitted position fields keep their current value."],
+                        "to_beat": ["type": "integer", "minimum": 1, "description": "Move the note to this beat."],
+                        "to_division": ["type": "integer", "minimum": 1, "description": "Move the note to this division."],
+                        "to_tick": ["type": "integer", "minimum": 1, "description": "Move the note to this tick."],
+                        "expected_current_velocity": ["type": "integer", "description": "Compare-and-set: the velocity you believe the note carries. A mismatch refuses and writes nothing."],
+                        "expected_current_length": ["type": "string", "description": "Compare-and-set on the length, in the same four-field spelling."]
+                    ],
+                    "required": ["action", "bar"],
+                    "additionalProperties": false
+                ],
+                // Writes MIDI into the user's region. Idempotent by
+                // construction on 'set' (the arguments name absolute values)
+                // and refused rather than repeated on 'create'.
+                safety: .write,
+                idempotent: true,
+                changesSound: true,
+                handler: MCPServer.handleEditEvent
+            ),
+            Tool(
                 name: "logic_markers",
                 description: "Markers: list, create, goto, rename or delete them. 'list' reads Logic's Marker List (View > List Editors > Marker) with each marker's bar and name. 'create' fires Logic's own Create Marker key command at the PLAYHEAD (pass bar to park the playhead there first) and verifies against a fresh read of the list; note that Logic's position stepping lands inside the bar rather than exactly on its line, so a marker can sit a fraction of a beat late. 'goto' parks the playhead at a named marker's bar. 'delete' uses the list row's own Delete action and verifies the marker is gone (Undo restores it). 'rename' writes the row's name cell IF Logic publishes a settable one and REFUSES with the reason if not — the Tempo List's cells turned out to be steppers rather than fields, so this is checked at runtime rather than assumed. Address a marker by name (exact, case-insensitive — never fuzzy, because renaming or deleting the wrong marker is silent damage) or by bar; ambiguity refuses with the candidates listed.",
                 inputSchema: [

@@ -68,6 +68,143 @@ extension MCPServer {
         return payload
     }
 
+    // MARK: - logic_edit_event (G18)
+
+    func handleEditEvent(_ arguments: [String: Any]) throws -> Any {
+        let action = try requiredString("action", in: arguments)
+        // Point the list at a region first, exactly as logic_list_events does:
+        // the Event List edits what it is SHOWING, so "fix this note in that
+        // region" is two steps and the tool does both.
+        var selection: [String: Any]?
+        if let trackName = arguments["track_name"] as? String {
+            selection = try logic.selectRegion(
+                trackName: trackName,
+                regionName: arguments["region_name"] as? String,
+                startBar: arguments["start_bar"] as? Int,
+                exclusive: true
+            )
+        }
+        guard let bar = arguments["bar"] as? Int, bar >= 1 else {
+            throw LogicianError.invalidArguments("bar is required and must be 1 or greater")
+        }
+        func segment(_ key: String) throws -> Int? {
+            guard let value = arguments[key] else { return nil }
+            guard let number = value as? Int, number >= 1 else {
+                throw LogicianError.invalidArguments("\(key) must be a whole number, 1 or greater")
+            }
+            return number
+        }
+        func pitch(_ key: String) throws -> Int? {
+            guard let value = arguments[key] else { return nil }
+            guard let parsed = EventListWrite.parsePitchArgument(value) else {
+                throw LogicianError.invalidArguments(
+                    "\(key) must be a MIDI note number 0-127 or a note name in Logic's own"
+                        + " spelling, where C3 is middle C (60): 'D#2', 'A♯2', 'C3'"
+                )
+            }
+            return parsed
+        }
+        var velocity: Int?
+        if let value = arguments["velocity"] {
+            guard let number = value as? Int, (1...127).contains(number) else {
+                throw LogicianError.invalidArguments(
+                    "velocity must be 1-127 (0 is a note-off, not a quiet note)"
+                )
+            }
+            velocity = number
+        }
+        var length: [Int]?
+        if let value = arguments["length"] {
+            guard let text = value as? String,
+                  let parsed = EventListWrite.parse(segments: text),
+                  parsed.allSatisfy({ $0 >= 0 }) else {
+                throw LogicianError.invalidArguments(
+                    "length must be Logic's own four-field spelling, 'bars beats divisions ticks'"
+                        + " — the same text logic_list_events prints in the Length/Info column."
+                        + " A quarter note is '0 1 0 0'."
+                )
+            }
+            length = parsed
+        }
+        var expectedLength: [Int]?
+        if let value = arguments["expected_current_length"] {
+            guard let text = value as? String, let parsed = EventListWrite.parse(segments: text) else {
+                throw LogicianError.invalidArguments(
+                    "expected_current_length must be Logic's 'bars beats divisions ticks' spelling"
+                )
+            }
+            expectedLength = parsed
+        }
+        let address = EventAddress(
+            bar: bar,
+            beat: try segment("beat"),
+            division: try segment("division"),
+            tick: try segment("tick"),
+            pitch: try pitch("pitch")
+        )
+        let change = EventChange(
+            pitch: try pitch("new_pitch"),
+            velocity: velocity,
+            bar: try segment("to_bar"),
+            beat: try segment("to_beat"),
+            division: try segment("to_division"),
+            tick: try segment("to_tick"),
+            length: length,
+            expectedVelocity: arguments["expected_current_velocity"] as? Int,
+            expectedLength: expectedLength
+        )
+        if action == "create" {
+            guard address.pitch != nil || change.pitch != nil else {
+                throw LogicianError.invalidArguments("action 'create' requires a pitch")
+            }
+            try refuseCreateOutsideRegion(bar: bar)
+        }
+        var payload = try logic.editEvent(action: action, address: address, change: change)
+        if let selection { payload["selection"] = selection }
+        if var dictionary = payload as [String: Any]? {
+            appendWarning(
+                action == "delete"
+                    ? nil
+                    : "Logic's Event List RE-SORTS on every position and pitch write, so row"
+                        + " numbers from an earlier logic_list_events are stale. Address events by"
+                        + " position and pitch, never by row.",
+                to: &dictionary
+            )
+            payload = dictionary
+        }
+        return payload
+    }
+
+    /// A note created past a region's boundary is a note nobody will ever hear.
+    ///
+    /// Measured 2026-08-28: with the playhead at bar 66 and the region running
+    /// 62–65, `Create new Event` still added the note to the region's event
+    /// list AND the region's own bounds did not grow — a silent note, verified
+    /// present and permanently inaudible. That is the worst kind of success, so
+    /// it is refused here rather than warned about.
+    private func refuseCreateOutsideRegion(bar: Int) throws {
+        guard let tracks = (try? logic.listRegions(trackName: nil))?["tracks"] as? [[String: Any]] else {
+            return
+        }
+        let selected = tracks.compactMap { track -> [String: Any]? in
+            (track["regions"] as? [[String: Any]])?.first { $0["selected"] as? Bool == true }
+        }
+        guard selected.count == 1, let region = selected.first,
+              let start = region["start_bar"] as? Int, let end = region["end_bar"] as? Int else {
+            // Not visible in the arrangement (scrolled-out tracks are not
+            // published) — say nothing rather than guess at bounds.
+            return
+        }
+        guard bar >= start, bar <= end else {
+            throw LogicianError.preconditionUnmet(
+                "bar \(bar) is outside the selected region, which runs bar \(start)–\(end)."
+                    + " Logic WILL create the note there and the region will NOT grow to hold it,"
+                    + " so it would be an event that exists and never sounds. Lengthen the region"
+                    + " first (logic_set_region_params / logic_copy_region), or create inside it."
+            )
+        }
+    }
+
     // MARK: - logic_markers (G46)
 
     func handleMarkers(_ arguments: [String: Any]) throws -> Any {
