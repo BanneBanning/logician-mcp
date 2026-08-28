@@ -3308,3 +3308,101 @@ Protokoll 5-daemonen speglar 0xD0-metrar (`meter_events`/`meter_levels`/`meter_o
 - **Slutsats per räknarens tre-utfallsdesign:** utfall 3, "Logic matar inte den här ytan" — med nyansen att det gäller *nuvarande* Control Surfaces-konfiguration. Riktiga Mackie-ytor får metrar när värden aktiverar meterläget; kandidat-experiment är Mackie Control-enhetens inställningar i Control Surfaces Setup (och/eller MCU:ns meterläges-sysex). Tills det körts ska `meter_level` förväntas vara 0/frånvarande, och verktygsbeskrivningen säger nu det rakt ut.
 
 Mätningen gjordes utanför agentsessionerna (koordinatorn, via socketen direkt: `{"cmd":"press","button":"play"}`, half-close-framing). Transporten stoppades efteråt; playheaden lämnades vid takt 7 (dubbel-stop hade parkerat den på takt 1 före körningen).
+
+### Händelselistans skrivsida: varje cell är en stegare, tabellen sorterar om sig, och markeringen är radens enda identitet (2026-08-28, v0.54.x)
+
+COVERAGE G18, "no event-level MIDI writes". Regionens noter har kunnat LÄSAS sedan `logic_list_events` (samma dag); nu går den enskilda felspelade noten att rätta utan att ta om tagningen. Samma miljö som entryna ovan: `Testlåt Copy.logicx`, användarens bryggdaemon orörd, projektet aldrig sparat. Allt experimenterande gjordes på en **skrapkopia** av regionen `Inst 4` (kopierad till takt 62 på `Lofi Pad` med `logic_copy_region`, borttagen efteråt).
+
+#### Fynd 1 — hela cellgrammatiken, kolumn för kolumn
+
+En **Event-rad** (`L M Position Status Ch Num Val Length/Info`) publicerar per cell:
+
+| kolumn | vad cellen bär | skrivbar? |
+|---|---|---|
+| `L`, `M` | inga barn alls | nej |
+| `Position` | en `AXGroup` med texten + **fyra** `Segment 0…3`-reglage = takt, slag, division, tick | ja, stegare |
+| `Status` | en `AXCell` med `Note` i beskrivningen, inget reglage | **nej** |
+| `Ch` | en `AXSlider`, `min 1 max 16` | oprövad — inte shippad |
+| `Num` | en `AXSlider`, `min 0 max 127`, `AXValue` = **det riktiga notnumret** (51), `AXValueDescription` = namnet (`D♯2`) | ja, stegare |
+| `Val` | en `AXSlider`, `min 0 max 4294967295`, `AXValue` = ett packat fält, `AXValueDescription` = anslaget | ja, men se fynd 2 |
+| `Length/Info` | en `AXGroup` med texten + **fyra** segmentreglage = takter, slag, divisioner, tickar | ja, stegare |
+
+Två saker som motsäger tempo-sessionens antaganden: **reglagen publiceras även på en OMARKERAD rad** (mätt: `AXSelected = 0` och ändå fyra positions- och fyra längdreglage), och positionssegmentens `min`/`max` är klampade till ±1 runt nuvärdet medan `Num` publicerar hela sitt intervall ärligt — **och beter sig ändå som en stegare**. Skriv 62 i ett `Num` som står på 51 och det landar på 52. Intervallet ljuger alltså inte, men det förutsäger inte skrivsemantiken.
+
+**`AXIncrement`/`AXDecrement` flyttar TIO**, inte ett — på både tonhöjd (D3 → C4 → D3) och anslag (97 → 107). Det är den grova växeln: en oktavtransponering kostar 3 skrivningar i stället för 12, ett anslag från 98 till 64 kostar 7 i stället för 34.
+
+#### Fynd 2 — `Val`-fällan är värre än läsningen visste, och den avgör skrivmekanismen
+
+Läsningen 2026-08-28 noterade att `Val` publicerar "samma bogusvärde 3306422272 på varenda not". Det stämde bara för att **alla noter i den regionen hade anslag 98**. Talet varierar: 98 → `0xC5140000`, 107 → `0xD7140000`. Toppbyten är `2 × anslag + 1`. Det är alltså ett packat fält, inte en konstant — men det spelar ingen roll för skrivningen, för Logic läser bara **riktningen**: en skrivning med ett tal *lägre* än nuvarande råvärde flyttar anslaget **ned ett steg**, ett högre flyttar **upp ett steg**. Att skriva `100` i den medan den stod på 98 gav alltså **97**. En "sätt anslaget till 100" som räknar ned är precis den buggformen designen finns för att omöjliggöra, så koden skriver reglagets egen `AXMaxValue` för att gå upp och `AXMinValue` för att gå ned, och läser resultatet på `AXValueDescription`.
+
+#### Fynd 3 — tabellen SORTERAR OM SIG under skrivningen, och radindex är inte identitet
+
+Raderna ligger sorterade på position och därefter på tonhöjd. En tonhöjdsskrivning flyttar alltså raden i tabellen direkt (mätt: en not som gick E2 → D3 flyttade sig från index 0 till index 2), och en positionsskrivning likaså. Elementet blir dessutom STALE efter varje skrivning (värdet läses tomt), och skrivningen **markerar** raden den landade på.
+
+#### Fynd 4 — buggen som skrevs, kördes skarpt och rättades: närhet är inte identitet
+
+Första versionen letade upp raden igen efter varje skrivning genom att hålla alla ANDRA fält fasta och ta den *närmaste* kvarvarande kandidaten. Det fungerar tills regionen håller ett ackord av rader som är identiska så när som på tonhöjden. Transponering av `F2` (53) en oktav upp tog den grova tiostegsväxeln till 63 — och "närmast 53" bland {57, 60, 63} var **grannen** på 57. Loopen fortsatte transponera fel not, och tre noter som varit F2, A2, C3 lästes efteråt som C3, C3, D♯3. Vägran ("3 rader den här redigeringen inte kan skilja åt") kom först när två rader blivit bitidentiska, alltså efter skadan.
+
+**Rättningen är Logics egen markering.** Raden markeras exklusivt innan första stegaren rörs, och efter varje skrivning slås den upp som *den enda markerade raden* — markeringen följer noten genom varje omsortering. Den rena funktionen `EventListWrite.agrees(_:with:exceptFor:)` är sedan en förnuftskontroll, inte en sökning: ändras något ANNAT än det fält loopen flyttar, stannar skrivningen och säger vad den såg. Den skarpa regressionen kördes efteråt på ett verkligt ackord (`62 5` = D2 / F2 / A♯2, alla anslag 98, alla längd `0 4 0 0`): mellannoten gick F2 → F3 på 3 skrivningar och tillbaka igen, med båda grannarna oförändrade.
+
+#### Fynd 5 — `Create new Event` finns, lägger noten på PLAYHEADEN, och Logic växer inte regionen
+
+Event-fliken bär en egen `Create new Event`-knapp (bredvid en popup som står på `Notes`). Den skapar en not **där playheaden står** — verifierat två gånger (playhead takt 63 slag 1 → `63 1 1 1`; takt 66 → `66 1 1 1`) — och **markerar** den nya raden, vilket är hur den skiljs från en identisk granne. Förvalen (C3, en längd på `0 2 0 0`, ett anslag som följde den senast redigerade noten) är inte deterministiska, så verktyget stegar alltid dit anroparen bad om och rapporterar resten ordagrant.
+
+Den farliga delen: med playheaden på takt 66 och regionen 62–65 skapades noten ändå, hamnade i regionens händelselista **och regionens gränser växte inte**. Det är en händelse som finns och aldrig låter — den sämsta sortens lyckat resultat — så `create` utanför den valda regionens takter **vägras** i stället för att varnas för.
+
+#### Fynd 6 — Event-flikens två nivåer, och vad `Leave Folder` gör
+
+Med en region öppen: `L M Position Status Ch Num Val Length/Info`. Efter flikens egen `Leave Folder`-knapp: `L M Position Name Trk Length`, 55 rader (en per region) och **noll reglage i någon cell**. En skrivning dit hade inte hittat något att skriva och fått gissa varför, så läget avgörs på kolumnerna och vägras. Nivån överlever inte att panelen stängs och öppnas igen — verktyget öppnar och stänger panelen självt, så vägran nås i praktiken bara när användaren lämnat panelen öppen i regionläget, och det är precis det fallet den kördes skarpt i.
+
+`Deselect All` på regionerna räcker INTE för att hamna i regionläget: listan fortsätter visa den senast visade regionen (eller det valda spårets region vid playheaden).
+
+#### Fynd 7 — positionssegmenten rullar över takten
+
+Att skriva 9 i slagsegmentet på en 5/4-takt vandrade 3 → 4 → 5 → **nästa takts** 1 → 2. Positionen konvergeras därför som en vektor i upp till tre pass (takt, slag, division, tick, omläst mellan varje), och en slutposition som inte är den begärda rapporteras som ett misslyckande med förklaringen att slaget inte finns i den taktarten — aldrig som en landning.
+
+#### `logic_edit_event` (G18)
+
+`set` / `create` / `delete`, adresserat på **position OCH tonhöjd** (ett ackord publicerar flera rader på samma position, så positionen ensam är ingen adress; `beat`/`division`/`tick` smalnar av, och två rader som fortfarande inte går att skilja åt VÄGRAS med båda listade). Utelämnade positionsfält behåller sitt nuvarande värde, så `to_beat` flyttar noten utan att kvantisera bort känslan den spelades med. `length` skrivs i Logics egen fyrfältsstavning — samma text `logic_list_events` skriver ut.
+
+Verifieringen är hela listan, omläst och jämförd mot listan före: antalet händelser måste stämma med åtgärden, händelsen läsa exakt det som begärdes, och **varje annan händelse i regionen ligga kvar oförändrad** — annars `warning` som namnger vilka som rörde sig. Compare-and-set på anslag och längd; en redigering som ber om det som redan står är en verifierad nolloperation (`already_set`) och trycker ingenting.
+
+Verktygsbeskrivningen säger rakt ut vad det ÄR: `logic_record_midi` spelar in en hel stämma, det här är skalpellen för den enda felspelade noten i en tagning man vill behålla.
+
+#### Live-bevis (allt genom den shippade handlern, på skrapkopian)
+
+```
+set  vel 98→64  @62|1 G2, expected 98      5,59 s  -> 7 skrivningar, verifierad, grannar orörda
+set  samma igen                            1,03 s  -> already_set, noll skrivningar
+set  vel 70 med expected 98 (står på 64)           -> current_value_mismatch, inget skrivet
+set  bara takt 62, inget pitch                     -> precondition_failed, 8 kandidater listade
+set  A♯2 @62|1 -> slag 2                   1,91 s  -> 1 skrivning, raden omsorterad, position exakt
+set  F2 @62|5 -> F3 (i identiskt ackord)   3,92 s  -> 3 skrivningar, D2 och A♯2 oförändrade
+set  F3 @62|5 -> 53 (siffra, inte namn)    2,67 s  -> 3 skrivningar, tillbaka till utgångsläget
+set  längd 0 2 0 8 -> 0 1 0 0, expected     5,16 s -> 9 skrivningar över två segment
+set  på en äkta dubblett (två lika rader)          -> precondition_failed, båda listade
+create C4 @63|1 vel 80 längd 0 1 0 0       7,62 s  -> 18→19 händelser, tonhöjd 3 skrivningar,
+                                                      anslag 9, längd 1; verifierad
+create samma igen                                  -> precondition_failed, "använd set"
+create @66|1 (utanför regionen 62–65)      0,12 s  -> precondition_failed, tyst not vägrad
+delete C4 @63|1                            2,42 s  -> 19→18, verifierad borta
+delete samma igen                                  -> precondition_failed, regionen listad
+set/create i REGIONLÄGET (panelen öppen)           -> precondition_failed, kolumnerna namngivna
+```
+
+#### Vad som är kvar
+
+- **MIDI-kanalen och `Status`.** `Ch`-reglaget finns och ser skrivbart ut; det har aldrig skrivits, så verktyget erbjuder det inte. `Status` publicerar inget reglage alls — händelsetypen går inte att ändra härifrån.
+- **CC-rader.** `Num`/`Val` betyder kontrollernummer och värde där, och verktyget vägrar allt som inte är en `Note`. Att skriva en CC-rad är samma stegargrammatik och är oprövad.
+- **Renderingsbevis.** Ingen ljudrendering av en redigerad not kördes; bevisningen är Logics egen omläsning av listan.
+- **Långa listor.** Alla skrivningar kördes mot en region med 18 händelser. `Number of Items`-korskontrollen gäller före varje skrivning (en delvis realiserad tabell vägras i stället för att redigeras på fel rad), men en verkligt lång lista är oprövad.
+
+#### Vad som lämnades i användarens projekt (osparat, ingenting har nått disken)
+
+Skrapregionen (`Inst 4` på `Lofi Pad`, takt 62) är **borttagen och verifierat borta**; `Lofi Pad` har sina två ursprungliga regioner och `Crash` sin enda. Originalregionen `Inst 4` vid takt 1 lästes om efteråt och är oförändrad (18 noter, alla anslag 98). List Editors-panelen stängd, inga modaler öppna, regionsvalet återställt till `Crash` vid takt 41. Playheaden står på takt 62 slag 2. Kvar sedan tidigare sessioner, oförändrat av den här: `Sweeps` i `Group 1`, `Aux 4`, och `Bas` → `Compressor` med `Output Gain` på 60.
+
+#### Vad som ändrades i koden
+
+`EventListWrite.swift` (ny, ren: kolumnuppslagningen, positions- och notnamnsparsningen, adresseringen, omsorteringskontrollen) · `AXEventEdit.swift` (ny: stegarloopen, markeringen som identitet, create/delete, verifieringen) · `ToolHandlersLists.swift` (`handleEditEvent`, regiongränsvakten) · `ToolRegistry.swift` (ett nytt verktyg, 83 → 84) · AGENT-GUIDE (ett nytt referensavsnitt, ett nytt arbetsflöde, två uppdaterade rader).
+
+`swift test`: **557 tester gröna** (22 nya i `EventListWriteTests`), ingen Logic behövs. `swift build -c release` grön. `serverVersion` medvetet **inte** bumpad.

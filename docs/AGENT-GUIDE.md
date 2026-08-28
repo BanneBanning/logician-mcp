@@ -77,6 +77,9 @@ When the Tempo List cannot be read at all, the pre-map behavior is the fallback:
 **Read what is already there:**
 `logic_select_region {track_name, start_bar}` → `logic_list_events` for the region's actual notes (position, pitch, velocity, length). The Event List shows the SELECTED region only — an empty result means nothing is selected, not that the project has no MIDI. `logic_list_events` will do the selecting for you if you pass `track_name`.
 
+**Fix one flubbed note without re-recording:**
+`logic_list_events {track_name, start_bar}` to see the region's notes → **`logic_edit_event {action: "set", bar, beat, pitch: "D#2", new_pitch: "E2"}`** (or `velocity`, `length`, `to_bar`/`to_beat`). Address a note by its position AND its pitch — a chord publishes several rows on one position and an ambiguous address is refused, not guessed. `logic_record_midi` is the composer; this is the scalpel for one wrong note in a take worth keeping. Also `action: "delete"` for a note that should not be there, and `action: "create"` for one that should — inside the region's own bars, because Logic will happily put a note past the region's edge where it exists and never sounds.
+
 **Mark the map:**
 `logic_markers {action: "create", bar: 33, name: "drop"}` → `logic_markers {action: "list"}` → `logic_markers {action: "goto", name: "drop"}`. Markers are created at the playhead, and Logic's position stepping lands inside the bar rather than exactly on its line — read the bar/beat back. Logic also renumbers its own default marker names by position, so address markers by `bar` when identity matters.
 
@@ -172,7 +175,7 @@ Every successful result carries the same four fields, and they mean different th
 ## Cautions
 
 - Track stacks cannot be freeze-rendered or MIDI-recorded onto; tools refuse cleanly — use subtracks.
-- `logic_markers` and `logic_list_events` (and the meter-map read behind the bar math) TOGGLE Logic's List Editors pane in the main window: they open it if it was closed, switch a tab, read, and put both back. That is a visible flicker in Logic's UI, and it is the only side effect.
+- `logic_markers`, `logic_list_events`, `logic_edit_event` and `logic_tempo_events` (and the meter-map read behind the bar math) TOGGLE Logic's List Editors pane in the main window: they open it if it was closed, switch a tab, read, and put both back. That is a visible flicker in Logic's UI, and it is the only side effect.
 - On a headerless strip (`Stereo Out`, an aux, a bus) the independent Accessibility cross-check that `logic_add_plugin` / `logic_remove_plugin` normally run can be UNAVAILABLE — no inspector is showing that strip. The write then stands on the control surface's own echo alone and the result carries a `warning` plus `cross_check: "unavailable"`. Open the Mixer (or select a track routed to the strip) and re-read the inserts if you want a second source.
 - Logic sometimes SUBSTITUTES words when it abbreviates a name onto the LCD (the track "Ivan Effect" appears as `IvanFx`). Such a name cannot be resolved on the control surface at all: you get `not_found` with the visible strips listed — never a write on the wrong strip. Rename the track, or reach it via a track-plane tool.
 - A rendered file that is honestly EMPTY (a track with no regions, or MIDI with no instrument) comes back with a `warning`, not fake success.
@@ -188,7 +191,7 @@ Every successful result carries the same four fields, and they mean different th
 
 ## Tool reference
 
-All 81 tools, generated from the live server schemas (v0.49.0), with the strip-addressing notes added by hand in v0.51.0, the `logic_plugin_preset` section rewritten by hand in v0.52.0, and the v0.54.0 additions added by hand — including the three Region-inspector tools — the five List-Editors/bypass/window tools, the key-command / region / delivery tools, the six control-surface tools, the composability corrections, and the class-B research batch (`logic_track_info`, `logic_set_track_routing`, `logic_tempo_events`, and the Smart Tempo read on `logic_get_transport`) — where an entry and the live schema differ in wording, the schema is authoritative. Every write is compare-and-set with readback; every failure names what was observed.
+All 81 tools, generated from the live server schemas (v0.49.0), with the strip-addressing notes added by hand in v0.51.0, the `logic_plugin_preset` section rewritten by hand in v0.52.0, and the v0.54.0 additions added by hand — including the three Region-inspector tools — the five List-Editors/bypass/window tools, the key-command / region / delivery tools, the six control-surface tools, the composability corrections, the class-B research batch (`logic_track_info`, `logic_set_track_routing`, `logic_tempo_events`, and the Smart Tempo read on `logic_get_transport`), and the Event List's write side (`logic_edit_event`) — where an entry and the live schema differ in wording, the schema is authoritative. Every write is compare-and-set with readback; every failure names what was observed.
 
 #### `logic_health`
 
@@ -1060,6 +1063,37 @@ Parameters:
   - `region_name` (string): With track_name: which region.
   - `start_bar` (integer): With track_name: the region's current start bar.
   - `track_name` (string): Select this track's region first. Omit to read whatever is selected.
+
+#### `logic_edit_event`
+
+The write side of the same list, and the SURGICAL one: `logic_record_midi` plays a whole part in, `logic_edit_event` fixes the single flubbed note in a take you want to keep. `action: "set"` changes a note's pitch (`new_pitch`), velocity, length or position (`to_bar`/`to_beat`/`to_division`/`to_tick`); `action: "delete"` removes it; `action: "create"` adds one.
+
+**Address a note by position AND pitch.** A chord publishes several rows on one position, so `bar` alone is not an address — an address matching two events is refused with both listed rather than resolved to the nearer one. Read the region with `logic_list_events` first; that is where the addresses come from. Narrow further with `beat`, `division` and `tick`.
+
+**What the write costs and how it behaves**, all measured live on 2026-08-28:
+
+  - **Every cell is a one-step-per-write stepper**, whatever range it publishes. Logic's pitch slider says `min 0 max 127` and still moves one semitone per write. The loop shifts into a coarse ten-unit gear (`AXIncrement`) while it is more than ten away, so an octave transpose costs 3 writes (~2.5 s) and a velocity walk from 98 to 64 costs 7 (~5 s).
+  - **The table RE-SORTS on every position and pitch write** — rows are ordered by position, then pitch. Row numbers from an earlier `logic_list_events` are stale the moment you write; address by position and pitch, never by row.
+  - **Position fields roll over.** Pushing the beat past the end of its bar walks into the next bar (measured in 5/4: beat 3 → 4 → 5 → next bar's 1), so a `to_beat` that does not exist in that meter is reported as a failure, not as a landing.
+  - **An omitted position field keeps its current value**, so `to_beat` alone moves a note without quantizing the sub-beat feel it was played with. Pass `to_division: 1, to_tick: 1` when you do want it on the grid.
+  - **`length` is Logic's own four-field spelling**, the same text `logic_list_events` prints: `"0 1 0 0"` is a quarter note, `"0 2 0 0"` a half.
+  - **`create` places the note at the playhead**, which the tool parks and then corrects on the new row's own position fields.
+
+**Verification, every time:** the list is re-read and must show the event count the action implies, the event reading exactly what was asked, and **every other event in the region untouched** — a write that disturbed a neighbour comes back with a `warning` naming which. Compare-and-set with `expected_current_velocity` / `expected_current_length`; an edit that asks for what is already there is a verified no-op (`state: "already_set"`) and presses nothing.
+
+**Refused, on purpose:** writing while the Event List is showing the project's REGIONS instead of a region's events (that level publishes no editable cell at all); a row that is not a Note, because Logic's `Num`/`Val` columns carry a controller number and value there; creating a duplicate of a note already at that position and pitch, which nothing could address afterwards; and creating outside the selected region's bars — Logic adds the note and does **not** grow the region, so it would be an event that exists and never sounds. **Not writable from this plane at all:** the `Status` column (an event's type) and the MIDI channel.
+
+Parameters:
+
+  - `action` (string, required): `set`, `create` or `delete`.
+  - `bar` (integer, required): The event's bar; for `create`, the bar to put it on.
+  - `beat`, `division`, `tick` (integer): Narrow the address; for `create`, where the note goes (default 1).
+  - `pitch` (string or integer): For `set`/`delete`, WHICH note at that position. For `create`, the note to make. A MIDI number 0–127 or Logic's own name, where C3 is middle C (60): `"D#2"`, `"A♯2"`, `"C3"`.
+  - `new_pitch` (string or integer): Transpose the addressed note.
+  - `velocity` (integer 1–127), `length` (string): The new values.
+  - `to_bar`, `to_beat`, `to_division`, `to_tick` (integer): Move the note.
+  - `expected_current_velocity` (integer), `expected_current_length` (string): Compare-and-set.
+  - `track_name`, `region_name`, `start_bar`: Select the region first, exactly as `logic_list_events` does.
 
 The result's `region` field is Logic's own answer to "which region is this?", read off the Event tab's Region Path label — check it rather than assuming your selection took. With NO region selected the Event List shows the project's REGIONS instead of any events (one row per region, with a `Name` and a `Length` and no `Status`); that is a real answer, not a failure, and `columns` tells you which of the two you got.
 
