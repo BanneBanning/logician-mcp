@@ -11,7 +11,7 @@
 [![MCP](https://img.shields.io/badge/MCP-83_tools-4be37a)](docs/AGENT-GUIDE.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
-[Install](#install) · [What it can do](#what-it-can-do-measured) · [Agent guide](docs/AGENT-GUIDE.md) · [Architecture](docs/ARCHITECTURE.md)
+[Install](#install) · [What it can do](#what-it-can-do-measured) · [Agent guide](docs/AGENT-GUIDE.md)
 
 </div>
 
@@ -165,7 +165,7 @@ logician  ──spawns──▶  logician --bridge (daemon)
       region editing, dialogs) — semantic, never coordinates
 ```
 
-Safety model: read before write, abort on ambiguity, verify by readback, roll back on mismatch, never save without being asked, duplicate before destructive experiments. **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** explains how every mechanism works — the MCU convergence loops, the key-command learning, the bounce-dialog semantics, and the Logic quirks catalog. [docs/FINDINGS.md](docs/FINDINGS.md) is the full research log (Swedish), versioned per discovery.
+Safety model: read before write, abort on ambiguity, verify by readback, roll back on mismatch, never save without being asked, duplicate before destructive experiments.
 
 ## Known limitations & roadmap
 
@@ -173,7 +173,7 @@ Safety model: read before write, abort on ambiguity, verify by readback, roll ba
 - English Logic UI assumed (Accessibility string matching; locale tables are future work)
 - Tempo and meter maps are read from Logic's own lists and integrated into all bar math; tempo *curves* are approximated as steps (the Tempo List does not expose them) with the uncertainty quantified. MIDI recording takes real time.
 - Track stacks cannot be freeze-rendered (Logic limitation — `solo_bounce` covers their subtracks)
-- **[docs/ROADMAP.md](docs/ROADMAP.md)** is the plan and the log: items 1–4 (tempo guards, master-chain addressing, variable tempo, preset browsing) largely shipped and live-verified 2026-08-27/28; **[docs/COVERAGE.md](docs/COVERAGE.md)** is the black-box producer audit that feeds what comes next
+- Roadmap: Homebrew packaging (once the repo is public), tempo curves, note-level MIDI beyond the Event List, localization
 
 ---
 
