@@ -481,8 +481,13 @@ extension LogicAccessibility {
         // Rewind when the offset is non-zero OR unknown: an unreadable
         // surface must not be treated as a clean playhead. It costs bar
         // stepping (~0.12 s per bar) and buys an exact cut.
+        // Never rewind a ROLLING transport: `Go to Beginning` would throw the
+        // playhead back to bar 1 and keep playing, which is a far bigger
+        // surprise than an inexact cut. The offset is then reported as it is.
+        let rolling = (MCUController.freshStatus()?["transport_leds"] as? [String: Any])?["play"]
+            as? Bool ?? false
         var rewound = false
-        if isZero(before) != true {
+        if isZero(before) != true && !rolling {
             try pressControlBarButton("Go to Beginning")
             Thread.sleep(forTimeInterval: 0.4)
             rewound = true
@@ -494,6 +499,7 @@ extension LogicAccessibility {
             "bar": group.flatMap { sliderValue($0, "bar") } ?? bar,
             "beat": group.flatMap { sliderValue($0, "beat") } ?? beat,
             "rewound_first": rewound,
+            "transport_rolling": rolling,
             "on_grid": isZero(after).map { $0 as Any } ?? NSNull() as Any
         ]
         if let after {

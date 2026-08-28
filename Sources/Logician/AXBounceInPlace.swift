@@ -13,19 +13,19 @@ extension LogicAccessibility {
     func bounceInPlaceSheet(timeout: Double = 8) -> AXUIElement? {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
+            /// The sheet has no title, so it is identified by the static text
+            /// that names it — never by "the first sheet in the window",
+            /// which would happily return a save panel or an alert.
+            func named(_ candidate: AXUIElement) -> Bool {
+                stringAttribute(candidate, kAXRoleAttribute as String) == "AXSheet"
+                    && children(of: candidate).contains {
+                        stringAttribute($0, kAXValueAttribute as String)
+                            .localizedCaseInsensitiveContains("Bounce")
+                    }
+            }
             for window in (try? logicWindows()) ?? [] {
-                if stringAttribute(window, kAXRoleAttribute as String) == "AXSheet",
-                   children(of: window).contains(where: {
-                       stringAttribute($0, kAXValueAttribute as String)
-                           .localizedCaseInsensitiveContains("Bounce")
-                   }) {
-                    return window
-                }
-                if let sheet = children(of: window).first(where: {
-                    stringAttribute($0, kAXRoleAttribute as String) == "AXSheet"
-                }) {
-                    return sheet
-                }
+                if named(window) { return window }
+                if let sheet = children(of: window).first(where: named) { return sheet }
             }
             Thread.sleep(forTimeInterval: 0.15)
         }

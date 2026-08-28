@@ -2114,3 +2114,28 @@ Det är precis den fara AGENT-GUIDE:s "fire Undo only right after a known edit" 
 `KeyCommandRegistry` (fritt notintervall, `takenNotes`, `defaultSearchTerm`, `source`/`learned_at`/`search` i posterna) · `AXKeyCommandLearning` (delade hjälpare, `searchKeyCommands` skrivskyddad, kandidater i `not_found`, exakt-sedan-skiftlägesokänslig radmatchning, subrollsfixen, den verifierade menypressen) · `MenuShortcut.swift` (ny, ren: modifierarmasken och tangentkoderna) · `AXBounce` (`settled:`-pressen, `labelledPopUp`, `selectPopUpItem`, `setCheckBox`, `applyBounceOptions`, `readBounceOptions`) · `BounceOptions.swift` (ny, ren: värdeförråden och den överseende matchningen) · `AXBounceInPlace.swift` (ny) · `AXRemoveSilence.swift` (ny, med `RemoveSilence.previewCount` ren) · `StemExport.swift` (ny, ren: listvalidering, ramjämförelse, innehållsnoten) · `AXRegions` (`splitRegion`, `selectRegions`, modalhanteringen, paste-på-rätt-spår) · `AXTransport` (`pressControlBarButton`, `parkPlayheadOnGrid`) · `MCURender.resolveKeyCommand` (`learnIfMissing`).
 
 Sju nya verktyg: `logic_learn_key_command`, `logic_list_key_commands`, `logic_split_region`, `logic_select_regions`, `logic_remove_silence`, `logic_bounce_in_place`, `logic_export_stems`. `logic_bounce_range` fick sex nya argument. Inget verktyg döptes om.
+
+#### Vad som är LIVE-VERIFIERAT och vad som inte är det
+
+**Kört mot Logic, med belägg ovan:** inlärningen (fem kommandon, registret 22 → 26 poster, `dry_run`, `not_found` med kandidater), `logic_list_key_commands`, `logic_split_region` (kopia → delning → Undo → städning, `on_grid: true` mot MCU-timecoden, modalen besvarad), `logic_select_regions` (fyra lägen med räkningar), fel-spår-buggen i `logic_copy_region` (observerad, fixad, och fixen bevisad av en fungerande samma-spår-kopia), samt **alla tre dialoggrammatikerna** — bouncedialogen (inklusive varje popups poster och MP3-varianten), bounce-in-place-arket och Remove Silence-fönstret — gångna skrivskyddat och avbrutna med Cancel.
+
+**Overifierat, för ärlighetens skull:**
+
+- **`logic_bounce_range`s nya argument har aldrig SKRIVIT i dialogen.** Värdeförråden och geometriparningen är mätta, men `applyBounceOptions`/`selectPopUpItem` har inte körts skarpt — en bounce med `bit_depth`/`sample_rate` satta är alltså implementerad och enhetstestad, inte utförd.
+- **`logic_bounce_in_place` har aldrig tryckt OK.** Arket är gånget och avbrutet; själva utskriften, verifieringen mot arrangemangskartan och 90-sekundersvakan är oprövade.
+- **`logic_remove_silence` har aldrig körts genom verktyget** — fönstret öppnades för hand via det inlärda kommandot och avbröts. Både förhandsvisningsläget och `apply: true` är alltså kod, inte observation.
+- **`logic_export_stems` har aldrig körts.** Solo-slingan, ramjämförelsen och den vägran som utlöses av ett kvarglömt solo är enhetstestade i sina rena delar och i övrigt oprövade.
+- **MP3/M4A-destinationerna** är uppräknade men inte implementerade, och `File > Export > All Tracks as Audio Files…` (den dedikerade stem-vägen) är inte ens öppnad.
+- **Splitten är verifierad på EN MIDI-region.** En ljudregion (som inte ska ge någon modal) är inte prövad, och `notes_crossing: "keep"`/`"shorten"` är inte heller det — bara `split`.
+
+Skälet till att listan är så lång är miljön, inte designen: tre agenter delade Logic via ett rådgivande lås, och macOS hjälpmedelslager föll systemomfattande igen mitt i (samma symptom som 2026-08-28:s v0.53.0-session — `AXWindows` returnerar applikationselementet, i Finder och Terminal också). **Orsaken är nu känd**: användaren rapporterar att den utlöses av att maskinen går i strömsparläge, och ändrade energiinställningarna. En AX-probe efter uppvaknandet visade planet friskt igen, så degraderingen är återställbar och inte permanent.
+
+#### Vad som blev kvar ändrat (osparat projekt; inget har nått disken)
+
+1. **Fem nya key command-tilldelningar i användarens egna set** — det är leveransen, inte en biverkning: `Select All Following` (not 60), `Select All Regions/Cells of Same Track` (61), `Deselect All` (62), `Remove Silence from Audio Region…` (63), `Select All Following of Same Track/Pitch` (64), alla på porten `Logic MCP Commands`, alla additiva och borttagbara i Key Commands-fönstret (markera kommandot, Delete Assignment). `logic_list_key_commands` visar dem med källa och tidsstämpel.
+2. **Ett tomt spår, `Inst 9`, är borta** — se fynd 12. Spårantalet gick 20 → 19 och Redo når det inte längre.
+3. **Playheaden står inte där den stod** (sessionen parkerade den på flera takter; sist runt takt 62).
+4. Kladdregionerna är borttagna och `Bas` och `Crash` är tillbaka på sina ursprungliga regioner, verifierat mot arrangemangskartan.
+5. Från tidigare sessioner, oförändrat: tempohändelsen på takt 9 (121 BPM), `Audio 8`/`Aux 1`/`Aux 3` på -0,1 dB, och `Bas` → `Compressor` med `Output Gain` på råvärde 60.
+
+`swift test`: 311 tester gröna (33 nya), 1,4 s, ingen Logic behövs. `swift build -c release` grön.
