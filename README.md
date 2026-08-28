@@ -8,7 +8,7 @@
 
 [![macOS](https://img.shields.io/badge/macOS-13%2B-black?logo=apple)](#requirements)
 [![Swift](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](Package.swift)
-[![MCP](https://img.shields.io/badge/MCP-57_tools-4be37a)](docs/AGENT-GUIDE.md)
+[![MCP](https://img.shields.io/badge/MCP-75_tools-4be37a)](docs/AGENT-GUIDE.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
 [Install](#install) · [What it can do](#what-it-can-do-measured) · [Agent guide](docs/AGENT-GUIDE.md) · [Architecture](docs/ARCHITECTURE.md)
@@ -135,20 +135,20 @@ Logician assumes the model on the other end is fallible and designs for it:
 - Swift toolchain (to build from source)
 - One-time: Accessibility permission for your MCP client, and a Mackie Control device in Logic pointing at the `Logic MCP MCU` ports (Logic Pro → Control Surfaces → Setup → New → Mackie Control — `logic_health` walks you through it)
 
-## Tool overview (57 tools)
+## Tool overview (75 tools)
 
 - **Diagnostics** — `logic_health` (doctor with fixes), `logic_setup_key_commands` (incl. `relearn` repair)
 - **Project lifecycle** — open/close/save/duplicate projects; new projects from a bundled template
-- **Reading** — tracks, regions, windows, inserts, sends, plugin parameter survey (third-party included)
-- **Transport** — play/stop, playhead, cycle range, verified via MCU LEDs and timecode
-- **Mixing** — volume (dB-converged), pan, mute, solo, sends (level + destination)
-- **Plugins** — add/remove (data-driven, no mouse), open/close windows, read/write **any** parameter, preset stepping
+- **Reading & orientation** — tracks, regions, windows, inserts, sends, plugin parameter survey (third-party included); `logic_list_strips` (the full mixer census incl. auxes/buses/outputs), `logic_mixer_snapshot` (every strip's dB/mute/solo/arm/pan in one call), `logic_list_events` (read a region's MIDI), `logic_markers`, `logic_list_signatures`, `logic_read_automation`
+- **Transport** — play/stop, playhead, cycle range, metronome, verified via MCU LEDs and timecode
+- **Mixing** — volume (dB-converged), pan, mute, solo, record-arm, sends (level + destination), insert bypass; **the master chain and buses address by name** (`Stereo Out`, auxes)
+- **Plugins** — add/remove (data-driven, no mouse), open/close windows, read/write **any** parameter, preset browsing (`list`/`select`/`step`/`undo`), `logic_load_instrument`
 - **Tracks** — create, rename, duplicate, delete, stacks
-- **Regions** — select, move, copy, delete; split/nudge via key commands
-- **Composition** — `logic_record_midi`: notes/CC/pitch-bend streamed with CoreMIDI timestamps while Logic records, render-verified
-- **Automation** — record volume/pan/send/plugin curves in any mode, playhead-chase verified
-- **Audio out & evaluation** — bounce, freeze render with bar slicing, `logic_evaluate_change` (render / bounce / solo_bounce), `logic_get_audio_clip`
-- **Key commands** — trigger any learned Logic key command over MIDI
+- **Regions** — select (incl. multi-select), move, copy, delete, split (dialog-aware), nudge, remove silence
+- **Composition** — `logic_record_midi`: notes/CC/pitch-bend streamed with CoreMIDI timestamps while Logic records, render-verified; **tempo and meter maps are read and integrated** (tempo track / signature changes followed)
+- **Automation** — read existing curves; record volume/pan/send/plugin curves in any mode, playhead-chase verified
+- **Audio out & evaluation** — bounce (format/depth/dither options), bounce-in-place, stem export, freeze render with bar slicing, `logic_evaluate_change` (render / bounce / solo_bounce), `logic_get_audio_clip`
+- **Key commands** — trigger any learned Logic key command over MIDI; learn new ones by name (`logic_learn_key_command`, consent-recorded)
 
 ## Architecture
 
@@ -170,9 +170,9 @@ Safety model: read before write, abort on ambiguity, verify by readback, roll ba
 
 - The biggest limitation is the models themselves: today's multimodal agents — Gemini's included — are not yet the mixing engineers you might wish for. That is exactly why Logician exists: give them real hands and ears in Logic, and you can *measure* how good they actually are instead of guessing.
 - English Logic UI assumed (Accessibility string matching; locale tables are future work)
-- Constant tempo assumed for bar math; MIDI recording takes real time
+- Tempo and meter maps are read from Logic's own lists and integrated into all bar math; tempo *curves* are approximated as steps (the Tempo List does not expose them) with the uncertainty quantified. MIDI recording takes real time.
 - Track stacks cannot be freeze-rendered (Logic limitation — `solo_bounce` covers their subtracks)
-- **[docs/ROADMAP.md](docs/ROADMAP.md)** is the concrete plan for what falls next, in order: tempo honesty guards, Stereo Out / master-chain addressing, variable tempo (tempo track / Smart Tempo), plugin preset browsing, Homebrew packaging
+- **[docs/ROADMAP.md](docs/ROADMAP.md)** is the plan and the log: items 1–4 (tempo guards, master-chain addressing, variable tempo, preset browsing) largely shipped and live-verified 2026-08-27/28; **[docs/COVERAGE.md](docs/COVERAGE.md)** is the black-box producer audit that feeds what comes next
 
 ---
 
