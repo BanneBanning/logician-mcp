@@ -127,6 +127,9 @@ Logician assumes the model on the other end is fallible and designs for it:
 | Set any plugin parameter, verified via LCD echo, incl. third-party | ~1.5–2.5 s |
 | Compose MIDI (notes, CC, pitch bend) recorded through the track's instrument, render-verified | real time + ~8 s |
 | Automation curves (volume/pan/sends/plugin params, all modes), playhead-chase verified | ~10–30 s |
+| Read the whole mixer in one call — every strip's dB, mute/solo/arm, pan (25 strips) | ~23 s |
+| Structured snapshot of the whole project (transport, regions, markers, tempo/meter maps) | ~2 s |
+| Reset to a fixture project — close without saving, reopen, verify (built for eval loops) | ~4.5 s |
 | Duplicate the project to a safe sandbox copy | ~2 s |
 
 ## Requirements
@@ -137,18 +140,16 @@ Logician assumes the model on the other end is fallible and designs for it:
 
 ## Tool overview (83 tools)
 
-- **Diagnostics** — `logic_health` (doctor with fixes), `logic_setup_key_commands` (incl. `relearn` repair)
-- **Project lifecycle** — open/close/save/duplicate projects; new projects from a bundled template; `logic_reset_to` (verified episode reset: close without saving, reopen a fixture — built for eval harnesses)
-- **Reading & orientation** — tracks, regions, windows, inserts, sends, plugin parameter survey (third-party included); `logic_list_strips` (the full mixer census incl. auxes/buses/outputs), `logic_mixer_snapshot` (every strip's dB/mute/solo/arm/pan in one call), `logic_track_info` (type/instrument/routing/groups), `logic_list_events` (read a region's MIDI), `logic_markers`, `logic_list_signatures`, `logic_read_automation`, `logic_project_snapshot` (the whole project as one structured truth document)
-- **Transport** — play/stop, playhead, cycle range, metronome, verified via MCU LEDs and timecode
-- **Mixing** — volume (dB-converged), pan, mute, solo, record-arm, sends (level + destination), insert bypass, output/group routing (`logic_set_track_routing`); **the master chain and buses address by name** (`Stereo Out`, auxes)
-- **Plugins** — add/remove (data-driven, no mouse), open/close windows, read/write **any** parameter, preset browsing (`list`/`select`/`step`/`undo`), `logic_load_instrument`
-- **Tracks** — create, rename, duplicate, delete, stacks
-- **Regions** — select (incl. multi-select), move, copy, delete, split (dialog-aware), nudge, remove silence
-- **Composition** — `logic_record_midi`: notes/CC/pitch-bend streamed with CoreMIDI timestamps while Logic records, render-verified; **tempo and meter maps are read, integrated and editable** (`logic_tempo_events` creates/edits/deletes tempo-map events; signature changes followed); Smart Tempo mode read before recording so an Adapt-mode project is refused, never rewritten
-- **Automation** — read existing curves; record volume/pan/send/plugin curves in any mode, playhead-chase verified
-- **Audio out & evaluation** — bounce (format/depth/dither options), bounce-in-place, stem export, freeze render with bar slicing, `logic_evaluate_change` (render / bounce / solo_bounce), `logic_get_audio_clip`
-- **Key commands** — trigger any learned Logic key command over MIDI; learn new ones by name (`logic_learn_key_command`, consent-recorded)
+- **See the project** — tracks, regions, markers, windows; the whole mixer in one call (every strip incl. auxes, buses and outputs); what each track is (type, instrument, routing, groups); a region's MIDI events; existing automation curves; or the entire project as one structured snapshot
+- **Diagnostics & lifecycle** — `logic_health` (a doctor that names the fix for anything broken); open/close/save/duplicate projects; verified reset to a fixture project
+- **Transport** — play/stop, playhead, cycle range, metronome — verified via MCU LEDs and timecode
+- **Mixing** — volume (dB-converged), pan, mute, solo, record-arm, sends, insert bypass, output/group routing; the master chain and buses address by name (`Stereo Out`, auxes)
+- **Plugins & instruments** — add/remove, read/write **any** parameter of any plugin (third-party included), browse and select presets by name, load instruments
+- **Regions** — select (multi too), move, copy, split (dialog-aware), nudge, rename, remove silence; region parameters: quantize, swing, transpose, velocity, loop, mute, gain, fades
+- **Composition & tempo** — MIDI (notes/CC/pitch bend) recorded through the track's real instrument, render-verified; tempo and meter maps are read, integrated into all bar math, and editable; the Smart Tempo mode is checked before recording so an Adapt-mode project is refused, never rewritten
+- **Automation** — read existing curves; record new ones in any mode, playhead-chase verified
+- **Audio out** — bounce (with format/depth/dither options), bounce-in-place, stem export, freeze renders sliced to bars, A/B evaluation carrying both audio versions
+- **Key commands** — trigger any learned command; learn any of Logic's ~1400 by name, consent-recorded
 
 ## Architecture
 
