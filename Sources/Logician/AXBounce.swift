@@ -657,6 +657,13 @@ extension LogicAccessibility {
         var resultPath: String?
         var lastSize: UInt64 = 0
         var stableRounds = 0
+        // Leaving this loop by `break` (the render settled) and leaving it
+        // because 60 s elapsed are DIFFERENT outcomes, and only the first one
+        // is evidence. `resultPath != nil` cannot tell them apart: it is set
+        // the moment the file APPEARS, not when Logic has finished writing it,
+        // so a render longer than the deadline used to fall straight through
+        // to `success: true, verified: true` over a half-written file.
+        var renderSettled = false
         let renderDeadline = Date().addingTimeInterval(60)
         while Date() < renderDeadline {
             Thread.sleep(forTimeInterval: 0.1)
@@ -680,6 +687,7 @@ extension LogicAccessibility {
                     // stable-round fallback keeps a container we cannot judge
                     // from blocking until the 60 s deadline.
                     if complete || stableRounds >= 20 {
+                        renderSettled = true
                         break // render finished
                     }
                 } else {
@@ -691,6 +699,20 @@ extension LogicAccessibility {
         guard let renderedPath = resultPath else {
             throw LogicianError.openVerificationFailed(
                 "no bounced file appeared within 60 s"
+            )
+        }
+        guard renderSettled else {
+            // The file exists but Logic was still writing it when the 60 s ran
+            // out. Reporting it would hand back a truncated render as a
+            // verified bounce — and the metrics reader would then measure the
+            // part that happened to be on disk, which is the "confidently
+            // wrong" answer this server exists to prevent.
+            throw LogicianError.openVerificationFailed(
+                "the bounce was still being written after 60 s (\(lastSize) bytes so far, at"
+                    + " '\(renderedPath)'). Logic is STILL RENDERING and the file is incomplete —"
+                    + " nothing was moved into the captures directory and no metrics were taken."
+                    + " Bounce a shorter bar range, or wait and read the file yourself with"
+                    + " logic_get_audio_clip once Logic's progress sheet is gone."
             )
         }
         // Move the render into the captures directory under the label name.
@@ -747,14 +769,42 @@ extension LogicAccessibility {
                 result["warning"] = "THE BOUNCE IS SILENT (rms \(rms) dB). A leftover solo on a quiet track, or an empty bar range, produces exactly this - fix the cause and bounce again; do not analyze this file."
             }
         }
-        let soloed = (try? soloedTrackNames()) ?? []
-        if !soloed.isEmpty {
+        let soloed = soloedTrackNamesIfReadable()
+        if let soloed, !soloed.isEmpty {
             result["soloed_tracks"] = soloed
             if result["warning"] == nil {
                 result["warning"] = "Tracks currently SOLOED: \(soloed.joined(separator: ", ")). This bounce contains ONLY those tracks - unsolo first if you meant to bounce the full mix."
             }
+        } else if soloed == nil {
+            // "I could not look" is not "nothing was soloed": a leftover solo
+            // is exactly what makes a master bounce silently wrong, so an
+            // unreadable Tracks area has to be said out loud.
+            appendWarning(
+                "SOLO STATE NOT CHECKED: Logic's track headers could not be read, so this bounce"
+                    + " was NOT checked for a leftover solo. If any track is soloed, this file"
+                    + " contains only that track.",
+                to: &result
+            )
         }
         return result
+    }
+
+    /// The soloed tracks, or `nil` when the track headers could not be read at
+    /// all — so `[]` means "nothing is soloed" and never "the read failed".
+    ///
+    /// The two used to collapse into one value at every call site
+    /// (`(try? soloedTrackNames()) ?? []`), which is the difference between a
+    /// pre-flight refusal and a pass: `logic_export_stems` refuses to run when
+    /// anything is already soloed, because every stem would then contain that
+    /// track — and an unreadable Tracks area answered that question with
+    /// "nothing is soloed".
+    ///
+    /// Note what a NON-nil answer still does not prove: `parsedTrackHeaders`
+    /// publishes only the rows Logic has RENDERED, so a soloed track scrolled
+    /// out of the Tracks area is invisible here. `[]` is evidence, not proof —
+    /// see `TrackListCompleteness`.
+    func soloedTrackNamesIfReadable() -> [String]? {
+        try? soloedTrackNames()
     }
 
     /// Names of all tracks whose header Solo checkbox is lit.
@@ -952,6 +1002,25 @@ extension LogicAccessibility {
     /// and writes it as a 32-bit float WAV, computing RMS/peak on the slice
     /// in the same pass. Freeze files start at project start (bar 1), so
     /// bar positions convert directly to seconds via tempo.
+    /// A seconds offset as a frame index inside a file of `cap` frames,
+    /// clamped at BOTH ends and never trapping.
+    ///
+    /// Pure and separately tested because the inputs are agent-supplied and
+    /// the consumer is an unsafe pointer walk: `Int(_:)` traps on a value a
+    /// Double can hold but an Int cannot, and a NEGATIVE index is not a short
+    /// read but a read outside the allocation entirely. Out-of-range seconds
+    /// clamp to the nearest end of the file rather than refusing, so a window
+    /// that straddles the start still yields the part of it that exists;
+    /// `nil` is only for a rate this cannot be measured against.
+    static func audioFrameIndex(_ seconds: Double, rate: Double, cap: Int) -> Int? {
+        guard seconds.isFinite, rate.isFinite, rate > 0, cap >= 0 else { return nil }
+        let frames = seconds * rate
+        // Also catches -infinity from the multiplication itself.
+        guard frames > 0 else { return 0 }
+        guard frames < Double(cap) else { return cap }
+        return Int(frames)
+    }
+
     static func sliceAudioFile(
         path: String, startSeconds: Double, endSeconds: Double, destinationPath: String
     ) -> [String: Any]? {
@@ -1003,14 +1072,37 @@ extension LogicAccessibility {
             }
             offset += 8 + size + (size % 2)
         }
-        guard channels > 0, sampleRate > 1000,
+        // The upper bound is not decoration: the rate comes out of an 80-bit
+        // extended float in the file, and it is written back below through
+        // `UInt32(sampleRate)`, which TRAPS on anything a UInt32 cannot hold.
+        // 768 kHz is past every rate Logic can bounce (DXD tops out at 705.6).
+        guard channels > 0, sampleRate > 1000, sampleRate <= 768_000,
               bits == 24 || bits == 16 || (bits == 32 && isFloat),
               soundStart > 0, soundBytes > 0,
               soundStart + soundBytes <= data.count else { return nil }
         let bytesPerSample = bits / 8
         let totalFrames = soundBytes / (bytesPerSample * channels)
-        let firstFrame = min(Int(startSeconds * sampleRate), totalFrames)
-        let lastFrame = min(Int(endSeconds * sampleRate), totalFrames)
+        // `startSeconds` arrives straight from a tool argument
+        // (`logic_get_audio_clip`), and JSON Schema `minimum` is advisory here
+        // — this server validates only `additionalProperties`. So the window
+        // is clamped at BOTH ends before it is trusted:
+        //
+        //  - A negative start used to survive `min(_, totalFrames)` and give a
+        //    negative `firstFrame` with a positive `sliceFrames`, and the
+        //    sample loop below reads through an UNSAFE pointer — `-100`
+        //    seconds walked ~26 MB off the front of the buffer (SIGBUS, which
+        //    takes the whole MCP server down rather than the one request).
+        //  - A non-finite or astronomically large second count traps in
+        //    `Int(_:)` itself, before any clamp can run, so it is refused
+        //    rather than converted.
+        guard startSeconds.isFinite, endSeconds.isFinite,
+              let firstFrame = LogicAccessibility.audioFrameIndex(
+                  startSeconds, rate: sampleRate, cap: totalFrames
+              ),
+              let lastFrame = LogicAccessibility.audioFrameIndex(
+                  endSeconds, rate: sampleRate, cap: totalFrames
+              )
+        else { return nil }
         let sliceFrames = lastFrame - firstFrame
         guard sliceFrames > 0 else { return nil }
 

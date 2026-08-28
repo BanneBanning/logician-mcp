@@ -110,6 +110,48 @@ final class AudioContainerTests: XCTestCase {
         ))
     }
 
+    func testSliceAudioFileRefusesAStartBeforeTheFile() {
+        // `start_seconds` reaches the slicer straight from the tool argument
+        // (the schema's `minimum` is advisory - the server validates only
+        // additionalProperties), and the frame window used to be clamped at
+        // the TOP only. A negative start therefore produced a negative
+        // firstFrame with a positive sliceFrames, and the sample loop read
+        // megabytes BEFORE the buffer through an unsafe pointer.
+        let path = writeTemporaryFile(aiff(chunks: [chunk("COMM", commBody), chunk("SSND", ssndBody)]))
+        let destination = path + ".wav"
+        defer {
+            try? FileManager.default.removeItem(atPath: path)
+            try? FileManager.default.removeItem(atPath: destination)
+        }
+        XCTAssertNil(LogicAccessibility.sliceAudioFile(
+            path: path, startSeconds: -100, endSeconds: -99, destinationPath: destination
+        ))
+        // A window that STRADDLES zero keeps the part of it that exists.
+        XCTAssertNotNil(LogicAccessibility.sliceAudioFile(
+            path: path, startSeconds: -100, endSeconds: 1, destinationPath: destination
+        ))
+    }
+
+    func testSliceAudioFileRefusesUnrepresentableSecondsInsteadOfTrapping() {
+        // `Int(1e300 * 44100)` is a Swift runtime trap, and a trap here takes
+        // the whole MCP server down rather than failing the one request.
+        let path = writeTemporaryFile(aiff(chunks: [chunk("COMM", commBody), chunk("SSND", ssndBody)]))
+        let destination = path + ".wav"
+        defer {
+            try? FileManager.default.removeItem(atPath: path)
+            try? FileManager.default.removeItem(atPath: destination)
+        }
+        XCTAssertNil(LogicAccessibility.sliceAudioFile(
+            path: path, startSeconds: 1e300, endSeconds: 1e301, destinationPath: destination
+        ))
+        XCTAssertNil(LogicAccessibility.sliceAudioFile(
+            path: path, startSeconds: .nan, endSeconds: .nan, destinationPath: destination
+        ))
+        XCTAssertNil(LogicAccessibility.sliceAudioFile(
+            path: path, startSeconds: -.infinity, endSeconds: .infinity, destinationPath: destination
+        ))
+    }
+
     // MARK: - Byte helpers
 
     /// 2 channels, 4 frames, 16-bit, 44100 Hz (80-bit extended float).

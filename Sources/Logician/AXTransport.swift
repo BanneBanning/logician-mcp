@@ -506,10 +506,21 @@ extension LogicAccessibility {
             result["timecode_division"] = after.division
             result["timecode_ticks"] = after.ticks
         } else {
+            // Only claim the rewind when it actually happened: a ROLLING
+            // transport is never rewound (that would throw the playhead back
+            // to bar 1 mid-playback), and saying otherwise turns the one
+            // sentence that justifies trusting the position into a fiction.
             result["on_grid_note"] = "the MCU position display could not be read, so whether the "
                 + "playhead sits exactly on the beat is UNVERIFIED (the control bar publishes bars "
-                + "and beats only). The playhead was rewound to the project start first, which is "
-                + "the state that makes stepping exact."
+                + "and beats only). "
+                + (rewound
+                    ? "The playhead was rewound to the project start first, which is the state "
+                        + "that makes stepping exact."
+                    : rolling
+                        ? "It was NOT rewound first, because the transport is rolling — so any "
+                            + "sub-beat offset the playhead already carried is still there."
+                        : "It was NOT rewound first, because it already read as being on the "
+                            + "beat before the move.")
         }
         return result
     }
