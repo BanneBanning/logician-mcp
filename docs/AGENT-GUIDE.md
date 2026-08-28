@@ -195,6 +195,8 @@ Parameters:
   - `normalize` (string): Off, Overload Protection Only, On. `On` changes the delivered level — say so when you report the result.
   - `include_audio_tail` (boolean): let reverb/delay tails ring past the end bar into the file.
 
+**Changing `file_type` costs you the metrics.** The metrics reader parses AIFF/AIFC only, so a WAVE or CAF bounce comes back with no `metrics` block — and therefore without the silent-bounce warning that block powers, and with `logic_export_stems`' alignment check reduced to "unverified". Bounce AIFF while you are judging the audio; switch format for the delivery itself.
+
 **The delivery options are the user's own settings.** Anything you do not pass is left exactly as it was; anything you do pass is verified by reading the pop-up back, and an unknown value is refused with the real list BEFORE the dialog does anything. The result's `delivered_as` is the whole delivery state read off the dialog just before OK — that, not your arguments, is what the file is. Logic keeps these settings for the next bounce: `options_changed` lists what moved and nothing puts it back. MP3 and M4A destinations exist in the dialog with their own option set and are not implemented here.
 
 #### `logic_bounce_in_place`
