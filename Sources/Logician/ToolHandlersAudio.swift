@@ -206,7 +206,7 @@ extension MCPServer {
         if (arguments["method"] as? String) == "render" {
             guard let slot = arguments["insert_slot"] as? Int else {
                 throw LogicianError.invalidArguments(
-                    "method 'render' requires insert_slot (1-8, MCU physical slot; list with logic_mcu_plugin_inserts)"
+                    "method 'render' requires insert_slot (1-8, MCU physical slot; list with logic_list_inserts route 'mcu')"
                 )
             }
             // Method 'render' cuts BOTH the baseline and the changed audio out
@@ -281,7 +281,7 @@ extension MCPServer {
         if (arguments["method"] as? String) == "solo_bounce" {
             guard let slot = arguments["insert_slot"] as? Int else {
                 throw LogicianError.invalidArguments(
-                    "method 'solo_bounce' requires insert_slot (1-8, MCU physical slot; list with logic_mcu_plugin_inserts)"
+                    "method 'solo_bounce' requires insert_slot (1-8, MCU physical slot; list with logic_list_inserts route 'mcu')"
                 )
             }
             payload = try MCUController.evaluateChangeSoloBounced(

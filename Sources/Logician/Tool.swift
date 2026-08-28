@@ -138,23 +138,48 @@ struct Tool {
 
     static let arrangementListenNote = "You changed the ARRANGEMENT. Bounce a range that includes a few bars BEFORE your edit and listen across the seam: the classic failure is the copied phrase landing displaced (snare on the wrong beat) even though the region boundaries read as bar-aligned - region positions do NOT prove the groove inside is aligned. If the pattern does not match the original groove exactly, undo and copy from a region that starts ON the beat (watch out for pickup regions)."
 
+    // MARK: The cross-cutting notes
+    //
+    // Each of the four below states a rule that is true of MANY tools, so each
+    // used to be spelled out in full on every one of them: 181 bytes × 28
+    // tools, 414 × 14, 407 × 3, 345 × 4 — 13.5 KB of `tools/list` spent saying
+    // four things sixty-nine times, once per session, before a single call.
+    //
+    // The rules now live ONCE in `MCPServer.instructions`, which `initialize`
+    // sends before the first tool call, and what stays on the tool is a
+    // pointer: enough for a model reading only this description to know the
+    // rule applies to it and where the full text is. Nothing was deleted —
+    // every sentence that was here is in the instructions, most of it expanded.
+    // What was removed is the repetition. Measured over the whole registry,
+    // these four plus the nine hand-copied insert-numbering property
+    // descriptions took `tools/list` from 151,028 to 143,102 bytes against
+    // 2,417 added to the instructions: 5.5 KB a session, and four rules that
+    // can no longer drift between their copies because there are none.
+
     /// Appended by `definition` to every tool whose result can carry a
-    /// top-level `warning` (the `mayWarn` flag). One fixed sentence, because a
-    /// model that learns the convention once should not have to relearn it per
-    /// tool: the KEY and its joining rule are the same everywhere, and what the
-    /// warning is ABOUT is the warning's own job to say.
-    static let warningNote = " MAY RETURN `warning`: one string naming something true and unwelcome about this result (several are joined into it with ' ALSO: '). Read it before acting on the rest of the result."
+    /// top-level `warning` (the `mayWarn` flag). The KEY, its joining rule and
+    /// the instruction to read it first are in the instructions' RESULT
+    /// CONTRACT; what the warning is ABOUT is the warning's own job to say.
+    static let warningNote = " MAY RETURN `warning` — read it before the rest of the result (RESULT CONTRACT in the server instructions)."
 
     /// Appended to every tool whose `track_name` also accepts a strip that has
-    /// no track header. Same sentence everywhere on purpose: an agent that
-    /// learns it once can reuse it, and the caveats are the same in every case.
-    static let stripAddressingNote = " Also accepts output/aux/bus strip names ('Stereo Out', 'Master', 'Aux 1', bus names): those have no track header, so they are resolved and selected on the control surface (LCD name + SELECT LED verified before any write) instead of by track selection. Use the name as Logic shows it in the Mixer, not the 6-character LCD abbreviation. Needs the MCU bridge for those names, and track_number applies to tracks only."
+    /// no track header ('Stereo Out', 'Master', 'Aux 1', a bus).
+    static let stripAddressingNote = " Accepts headerless output/aux/bus strips — see STRIP ADDRESSING in the server instructions."
 
     /// For the Accessibility-only strip tools: they reach a headerless strip
     /// only while an inspector is SHOWING it, which the control-surface tools
     /// do not require (verified 2026-08-27: 'Stereo Out' was visible as the
     /// selected track's output while 'Master' and 'Aux 1' were not).
-    static let stripAddressingAXNote = " Output/aux/bus strips ('Stereo Out') work too, but only while an inspector is SHOWING that strip (select a track routed to it; opening the Mixer does NOT put a strip in reach of these tools, measured) — Accessibility cannot reach a strip no inspector shows. For any other strip use the control-surface tools (logic_mcu_plugin_inserts, logic_mcu_plugin_parameters), which address every strip in the project."
+    static let stripAddressingAXNote = " ACCESSIBILITY-ONLY: a headerless strip works only while an inspector is SHOWING it — see STRIP ADDRESSING in the server instructions."
+
+    /// The `insert_index` / `insert_slot` distinction, on the arguments that
+    /// take one. The full statement — which tools take which, and the measured
+    /// reversal that makes converting between them dangerous — is the
+    /// instructions' INSERT NUMBERING paragraph.
+    static let axInsertIndexNote = " ACCESSIBILITY ordinal (logic_list_inserts route 'ax'), NOT the Mackie insert_slot — see INSERT NUMBERING in the server instructions."
+
+    /// The mirror of `axInsertIndexNote`, for the Mackie physical slot.
+    static let mcuInsertSlotNote = " MACKIE physical slot 1-8 (logic_list_inserts route 'mcu'), NOT the Accessibility insert_index — see INSERT NUMBERING in the server instructions."
 
     static let evaluateChangeListenNote = "Do not decide keep/rollback from the numbers alone: LISTEN to baseline_audio and after_audio (open the preview/clip files with your client's file viewer) before judging."
 }

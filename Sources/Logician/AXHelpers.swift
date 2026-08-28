@@ -391,9 +391,10 @@ extension LogicAccessibility {
                     exposed: "the plugin in window '\(windowTitle)' publishes no editable parameter fields"
                         + " — its controls are knobs only, so Accessibility can READ every value"
                         + " (logic_list_plugin_parameters) but write none of them."
-                        + " Use logic_mcu_set_plugin_parameter (control surface, insert_slot from"
-                        + " logic_mcu_plugin_inserts), or logic_evaluate_change method 'render'/'solo_bounce',"
-                        + " which write through the same surface"
+                        + " Call logic_set_plugin_parameter again with track_name + insert_slot"
+                        + " (logic_list_inserts route 'mcu') and it takes the control surface,"
+                        + " which reaches every plugin; logic_evaluate_change method"
+                        + " 'render'/'solo_bounce' writes through that same surface"
                 )
             }
             throw LogicianError.parameterNotFound(
