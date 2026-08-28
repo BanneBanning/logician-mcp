@@ -2371,3 +2371,163 @@ Samma systemomfattande degradering som v0.53.0 beskrev slog till två gånger un
 5. Allt annat är återställt och verifierat: metronomen av, `Lofi Pad`/`808`/`Inst 2`/`Crash`/`Audio 9` alla oarmerade, ytan i PAN-vyn på vänstraste banken, inga plugin- eller dialogfönster öppna.
 
 `swift test`: 295 tester gröna (17 nya), 1,4 s, ingen Logic behövs. `swift build -c release` grön.
+
+### De sex overifierade skrivningarna körs skarpt: fyra buggar, ett motbevisat påstående (2026-08-28, v0.54.0 — verifieringspasset)
+
+v0.54.0 shippade tio COVERAGE-punkter på en dag och lämnade sex skrivningar med etiketten **"implementerad, aldrig körd"**. Den här sessionen körde alla sex mot den riktiga Logic. Fem fungerade (två av dem först efter en fix), och den sjätte — `logic_set_mixer` — **motbevisade det påstående den byggdes på**. Fyra buggar i shippad kod föll ut på vägen, varav två gjorde hela hjälpmedelsplanet obrukbart medan de var aktiva.
+
+**Miljö:** Logic Pro 12.3.1 (`Testlåt Copy.logicx`, pid 75391 — sandlådekopian användaren godkänt skrivningar i), användarens bryggdaemon pid 24761, aldrig omstartad, ingen `logician --bridge` startad. Projektet **sparades aldrig**. Fönstertiteln/dokumentsökvägen kontrollerades innehålla "Copy" före första skrivningen. Tillfällig XCTest-harness (`LiveProbe.swift`, `LOGICIAN_LIVE=1`), borttagen efteråt. Ingen annan agent delade Logic den här gången, så inget rådgivande lås behövdes. **Ingen blind Ångra fyrades** — all städning gjordes med riktade anrop.
+
+| verifiering | resultat |
+|---|---|
+| `logic_set_insert_bypass` (pressen) | ✅ fungerar som skrivet |
+| `logic_set_mixer` | ⚠️ verktyget lagat (2 buggar) — **men påståendet motbevisat** |
+| `logic_bounce_range`s leveransval | ✅ efter fix av positionsfälten (bugg 3) |
+| `logic_bounce_in_place` (OK-tryckningen) | ✅ efter fix av regionmatchningen (bugg 4) |
+| `logic_remove_silence` end-to-end | ✅ rakt igenom, första försöket |
+| `logic_export_stems` | ✅ rakt igenom, första försöket |
+
+#### Fynd 1 — insert-bypass: pressen fungerar, och nolloperationen också
+
+`Bas` → insert 2 (`Channel EQ`), tre anrop i rad, varje gång korsläst med `logic_list_inserts`:
+
+```
+active  --(bypassed: true,  expected_current_bypassed: false)-->  bypassed   verified
+bypassed --(bypassed: true,  ingen expected)                  -->  already_bypassed (ingen press)
+bypassed --(bypassed: false, expected_current_bypassed: true)  -->  active     verified
+```
+
+`logic_list_inserts` läste `bypassed: true` mellan de två skrivningarna och `false` efter, alltså inte bara kryssrutans egen återläsning. Strippen var tillbaka i sitt ursprungsläge när verifieringen var klar (och `PShft` i slot 3 var bypassad före och efter — användarens eget läge, orört). G36 är därmed helt live-bevisad, läs- som skrivsida.
+
+#### Fynd 2 — Mixern: två buggar, och svaret på öppen fråga "lyfter en öppen Mixer AX-begränsningen?" är NEJ
+
+Verktyget shippade med orden *"treat the first call as the experiment"*. Experimentet kördes.
+
+**Bugg A — Mixerfönstret gick inte att känna igen.** `mixerWindow()` letade efter ett fönster **utan dokument** vars titel nämner mixern. Logics Mixerfönster är i verkligheten `"Testlåt Copy - Mixer: Tracks"`, `AXStandardWindow`, och det **bär samma `AXDocument` som projektfönstret**. Alltså: `open: true` öppnade Mixern och rapporterade sedan `verificationFailed` ("fönsterlistan säger fortfarande stängt"), och `open: false` svarade `already_closed` medan en Mixer stod öppen — verktyget kunde varken bekräfta eller stänga sitt eget resultat. Igenkänningen går nu på titeln (segmentet efter sista `" - "` börjar med `Mixer`).
+
+**Bugg B — en öppen Mixer SKUGGADE projektfönstret, och slog ut hela AX-planet.** `projectWindow()` tog "första standardfönstret med dokument", vilket lika gärna kunde bli Mixern. Effekten var total: `logic_list_inserts` → `windowNotFound("left inspector channel strip")`, spårhuvuden → `windowNotFound("Tracks header group")`, och till och med MCU-verktygen föll (de resolvar spåret genom spårhuvudena först). Och när Logic ligger i bakgrunden publicerar det **bara sitt main/focused-fönster**, så med Mixern som huvudfönster var projektfönstret inte ens nåbart. `projectWindow()` hoppar nu explicit över Mixerfönster och säger vad som är fel när bara en Mixer syns; `setMixerOpen` tar dessutom Logic till förgrunden i **båda** riktningarna (efter en stängning av ett bakgrunds-Logic publicerades noll fönster tills appen aktiverades — det tog en aktivering att komma tillbaka).
+
+**Och själva påståendet:** med Mixern öppen misslyckas `logic_list_inserts {track_name: "Master"}` **exakt som med Mixern stängd** (`trackNotExposed`). Mixerns strippar finns i trädet — alla 25 — men de är inte inspektorstrippar:
+
+- de ligger i ett **annat fönster** (inspektorsökningen går genom projektfönstret),
+- de bär ingen `inspector channel strip`-hjälptext,
+- deras `AXDescription` är en **sifferbtripel** för de strippar vars spårhuvud inte är utrullat: `"84 76 8"` = `Master`, `"80 30 4"` = `Stereo Out`, `"124 68 8"` = `Aux 1`. Namnet ligger i strippens eget `name`-textfält,
+- och deras insertslottar publicerar platshållarbeskrivningar (`audio plug-in`) där inspektorn publicerar plugin-namn: Mixerns `Bas` läste `1: Compressor, 2-4: audio plug-in, 5: input` medan inspektorns `Bas` läser `Compressor, Channel EQ, PShft, Channel EQ, Trilian`.
+
+Resultatet bär därför **två** listor — `inspector_strips` (vad AX-strippverktygen faktiskt når) och `mixer_strips` (vad Mixerfönstret visar, med riktiga namn) — plus en varning om skuggningen. Verktygsbeskrivningen, AGENT-GUIDE:s punkt 3b och felmeddelandet i `stripForControls` sa alla "öppna Mixern" som åtgärd; alla tre säger nu i stället `logic_mcu_*`.
+
+#### Fynd 3 — leveransvalen skriver, och positionsfälten kunde inte konvergera under en taktartsändring
+
+**Bugg C, den allvarligaste.** Första bouncen med `file_type: "WAVE", bit_depth: "16-bit"` misslyckades deterministiskt:
+
+```
+verificationFailed(requested: "bounce position bar 4", actual: "3 2 1 1")
+```
+
+Instrumenterad stegning avslöjade varför. Fältet är fyra `AXSlider`-siffror som alla speglar **ett absolut tickvärde**, och en skrivning stegar det **en av Logics takter** — vilket är olika många ticks beroende på taktarten:
+
+```
+steg 0: end=' 63 3 1 1' raw=1286428604497920
+steg 1: end=' 62 3 1 1' raw=1265812761477120     (delta 20 615 843 020 800 = FEM slag)
+...
+steg 22: end=' 41 3 1 1'
+steg 23: end=' 40 2 1 1' raw=812264215019520     (delta 16 492 674 416 640 = FYRA slag)
+```
+
+Projektet har en `5/4`-händelse vid takt 41 (kvarlämnad av gårdagens signaturprob). Den gamla konvergeraren räknade målet som `minimum + (takt − 1) × en-4/4-takt` och jämförde **råvärdet**: under 5/4-sträckan blir varje steg 25 % större än modellen, så målet kan aldrig träffas — och värdet `63 3 1 1` var dessutom jämnt delbart med en 4/4-takt, så under-takt-kontrollen trodde att det låg på taktlinjen. Fältet vandrade från takt 63 ner till `3 2 1 1` och stannade där, ett slag fel och en takt kort.
+
+**Fixen är att sluta räkna och börja läsa.** Konvergeraren jämför nu Logics **egen takt/slag-text** (`BouncePosition.parse`), vilket är taktartsoberoende per konstruktion: allt som inte står exakt på en taktlinje (eller ligger förbi målet) klampas först till fältets minimum — den enda absoluta förflyttning fältet erbjuder — och stegas sedan upp takt för takt tills displayen visar måltakten. Det skrivna talet är bara en RIKTNING, och en stall under måltakten höjer den med en takt till i stället för att lita på aritmetik som aldrig var exakt. Varje väg är bunden: en total skrivbudget (400), en stall-räknare och en översskjutningskontroll, och felet namnger vad **båda** fälten läser i stället för att snurra.
+
+**Skrivordningen valdes också om.** `end först, det undviker klampning` gällde bara så länge det nya området överlappade det gamla. Med start på takt 9 och slut på takt 63, och bar 2–4 begärt, vandrade slutfältet ner FÖRBI startfältet — området inverterades mitt i skrivningen (användaren såg det på skärmen: `Start: 9 1 1 1`, `End: 3 2 1 1`). `BounceWriteOrder.choose(currentEnd:targetStart:)` avgör nu: ett område som flyttas helt framåt skriver END först, allt annat START först. Ren funktion, enhetstestad mot båda de observerade fallen.
+
+**Efter fixen, skarpt** (och notera att bar 41–45 i fynd 6 ligger mitt i 5/4-sträckan — konvergeraren klarar den):
+
+```
+$ afinfo …/logicmcp-g53wave-1787933121.wav
+File type ID:   WAVE
+Data format:     2 ch,  44100 Hz, Int16, interleaved
+estimated duration: 4.000000 sec
+
+$ afinfo …/logicmcp-g53restore-1787933171.aif
+File type ID:   AIFF
+Data format:     2 ch,  44100 Hz, lpcm 24-bit big-endian signed integer
+estimated duration: 4.000000 sec
+```
+
+`delivered_as` sa `WAVE / 16-bit / 44,1 kHz / None / Off` respektive `AIFF / 24-bit`, och `options_changed` namngav flytten åt båda hållen. **Om återställning:** verktygets kontrakt är att INGENTING återställs — dialogen är användarens egen preferenssida och Logic behåller den — så den andra bouncen var en medveten återställning av mig, inte verktygets manér. Användarens ursprungsläge (AIFF / 24-bit / 44,1 kHz / None / Off / Interleaved) är därmed återställt och verifierat via `delivered_as` och `afinfo`, inte antaget.
+
+#### Fynd 4 — bounce in place: utskriften hände, men verktyget pekade ut FEL region
+
+Kladdunderlag: en kopia av `Crash`-regionen (takt 41) klistrad till takt 50 på samma spår, och en till på takt 55.
+
+Första körningen svarade `success: true, verified: true` med
+
+```
+"printed_region": { "track_name": "Crash", "name": "Crash, muted", "start_bar": 50, "end_bar": 53 }
+```
+
+**Det är källan, inte utskriften.** `source: Mute` (Logics förval) **döper om** källregionen i hjälpmedelsträdet — `Crash` blir `Crash, muted` — så före/efter-diffen hittade två "nya" regioner och tog den första. Den riktiga utskriften låg på ett splitternytt spår en rad ner (`LogicianScratchBIP`, takt 50–53, ljud). En verifierad framgång som pekar på fel objekt är precis den felklass det här repot bryr sig mest om.
+
+**Bugg D fixad** som en ren, enhetstestad funktion (`PrintedRegion.find`): mute-suffixet normaliseras bort ur jämförelsen, det begärda namnet vinner, sedan Logics eget `_bip`-namn, sedan en region på ett spår som inte fanns före. Andra körningen, med `bypass_effect_plugins: false`:
+
+```
+"printed_region": { "track_name": "LogicianScratchWet", "name": "LogicianScratchWet", "start_bar": 55, "end_bar": 58 }
+"changed": { "Bypass Effect Plug-ins": { "from": true, "to": false }, "destination": "New Track", … }
+```
+
+**Den dokumenterade hazarden bekräftades:** arket stod på `Bypass Effect Plug-ins: true` i det här projektet, första körningen (som inte rörde kryssrutan) bar varningen ordagrant, och andra körningen visar kryssrutans skrivning verifierad. 90-sekundersvakan och arrangemangskartan som bevis fungerade båda.
+
+#### Fynd 5 — remove silence, rakt igenom
+
+På den utskrivna ljudregionen (`LogicianScratchBIP`, takt 50):
+
+- `apply: false` → `preview_regions: 3`, `preview_text: "3 Regions"`, `Search Zero Crossing: true`, fälten `0,1000 / 0,0000 / 0,0060 / -28`, **ingenting ändrat**.
+- `apply: true` → `regions_before: 1`, `regions_after: 3`, `regions_produced: 3`, `verified: true`.
+- `logic_list_regions` efteråt: `LogicianScratchBIP.01/.02/.03`, tre ljudregioner mellan takt 50 slag 1 och takt 50 slag 3.
+
+Förhandsvisningen lovade exakt vad tillämpningen levererade, vilket är hela poängen med tvåstegsdesignen. G30 är live-bevisad.
+
+#### Fynd 6 — stems, rakt igenom
+
+`logic_export_stems {tracks: ["808", "Crash"], start_bar: 41, end_bar: 45}`:
+
+```
+aligned: true — "all 2 stems are 437356 frames long."
+808:   peak -12,46 dB, rms -18,73 dB, 24 bit, 44,1 kHz, 2 626 kB
+Crash: peak -25,19 dB, rms -44,05 dB, samma ramantal
+solo_restored: true på båda; mixerögonblicksbilden efteråt: inget spår soloat
+```
+
+`afinfo` bekräftar 9,917370 s per fil — fyra takter **5/4** i 120 BPM är 20 slag = 10 s, alltså rätt musik (och ännu ett kvitto på att positionsfälten nu klarar taktartsbytet). Innehållsnoten kom med och är korrekt: filerna är masterutgången hörd ett spår i taget.
+
+#### Fynd 7 — `Delete Track and Regions?`: en modal ingen visste om, och den frös städningen
+
+Städningen av kladdspåren avslöjade en dialoggrammatik som ingen tidigare session sett, eftersom tidigare sessioner bara raderat TOMMA spår:
+
+```
+AXWindow (AXDialog), ingen titel
+  AXImage      'Logic Pro critical alert'
+  AXStaticText 'Delete Track and Regions?'
+  AXStaticText 'Deleting this track also deletes the regions on the track.'
+  AXButton     'Cancel' | 'Delete'   (Delete är förvalet)
+```
+
+`logic_delete_track` svarade `"The track is still listed; a dialog may need attention."` och lämnade modalen uppe — och en modal sväljer key command-planet, så **allt efter den stannade** tills en människa tryckte. (Användaren fick rädda körningen; det är den sortens stall som ska upptäckas av verktyget, inte av användaren.) Samma disciplin som `logic_split_region`s `Notes Crossing Split Point` gäller nu här: dialogen upptäcks, dess texter läses, och svaret avgörs av en ren funktion — `Delete` bara när dialogen är den kända OCH urvalet fortfarande namnger det begärda spåret, annars `Cancel` med en ärlig vägran. Alerttexten följer med i resultatets `confirmation`. Enhetstestat, inklusive "okänd dialog trycks aldrig".
+
+Efter fixen: `logic_delete_track {track_name: "LogicianScratchBIP"}` → `confirmation: {answered: "delete", dismissed: true}`, `state: "deleted"`, `verified: true`.
+
+#### Vad som blev kvar i användarens projekt (osparat, inget har nått disken)
+
+1. **Kladden är borta och verifierad borta:** båda kladdspåren (`LogicianScratchBIP`, `LogicianScratchWet`) raderade, båda `Crash`-kopiorna (takt 50 och 55) raderade med `logic_delete_region`, och `Crash` är tillbaka på sin enda ursprungsregion vid takt 41. Spårlistan visar åter samma 19 utrullade spårhuvuden som vid start.
+2. **Bounce-in-place-arkets `Bypass Effect Plug-ins` står nu på AV** (det stod PÅ). Arket är användarens egen preferenssida och verktyget återställer medvetet ingenting; PÅ betydde att varje utskrift blev torr, så AV är sannolikt det användaren vill ha — men det är en ändring och den ska stå här. Arkets `Name` visar `LogicianScratchWet` tills nästa utskrift skriver över det.
+3. **Bouncedialogens leveransval är återställda** till AIFF / 24-bit / 44,1 kHz / None / Off (verifierat, se fynd 3).
+4. **Den soloade/mutade världen är orörd**: inget spår soloat efter stems-körningen, inga muteringar kvar (de mutade källorna raderades med kladden).
+5. **`5/4`-händelsen vid takt 41 och tempohändelsen vid takt 9 ligger kvar** sedan tidigare sessioner. De togs medvetet INTE bort: användaren har sagt att kvarlämnat tillstånd får ligga, och 5/4-takten är dessutom det enda kända fixturet där bugg C reproducerar — den är nu regressionsbeviset för positionskonvergeraren.
+6. **Nya filer på disk** i `~/Library/Application Support/Logician/captures/`: två testbouncar (`g53wave`, `g53restore`) och två stems (`g54-808`, `g54-Crash`), plus deras m4a-förhandsvisningar. Projektet självt har inte rörts på disken.
+7. Logic lämnas dialogfritt, med Mixern stängd och projektfönstret framme.
+
+#### Vad som ändrades i koden
+
+`AXMixerWindow.swift` (titelbaserad igenkänning, `mixerStripNames`, tvådelad census, varning, frontmost i båda riktningarna) · `AXHelpers.projectWindow()` (hoppar över Mixerfönster, säger varför) · `AXBounce.setBouncePosition` (displaydriven konvergering med budget/stall/överskjutningsvakter) och `bounceRange` (dynamisk skrivordning) · `BounceOptions.swift` (`BouncePosition`, `BounceWriteOrder`, `ArrangementRegion`, `PrintedRegion`) · `AXBounceInPlace` (rätt region via `PrintedRegion.find`) · `AXTracks.swift` (`TrackDeletionAlert` + dialogdrivningen) · `ToolHandlersTracks.handleDeleteTrack` (svarar på bekräftelsen, rapporterar den) · `StripAddressing`/`Tool.swift`/ToolRegistry/AGENT-GUIDE/COVERAGE (ärlighetsmarkörerna: "aldrig körd" och "öppna Mixern" är ersatta av vad som nu är mätt).
+
+`swift test`: 387 tester gröna (12 nya: positionsparsning, skrivordning, utskriftsmatchning, dialogsvar), 1,4 s, ingen Logic behövs. `swift build -c release` grön. `serverVersion` är medvetet **inte** bumpad — inget cache-relevant beteende ändrades.

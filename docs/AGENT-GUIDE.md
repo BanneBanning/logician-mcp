@@ -22,7 +22,7 @@ Run `logic_health` first. It starts the bridge daemon, checks every setup requir
 
   - **Which plane resolves them.** A track is selected through Accessibility; a headerless strip is resolved and selected on the control surface, so those calls need the MCU bridge. Results say which was used in `selection_route` (`ax_track_header` / `mcu_channel`).
   - **`track_number` is for tracks only.** Passing one pins the call to the track-header plane, so a number plus an output name is an error, not a reroute.
-  - **The Accessibility-only tools need the strip on screen.** `logic_list_inserts`, `logic_survey_plugins`, `logic_open_plugin`, `logic_plugin_preset` and `logic_set_insert_bypass` read an *inspector* strip, and an inspector only shows the selected track's own strip and its output. `Stereo Out` is usually reachable that way; `Master` and the auxes usually are not. **`logic_set_mixer {open: true}` is the fix** — it opens Logic's Mixer and reports back `inspector_strips`, every strip name Accessibility can see at that moment, so you can check whether the strip you want actually came into reach rather than assuming it. The `logic_mcu_*` tools have no such limit and never need the Mixer.
+  - **The Accessibility-only tools need the strip on screen.** `logic_list_inserts`, `logic_survey_plugins`, `logic_open_plugin`, `logic_plugin_preset` and `logic_set_insert_bypass` read an *inspector* strip, and an inspector only shows the selected track's own strip and its output. `Stereo Out` is usually reachable that way; `Master` and the auxes usually are not. **Opening the Mixer does NOT fix that** — the experiment ran on 2026-08-28 and the answer is no: the Mixer window publishes every strip (`logic_set_mixer` reports them as `mixer_strips`, `Master` and the auxes included), but they are not inspector strips and `logic_list_inserts` on `Master` fails with the Mixer open exactly as it does with it closed. Worse, the Mixer is a second document window carrying the same project and can shadow the project window while Logic is in the background. **Use the `logic_mcu_*` tools for `Master`, an aux or a bus** — they have no such limit and never need a window.
   - **Insert numbering can differ between the planes, and on an output it was observed REVERSED**: on `Stereo Out`, Accessibility listed `Sensor, Limiter, Channel EQ` while MCU slots 1-3 read `Channel EQ, Limiter, Sensor`. Never translate an AX `insert_index` into an MCU `insert_slot`; list with the tool you are about to use (`logic_mcu_plugin_inserts` for the MCU tools).
   - **Ambiguity refuses.** Two strips whose names abbreviate to the same six LCD characters produce `ambiguous` with the cells listed, and nothing is written.
 
@@ -195,7 +195,7 @@ Parameters:
 
 #### `logic_list_inserts`
 
-List audio-effect insert slots (index, plugin display name, bypass state) of the named track's channel strip, read-only. The track must be selected so its strip is shown in the left inspector; otherwise the error not_exposed reports which track is currently shown. **Strips without a track header** (`Stereo Out`, aux, bus) work only while an inspector is SHOWING that strip (select a track routed to it, or open the Mixer); otherwise use the `logic_mcu_*` tools, which reach every strip.
+List audio-effect insert slots (index, plugin display name, bypass state) of the named track's channel strip, read-only. The track must be selected so its strip is shown in the left inspector; otherwise the error not_exposed reports which track is currently shown. **Strips without a track header** (`Stereo Out`, aux, bus) work only while an inspector is SHOWING that strip (select a track routed to it — opening the Mixer does NOT help these tools, measured 2026-08-28); otherwise use the `logic_mcu_*` tools, which reach every strip.
 
 Parameters:
 
@@ -220,7 +220,9 @@ Parameters:
 
 **Changing `file_type` costs you the metrics.** The metrics reader parses AIFF/AIFC only, so a WAVE or CAF bounce comes back with no `metrics` block — and therefore without the silent-bounce warning that block powers, and with `logic_export_stems`' alignment check reduced to "unverified". Bounce AIFF while you are judging the audio; switch format for the delivery itself.
 
-**The delivery options are the user's own settings.** Anything you do not pass is left exactly as it was; anything you do pass is verified by reading the pop-up back, and an unknown value is refused with the real list BEFORE the dialog does anything. The result's `delivered_as` is the whole delivery state read off the dialog just before OK — that, not your arguments, is what the file is. Logic keeps these settings for the next bounce: `options_changed` lists what moved and nothing puts it back. MP3 and M4A destinations exist in the dialog with their own option set and are not implemented here.
+**The delivery options are the user's own settings.** Anything you do not pass is left exactly as it was; anything you do pass is verified by reading the pop-up back, and an unknown value is refused with the real list BEFORE the dialog does anything. The result's `delivered_as` is the whole delivery state read off the dialog just before OK — that, not your arguments, is what the file is. Logic keeps these settings for the next bounce: `options_changed` lists what moved and nothing puts it back. MP3 and M4A destinations exist in the dialog with their own option set and are not implemented here. Live-verified 2026-08-28: a two-bar bounce written as WAVE / 16-bit came back off `afinfo` as `WAVE, 2 ch, 44100 Hz, Int16` and the next call put the dialog back to AIFF / 24-bit, confirmed the same way.
+
+**The start/end fields are driven against Logic's own bar readout, not by tick arithmetic.** They are per-digit steppers that move one of LOGIC's bars per write, and a bar is not a constant number of ticks under a changing meter — the old converger computed a 4/4 target and hunted a number the field could never show on a project with a 5/4 section. Two consequences worth knowing: a range far from where the fields currently sit costs a second or two of stepping (the field is clamped to bar 1 first, then walked up), and a field that will not converge comes back as an error naming what BOTH fields read rather than looping.
 
 #### `logic_bounce_in_place`
 
@@ -233,11 +235,13 @@ Parameters:
   - `destination` (`new_track` | `selected_track`), `source` (`mute` | `leave` | `delete`)
   - `normalize` (string), `bypass_effect_plugins`, `include_volume_pan_automation`, `include_audio_tail_in_region`, `include_audio_tail_in_file`, `bounce_second_loop_pass`, `include_instrument_multi_outputs` (booleans)
 
-**`Bypass Effect Plug-ins` is the trap.** It is a real Logic setting that may be ON in the user's project, and a print made with it on is DRY — the inserts are not rendered. The result warns when it was on; pass `bypass_effect_plugins: false` to print the sound as you hear it.
+**`Bypass Effect Plug-ins` is the trap.** It is a real Logic setting that may be ON in the user's project, and a print made with it on is DRY — the inserts are not rendered. The result warns when it was on; pass `bypass_effect_plugins: false` to print the sound as you hear it. Live-verified 2026-08-28 on a scratch copy: the warning fired on the sheet's own ON state, and the wet print with `bypass_effect_plugins: false` reported the checkbox moving `true → false`.
+
+**Which region was printed is a decided question, not the first difference.** Logic's default `source: "mute"` RENAMES the source region in the Accessibility tree (`Crash` → `Crash, muted`), and the first live run reported that muted source as the print while the real one sat on a brand-new track. The mute suffix is ignored in the comparison now, and the name you passed wins the tie.
 
 #### `logic_export_stems`
 
-One offline bounce per named track over the SAME bar range, each with only that track soloed, solo restored after every one. The shared range is what makes them stems rather than a loop of renders, and the tool verifies it: the files' frame counts are compared and `aligned` says whether they really line up. Refuses before the first render if any track is already soloed. Costs one full bounce per track; 16 tracks per call.
+One offline bounce per named track over the SAME bar range, each with only that track soloed, solo restored after every one. The shared range is what makes them stems rather than a loop of renders, and the tool verifies it: the files' frame counts are compared and `aligned` says whether they really line up. Refuses before the first render if any track is already soloed. Costs one full bounce per track; 16 tracks per call. Live-verified 2026-08-28: two stems over four bars came back 437356 frames each (`aligned: true`), both solos restored, and the mixer snapshot afterwards showed nothing soloed.
 
 Parameters:
 
@@ -461,6 +465,8 @@ Parameters:
 
 DESTRUCTIVE: delete a track via the Delete Track key command. The selection is re-verified to be the named track immediately before firing, and the result is verified against the track list. Undo restores.
 
+**A track with regions on it asks first.** Logic raises a modal `Delete Track and Regions?` alert (measured 2026-08-28 — an empty track deletes silently, which is why earlier sessions never met it). The tool detects it and answers: `Delete` while the selection still names the requested track, `Cancel` otherwise (and then nothing is deleted and the result says so). The alert's own text comes back in `confirmation`. This matters beyond tidiness: a modal left standing swallows every key command after it, so a tool that ignored it would stall everything that followed.
+
 Parameters:
 
   - `track_name` (string) **(required)**
@@ -538,7 +544,7 @@ Parameters:
 
 #### `logic_remove_silence`
 
-Cut the silence out of ONE audio region (what other DAWs call strip silence; Logic 12.3.1's command is `Remove Silence from Audio Region…`). `apply: false` — the default — opens the window, reads Logic's LIVE preview of how many regions the current settings would leave, closes it and changes nothing. `apply: true` commits and verifies against the arrangement map. Refuses on a MIDI region. The window's four numeric fields (threshold, minimum silence, pre-attack, post-release) are per-digit steppers this server does not write; their current values are reported.
+Cut the silence out of ONE audio region (what other DAWs call strip silence; Logic 12.3.1's command is `Remove Silence from Audio Region…`). `apply: false` — the default — opens the window, reads Logic's LIVE preview of how many regions the current settings would leave, closes it and changes nothing. `apply: true` commits and verifies against the arrangement map. Refuses on a MIDI region. The window's four numeric fields (threshold, minimum silence, pre-attack, post-release) are per-digit steppers this server does not write; their current values are reported. Live-verified 2026-08-28 on a printed scratch region: the preview read `3 Regions`, `apply: true` produced exactly three, and the arrangement map confirmed it.
 
 Parameters:
 
@@ -779,7 +785,7 @@ Parameters:
 
 #### `logic_survey_plugins`
 
-Inventory every insert on a track: open each plugin window, list its accessible parameters (name, raw range, writability), classify the exposure, and close windows that were opened. Takes a few seconds per insert. Use to map which plugins are controllable through this MCP. **Strips without a track header** (`Stereo Out`, aux, bus) work only while an inspector is SHOWING that strip (select a track routed to it, or open the Mixer); otherwise use the `logic_mcu_*` tools, which reach every strip.
+Inventory every insert on a track: open each plugin window, list its accessible parameters (name, raw range, writability), classify the exposure, and close windows that were opened. Takes a few seconds per insert. Use to map which plugins are controllable through this MCP. **Strips without a track header** (`Stereo Out`, aux, bus) work only while an inspector is SHOWING that strip (select a track routed to it — opening the Mixer does NOT help these tools, measured 2026-08-28); otherwise use the `logic_mcu_*` tools, which reach every strip.
 
 Parameters:
 
@@ -933,7 +939,7 @@ Parameters:
 
 #### `logic_set_insert_bypass`
 
-Bypass or un-bypass one insert — the fastest honest A/B in mixing, and the write side of the bypass state `logic_list_inserts` has always been able to read. Address the insert by `plugin_name`, by `insert_index`, or both (both is safest: a name that does not match the slot at that index is refused). `insert_index` is the ACCESSIBILITY ordinal from `logic_list_inserts`, **not** the Mackie `insert_slot`. Compare-and-set with `expected_current_bypassed`; an insert already in the requested state is a verified no-op (`already_bypassed` / `already_active`) rather than a blind toggle, because the control publishes only `AXPress` and no absolute write. **Strips without a track header** (`Stereo Out`, aux, bus) work only while an inspector is SHOWING that strip — open the Mixer with `logic_set_mixer`.
+Bypass or un-bypass one insert — the fastest honest A/B in mixing, and the write side of the bypass state `logic_list_inserts` has always been able to read. Address the insert by `plugin_name`, by `insert_index`, or both (both is safest: a name that does not match the slot at that index is refused). `insert_index` is the ACCESSIBILITY ordinal from `logic_list_inserts`, **not** the Mackie `insert_slot`. Compare-and-set with `expected_current_bypassed`; an insert already in the requested state is a verified no-op (`already_bypassed` / `already_active`) rather than a blind toggle, because the control publishes only `AXPress` and no absolute write. **Strips without a track header** (`Stereo Out`, aux, bus) work only while an inspector is SHOWING that strip; the Mixer does not change that (measured 2026-08-28), so reach for the `logic_mcu_*` tools instead. Live-verified 2026-08-28 on a track's Channel EQ: active → bypassed → active, each step confirmed by `logic_list_inserts`.
 
 Parameters:
 
@@ -946,7 +952,11 @@ Parameters:
 
 #### `logic_set_mixer`
 
-Open or close Logic's Mixer window (`Window > Open Mixer`), verified against the window list. Worth more than window management looks: the Accessibility-plane strip tools can only reach a channel strip that is SHOWING in an inspector, which is why `Stereo Out` is usually reachable and `Master` and the auxes are not. The result reports `inspector_strips` — every strip name Accessibility can see at that moment — so you can check whether the strip you want actually came into reach. The `logic_mcu_*` tools never need this.
+Open or close Logic's Mixer window (`Window > Open Mixer`), verified against the window list. Two censuses come back: `inspector_strips` (what the Accessibility strip tools can address — the selected track's strip and its output) and, while the Mixer is open, `mixer_strips` (every strip the Mixer window shows, `Master`, `Stereo Out` and the auxes included, named from each strip's own name field because their `AXDescription` is a numeric triple).
+
+**It does not lift the inspector limitation, and that was measured, not assumed** (2026-08-28): with the Mixer open, `logic_list_inserts {track_name: "Master"}` fails exactly as it does with the Mixer closed, because the Mixer's strips are not inspector strips and their insert slots publish placeholder names. For `Master`, an aux or a bus use the `logic_mcu_*` tools.
+
+**And it has a cost.** The Mixer is a standard window carrying the same document as the project window, so it can shadow it — while Logic is in the background it may be the only window Accessibility publishes, and then every track-header read fails. This server skips Mixer windows when it resolves the project window, and this tool brings Logic to the front in both directions, but close the Mixer when you are done. What it is genuinely for: putting the Mixer in front of a human, and reading the full strip census when the surface plane is unavailable.
 
 Parameters:
 

@@ -159,4 +159,129 @@ final class DeliveryTests: XCTestCase {
         XCTAssertNil(MenuShortcut.decode(character: "⌫", modifiers: 0))
         XCTAssertNil(MenuShortcut.decode(character: "", modifiers: 0))
     }
+
+    // MARK: - Bounce position fields (the 2026-08-28 oscillation)
+
+    func testPositionParsesLogicsTabSeparatedText() {
+        XCTAssertEqual(
+            BouncePosition.parse("63\t3\t1\t1"),
+            BouncePosition(bar: 63, beat: 3, division: 1, tick: 1)
+        )
+        // The group's value arrives with leading spaces on some rows.
+        XCTAssertEqual(BouncePosition.parse(" 9\t1\t1\t1")?.bar, 9)
+    }
+
+    func testPositionRefusesWhatIsNotFourNumbers() {
+        XCTAssertNil(BouncePosition.parse("63\t3\t1"))
+        XCTAssertNil(BouncePosition.parse(""))
+        XCTAssertNil(BouncePosition.parse("bar\t3\t1\t1"))
+    }
+
+    func testOnlyTheBarLineCountsAsABarStart() {
+        XCTAssertTrue(BouncePosition(bar: 4, beat: 1, division: 1, tick: 1).isBarStart)
+        // The value that stalled the old converger: one beat past the line,
+        // and evenly divisible by a 4/4 bar in raw ticks all the same.
+        XCTAssertFalse(BouncePosition(bar: 3, beat: 2, division: 1, tick: 1).isBarStart)
+        XCTAssertFalse(BouncePosition(bar: 4, beat: 1, division: 1, tick: 240).isBarStart)
+    }
+
+    func testWriteOrderOpensTheRangeBeforeItMovesTheStart() {
+        // Moving the range entirely later: the end has to go first, or the
+        // start would momentarily sit after it.
+        XCTAssertEqual(BounceWriteOrder.choose(currentEnd: 4, targetStart: 50), .endFirst)
+        XCTAssertEqual(BounceWriteOrder.choose(currentEnd: 4, targetStart: 4), .endFirst)
+    }
+
+    func testWriteOrderMovesTheStartFirstWhenTheRangeStaysInsideTheOldOne() {
+        // The live case: start 9, end 63, asked for bars 2-4. Writing the end
+        // first walks it down past the start; writing the start first cannot
+        // invert anything.
+        XCTAssertEqual(BounceWriteOrder.choose(currentEnd: 63, targetStart: 2), .startFirst)
+        XCTAssertEqual(BounceWriteOrder.choose(currentEnd: 63, targetStart: 62), .startFirst)
+    }
+
+    // MARK: - Which region a bounce-in-place printed
+
+    private var crashBefore: [ArrangementRegion] {
+        [
+            ArrangementRegion(track: "Crash", name: "Crash", start: 41, end: 44),
+            ArrangementRegion(track: "Crash", name: "Crash", start: 50, end: 53)
+        ]
+    }
+
+    func testTheMutedSourceIsNotThePrint() {
+        // The live shape on 2026-08-28: the source at bar 50 was muted (which
+        // RENAMES it) and the print landed on a new track.
+        let after = [
+            ArrangementRegion(track: "Crash", name: "Crash", start: 41, end: 44),
+            ArrangementRegion(track: "Crash", name: "Crash, muted", start: 50, end: 53),
+            ArrangementRegion(track: "LogicianScratchBIP", name: "LogicianScratchBIP", start: 50, end: 53)
+        ]
+        XCTAssertEqual(
+            PrintedRegion.find(before: crashBefore, after: after, requestedName: "LogicianScratchBIP"),
+            after[2]
+        )
+        // And with no name asked for, the new TRACK still decides it.
+        XCTAssertEqual(
+            PrintedRegion.find(before: crashBefore, after: after, requestedName: nil), after[2]
+        )
+    }
+
+    func testLogicsOwnBipNameIsRecognised() {
+        let after = crashBefore + [
+            ArrangementRegion(track: "Crash", name: "Crash_bip", start: 50, end: 53)
+        ]
+        XCTAssertEqual(
+            PrintedRegion.find(before: crashBefore, after: after, requestedName: nil)?.name,
+            "Crash_bip"
+        )
+    }
+
+    func testNothingPrintedIsNil() {
+        let after = [
+            ArrangementRegion(track: "Crash", name: "Crash", start: 41, end: 44),
+            ArrangementRegion(track: "Crash", name: "Crash, muted", start: 50, end: 53)
+        ]
+        XCTAssertNil(PrintedRegion.find(before: crashBefore, after: after, requestedName: "x"))
+    }
+
+    func testCanonicalNameOnlyStripsTheMuteSuffix() {
+        XCTAssertEqual(PrintedRegion.canonicalName("Crash, muted"), "Crash")
+        XCTAssertEqual(PrintedRegion.canonicalName("Crash"), "Crash")
+        XCTAssertEqual(PrintedRegion.canonicalName("muted, Crash"), "muted, Crash")
+    }
+
+    // MARK: - The delete-track confirmation
+
+    func testTheKnownAlertIsAnsweredWithDeleteWhenTheSelectionHolds() {
+        XCTAssertEqual(
+            TrackDeletionAlert.answer(
+                texts: [
+                    "Delete Track and Regions?",
+                    "Deleting this track also deletes the regions on the track."
+                ],
+                selectionMatches: true
+            ),
+            .delete
+        )
+    }
+
+    func testADriftedSelectionCancelsTheAlert() {
+        XCTAssertEqual(
+            TrackDeletionAlert.answer(texts: ["Delete Track and Regions?"], selectionMatches: false),
+            .cancel
+        )
+    }
+
+    func testAnUnknownAlertIsAlwaysCancelled() {
+        // Whatever else Logic puts up, this path does not press its buttons.
+        XCTAssertEqual(
+            TrackDeletionAlert.answer(
+                texts: ["Save changes to “Testlåt Copy” before closing?"],
+                selectionMatches: true
+            ),
+            .cancel
+        )
+        XCTAssertEqual(TrackDeletionAlert.answer(texts: [], selectionMatches: true), .cancel)
+    }
 }
