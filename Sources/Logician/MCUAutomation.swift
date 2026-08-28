@@ -59,28 +59,35 @@ extension MCUController {
     /// re-run, so its arithmetic should not need Logic to be trusted.
     static func automationOffsetMs(
         bar: Int, beat: Double, firstBar: Int, beatsPerBar: Double,
-        tempo: Double, map: TempoMap?
+        tempo: Double, map: TempoMap?, meter: MeterMap? = nil
     ) -> Double {
-        let beatsFromFirst = Double(bar - firstBar) * beatsPerBar + (beat - 1)
+        let meterMap = (meter?.isVariable == true) ? meter : nil
+        let beatsFromFirst = meterMap?.beatOffset(fromBar: firstBar, toBar: bar, beat: beat)
+            ?? (Double(bar - firstBar) * beatsPerBar + (beat - 1))
         guard let map, map.source == .tempoList, !map.isConstant else {
             return beatsFromFirst * (60000.0 / tempo)
         }
-        let origin = TempoMap.beatOffset(bar: firstBar, beatsPerBar: beatsPerBar)
-        return (map.seconds(atBeatOffset: origin + beatsFromFirst, beatsPerBar: beatsPerBar)
-            - map.seconds(atBeatOffset: origin, beatsPerBar: beatsPerBar)) * 1000
+        let origin = TempoMap.beatOffset(bar: firstBar, beatsPerBar: beatsPerBar, meter: meterMap)
+        return (map.seconds(
+            atBeatOffset: origin + beatsFromFirst, beatsPerBar: beatsPerBar, meter: meterMap
+        ) - map.seconds(atBeatOffset: origin, beatsPerBar: beatsPerBar, meter: meterMap)) * 1000
     }
 
     /// The milliseconds-per-beat IN FORCE at (`bar`, `beat`) — what a per-beat
     /// convergence budget and a ramp's subdivision step need once "the tempo" is
     /// no longer one number.
     static func automationMsPerBeat(
-        bar: Int, beat: Double, beatsPerBar: Double, tempo: Double, map: TempoMap?
+        bar: Int, beat: Double, beatsPerBar: Double, tempo: Double,
+        map: TempoMap?, meter: MeterMap? = nil
     ) -> Double {
         guard let map, map.source == .tempoList, !map.isConstant else {
             return 60000.0 / tempo
         }
-        let position = TempoMap.beatOffset(bar: bar, beatsPerBar: beatsPerBar) + (beat - 1)
-        return 60000.0 / map.bpm(atBeatOffset: position, beatsPerBar: beatsPerBar)
+        let meterMap = (meter?.isVariable == true) ? meter : nil
+        let position = TempoMap.beatOffset(
+            bar: bar, beatsPerBar: beatsPerBar, meter: meterMap
+        ) + (beat - 1)
+        return 60000.0 / map.bpm(atBeatOffset: position, beatsPerBar: beatsPerBar, meter: meterMap)
     }
 
     static func currentFader14(_ channel: Int) -> Int? {
@@ -100,7 +107,8 @@ extension MCUController {
         points: [(bar: Int, beat: Double, db: Double)],
         ramp: Bool,
         verify: Bool,
-        tempoMap: TempoMap? = nil
+        tempoMap: TempoMap? = nil,
+        meterMap: MeterMap? = nil
     ) throws -> [String: Any] {
         let transport = try logic.getTransport()
         guard let tempo = transport["tempo"] as? Double else {
@@ -159,7 +167,7 @@ extension MCUController {
         func offsetMs(_ bar: Int, _ beat: Double) -> Double {
             automationOffsetMs(
                 bar: bar, beat: beat, firstBar: first.bar, beatsPerBar: beatsPerBar,
-                tempo: tempo, map: tempoMap
+                tempo: tempo, map: tempoMap, meter: meterMap
             )
         }
         var schedule: [(ms: Double, value: Int)] = sorted.map {
@@ -174,7 +182,7 @@ extension MCUController {
                 // beat is not the same number of milliseconds everywhere.
                 let localMsPerBeat = automationMsPerBeat(
                     bar: sorted[index].bar, beat: sorted[index].beat,
-                    beatsPerBar: beatsPerBar, tempo: tempo, map: tempoMap
+                    beatsPerBar: beatsPerBar, tempo: tempo, map: tempoMap, meter: meterMap
                 )
                 let steps = max(Int((b.ms - a.ms) / (localMsPerBeat / 2)), 1)
                 if steps > 1 {
@@ -446,7 +454,8 @@ extension MCUController {
         enterView: (Int) throws -> (read: () -> Double?, write: (Double, TimeInterval) throws -> Void),
         refreshView: (() throws -> Void)? = nil,
         restoreView: @escaping () -> Void,
-        tempoMap: TempoMap? = nil
+        tempoMap: TempoMap? = nil,
+        meterMap: MeterMap? = nil
     ) throws -> [String: Any] {
         let transport = try logic.getTransport()
         guard let tempo = transport["tempo"] as? Double else {
@@ -487,12 +496,13 @@ extension MCUController {
         func offsetMs(_ bar: Int, _ beat: Double) -> Double {
             automationOffsetMs(
                 bar: bar, beat: beat, firstBar: first.bar, beatsPerBar: beatsPerBar,
-                tempo: tempo, map: tempoMap
+                tempo: tempo, map: tempoMap, meter: meterMap
             )
         }
         func localMsPerBeat(_ bar: Int, _ beat: Double) -> Double {
             automationMsPerBeat(
-                bar: bar, beat: beat, beatsPerBar: beatsPerBar, tempo: tempo, map: tempoMap
+                bar: bar, beat: beat, beatsPerBar: beatsPerBar, tempo: tempo,
+                map: tempoMap, meter: meterMap
             )
         }
         // Each entry carries the ms-per-beat in force at its own position, so the

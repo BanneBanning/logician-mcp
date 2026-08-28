@@ -111,13 +111,20 @@ struct TempoMap: Equatable, Codable {
     }
 
     /// Beats from bar 1 beat 1 (which is 0) to an event's position.
-    private func beatOffset(_ event: TempoEvent, beatsPerBar: Double) -> Double {
-        Double(event.bar - 1) * beatsPerBar + (event.beatInBar - 1)
+    private func beatOffset(_ event: TempoEvent, beatsPerBar: Double, meter: MeterMap?) -> Double {
+        TempoMap.beatOffset(bar: event.bar, beatsPerBar: beatsPerBar, meter: meter)
+            + (event.beatInBar - 1)
     }
 
     /// Beats from bar 1 beat 1 to `bar`'s bar line.
-    static func beatOffset(bar: Int, beatsPerBar: Double) -> Double {
-        Double(bar - 1) * beatsPerBar
+    ///
+    /// `meter` is the project's METER MAP and is honoured only when it actually
+    /// varies (`MeterMap.isVariable`); a nil or constant map takes the single
+    /// multiplication this has always been, bit for bit. See the constant-meter
+    /// contract on `MeterMap`.
+    static func beatOffset(bar: Int, beatsPerBar: Double, meter: MeterMap? = nil) -> Double {
+        if let meter, meter.isVariable { return meter.beatOffset(bar: bar) }
+        return Double(bar - 1) * beatsPerBar
     }
 
     // MARK: Integration
@@ -130,12 +137,14 @@ struct TempoMap: Equatable, Codable {
     /// closed form of ∫ 60/BPM(beat) d(beat) when BPM is linear in beats. There
     /// is therefore no error bound to document for the math itself — only for
     /// what the SOURCE could not tell us (see `curveUncertaintySeconds`).
-    func seconds(atBeatOffset beats: Double, beatsPerBar: Double) -> Double {
+    func seconds(atBeatOffset beats: Double, beatsPerBar: Double, meter: MeterMap? = nil) -> Double {
         guard beats > 0, beatsPerBar > 0 else { return 0 }
-        // One event: reproduce the constant-tempo arithmetic exactly.
+        // One event: reproduce the constant-tempo arithmetic exactly. (The meter
+        // does not enter here at all — the caller has already converted bars to
+        // beats, and one tempo over any meter is still beats x 60 / BPM.)
         if events.count == 1 { return beats * 60.0 / events[0].bpm }
         var total = 0.0
-        let offsets = events.map { max(beatOffset($0, beatsPerBar: beatsPerBar), 0) }
+        let offsets = events.map { max(beatOffset($0, beatsPerBar: beatsPerBar, meter: meter), 0) }
         // A map whose first event is not at bar 1 (Logic always puts one there,
         // but a partial read must not invent seconds): the stretch before it is
         // carried at that first event's tempo.
@@ -169,15 +178,15 @@ struct TempoMap: Equatable, Codable {
 
     /// The tempo in force at a beat offset — what a per-beat budget or a
     /// convergence lead needs when "the tempo" is no longer one number.
-    func bpm(atBeatOffset beats: Double, beatsPerBar: Double) -> Double {
+    func bpm(atBeatOffset beats: Double, beatsPerBar: Double, meter: MeterMap? = nil) -> Double {
         var current = events[0].bpm
         for (index, event) in events.enumerated() {
-            let start = beatOffset(event, beatsPerBar: beatsPerBar)
+            let start = beatOffset(event, beatsPerBar: beatsPerBar, meter: meter)
             if start > beats { break }
             current = event.bpm
             if event.rampToNext, index + 1 < events.count {
                 let next = events[index + 1]
-                let end = beatOffset(next, beatsPerBar: beatsPerBar)
+                let end = beatOffset(next, beatsPerBar: beatsPerBar, meter: meter)
                 if beats < end, end > start {
                     let t = (beats - start) / (end - start)
                     current = event.bpm + (next.bpm - event.bpm) * t
@@ -195,21 +204,31 @@ struct TempoMap: Equatable, Codable {
     /// Double for some tempos, and constant-tempo projects are the common case:
     /// a boundary that moved by a float's last bit would be a silent change to
     /// every freeze slice this server has ever cut.
+    ///
+    /// A VARYING `meter` disables that fast path, because under a changing
+    /// signature the bars in a range are not all the same number of beats and no
+    /// single `secondsPerBar` describes them. A nil or constant meter map leaves
+    /// the fast path exactly where it was.
     func rangeSeconds(
-        startBar: Int, endBar: Int, beatsPerBar: Double
+        startBar: Int, endBar: Int, beatsPerBar: Double, meter: MeterMap? = nil
     ) -> (start: Double, end: Double) {
-        if events.count == 1 {
+        let meterMap = (meter?.isVariable == true) ? meter : nil
+        if events.count == 1, meterMap == nil {
             let secondsPerBar = beatsPerBar * 60.0 / events[0].bpm
             return (Double(startBar - 1) * secondsPerBar, Double(endBar - 1) * secondsPerBar)
         }
         return (
             seconds(
-                atBeatOffset: TempoMap.beatOffset(bar: startBar, beatsPerBar: beatsPerBar),
-                beatsPerBar: beatsPerBar
+                atBeatOffset: TempoMap.beatOffset(
+                    bar: startBar, beatsPerBar: beatsPerBar, meter: meterMap
+                ),
+                beatsPerBar: beatsPerBar, meter: meterMap
             ),
             seconds(
-                atBeatOffset: TempoMap.beatOffset(bar: endBar, beatsPerBar: beatsPerBar),
-                beatsPerBar: beatsPerBar
+                atBeatOffset: TempoMap.beatOffset(
+                    bar: endBar, beatsPerBar: beatsPerBar, meter: meterMap
+                ),
+                beatsPerBar: beatsPerBar, meter: meterMap
             )
         )
     }
@@ -227,7 +246,7 @@ struct TempoMap: Equatable, Codable {
     /// is displaced by the whole of it. That is the honest number a warning
     /// should carry, and it is why this is computed rather than guessed.
     func curveUncertaintySeconds(
-        startBar: Int, endBar: Int, beatsPerBar: Double
+        startBar: Int, endBar: Int, beatsPerBar: Double, meter: MeterMap? = nil
     ) -> Double {
         guard events.count > 1 else { return 0 }
         let ramped = TempoMap(
@@ -241,8 +260,12 @@ struct TempoMap: Equatable, Codable {
             subBeatPositions: subBeatPositions
         )
         guard let ramped else { return 0 }
-        let steps = rangeSeconds(startBar: startBar, endBar: endBar, beatsPerBar: beatsPerBar)
-        let curves = ramped.rangeSeconds(startBar: startBar, endBar: endBar, beatsPerBar: beatsPerBar)
+        let steps = rangeSeconds(
+            startBar: startBar, endBar: endBar, beatsPerBar: beatsPerBar, meter: meter
+        )
+        let curves = ramped.rangeSeconds(
+            startBar: startBar, endBar: endBar, beatsPerBar: beatsPerBar, meter: meter
+        )
         return max(abs(curves.start - steps.start), abs(curves.end - steps.end))
     }
 

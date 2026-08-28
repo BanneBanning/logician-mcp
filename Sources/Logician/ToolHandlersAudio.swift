@@ -70,11 +70,15 @@ extension MCPServer {
                         + " tempo map."
                 )
             }
+            // The METER map, on the same terms as the tempo map: read once,
+            // used only when it actually varies, so a constant-meter project's
+            // two slices are cut exactly where they always were.
+            let meterKnowledge = resolveMeterKnowledge()
             // The tempo and meter resolved above, not read a second time.
             let range = try MCPServer.barRangeSeconds(
                 startBar: startBar, endBar: endBar,
                 tempo: resolvedMeter.tempo, beatsPerBar: resolvedMeter.beatsPerBar,
-                map: knowledge.readMap
+                map: knowledge.readMap, meterMap: meterKnowledge.integratedMap
             )
             var rendered = try MCUController.evaluateChangeRendered(
                 logic: logic,
@@ -94,7 +98,11 @@ extension MCPServer {
             appendWarning(
                 knowledge.warning(sliced: "the two compared slices"), to: &rendered
             )
+            appendWarning(
+                meterKnowledge.warning(sliced: "the two compared slices"), to: &rendered
+            )
             if let block = knowledge.payload { rendered["tempo_map"] = block }
+            rendered["meter_map"] = meterKnowledge.payload
             return rendered
         }
         if (arguments["method"] as? String) == "solo_bounce" {
@@ -177,6 +185,7 @@ extension MCPServer {
         // project start and needs no tempo at all. So the tempo is resolved here
         // and nowhere else — a render without start_bar/end_bar costs nothing.
         var knowledge: TempoKnowledge?
+        var meterKnowledge: MeterKnowledge?
         if let startBar = arguments["start_bar"] as? Int,
            let endBar = arguments["end_bar"] as? Int {
             let resolvedMeter = try resolveTempoAndMeter(logic: logic, arguments: arguments)
@@ -184,10 +193,12 @@ extension MCPServer {
                 startBar: startBar, endBar: endBar, beatsPerBar: resolvedMeter.beatsPerBar
             )
             knowledge = resolved
+            let meter = resolveMeterKnowledge()
+            meterKnowledge = meter
             sliceRange = try MCPServer.barRangeSeconds(
                 startBar: startBar, endBar: endBar,
                 tempo: resolvedMeter.tempo, beatsPerBar: resolvedMeter.beatsPerBar,
-                map: resolved.readMap
+                map: resolved.readMap, meterMap: meter.integratedMap
             )
         }
         var render = try MCUController.renderSelectedTrack(
@@ -207,7 +218,14 @@ extension MCPServer {
             knowledge?.warning(sliced: "the requested bar-range slice (the FULL render is unaffected)"),
             to: &render
         )
+        appendWarning(
+            meterKnowledge?.warning(
+                sliced: "the requested bar-range slice (the FULL render is unaffected)"
+            ),
+            to: &render
+        )
         if let block = knowledge?.payload { render["tempo_map"] = block }
+        if let block = meterKnowledge?.payload { render["meter_map"] = block }
         return render
     }
 

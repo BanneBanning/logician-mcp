@@ -57,51 +57,22 @@ extension LogicAccessibility {
     /// It never throws: a map that cannot be read is a fallback, not a failure —
     /// callers drop back to the two-point sampling that shipped before it.
     func readTempoMap() -> (map: TempoMap?, failure: TempoListFailure?, tempoSet: String?) {
-        // The pane is a child of the PROJECT window, and `logicWindows()` is
-        // ordered by Logic, not by us: with any plugin window open, `.first`
-        // was that plugin window and the read came back `tempoTabNotFound`
-        // while a perfectly readable Tempo List sat one window over
-        // (2026-08-28 — every plugin tool leaves a window open long enough for
-        // this to happen, and the caller then silently fell back to parking
-        // the playhead for a two-point sample).
-        guard let window = try? projectWindow() else {
-            return (nil, .listEditorsUnavailable, nil)
-        }
-        // Already open? Then leave it open afterwards.
-        let wasOpen = tempoListTabs(in: window).isEmpty == false
-        if !wasOpen {
-            guard (try? pressMenuItem(containing: "List Editors", underMenu: "View")) != nil else {
-                return (nil, .listEditorsUnavailable, nil)
-            }
-            settleForListEditors()
-        }
-        defer {
-            if !wasOpen {
-                try? pressMenuItem(containing: "List Editors", underMenu: "View")
+        // The pane discipline (open if closed, restore the tab, close what we
+        // opened) lives in `withListEditorsTab` — established here on
+        // 2026-08-27 and lifted out when the Event, Marker and Signature tabs
+        // needed exactly the same dance.
+        let read = withListEditorsTab(named: "Tempo") { self.parseTempoList(in: $0) }
+        if let failure = read.failure {
+            // The shared vocabulary, translated back into this reader's own —
+            // the tempo family's warnings and payloads are written against it.
+            switch failure {
+            case .paneUnavailable: return (nil, .listEditorsUnavailable, nil)
+            case .tabNotFound: return (nil, .tempoTabNotFound, nil)
+            default: return (nil, .tableNotFound, nil)
             }
         }
-        let tabs = tempoListTabs(in: window)
-        guard let tempoTab = tabs.first(where: { $0.name == "Tempo" }) else {
-            return (nil, .tempoTabNotFound, nil)
-        }
-        let previous = tabs.first(where: \.selected)?.name
-        if !tempoTab.selected {
-            _ = AXUIElementPerformAction(tempoTab.element, kAXPressAction as CFString)
-            settleForListEditors()
-        }
-        defer {
-            if let previous, previous != "Tempo",
-               let tab = tempoListTabs(in: window).first(where: { $0.name == previous }) {
-                _ = AXUIElementPerformAction(tab.element, kAXPressAction as CFString)
-            }
-        }
-        return parseTempoList(in: window)
-    }
-
-    /// The pane repaints after a menu toggle or a tab switch; the table's rows
-    /// are not there on the first look.
-    private func settleForListEditors() {
-        Thread.sleep(forTimeInterval: 0.6)
+        guard let parsed = read.value else { return (nil, .tableNotFound, nil) }
+        return parsed
     }
 
     /// The four List Editors tabs, by their `AXDescription`, with which one is

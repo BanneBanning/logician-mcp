@@ -155,11 +155,18 @@ extension MCPServer {
         // long a range the tempo/meter were read for.
         let resolved = try resolveTempoAndMeter(logic: logic, arguments: arguments)
         let beatsPerBar = resolved.beatsPerBar
+        // The METER map, read once and honoured only when it varies: where the
+        // take ENDS is a bar count, and under a changing signature that is a
+        // walk over the bars rather than one division. A constant-meter project
+        // takes the arithmetic it always did.
+        let meterKnowledge = resolveMeterKnowledge()
+        let meterMap = meterKnowledge.integratedMap
         let endBar = MCPServer.takeEnd(
             startBar: startBar,
             beatsPerBar: beatsPerBar,
             notes: parsed.map { (bar: $0.bar, beat: $0.beat, durationBeats: $0.durationBeats) },
-            extraEventBars: extraBars
+            extraEventBars: extraBars,
+            meterMap: meterMap
         ).endBar
         // What we know about the tempo, resolved ONCE for this invocation: the
         // note scheduling and the verification render's slice cover the same
@@ -172,7 +179,7 @@ extension MCPServer {
         let tempoMap = knowledge.readMap
         let range = try MCPServer.barRangeSeconds(
             startBar: startBar, endBar: endBar,
-            tempo: resolved.tempo, beatsPerBar: beatsPerBar, map: tempoMap
+            tempo: resolved.tempo, beatsPerBar: beatsPerBar, map: tempoMap, meterMap: meterMap
         )
         // speed > 1 records at a raised tempo and scales event times:
         // the region lands at identical bar positions in a fraction
@@ -225,19 +232,31 @@ extension MCPServer {
         // A CONSTANT map takes the `msPerBeat` path too, deliberately: it is the
         // same arithmetic, and `speed` (which scales `recordingTempo`) is only
         // ever allowed there.
-        let takeStartBeats = TempoMap.beatOffset(bar: startBar, beatsPerBar: range.beatsPerBar)
+        let takeStartBeats = TempoMap.beatOffset(
+            bar: startBar, beatsPerBar: range.beatsPerBar, meter: meterMap
+        )
         let takeStartSeconds = tempoMap.map {
-            $0.seconds(atBeatOffset: takeStartBeats, beatsPerBar: range.beatsPerBar)
+            $0.seconds(
+                atBeatOffset: takeStartBeats, beatsPerBar: range.beatsPerBar, meter: meterMap
+            )
         } ?? 0
         func offsetMs(_ offsetBeats: Double) -> Double {
             guard let tempoMap, !tempoMap.isConstant else { return offsetBeats * msPerBeat }
             return (tempoMap.seconds(
-                atBeatOffset: takeStartBeats + offsetBeats, beatsPerBar: range.beatsPerBar
+                atBeatOffset: takeStartBeats + offsetBeats, beatsPerBar: range.beatsPerBar,
+                meter: meterMap
             ) - takeStartSeconds) * 1000
+        }
+        /// Beats from the take's first bar line to (`bar`, `beat`) — one bar
+        /// times beats-per-bar, unless the meter map says the bars in between
+        /// are not all that long.
+        func eventBeats(bar: Int, beat: Double) -> Double {
+            meterMap?.beatOffset(fromBar: startBar, toBar: bar, beat: beat)
+                ?? (Double(bar - startBar) * range.beatsPerBar + (beat - 1))
         }
         var events: [(offsetMs: Double, bytes: [UInt8])] = []
         for note in parsed {
-            let offsetBeats = Double(note.bar - startBar) * range.beatsPerBar + (note.beat - 1)
+            let offsetBeats = eventBeats(bar: note.bar, beat: note.beat)
             guard offsetBeats >= 0 else {
                 throw LogicianError.invalidArguments(
                     "note at bar \(note.bar) lies before start_bar \(startBar)"
@@ -259,7 +278,7 @@ extension MCPServer {
                 }
                 let beat = (raw["beat"] as? Double) ?? (raw["beat"] as? Int).map(Double.init) ?? 1.0
                 let channel = UInt8(((raw["channel"] as? Int) ?? 1) - 1) & 0x0F
-                let offsetBeats = Double(bar - startBar) * range.beatsPerBar + (beat - 1)
+                let offsetBeats = eventBeats(bar: bar, beat: beat)
                 guard offsetBeats >= 0 else {
                     throw LogicianError.invalidArguments("cc_event at bar \(bar) lies before start_bar \(startBar)")
                 }
@@ -275,7 +294,7 @@ extension MCPServer {
                 }
                 let beat = (raw["beat"] as? Double) ?? (raw["beat"] as? Int).map(Double.init) ?? 1.0
                 let channel = UInt8(((raw["channel"] as? Int) ?? 1) - 1) & 0x0F
-                let offsetBeats = Double(bar - startBar) * range.beatsPerBar + (beat - 1)
+                let offsetBeats = eventBeats(bar: bar, beat: beat)
                 guard offsetBeats >= 0 else {
                     throw LogicianError.invalidArguments("pitch_bend at bar \(bar) lies before start_bar \(startBar)")
                 }
@@ -322,6 +341,13 @@ extension MCPServer {
             result["project_tempo_mode"] = name
         }
         if let block = knowledge.payload { result["tempo_map"] = block }
+        result["meter_map"] = meterKnowledge.payload
+        appendWarning(
+            meterKnowledge.warning(
+                sliced: "the note timing and the verification render's slice"
+            ),
+            to: &result
+        )
         // A recording made while the Smart Tempo mode was NOT verifiably Keep
         // can have rewritten the tempo map (Adapt follows the recording), so the
         // cached map is no longer a description of this project. Forget it: the
@@ -400,6 +426,10 @@ extension MCPServer {
         // playhead-chase verification is bar-based already, so it is the proof
         // this arithmetic landed the points on the beats they were asked for.
         let automationTempoMap = resolveTempoMap().map
+        // Same for the meter: point placement is a bar-to-beat conversion, and
+        // under a changing signature that is not one multiplication.
+        let automationMeter = resolveMeterKnowledge()
+        let automationMeterMap = automationMeter.integratedMap
         var automationResult: [String: Any]
         switch parameter {
         case "volume":
@@ -409,7 +439,8 @@ extension MCPServer {
                 points: automationPoints.map { ($0.bar, $0.beat, $0.value) },
                 ramp: ramp,
                 verify: verifyCurve,
-                tempoMap: automationTempoMap
+                tempoMap: automationTempoMap,
+                meterMap: automationMeterMap
             )
         case "pan":
             automationResult = try MCUController.recordVpotAutomation(
@@ -429,7 +460,8 @@ extension MCPServer {
                     )
                 },
                 restoreView: { },
-                tempoMap: automationTempoMap
+                tempoMap: automationTempoMap,
+                meterMap: automationMeterMap
             )
         case "send":
             guard let sendSlot = arguments["send"] as? Int, (1...8).contains(sendSlot) else {
@@ -467,7 +499,8 @@ extension MCPServer {
                     try MCUController.sendViewToPage(forSend: sendSlot)
                 },
                 restoreView: { MCUController.exitToPan() },
-                tempoMap: automationTempoMap
+                tempoMap: automationTempoMap,
+                meterMap: automationMeterMap
             )
         case "plugin":
             guard let slot = arguments["insert_slot"] as? Int else {
@@ -512,7 +545,8 @@ extension MCPServer {
                     }
                 },
                 restoreView: { MCUController.exitToPan() },
-                tempoMap: automationTempoMap
+                tempoMap: automationTempoMap,
+                meterMap: automationMeterMap
             )
         default:
             throw LogicianError.invalidArguments("parameter must be volume, pan, send or plugin")
@@ -527,6 +561,11 @@ extension MCPServer {
                 "integrated": true
             ]
         }
+        automationResult["meter_map"] = automationMeter.payload
+        appendWarning(
+            automationMeter.warning(sliced: "each point's musical moment"),
+            to: &automationResult
+        )
         return automationResult
     }
 }

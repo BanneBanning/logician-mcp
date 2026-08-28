@@ -129,12 +129,16 @@ extension MCPServer {
     /// down to the operation order, so a project with no readable map takes
     /// bit-for-bit the same path it did before tempo maps existed.
     ///
-    /// The METER is still one number. Logic's signature changes live in their own
-    /// list and this server does not read them, so a project whose meter changes
-    /// mid-song still gets bar boundaries from one beats-per-bar. That
-    /// assumption is unchanged, and now it is the only one left.
+    /// With a `meterMap` READ from Logic's Signature List, and only when that map
+    /// actually VARIES, the bar→beat half of the conversion is integrated too:
+    /// a range that spans a 4/4 → 3/4 change no longer assumes every bar in it
+    /// is the same length. A nil map, a map that could not be read, and a
+    /// constant one all take the single multiplication that has always been
+    /// here — see the constant-meter contract on `MeterMap`, which is what keeps
+    /// the common case bit-for-bit unchanged.
     static func barRangeSeconds(
-        startBar: Int, endBar: Int, tempo: Double, beatsPerBar: Double, map: TempoMap? = nil
+        startBar: Int, endBar: Int, tempo: Double, beatsPerBar: Double,
+        map: TempoMap? = nil, meterMap: MeterMap? = nil
     ) throws -> (start: Double, end: Double, tempo: Double, beatsPerBar: Double) {
         guard startBar >= 1, endBar > startBar else {
             throw LogicianError.invalidArguments("need start_bar >= 1 and end_bar > start_bar")
@@ -144,9 +148,19 @@ extension MCPServer {
                 "need a positive tempo and beats_per_bar for bar math (got \(tempo) BPM, \(beatsPerBar) beats/bar)"
             )
         }
+        let meter = (meterMap?.isVariable == true) ? meterMap : nil
         if let map, map.source == .tempoList {
             let integrated = map.rangeSeconds(
-                startBar: startBar, endBar: endBar, beatsPerBar: beatsPerBar
+                startBar: startBar, endBar: endBar, beatsPerBar: beatsPerBar, meter: meter
+            )
+            return (integrated.start, integrated.end, tempo, beatsPerBar)
+        }
+        // A varying meter under an UNREAD tempo map still has to be integrated:
+        // the one tempo we have is expressed as a one-event map so the two halves
+        // compose through the same code path instead of a second formula here.
+        if let meter, let constant = TempoMap.constant(tempo) {
+            let integrated = constant.rangeSeconds(
+                startBar: startBar, endBar: endBar, beatsPerBar: beatsPerBar, meter: meter
             )
             return (integrated.start, integrated.end, tempo, beatsPerBar)
         }
@@ -211,6 +225,66 @@ extension MCPServer {
         return (read.map, read.failure)
     }
 
+    // MARK: - Meter map: acquisition, caching, and the one thing it changes
+
+    /// Where the read meter map is cached, per project.
+    static var meterMapCacheURL: URL {
+        MCUBridge.directory.appendingPathComponent("meter-map-cache.json")
+    }
+
+    /// Forgets the cached meter map. Called for the same reason the tempo cache
+    /// is forgotten: a recording made while the Smart Tempo project mode was not
+    /// verifiably Keep can rewrite the project's musical grid behind us.
+    func invalidateMeterMapCache() {
+        try? FileManager.default.removeItem(at: MCPServer.meterMapCacheURL)
+    }
+
+    /// The project's meter map, read from the Signature List and cached per
+    /// project — the same shape, and the same honesty rules, as
+    /// `resolveTempoMap()`.
+    ///
+    /// Only SUCCESS is cached: "the Signature List could not be read" must never
+    /// harden into "this project has one meter". There is no cheap live
+    /// cross-check for the cache the way the control bar's tempo validates the
+    /// tempo map — the control bar publishes the time signature AT THE PLAYHEAD,
+    /// so it can only ever contradict the map, never confirm it; a signature the
+    /// map cannot account for at any bar therefore discards the cache, and a
+    /// signature it can does not prove the map is current.
+    func resolveMeterMap() -> (map: MeterMap?, failure: ListEditorFailure?) {
+        let projectPath = try? logic.projectDocumentPath()
+        if let cached = loadScopedCache(
+            MCPServer.meterMapCacheURL, projectPath: projectPath, as: MeterMap.self
+        ) {
+            let live = (try? logic.getTransport())?["time_signature"] as? String
+            let liveSignature = live.flatMap(MeterMap.parseSignature)
+            if liveSignature == nil || cached.events.contains(where: {
+                $0.numerator == liveSignature?.numerator
+                    && $0.denominator == liveSignature?.denominator
+            }) {
+                return (cached, nil)
+            }
+            invalidateMeterMapCache()
+        }
+        let read = logic.readMeterMap()
+        if let map = read.map {
+            saveScopedCache(map, to: MCPServer.meterMapCacheURL, projectPath: projectPath)
+        }
+        return (read.map, read.failure)
+    }
+
+    /// The meter map, the payload block that reports it, and the warning a
+    /// VARYING one obliges a seconds-slicing result to carry.
+    ///
+    /// A constant map says nothing, exactly as a constant tempo map does: the
+    /// boundaries are simply right and there is no caveat to carry. Nor does an
+    /// unreadable one warn — that is the assumption this server has always made,
+    /// and it is documented in every affected tool's description; the payload
+    /// block still names the reason so an agent can see the read was attempted.
+    func resolveMeterKnowledge() -> MeterKnowledge {
+        let resolved = resolveMeterMap()
+        return MeterKnowledge(map: resolved.map, failure: resolved.failure)
+    }
+
     /// What this invocation knows about the tempo across `startBar`–`endBar`:
     /// the map when the Tempo List can be read, the two-point sample when it
     /// cannot. AT MOST ONE of the two is paid for — the sample's playhead travel
@@ -248,21 +322,36 @@ extension MCPServer {
         startBar: Int,
         beatsPerBar: Double,
         notes: [(bar: Int, beat: Double, durationBeats: Double)],
-        extraEventBars: [Int]
+        extraEventBars: [Int],
+        meterMap: MeterMap? = nil
     ) -> (lastBeat: Double, endBar: Int) {
         let meter = beatsPerBar > 0 ? beatsPerBar : 4
+        let map = (meterMap?.isVariable == true) ? meterMap : nil
+        /// Beats from `startBar`'s bar line to a position, under the meter map
+        /// when there is one to honour and the single multiplication when not.
+        func offset(bar: Int, beat: Double) -> Double {
+            map?.beatOffset(fromBar: startBar, toBar: bar, beat: beat)
+                ?? (Double(bar - startBar) * meter + (beat - 1))
+        }
         // A CC or pitch-bend event carries no duration, so it claims the bar it
         // sits in: one full bar past its own start.
-        let lastExtraBeats = extraEventBars.map { Double($0 - startBar + 1) * meter }.max() ?? 0
+        let lastExtraBeats = extraEventBars.map { offset(bar: $0 + 1, beat: 1) }.max() ?? 0
         let lastBeat = max(
-            notes.map {
-                Double($0.bar - startBar) * meter + ($0.beat - 1) + $0.durationBeats
-            }.max() ?? meter,
+            notes.map { offset(bar: $0.bar, beat: $0.beat) + $0.durationBeats }.max()
+                ?? (map?.beatsPerBar(atBar: startBar) ?? meter),
             lastExtraBeats
         )
         // At least one bar: a take shorter than a bar still occupies one, and
         // the bar math downstream requires end > start.
-        return (lastBeat, max(startBar + Int((lastBeat / meter).rounded(.up)), startBar + 1))
+        guard let map else {
+            return (lastBeat, max(startBar + Int((lastBeat / meter).rounded(.up)), startBar + 1))
+        }
+        // Under a changing meter "how many bars is this many beats" is a walk,
+        // not a division: the same beat count is a different number of bars
+        // depending on which bars it lands in.
+        let end = map.position(atBeatOffset: map.beatOffset(bar: startBar) + lastBeat)
+        let endBar = end.beatInBar > 1 + 1e-9 ? end.bar + 1 : end.bar
+        return (lastBeat, max(endBar, startBar + 1))
     }
 
 }

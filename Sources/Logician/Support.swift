@@ -334,6 +334,73 @@ struct TempoKnowledge {
     var refusalDetail: String? { sample?.refusalDetail }
 }
 
+/// What one tool invocation knows about the project's METER — the last
+/// assumption the bar math carried after the tempo map landed (ROADMAP item 3,
+/// "Meter is the last assumption").
+///
+/// Deliberately smaller than `TempoKnowledge`: there is no two-point fallback to
+/// weigh against the map, because there is nothing to sample. The control bar
+/// publishes the signature at the playhead, which cannot tell a constant-meter
+/// project from a mapped one, so the Signature List either answers or it does
+/// not — and when it does not, the bar math keeps the single beats-per-bar it
+/// has always used.
+struct MeterKnowledge {
+    /// Non-nil only when the Signature List read succeeded.
+    let map: MeterMap?
+    /// Why it did not — carried into the payload so an unread map is visible as
+    /// an unread map, never as a constant one.
+    let failure: ListEditorFailure?
+
+    /// The map, but only when it came from the Signature List AND actually
+    /// changes the arithmetic. This is what every consumer passes down; see the
+    /// constant-meter contract on `MeterMap`.
+    var integratedMap: MeterMap? {
+        guard let map, map.source == .signatureList, map.isVariable else { return nil }
+        return map
+    }
+
+    /// The `meter_map` block a result carries. Present whenever a read was
+    /// ATTEMPTED — a failed read is a fact worth reporting, because it is the
+    /// case where the constant-meter assumption is still live.
+    var payload: [String: Any] {
+        guard let map, map.source == .signatureList else {
+            return [
+                "read": false,
+                "reason": failure?.reason ?? "the Signature List was not read",
+                "integrated": false,
+                "note": "bar math assumed one beats-per-bar, as it always has"
+            ]
+        }
+        return [
+            "read": true,
+            "source": "signature_list",
+            "events": map.events.count,
+            "signatures": map.signatures,
+            "bars": map.bars,
+            "constant": map.isConstant,
+            // A constant map is reported and NOT used: the caller's own
+            // beats_per_bar (control bar, or an explicit override) stays
+            // authoritative, which keeps a constant-meter project's boundaries
+            // bit-for-bit what they have always been.
+            "integrated": map.isVariable
+        ]
+    }
+
+    /// What a VARYING meter obliges a seconds-slicing result to say.
+    func warning(sliced: String) -> String? {
+        guard let map = integratedMap else { return nil }
+        let changes = zip(map.bars, map.signatures)
+            .map { "bar \($0.0): \($0.1)" }
+            .joined(separator: ", ")
+        return "METER MAP READ AND INTEGRATED: Logic's Signature List holds"
+            + " \(map.events.count) time signatures (\(changes)), so the bars in this range are"
+            + " not all the same length, and \(sliced) was computed by summing each bar's own"
+            + " length instead of multiplying by one beats-per-bar. An explicit beats_per_bar"
+            + " argument does NOT override a varying meter map — the map is the project's own"
+            + " grid."
+    }
+}
+
 /// Logic's project tempo mode (Smart Tempo): what a recording is allowed to do
 /// to the project's tempo map. `Keep` leaves the map alone (the classic
 /// behavior), `Adapt` REWRITES it to follow the recording, and `Auto` decides
