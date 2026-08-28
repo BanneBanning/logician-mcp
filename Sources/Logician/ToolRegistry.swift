@@ -944,6 +944,53 @@ extension MCPServer {
                 handler: MCPServer.handleCloseProject
             ),
             Tool(
+                name: "logic_reset_to",
+                description: "**THIS TOOL DISCARDS THE OPEN PROJECT'S UNSAVED CHANGES. THAT IS ITS CONTRACT, NOT A SIDE EFFECT.** The episode-reset primitive: close whatever is open WITHOUT saving, open the .logicx at `path`, and prove the world is in a known state. Built for eval harnesses and for any agent that wants a clean slate between attempts — reset to the same file it was already in and every experiment of the last episode is gone. `confirm_discard: true` is REQUIRED and has no default, so this cannot be tripped into; call logic_save_project first if the changes matter. Refuses BEFORE touching Logic when the target file does not exist, so a bad path never costs you the open project. IT OWNS THE DIALOGS: the close runs off-thread (Logic's AppleScript blocks while a modal is up) while an Accessibility loop walks whatever appears, answers 'Do you want to save the changes…?' with **Don't Save** and the auto-save recovery prompt with **Saved**, and reports every dialog it saw in `dialogs`. A dialog whose grammar it does not recognise is REPORTED AND NEVER PRESSED — the reset then fails on the timeout with the alert's own text and buttons in the log, rather than clicking a button whose consequence was never measured. CACHES: all four per-project caches (bank map, tempo map, meter map, plugin parameter names) are cleared explicitly while nothing is open. They are scoped by project path, which already covers switching to a DIFFERENT project — but reopening the SAME path keeps the scope token identical, so a bank map measured against tracks that only existed unsaved would otherwise survive the reset and be trusted. VERIFICATION: the frontmost document window matches the target path, exactly one document is open, it is unmodified, logic_health's Accessibility and process checks pass, and no dialog is left on screen. Every check is reported individually and `verified` is the AND of all of them. If the open fails after the close, the error says so explicitly — the previous project is already gone at that point and Logic has nothing open.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "path": ["type": "string", "description": "Absolute path to the .logicx to reset to. Must already exist; pass the SAME path the project is currently at to reset an episode in place."],
+                        "confirm_discard": [
+                            "type": "boolean",
+                            "description": "Must be exactly true. Acknowledges that the open project's unsaved changes are thrown away. There is no default."
+                        ],
+                        "timeout_seconds": ["type": "number", "description": "How long to wait for the close (5-300, default 30). The open has its own 30 s budget."]
+                    ],
+                    "required": ["path", "confirm_discard"],
+                    "additionalProperties": false
+                ],
+                // The most destructive tool in the server: discarding unsaved
+                // work is the thing it is FOR, not a risk it carries.
+                safety: .destructive,
+                // Resetting twice to the same path lands in the same state —
+                // the second run simply has nothing to discard.
+                idempotent: true,
+                handler: MCPServer.handleResetTo
+            ),
+            Tool(
+                name: "logic_project_snapshot",
+                description: "The TRUTH DOCUMENT: one call that aggregates the existing readers into a structured, diffable picture of the project. Pair it with logic_reset_to to diff an episode's start and end state, or call it once to understand a project you did not build instead of making twenty reads. SCOPE decides the cost, not the capability — each level is a superset of the one before. 'structure' (default) is Accessibility-only and never touches the control surface: transport (tempo, meter, playhead, project path), the tempo map, the meter map, markers, the rendered track list and the region map. 'mix' adds the control-surface strip census and the full mixer snapshot (two bank walks — the expensive part). 'full' adds per-track MCU inserts and sends, one strip selection each, capped by max_tracks. COMPLETENESS IS THE CONTRACT: every section named in `sections` is present in the result, and one that could not be read comes back as {\"unavailable\": \"<reason>\"} — never a missing key, because a diff would read a missing section as an empty project rather than a failed reader. `complete` is false whenever any section is unavailable, and `unavailable_sections` names them. Deterministic by design: fixed section and array ordering, keys serialized sorted, so two snapshots of the same project diff cleanly. `timing_ms` carries the per-section cost and is the ONE nondeterministic block — drop it before diffing. Composes the same functions the individual tools call (logic_get_transport, logic_list_signatures' meter map, logic_markers, logic_list_tracks, logic_list_regions, logic_list_strips, logic_mixer_snapshot, logic_mcu_plugin_inserts, logic_mcu_sends), so their caveats apply here unchanged — in particular the track list is only the RENDERED rows, and the MCU sections degrade honestly against an old bridge daemon.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "scope": [
+                            "type": "string",
+                            "enum": SnapshotScope.allCases.map(\.rawValue),
+                            "description": "'structure' (default, AX-only), 'mix' (+ census and mixer), 'full' (+ per-track inserts and sends)."
+                        ],
+                        "max_tracks": ["type": "integer", "minimum": 1, "maximum": 64, "description": "Cap on tracks walked by scope 'full', default 8. Exceeding it truncates the inserts/sends sections, which say so."]
+                    ],
+                    "additionalProperties": false
+                ],
+                // Read-only about the PROJECT, but scope 'mix'/'full' banks the
+                // control surface and every scope opens and restores a List
+                // Editors pane — the same reason logic_mixer_snapshot is not
+                // readOnly. Nothing in the project changes.
+                safety: .write,
+                idempotent: true,
+                handler: MCPServer.handleProjectSnapshot
+            ),
+            Tool(
                 name: "logic_setup_key_commands",
                 description: "One-time onboarding: learn MIDI-note assignments for all standard key commands (Toggle Track Freeze, Undo, Redo, Flashback Capture as Recording, Split at Playhead, Create Marker) into the user's Logic via the Key Commands window automation. Additive to the user's key command set and removable there; collisions with existing assignments get alternate notes automatically. Idempotent — already-learned commands are verified and skipped. Runs automatically the first time a tool needs a missing command, so calling this explicitly is optional. Pass relearn: true to force re-learning even for commands that look bound — the repair when key commands silently stopped firing (e.g. after the MIDI ports were recreated: Logic scopes the assignments to the port identity).",
                 inputSchema: [

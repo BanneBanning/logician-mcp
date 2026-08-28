@@ -18,6 +18,14 @@ extension LogicAccessibility {
     /// hole, because agent-controlled strings (project names, which are just
     /// filenames the agent chose) reach here. `source` must be a constant.
     func runAppleScript(_ source: String, arguments: [String] = []) -> String? {
+        LogicAccessibility.runAppleScript(source, arguments: arguments)
+    }
+
+    /// The same call, without an instance. `logic_reset_to` issues its close
+    /// from a background queue (Logic's AppleScript blocks while a modal is
+    /// up, and answering the modal is the point), and this class is not
+    /// Sendable — so the detached work must not capture one.
+    static func runAppleScript(_ source: String, arguments: [String] = []) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", source] + arguments
@@ -252,18 +260,41 @@ extension LogicAccessibility {
         openProcess.waitUntilExit()
         // Answer the save-changes prompt per the caller's explicit choice.
         let expectedName = target.deletingPathExtension().lastPathComponent
+        // Which prompts actually appeared, in order. This used to be silent —
+        // the two answerers return a Bool that nobody read — so a project that
+        // opened after discarding someone's changes looked identical to one
+        // that opened clean. `logic_reset_to` folds this into its dialog log,
+        // and every other caller now gets the same receipt for free.
+        var dialogsAnswered: [[String: Any]] = []
         let deadline = Date().addingTimeInterval(30)
         while Date() < deadline {
             Thread.sleep(forTimeInterval: 0.5)
             if ifCurrentModified == "save" || ifCurrentModified == "dont_save" {
-                _ = answerSaveChangesDialog(save: ifCurrentModified == "save")
+                let save = ifCurrentModified == "save"
+                if answerSaveChangesDialog(save: save) {
+                    dialogsAnswered.append([
+                        "phase": "open",
+                        "dialog": "save_changes",
+                        "answered_with": save ? "Save" : "Don’t Save",
+                        "effect": save
+                            ? "saved the previously open project before closing it"
+                            : "discarded the previously open project's unsaved changes"
+                    ])
+                }
             }
             // Auto-save recovery prompt: always prefer the canonical saved
             // version (the auto-saved one is what a crash would recover).
-            _ = answerRecoveryDialog()
+            if answerRecoveryDialog() {
+                dialogsAnswered.append([
+                    "phase": "open",
+                    "dialog": "autosave_recovery",
+                    "answered_with": "Saved",
+                    "effect": "opened the last SAVED version rather than the auto-saved one"
+                ])
+            }
             let docs = openDocuments()
             if docs.contains(where: { $0.name == expectedName }) {
-                return [
+                var payload: [String: Any] = [
                     "success": true, "verified": true,
                     "state": createFromTemplate ? "created" : "opened",
                     "project": expectedName, "path": target.path,
@@ -271,11 +302,24 @@ extension LogicAccessibility {
                         ? "Created from the bundled empty template and opened; already saved on disk."
                         : "Opened."
                 ]
+                if !dialogsAnswered.isEmpty { payload["dialogs_answered"] = dialogsAnswered }
+                return payload
             }
         }
+        // A timeout with a dialog on screen and a timeout without one are
+        // different diagnoses ("a dialog needs attention" was a guess at one
+        // of them), so the message names whatever Logic is actually showing.
+        let onScreen = describeVisibleDialogs()
         throw LogicianError.verificationFailed(
             requested: "'\(expectedName)' appearing in Logic's document list",
-            actual: "not there within 30 s (a dialog may need attention)",
+            actual: "not there within 30 s"
+                + (onScreen.isEmpty
+                    ? " and no dialog is on screen"
+                    : "; Logic is showing: \(onScreen)")
+                + (dialogsAnswered.isEmpty
+                    ? ""
+                    : ". Answered on the way: "
+                        + dialogsAnswered.compactMap { $0["dialog"] as? String }.joined(separator: ", ")),
             restored: false
         )
     }
