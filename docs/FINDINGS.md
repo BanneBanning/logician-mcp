@@ -1918,3 +1918,113 @@ Det är i sig ett arkitektoniskt argument som är värt att skriva ned: **datav�
 Allt annat är återställt och verifierat: `Stereo Out`s volym (12443) och mute (av), masterfadern (12443), Channel EQ:s `Pea3Ga` (0,0 dB), och Limiterns åtta parametrar plus dess etikett.
 
 `swift test`: 278 tester gröna (22 nya), 1,4 s, ingen Logic behövs. `swift build -c release` grön.
+
+### Ytplanet öppnas: census, mixerögonblicksbild, inspelningsarmering, metronom, instrumentbläddraren och automationsläsning (2026-08-28, v0.54.0)
+
+Den här sessionen tog COVERAGE-auditens MCU-skiva: sex verktyg, fyra av dem ren **avkodning av data bryggan redan höll**. Tre av auditens öppna frågor besvarades experimentellt, och tre buggar föll ut på vägen — en av dem en tyst felattribuering som hela poängen med det största verktyget hade fallit på.
+
+**Miljö:** körande Logic Pro 12.3.1 (`Testlåt Copy.logicx`, pid 75391 — sandlådekopian användaren godkänt skrivningar i), användarens bryggdaemon pid 24761, **aldrig omstartad**. Tillfälliga XCTest-harnesser, borttagna efteråt. Ingen `logician --bridge` startades, projektet sparades aldrig. Fönstertiteln kontrollerades innehålla "Copy" före första skrivningen. Två andra agenter arbetade samtidigt mot samma Logic bakom ett rådgivande `mkdir`-lås; en av dem sköt två blinda Ångra som rörde den här sessionens skrapspår (se "Vad som blev kvar").
+
+#### Fynd 1 — rec/ready ÄR not 0x00–0x07, och lysdioden BLINKAR
+
+COVERAGE:s öppna fråga 1, besvarad i tre steg. Först en läsning innan något trycktes: på bank 0 låg not `0x01` tänd i spegeln. Sedan ett tryck på `0x00` på strippen `LofPad` — spårhuvudets `AXCheckBox desc='Record Enable'` gick från `0` till `1`, och ett andra tryck tog den tillbaka. Not 0x00–0x07 är alltså rec/ready, med spårhuvudets kryssruta som oberoende AX-kontroll.
+
+Men de tre första körningarna motsade varandra: en gång tändes noten, en gång slocknade grannens, en gång syntes ingenting alls trots att AX sa `1`. Förklaringen mättes fram med en 80 ms-sampling under sex sekunder på ett armerat spår:
+
+```
+armerad:   ####........########........#########........########.........######
+oarmerad:  ..................................
+```
+
+**Logic blinkar rec-dioden på ett inspelningsarmerat spår** — ungefär 640 ms tänd, 640 ms släckt, period ~1,3 s. En enda ögonblicksbild av spegeln läser alltså ett armerat spår som oarmerat i ungefär hälften av fallen. Det är inte en detalj utan hela verifieringsdesignen: bevisen är **asymmetriska**. Sedd tänd en gång = armerad. Bara ett *helt* fönster utan tändning får betyda oarmerad. `recBlinkWindow` (1,6 s) och `sampleRecArmedStrips` bär den regeln, och `logic_mcu_status` — som är ett ögonblick — får en uttrycklig varning i AGENT-GUIDE om att inte tolkas som armeringsläsning.
+
+Två saker till, båda live: **flera spår kan vara armerade samtidigt** (`808` och `Inst 2` stod på `1` på samma gång, dioderna 2 och 3 tända), så en armering avväpnar ingenting annat. Och ett **rec-tryck på `Stereo Out` gör ingenting alls** — ingen diod, ingen ändring. Utgångar, auxar, bussar och master har ingen inspelningsknapp, så `logic_set_track_record_arm` vägrar dem innan något trycks i stället för att låta trycket försvinna i tomma intet.
+
+#### Fynd 2 — den blinkande dioden låste hela MCU-planet
+
+Den dyraste konsekvensen av fynd 1, och den hittades bara för att verktyget fanns: med ett spår armerat slutade **varje** MCU-verktyg fungera.
+
+`ensurePanNames()` väntade på att Logic skulle vara tyst i en hel sekund (`awaitEvents(timeoutMs: 1000)` med `timed_out == true`) innan den vågade klassificera vad displayen visade. En blinkande diod är MIDI-trafik var 640:e millisekund. Tystnaden kom aldrig, funktionen returnerade `nil`, och `findChannel` — och med den namnupplösningen för samtliga ytverktyg — föll. I loggen: `[mcu] pan multi-channel view failed`, direkt efter en lyckad armering.
+
+Rättningen är att erkänna att **tystnad inte är det enda beviset på en stilla display**. Diodtrafik rör aldrig LCD:n, så en toppdrad som varit *identisk* i en hel sekund är lika stillastående vare sig Logic pratar eller inte. Båda bevisen accepteras nu, det tysta först eftersom det är det starkare. Samma mönster fanns i `settledTop()` och rättades likadant. Efter fixen gick hela cykeln armera → compare-and-set → avväpna igenom, med både dioden och AX-kryssrutan som återläsning.
+
+#### Fynd 3 — instrumentbläddraren finns, precis där kommentaren sa att den fanns
+
+COVERAGE:s öppna fråga 4. `MCUInstrument.swift:12` har burit meningen "Never turns vpots in the bank view (that is the instrument browser)" sedan instrumentparameter-arbetet — skriven för att **undvika** beteendet, aldrig för att använda det. Den stämmer.
+
+Grammatiken, observerad på ett färskt skrapspår:
+
+```
+IN-bankvyn, i vila:   topp: kanalnamn        botten: instrument per stripp ("--", "Trilan", "Q-Samp")
+under bläddring:      topp: "Instrument" från den bläddrade cellen och högerut, senare celler tömda
+                      botten: hela postens namn, utspillt över grannecellerna
+```
+
+Tre skillnader mot `addPluginViaBrowser`, alla med konsekvenser:
+
+1. **Ett tick per post** (pluginbläddraren stegar en post per två tick). Verifierat genom att jämföra `delta: 1` och `delta: 2` — den senare hoppar över varannan post.
+2. Posterna bär Logics kanalformat: `Drum Kit Designer Stereo`, `Drum Kit Designer Multi-Output`, `Ampeg SVTVR Classic Mono`, `Abbey Road Saturator (m) Mono`. Två eller tre poster per plugin. `splitInstrumentEntry` skiljer namnet från formatordet; den inline-markören `(m)`/`(s)`/`(m->s)` tillhör **namnet**, inte formatet, eftersom den skiljer två olika bläddrarposter åt.
+3. **Listan är inte alfabetisk** och den är lång — den håller varje installerat instrument i varje format. 400 steg (~44 s) räckte inte fram till `Sampler` på den här maskinen, vilket är varför taket nu är 1200 och felmeddelandet säger att ett "visade aldrig" vid ett lågt tak troligen betyder "hann inte fram", inte "fel namn".
+
+**Att lämna vyn avbryter en bläddring.** Verifierat: en bläddring gick fram till `AmpliTube 5 Stereo`, gick ur till PAN-vyn, och slotten höll fortfarande kvar det instrument den började med. **Vpot-trycket instansierar**: efter trycket föll ytan ned i det nya instrumentets parametersida (`Kit InMapp Kick KicMut KicTun ...`) och IN-bankvyns slot för strippen läste `DrmKit`. Hela kedjan browse → settle → återverifiera → tryck → läs tillbaka är alltså bevisad live.
+
+#### Fynd 4 — metronomen var en knapp som var mappad och aldrig tryckt
+
+Det minsta gapet i hela auditen. `click` (not 0x59) har legat i bryggans `buttonNames` från början och `getTransport` har läst kontrollradens `Metronome Click` lika länge — en skrivning och dess oberoende återläsning på var sin sida av servern utan något verktyg emellan. Av → på → av, live, med AX-kryssrutan och diod 0x59 överens i varje steg. Count-in är en separat inställning och rörs inte.
+
+#### Fynd 5 — mixern går att läsa i ett svep, och volymvyn bär BÅDE namn och dB
+
+Nyckelobservationen bakom `logic_mixer_snapshot`: i kanalremsans volymvy (`assign_track`, kod `CS`) målar Logic **kanalnamnen på övre raden och dB-värdena på den undre**, när bannern hunnit tona bort. En bankvandring ger alltså identitet och nivå på samma gång:
+
+```
+VOL bank 1  topp   'DrSyKi Vocals IvnVoc IvnVoc IvanFx AckVoc Sweeps Crash  '
+VOL bank 1  botten '-5,1dB +1,0dB +0,0dB -14,6  -2,1dB -0,1dB -11,4  -16,5  '
+```
+
+PAN-vyns undre rad bär på samma sätt panoreringen per stripp, och vpot-ringarna ringläget. Två vandringar, 16–17 s för 25 strippar. dB-värdet som rapporteras är **Logics egen utskrift**, samma avläsning som `setVolume` konvergerar mot — inte en omräkning av faderpositionen, som rapporteras separat och rått som `fader_14bit`. Sidoresultat: 25 par av (14-bitars fader, dB) föll ut ur svepet — 12443 = +0,0 dB, 13573 = +2,8, 10393 = -5,1, 9186 = -7,2, 6916 = -13,1, 5412 = -19,5 — tillräckligt för att kalibrera en kurva, men ingen sådan har verifierats och verktyget påstår ingen.
+
+Censusen är det andra halvan: **25 strippar mot 19 renderade spårhuvuden**. `logic_list_tracks` såg alltså 19 av 25 och rapporterade `success: true`, vilket är exakt komposabilitetsfelet U1. De sex som inte var spår föll rätt ut: `Aux 1-3`, `SP/1.3`, `St Out` och `Master` som `unresolved` (de har inget spårhuvud), och dessutom — helt korrekt — de två spåren som *heter samma sak* (`IvnVoc` ×2, tvetydigt) och `IvanFx`, där Logic byter ut bokstäver när det förkortar `Ivan Effect` och namnet därför inte går att lösa på ytan alls (känt sedan tidigare).
+
+#### Fynd 6 — bankcachen fick inte användas till en census, och det upptäcktes live
+
+Den farligaste buggen i den här sessionen, och den var min egen. Båda de nya läsverktygen började med `loadBankCache`, i tron att en cache som duger åt `findChannel` duger åt en census. Det gör den inte, och felet är av en annan **art**: en missad cacheträff i `findChannel` kostar en misslyckad uppslagning som anroparen gör om, medan en census som parar en **live** avläst dB- och diodrad med en **inaktuell** namnrad tyst attribuerar varje värde från den ändrade strippen och högerut till fel spår.
+
+Det hände live: ett skrapspår hade skapats och tagits bort mellan två anrop, ögonblicksbilden rapporterade 26 strippar där ytan hade 25, och varje rad efter det borttagna spåret satt en position fel. Ingenting i resultatet hade avslöjat det.
+
+Rättningen är att `logic_list_strips` och `logic_mixer_snapshot` **alltid sveper ytan färskt** och skriver om cachen åt alla andra. Att läsa är vad de två verktygen är till för; då får de betala för läsningen. Argumenten `rescan` och `include_pan` togs bort samtidigt — det första var en inbjudan till just det här felet, det andra sparade ingenting eftersom pan-vandringen ändå är den som fastställer identiteten.
+
+#### Fynd 7 — automationsläsning: mekanismen låg redan inne i skrivverktyget
+
+`logic_record_automation` avslutar med att parkera playheaden i varje punkt i Read-läge och läsa värdet Logic jagar fram. Med skrivhalvan borttagen **är** det ett läsverktyg, och det var hela arbetet: ingen ny Logic-kunskap, bara att inte skriva. Läsaren byggs medvetet inte på `makeVpotWriter`, som kalibrerar encodern genom att **vrida** den — det vore en skrivning i ett läsverktyg.
+
+Live, två gånger på var sitt spår. Först den tomma banan, sedan samma intervall efter en pålagd volymåkning -4 → -20 dB över takt 2–4:
+
+| takt.slag | före åkningen | efter |
+|---|---|---|
+| 2.1 | 0,0 | **-3,9** / -4,1 |
+| 2.3 | 0,0 | **-6,7** / -6,8 |
+| 3.1 | 0,0 | **-9,2** / -9,3 |
+| 3.3 | 0,0 | **-14,1** / -14,2 |
+| 4.1 | 0,0 | **-20,0** / -20,0 |
+
+Ärlighetskontraktet är den intressanta delen. Läsningen är **samplad, inte avkodad**: den ger värdet Logic evaluerar banan till i varje position, inte banans brytpunkter, så en rörelse som ryms helt mellan två samplingar är osynlig. Och en **oautomatiserad** bana ser likadan ut som en platt kurva — jaget returnerar bara det statiska värdet. Resultatet säger båda sakerna själv: den platta läsningen ovan bar varningen "Every sampled value is the same … this is not proof that a curve exists and is flat", och den riktiga kurvan bar ingen varning alls. 5 punkter kostade 11–19 s.
+
+#### Fynd 8 — två buggar i befintliga verktyg som föll ut på köpet
+
+**`logic_create_track {type: "software_instrument"}` skapade ett LJUDSPÅR.** Verktyget fyrar av tangentkommandot `New Software Instrument Track` och svarar sedan `Create` i dialogen — men dialogen minns vad den senast användes till, och en av körningarna gav ett spår som Logic döpte till `Audio 9` och som saknade instrumentslot helt. Det upptäcktes bara för att `logic_load_instrument` numera vägrar med rätt ord: "turning that strip's vpot in the instrument view produced no browser entries at all — the strip has no instrument slot". `success: true` från `logic_create_track` är alltså inte ett löfte om spårtypen. Inte rättat här — det tillhör spårverktygen — men värt en egen rad.
+
+**MCU-verktygen dör efter tio minuters tystnad.** `freshStatus()` kräver `last_receive` yngre än 600 s. Logic skickar ingenting när ingenting händer, så efter en stunds paus svarar varje ytverktyg "the bridge is not running or Logic has never talked to it" fast bryggan är helt frisk. Ett `bank_right`/`bank_left` väcker den direkt. Rimligaste fixen är att låta den vakna själv i stället för att vägra; inte gjort här.
+
+#### Fynd 9 — hjälpmedelslagret föll två gånger till, och orsaken är nu känd
+
+Samma systemomfattande degradering som v0.53.0 beskrev slog till två gånger under sessionen: Logic rapporterade noll fönster, och `Finder` likaså, medan bryggan svarade normalt hela tiden. Den återhämtade sig av sig själv båda gångerna, efter några minuter. **Användaren identifierade orsaken: maskinen som går i vila** (skärm-/systemsömn) — inte Logic, inte servern — och ändrar energiinställningarna. Det gör hazarden i ROADMAP:s not konkret och åtgärdbar i stället för mystisk. Arkitekturargumentet står kvar oförändrat: MCU-planet arbetade rakt igenom båda avbrotten, och den enda kapacitet som faktiskt blockerades var de AX-burna korskontrollerna.
+
+#### Vad som blev kvar i användarens projekt (osparat, inget har nått disken)
+
+1. **En automationsbana på volymen för `Audio 9`, takt 2–4**, från -4 till -20 dB — resten av läsverifieringen i fynd 7. Spårets *statiska* volym är återställd (0,0 → -20,0 → -0,1 dB; -0,1 i stället för exakt 0,0 av samma faderkvantiseringsskäl som v0.53.0 dokumenterade), men banan ligger kvar och tar över under uppspelning. Fixen: öppna automationsbanan på `Audio 9` och radera den, eller Ångra.
+2. **`Lofi Pad` står på -10,6 dB** (fader 7475) mot -13,1 dB (6916) vid sessionens start. Ändringen skedde mellan två av mina läsningar och kommer inte från något av mina anrop; sannolikt en av de samtidiga agenterna.
+3. **Spårordningen kan ha ändrats.** Ett skrapspår skapades, användes och togs bort tre gånger. Två gånger döpte Logic det till `Audio 9` — samma namn som ett befintligt spår — och en radering på namn träffade då fel `Audio 9`; båda gångerna återställdes den med ett Ångra som fyrades direkt efter raderingen (den dokumenterat säkra användningen), och slutcensusen visar åter exakt de 19 spårhuvuden och 25 strippar projektet började med. Att `Audio 9` numera saknar regioner är inte en förändring: `Audio 8`, `Audio 9` och `Vinyl` var alla tomma redan vid kontrollen.
+4. **Tempokartan med två händelser (120 och 121 BPM) ligger kvar** sedan v0.53.0 — den syntes i varje `tempo_map`-block den här sessionen och är alltså inte åtgärdad.
+5. Allt annat är återställt och verifierat: metronomen av, `Lofi Pad`/`808`/`Inst 2`/`Crash`/`Audio 9` alla oarmerade, ytan i PAN-vyn på vänstraste banken, inga plugin- eller dialogfönster öppna.
+
+`swift test`: 295 tester gröna (17 nya), 1,4 s, ingen Logic behövs. `swift build -c release` grön.
