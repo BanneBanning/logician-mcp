@@ -86,6 +86,14 @@ extension MCPServer {
         return value
     }
 
+    /// A JSON number argument, whichever way the client typed it. `-12` and
+    /// `-12.0` are the same dB value and a schema that says `"type": "number"`
+    /// accepts both, so a handler that only reads `as? Double` silently ignores
+    /// the integer form.
+    func doubleArgument(_ key: String, in arguments: [String: Any]) -> Double? {
+        (arguments[key] as? Double) ?? (arguments[key] as? Int).map(Double.init)
+    }
+
     /// Tempo and meter for bar math: the explicit arguments when they are given,
     /// otherwise the control bar.
     ///

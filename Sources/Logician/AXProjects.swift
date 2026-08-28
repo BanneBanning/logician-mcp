@@ -386,10 +386,15 @@ extension LogicAccessibility {
             "copy": destination.path,
             "saved_before_copy": savedBeforeCopy
         ]
-        if let saveWarning { result["warning"] = saveWarning }
+        // Both of these can be true at once (a save that did not land AND a
+        // modified document), and the second used to OVERWRITE the first —
+        // losing the more alarming of the two. `appendWarning` joins them.
+        appendWarning(saveWarning, to: &result)
         if document.modified && !saveFirst {
-            result["warning"] =
-                "the open project has unsaved changes that are NOT in the copy (disk state was copied); pass save_first: true to include them"
+            appendWarning(
+                "the open project has unsaved changes that are NOT in the copy (disk state was copied); pass save_first: true to include them",
+                to: &result
+            )
         }
         if openCopy {
             let opened = try openProject(

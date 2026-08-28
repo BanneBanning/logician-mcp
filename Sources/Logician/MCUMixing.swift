@@ -9,7 +9,8 @@ extension MCUController {
     static func setToggle(
         trackName: String,
         control: String, // "mute" | "solo"
-        enabled: Bool
+        enabled: Bool,
+        expectedCurrent: Bool? = nil
     ) throws -> [String: Any]? {
         // Resolve the string to a real command name ONCE, up front: the two
         // branches below (LED base and the bridge command) then cannot drift
@@ -24,6 +25,14 @@ extension MCUController {
         let ledBase = strip == .mute ? 0x10 : 0x08
         let note = ledBase + channel
         guard let before = freshStatus() else { return nil }
+        // Compare-and-set, off the state this route was already reading to
+        // decide whether the button needs pressing at all.
+        if let expectedCurrent, ledLit(note, in: before) != expectedCurrent {
+            throw LogicianError.currentValueMismatch(
+                expected: "\(control)=\(expectedCurrent)",
+                actual: "\(control)=\(ledLit(note, in: before))"
+            )
+        }
         if ledLit(note, in: before) == enabled {
             return [
                 "success": true, "verified": true,
@@ -65,7 +74,7 @@ extension MCUController {
 
     static func setVolume(
         trackName: String,
-        targetDb: Double,
+        request: VolumeWrite,
         toleranceDb: Double
     ) throws -> [String: Any]? {
         guard freshStatus() != nil else { debugLog("setVolume: no bridge status"); return nil }
@@ -103,6 +112,11 @@ extension MCUController {
             return parseDb(lcdValueFields(bottom)[channel])
         }
         guard let startDb = currentDb() else { debugLog("setVolume: no dB readback for channel \(channel)"); return nil }
+        // The compare-and-set check and the relative_db arithmetic both need
+        // the value the fader is sitting at, which this route has just read.
+        // Throwing here is deliberate: a precondition mismatch must NOT fall
+        // through to the Accessibility route and be written there instead.
+        let targetDb = try request.target(currentDb: startDb)
         if let fast = fastConverge(index: channel, target: targetDb,
                                    tolerance: toleranceDb, maxMs: 3000, seedRatio: 2.5) {
             _ = fast

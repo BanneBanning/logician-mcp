@@ -148,7 +148,9 @@ extension MCUController {
         // Calibrate: unique dB targets -> absolute fader values, then restore.
         var calibration: [Double: Int] = [:]
         for db in Set(sorted.map(\.db)) {
-            guard try setVolume(trackName: trackName, targetDb: db, toleranceDb: 0.15) != nil,
+            guard try setVolume(
+                trackName: trackName, request: .absolute(db), toleranceDb: 0.15
+            ) != nil,
                   let position = currentFader14(channel) else {
                 _ = try? MCUBridge.send(.fader(channel: channel, value: originalFader))
                 throw LogicianError.verificationFailed(

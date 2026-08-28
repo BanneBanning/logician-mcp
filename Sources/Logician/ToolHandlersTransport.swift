@@ -3,9 +3,15 @@ import Foundation
 // Transport, cycle, playhead, MIDI recording and automation recording.
 extension MCPServer {
     func handleGetTransport(_ arguments: [String: Any]) throws -> Any {
-        return try logic.getTransport(
+        // Added on the way out, not inside `getTransport()`: that reader is
+        // called all over this server for the tempo and the meter, and those
+        // callers read fields, not an envelope.
+        var payload = try logic.getTransport(
             readSmartTempoMode: arguments["read_smart_tempo_mode"] as? Bool ?? false
         )
+        payload["success"] = true
+        payload["state"] = "read"
+        return payload
     }
 
     func handleTempoEvents(_ arguments: [String: Any]) throws -> Any {

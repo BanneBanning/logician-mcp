@@ -42,6 +42,15 @@ struct Tool {
     let inputSchema: [String: Any]
     /// How this tool touches Logic. Required on purpose: see `ToolSafety`.
     let safety: ToolSafety
+    /// True when this tool's result can carry a top-level `warning`.
+    ///
+    /// Declared here rather than written into each description by hand for the
+    /// same reason `stripAddressingNote` is a constant: 28 tools can warn, the
+    /// sentence explaining the key is the same for all of them, and a hand-kept
+    /// copy in 28 descriptions is 28 chances to drift. `definition` appends
+    /// `Tool.warningNote` when this is set, so the advertised surface and this
+    /// flag cannot disagree.
+    let mayWarn: Bool
     /// True when repeating the call with the SAME arguments causes no further
     /// change — the tool names an absolute target state ("set X to V",
     /// "select T", "close W") rather than a relative or accumulating one
@@ -67,6 +76,7 @@ struct Tool {
         description: String,
         inputSchema: [String: Any],
         safety: ToolSafety,
+        mayWarn: Bool = false,
         idempotent: Bool = false,
         changesSound: Bool = false,
         changesArrangement: Bool = false,
@@ -77,6 +87,7 @@ struct Tool {
         self.description = description
         self.inputSchema = inputSchema
         self.safety = safety
+        self.mayWarn = mayWarn
         self.idempotent = idempotent
         self.changesSound = changesSound
         self.changesArrangement = changesArrangement
@@ -109,7 +120,7 @@ struct Tool {
     var definition: [String: Any] {
         [
             "name": name,
-            "description": description,
+            "description": description + (mayWarn ? Tool.warningNote : ""),
             "inputSchema": inputSchema,
             "annotations": annotations
         ]
@@ -127,6 +138,13 @@ struct Tool {
 
     static let arrangementListenNote = "You changed the ARRANGEMENT. Bounce a range that includes a few bars BEFORE your edit and listen across the seam: the classic failure is the copied phrase landing displaced (snare on the wrong beat) even though the region boundaries read as bar-aligned - region positions do NOT prove the groove inside is aligned. If the pattern does not match the original groove exactly, undo and copy from a region that starts ON the beat (watch out for pickup regions)."
 
+    /// Appended by `definition` to every tool whose result can carry a
+    /// top-level `warning` (the `mayWarn` flag). One fixed sentence, because a
+    /// model that learns the convention once should not have to relearn it per
+    /// tool: the KEY and its joining rule are the same everywhere, and what the
+    /// warning is ABOUT is the warning's own job to say.
+    static let warningNote = " MAY RETURN `warning`: one string naming something true and unwelcome about this result (several are joined into it with ' ALSO: '). Read it before acting on the rest of the result."
+
     /// Appended to every tool whose `track_name` also accepts a strip that has
     /// no track header. Same sentence everywhere on purpose: an agent that
     /// learns it once can reuse it, and the caveats are the same in every case.
@@ -136,7 +154,7 @@ struct Tool {
     /// only while an inspector is SHOWING it, which the control-surface tools
     /// do not require (verified 2026-08-27: 'Stereo Out' was visible as the
     /// selected track's output while 'Master' and 'Aux 1' were not).
-    static let stripAddressingAXNote = " Output/aux/bus strips ('Stereo Out') work too, but only while an inspector is SHOWING that strip (select a track routed to it; opening the Mixer does NOT put a strip in reach of these tools, measured 2026-08-28) — Accessibility cannot reach a strip no inspector shows. For any other strip use the control-surface tools (logic_mcu_plugin_inserts, logic_mcu_plugin_parameters), which address every strip in the project."
+    static let stripAddressingAXNote = " Output/aux/bus strips ('Stereo Out') work too, but only while an inspector is SHOWING that strip (select a track routed to it; opening the Mixer does NOT put a strip in reach of these tools, measured) — Accessibility cannot reach a strip no inspector shows. For any other strip use the control-surface tools (logic_mcu_plugin_inserts, logic_mcu_plugin_parameters), which address every strip in the project."
 
     static let evaluateChangeListenNote = "Do not decide keep/rollback from the numbers alone: LISTEN to baseline_audio and after_audio (open the preview/clip files with your client's file viewer) before judging."
 }

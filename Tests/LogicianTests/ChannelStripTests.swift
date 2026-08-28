@@ -314,4 +314,61 @@ final class ChannelStripTests: XCTestCase {
         XCTAssertNil(ChannelStrip.switchState("Mono"))
         XCTAssertNil(ChannelStrip.switchState(""))
     }
+
+    // MARK: - VolumeWrite: what one logic_set_track_volume call resolves to
+
+    /// The arithmetic behind `relative_db` and the comparison behind
+    /// `expected_current_db`. Both run inside the write path, against a dB the
+    /// route has just read, so a mistake here writes a wrong fader value and
+    /// then reports it as verified.
+
+    func testAnAbsoluteRequestIgnoresWhereTheFaderIs() throws {
+        let write = try VolumeWrite(absoluteDb: -6, relativeDb: nil, expectedCurrentDb: nil)
+        XCTAssertEqual(try write.target(currentDb: -20), -6)
+        XCTAssertEqual(try write.target(currentDb: 0), -6)
+    }
+
+    func testARelativeRequestIsMeasuredFromTheValueReadBeforeTheWrite() throws {
+        let louder = try VolumeWrite(absoluteDb: nil, relativeDb: 2, expectedCurrentDb: nil)
+        XCTAssertEqual(try louder.target(currentDb: -14.2), -12.2, accuracy: 1e-9)
+        let quieter = try VolumeWrite(absoluteDb: nil, relativeDb: -3, expectedCurrentDb: nil)
+        XCTAssertEqual(try quieter.target(currentDb: 0), -3, accuracy: 1e-9)
+    }
+
+    func testDbAndRelativeDbAreMutuallyExclusiveAndOneIsRequired() {
+        XCTAssertThrowsError(
+            try VolumeWrite(absoluteDb: -6, relativeDb: 2, expectedCurrentDb: nil)
+        ) { error in
+            XCTAssertEqual((error as? LogicianError)?.code, "invalid_arguments")
+        }
+        XCTAssertThrowsError(
+            try VolumeWrite(absoluteDb: nil, relativeDb: nil, expectedCurrentDb: -6)
+        ) { error in
+            XCTAssertEqual((error as? LogicianError)?.code, "invalid_arguments")
+        }
+    }
+
+    func testExpectedCurrentDbRefusesBeforeAnythingIsWritten() throws {
+        let write = try VolumeWrite(absoluteDb: -6, relativeDb: nil, expectedCurrentDb: -12)
+        XCTAssertThrowsError(try write.target(currentDb: -3)) { error in
+            XCTAssertEqual((error as? LogicianError)?.code, "precondition_failed")
+        }
+    }
+
+    /// Results round dB to one decimal, so an agent passing back exactly the
+    /// number the previous call reported must not be refused over rounding.
+    func testExpectedCurrentDbToleratesTheRoundingThisServerItselfPublishes() throws {
+        let write = try VolumeWrite(absoluteDb: -6, relativeDb: nil, expectedCurrentDb: -12.3)
+        XCTAssertEqual(try write.target(currentDb: -12.34), -6)
+        XCTAssertEqual(try write.target(currentDb: -12.79), -6)
+        XCTAssertThrowsError(try write.target(currentDb: -12.9))
+    }
+
+    /// A relative move on a stale precondition must refuse rather than land
+    /// somewhere nobody asked for.
+    func testARelativeRequestStillHonoursItsPrecondition() throws {
+        let write = try VolumeWrite(absoluteDb: nil, relativeDb: 2, expectedCurrentDb: -6)
+        XCTAssertEqual(try write.target(currentDb: -6), -4, accuracy: 1e-9)
+        XCTAssertThrowsError(try write.target(currentDb: -1))
+    }
 }

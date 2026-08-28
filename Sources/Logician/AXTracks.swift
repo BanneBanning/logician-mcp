@@ -442,12 +442,19 @@ extension LogicAccessibility {
         trackName: String,
         trackNumber: Int?,
         control: String, // "mute" or "solo"
-        enabled: Bool
+        enabled: Bool,
+        expectedCurrent: Bool? = nil
     ) throws -> [String: Any] {
         let button = try selectedStripChild(
             trackName: trackName, trackNumber: trackNumber, description: control
         )
         let current = stringAttribute(button, kAXValueAttribute as String) == "on"
+        // Compare-and-set, from the same read that decides whether to press.
+        if let expectedCurrent, current != expectedCurrent {
+            throw LogicianError.currentValueMismatch(
+                expected: "\(control)=\(expectedCurrent)", actual: "\(control)=\(current)"
+            )
+        }
         if current == enabled {
             return [
                 "success": true, "verified": true,
@@ -488,7 +495,7 @@ extension LogicAccessibility {
     func setTrackVolume(
         trackName: String,
         trackNumber: Int?,
-        targetDb: Double,
+        request: VolumeWrite,
         toleranceDb: Double
     ) throws -> [String: Any] {
         let fader = try selectedStripChild(
@@ -497,6 +504,9 @@ extension LogicAccessibility {
         guard let beforeDb = decibelValue(of: fader) else {
             throw LogicianError.valueNotWritable("the volume fader exposes no readable dB value")
         }
+        // Compare-and-set and relative_db, resolved against the dB this route
+        // has already read, before the first AXValue write.
+        let targetDb = try request.target(currentDb: beforeDb)
         guard let minRaw = Int(stringAttribute(fader, kAXMinValueAttribute as String)),
               let maxRaw = Int(stringAttribute(fader, kAXMaxValueAttribute as String)) else {
             throw LogicianError.valueNotWritable("the volume fader exposes no raw range")
@@ -552,7 +562,8 @@ extension LogicAccessibility {
     func setTrackPan(
         trackName: String,
         trackNumber: Int?,
-        position: Int
+        position: Int,
+        expectedCurrentPosition: Int? = nil
     ) throws -> [String: Any] {
         let knob = try selectedStripChild(
             trackName: trackName, trackNumber: trackNumber, description: "pan"
@@ -563,6 +574,13 @@ extension LogicAccessibility {
             throw LogicianError.invalidArguments("pan position must be within the knob's range")
         }
         let before = Int(stringAttribute(knob, kAXValueAttribute as String)) ?? 0
+        // Compare-and-set: the knob's position was read anyway to report
+        // `before`, so refusing on a stale idea of it costs nothing.
+        if let expectedCurrentPosition, before != expectedCurrentPosition {
+            throw LogicianError.currentValueMismatch(
+                expected: "pan \(expectedCurrentPosition)", actual: "pan \(before)"
+            )
+        }
         var last = before
         for _ in 0..<(maxRaw - minRaw + 8) {
             guard let current = Int(stringAttribute(knob, kAXValueAttribute as String)) else { break }

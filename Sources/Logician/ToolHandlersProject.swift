@@ -3,7 +3,7 @@ import Foundation
 // Project lifecycle and windows: open, close, save, duplicate, new.
 extension MCPServer {
     func handleListWindows(_ arguments: [String: Any]) throws -> Any {
-        return ["windows": try logic.listWindows()]
+        return ["success": true, "state": "listed", "windows": try logic.listWindows()]
     }
 
     func handleSaveProject(_ arguments: [String: Any]) throws -> Any {

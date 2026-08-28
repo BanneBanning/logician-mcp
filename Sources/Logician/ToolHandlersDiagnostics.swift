@@ -51,6 +51,12 @@ extension MCPServer {
         ) {
             health[key] = text
         }
+        // `success` says the CHECK ran, never that everything it checked is
+        // healthy — the individual booleans and the `*_fix` strings say that,
+        // and a doctor that reported success: false on a missing key command
+        // would be indistinguishable from one that could not look.
+        health["success"] = true
+        health["state"] = "checked"
         return health
     }
 

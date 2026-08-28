@@ -296,4 +296,70 @@ final class MCPProtocolTests: XCTestCase {
         }
         XCTAssertTrue(JSONSerialization.isValidJSONObject(response))
     }
+
+    // MARK: - The result contract, as the surface advertises it
+
+    /// `mayWarn` and the advertised description cannot disagree: the note is
+    /// appended by `definition`, so a tool that can warn says so exactly once
+    /// and one that cannot never claims it.
+    func testTheWarningNoteIsAdvertisedExactlyOncePerFlaggedTool() throws {
+        let byName = Dictionary(uniqueKeysWithValues: server.toolRegistry().map { ($0.name, $0) })
+        for definition in server.toolDefinitions() {
+            let name = try XCTUnwrap(definition["name"] as? String)
+            let described = try XCTUnwrap(definition["description"] as? String)
+            let tool = try XCTUnwrap(byName[name])
+            let occurrences = described.components(separatedBy: Tool.warningNote).count - 1
+            XCTAssertEqual(occurrences, tool.mayWarn ? 1 : 0, name)
+        }
+    }
+
+    /// The census the result-key inventory produced: 28 tools can put a
+    /// top-level `warning` in their result. A new emitter that forgets the flag
+    /// (or a flag on a tool that cannot warn) fails here rather than shipping a
+    /// key no description mentions.
+    func testEveryToolThatCanWarnIsFlagged() {
+        let expected: Set<String> = [
+            "logic_add_plugin", "logic_add_send", "logic_bounce_in_place", "logic_bounce_range",
+            "logic_duplicate_project", "logic_edit_event", "logic_evaluate_change",
+            "logic_export_stems", "logic_learn_key_command", "logic_list_events",
+            "logic_load_instrument", "logic_markers", "logic_mixer_snapshot", "logic_plugin_preset",
+            "logic_project_snapshot", "logic_read_automation", "logic_record_automation",
+            "logic_record_midi", "logic_remove_plugin", "logic_remove_silence", "logic_render_track",
+            "logic_reset_to", "logic_set_metronome", "logic_set_mixer", "logic_set_tempo",
+            "logic_set_track_record_arm", "logic_split_region", "logic_tempo_events"
+        ]
+        let flagged = Set(server.toolRegistry().filter(\.mayWarn).map(\.name))
+        XCTAssertEqual(flagged, expected)
+    }
+
+    /// The two numberings are the single most damaging confusion on this
+    /// surface (an output strip had them REVERSED), so every argument that
+    /// names one must say which it is not.
+    func testEveryInsertOrdinalArgumentSaysWhichNumberingItIsNot() throws {
+        for tool in server.toolRegistry() {
+            let properties = tool.inputSchema["properties"] as? [String: Any] ?? [:]
+            for key in ["insert_index", "insert_slot"] {
+                guard let property = properties[key] as? [String: Any] else { continue }
+                let text = try XCTUnwrap(property["description"] as? String, "\(tool.name).\(key)")
+                XCTAssertTrue(
+                    text.contains("NOT the"),
+                    "\(tool.name).\(key) does not say which numbering it is NOT"
+                )
+            }
+        }
+    }
+
+    /// `db` stopped being required when `relative_db` arrived; the handler
+    /// enforces "exactly one of them", which a JSON Schema `required` cannot.
+    func testVolumeTakesEitherAnAbsoluteOrARelativeTargetAndSaysSo() throws {
+        let tool = try XCTUnwrap(
+            server.toolRegistry().first { $0.name == "logic_set_track_volume" }
+        )
+        XCTAssertEqual(tool.inputSchema["required"] as? [String], ["track_name"])
+        let properties = try XCTUnwrap(tool.inputSchema["properties"] as? [String: Any])
+        for key in ["db", "relative_db", "expected_current_db"] {
+            XCTAssertNotNil(properties[key], key)
+        }
+        XCTAssertTrue(tool.description.contains("ABSOLUTE"))
+    }
 }
