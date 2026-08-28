@@ -72,6 +72,65 @@ extension MCUController {
         return Double(numeric)
     }
 
+    /// The volume result, with ONE verdict rule for both write paths:
+    /// `verified` is true when the fader is within the tolerance the CALLER
+    /// asked for, and false otherwise.
+    ///
+    /// It used to be `abs(landed - target) <= max(tolerance, 0.6)` on the
+    /// control-surface fast path, which meant a default call (tolerance
+    /// 0.15 dB) could land 0.6 dB out — four times what it asked for, an
+    /// audible move on a busy mix — and be told it was verified. A `verified`
+    /// that quietly widens the caller's own tolerance is worse than an
+    /// unverified result: an unverified result gets read back, and this one
+    /// did not. The floor is gone.
+    ///
+    /// Outside the tolerance the result says so, says by how much, and stays
+    /// `success: true` — the fader DID move, and `after_db` is Logic's own
+    /// readout of where it is, not an estimate. Pure and static so the rule
+    /// can be tested without a fader (`ChannelStripTests`).
+    static func volumeVerdict(
+        trackName: String,
+        startDb: Double,
+        targetDb: Double,
+        landedDb: Double,
+        toleranceDb: Double,
+        writeRoute: String
+    ) -> [String: Any] {
+        let deviation = abs(landedDb - targetDb)
+        // 1e-9, and it is not a floor sneaking back in: Logic prints dB to one
+        // decimal and tolerances arrive as decimals, so a landing exactly ON
+        // the tolerance (|-6.15 - -6.0| = 0.15000000000000036) would fail a
+        // bare `<=` for no reason a caller could see or fix.
+        let inside = deviation <= toleranceDb + 1e-9
+        var payload: [String: Any] = [
+            "success": true,
+            "verified": inside,
+            "state": "volume_set",
+            // The fast path used to omit the track entirely, so a result could
+            // not say WHICH track it moved - the slow path always named it.
+            // Both report it the same way now.
+            "track": trackName, "track_name": trackName,
+            "before_db": round(startDb * 10) / 10,
+            "after_db": round(landedDb * 10) / 10,
+            "requested_db": targetDb,
+            "deviation_db": round(deviation * 100) / 100,
+            "tolerance_db": toleranceDb,
+            "route": "mcu",
+            "write_route": writeRoute,
+            "readback_route": "mcu_lcd_db"
+        ]
+        if !inside {
+            payload["verification_note"] = String(
+                format: "The fader landed at %.1f dB, %.2f dB from the %.1f dB requested —"
+                    + " outside the %.2f dB tolerance, so verified is false."
+                    + " after_db is Logic's own dB readout, not an estimate;"
+                    + " raise tolerance_db if that is close enough, or write again.",
+                landedDb, deviation, targetDb, toleranceDb
+            )
+        }
+        return payload
+    }
+
     static func setVolume(
         trackName: String,
         request: VolumeWrite,
@@ -117,54 +176,76 @@ extension MCUController {
         // Throwing here is deliberate: a precondition mismatch must NOT fall
         // through to the Accessibility route and be written there instead.
         let targetDb = try request.target(currentDb: startDb)
+
+        /// The vpot correction loop, shared by both write paths.
+        ///
+        /// `stopWhenStuck` is the difference between them. On the slow path a
+        /// fader that will not move is a verification FAILURE and throws — the
+        /// write never landed. On a refinement pass it is not: the bridge
+        /// already put the fader within reach of the target, and a stalled
+        /// last tenth of a dB is a result to report honestly, not an error to
+        /// throw over a write that mostly worked.
+        func correct(from origin: Double, stopWhenStuck: Bool) throws -> Double {
+            var db = origin
+            var ticksPerDb = 2.5
+            var stuck = 0
+            for _ in 0..<30 {
+                let difference = targetDb - db
+                if abs(difference) <= toleranceDb { break }
+                let ticks = max(1, min(60, Int((abs(difference) * ticksPerDb).rounded())))
+                let before = freshStatus()?["received_events"] as? Int ?? -1
+                let response = try MCUBridge.send(
+                    .vpot(index: channel, delta: difference > 0 ? ticks : -ticks)
+                )
+                guard response.ok else {
+                    throw LogicianError.writeFailed("MCU vpot failed: \(response.error ?? "?")")
+                }
+                _ = awaitEvents(since: before, timeoutMs: 300)
+                guard let updated = currentDb() else { break }
+                if abs(updated - db) < 0.01 {
+                    stuck += 1
+                    if stuck >= 3 {
+                        guard stopWhenStuck else { return updated }
+                        throw LogicianError.verificationFailed(
+                            requested: String(format: "%.1f dB", targetDb),
+                            actual: String(format: "volume stuck at %.1f dB", updated),
+                            restored: false
+                        )
+                    }
+                } else {
+                    stuck = 0
+                    ticksPerDb = min(30, max(0.5, Double(ticks) / abs(updated - db)))
+                }
+                db = updated
+            }
+            return db
+        }
+
+        func verdict(landedAt db: Double, writeRoute: String) -> [String: Any] {
+            volumeVerdict(
+                trackName: trackName, startDb: startDb, targetDb: targetDb,
+                landedDb: db, toleranceDb: toleranceDb, writeRoute: writeRoute
+            )
+        }
+
         if let fast = fastConverge(index: channel, target: targetDb,
                                    tolerance: toleranceDb, maxMs: 3000, seedRatio: 2.5) {
-            _ = fast
             let landed = currentDb() ?? fast.value
-            return [
-                "success": true, "verified": abs(landed - targetDb) <= max(toleranceDb, 0.6),
-                "state": "volume_set",
-                // The fast path used to omit the track entirely, so a result
-                // could not say WHICH track it moved - the slow path below
-                // always named it. Both report it the same way now.
-                "track": trackName, "track_name": trackName,
-                "before_db": round(startDb * 10) / 10,
-                "after_db": round(landed * 10) / 10,
-                "requested_db": targetDb, "db": landed,
-                "route": "mcu", "write_route": "bridge_converge"
-            ]
-        }
-        var db = startDb
-        var ticksPerDb = 2.5
-        var stuck = 0
-        for _ in 0..<30 {
-            let difference = targetDb - db
-            if abs(difference) <= toleranceDb { break }
-            let ticks = max(1, min(60, Int((abs(difference) * ticksPerDb).rounded())))
-            let before = freshStatus()?["received_events"] as? Int ?? -1
-            let response = try MCUBridge.send(
-                .vpot(index: channel, delta: difference > 0 ? ticks : -ticks)
-            )
-            guard response.ok else {
-                throw LogicianError.writeFailed("MCU vpot failed: \(response.error ?? "?")")
+            // The same epsilon `volumeVerdict` uses, so a landing it would
+            // call verified never triggers a pointless refinement pass.
+            guard abs(landed - targetDb) > toleranceDb + 1e-9 else {
+                return verdict(landedAt: landed, writeRoute: "bridge_converge")
             }
-            _ = awaitEvents(since: before, timeoutMs: 300)
-            guard let updated = currentDb() else { break }
-            if abs(updated - db) < 0.01 {
-                stuck += 1
-                if stuck >= 3 {
-                    throw LogicianError.verificationFailed(
-                        requested: String(format: "%.1f dB", targetDb),
-                        actual: String(format: "volume stuck at %.1f dB", updated),
-                        restored: false
-                    )
-                }
-            } else {
-                stuck = 0
-                ticksPerDb = min(30, max(0.5, Double(ticks) / abs(updated - db)))
-            }
-            db = updated
+            // Outside what the caller asked for: try again with the vpot loop
+            // before reporting. Re-converging is the answer the caller wanted;
+            // an honest `verified: false` is the answer they get if it cannot.
+            let refined = try correct(from: landed, stopWhenStuck: false)
+            return verdict(landedAt: refined, writeRoute: "bridge_converge+vpot_refine")
         }
+
+        let db = try correct(from: startDb, stopWhenStuck: true)
+        // The failure gate, unchanged: past this much the write did not land
+        // at all and must not come back as a success of any kind.
         guard abs(db - targetDb) <= max(toleranceDb, 0.25) else {
             throw LogicianError.verificationFailed(
                 requested: String(format: "%.1f dB", targetDb),
@@ -172,16 +253,7 @@ extension MCUController {
                 restored: false
             )
         }
-        return [
-            "success": true, "verified": true, "state": "volume_set",
-            "track": trackName, "track_name": trackName,
-            "before_db": round(startDb * 10) / 10,
-            "after_db": round(db * 10) / 10,
-            "requested_db": targetDb,
-            "route": "mcu",
-            "write_route": "mcu_vpot_converge",
-            "readback_route": "mcu_lcd_db"
-        ]
+        return verdict(landedAt: db, writeRoute: "mcu_vpot_converge")
     }
 }
 

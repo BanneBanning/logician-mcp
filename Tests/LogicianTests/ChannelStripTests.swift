@@ -371,4 +371,69 @@ final class ChannelStripTests: XCTestCase {
         XCTAssertEqual(try write.target(currentDb: -6), -4, accuracy: 1e-9)
         XCTAssertThrowsError(try write.target(currentDb: -1))
     }
+
+    // MARK: - What `verified` means on a volume write
+
+    private func verdict(
+        landed: Double, target: Double = -6, tolerance: Double = 0.15,
+        route: String = "bridge_converge"
+    ) -> [String: Any] {
+        MCUController.volumeVerdict(
+            trackName: "Ivan Effect", startDb: -12, targetDb: target,
+            landedDb: landed, toleranceDb: tolerance, writeRoute: route
+        )
+    }
+
+    func testAValueInsideTheCallersToleranceIsVerified() {
+        let inside = verdict(landed: -6.1)
+        XCTAssertEqual(inside["verified"] as? Bool, true)
+        XCTAssertEqual(inside["success"] as? Bool, true)
+        XCTAssertEqual(inside["after_db"] as? Double, -6.1)
+        XCTAssertEqual(inside["deviation_db"] as? Double, 0.1)
+        // Nothing to explain when the write did what it said.
+        XCTAssertNil(inside["verification_note"])
+    }
+
+    /// The 0.6 dB floor, gone. This is the exact case it used to cover: the
+    /// caller asked for 0.15 dB, the fader stopped 0.5 dB out, and the result
+    /// said `verified: true` because 0.5 < max(0.15, 0.6). Four times the
+    /// tolerance asked for, reported as confirmed.
+    func testAValueOutsideTheCallersToleranceIsNotVerifiedEvenUnderSixTenths() {
+        let outside = verdict(landed: -6.5)
+        XCTAssertEqual(outside["verified"] as? Bool, false)
+        // The write still happened and the result still says where the fader
+        // is - this is an honest miss, not a failure.
+        XCTAssertEqual(outside["success"] as? Bool, true)
+        XCTAssertEqual(outside["after_db"] as? Double, -6.5)
+        XCTAssertEqual(outside["deviation_db"] as? Double, 0.5)
+        let note = outside["verification_note"] as? String
+        XCTAssertNotNil(note)
+        XCTAssertTrue(note?.contains("-6.5") == true, note ?? "")
+        XCTAssertTrue(note?.contains("verified is false") == true, note ?? "")
+    }
+
+    /// The boundary belongs to the caller: exactly at the tolerance is inside.
+    func testTheToleranceBoundaryIsInclusive() {
+        XCTAssertEqual(verdict(landed: -6.15)["verified"] as? Bool, true)
+        XCTAssertEqual(verdict(landed: -6.16)["verified"] as? Bool, false)
+    }
+
+    /// A caller who asks for a WIDER tolerance gets it — the rule is the
+    /// caller's number in both directions, not a floor and not a ceiling.
+    func testAWiderToleranceIsHonouredToo() {
+        XCTAssertEqual(verdict(landed: -6.5, tolerance: 1.0)["verified"] as? Bool, true)
+        XCTAssertEqual(verdict(landed: -7.5, tolerance: 1.0)["verified"] as? Bool, false)
+    }
+
+    /// Both write paths report through the same rule, so the route cannot
+    /// change what `verified` means — only what produced the value.
+    func testEveryWriteRouteReportsTheSameVerdictShape() {
+        for route in ["bridge_converge", "bridge_converge+vpot_refine", "mcu_vpot_converge"] {
+            let payload = verdict(landed: -6.5, route: route)
+            XCTAssertEqual(payload["verified"] as? Bool, false, route)
+            XCTAssertEqual(payload["write_route"] as? String, route)
+            XCTAssertEqual(payload["readback_route"] as? String, "mcu_lcd_db")
+            XCTAssertEqual(payload["tolerance_db"] as? Double, 0.15, route)
+        }
+    }
 }
