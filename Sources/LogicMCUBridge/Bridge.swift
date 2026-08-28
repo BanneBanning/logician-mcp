@@ -28,6 +28,15 @@ final class SurfaceState {
     var faders = [Int](repeating: -1, count: 9) // 14-bit, -1 = never reported
     var leds: [Int: Bool] = [:] // note number -> lit
     var vpotRings = [Int](repeating: 0, count: 8)
+    /// Per-strip meter segment as Logic paints it on the surface, 0...12,
+    /// -1 = never reported. See `MCUMeter` for the grammar.
+    var meterLevels = [Int](repeating: -1, count: MCUMeter.channelCount)
+    /// Per-strip overload ("clip") flag, latched by Logic and cleared by Logic.
+    var meterOverloads = [Bool](repeating: false, count: MCUMeter.channelCount)
+    /// How many meter messages have been decoded. `0` after a stretch of
+    /// playback is the evidence that Logic does not feed this surface meters
+    /// at all — which is the whole reason the counter is on the wire.
+    var meterCount: Int = 0
     var lastReceive: Double = 0
     var receivedCount: Int = 0
     var dirty = true
@@ -38,6 +47,28 @@ final class SurfaceState {
         lastReceive = Date().timeIntervalSince1970
         receivedCount += 1
         dirty = true
+        lock.unlock()
+    }
+
+    /// Meter updates go through their OWN mutator, which deliberately does not
+    /// touch `receivedCount` or `lastReceive`.
+    ///
+    /// Both of those are load-bearing for silence detection: `awaitEvents`
+    /// counts `receivedCount`, and `ensurePanNames`/`settledTop` classify the
+    /// display by waiting for Logic to go quiet. Meters arrive continuously
+    /// while the transport rolls, so counting them as ordinary events would
+    /// make "quiet" unreachable during playback — the exact failure the
+    /// blinking record LED already caused once (FINDINGS 2026-08-28, fynd 2),
+    /// where every MCU tool stopped resolving names. `dirty` is set only when
+    /// the decoded state actually CHANGES, so a stream of identical meter
+    /// frames does not rewrite state.json 7 times a second.
+    func updateMeters(_ mutate: (SurfaceState) -> Void) {
+        lock.lock()
+        let beforeLevels = meterLevels
+        let beforeOverloads = meterOverloads
+        mutate(self)
+        meterCount += 1
+        if meterLevels != beforeLevels || meterOverloads != beforeOverloads { dirty = true }
         lock.unlock()
     }
 
@@ -78,7 +109,10 @@ final class SurfaceState {
             faders14bit: faders,
             vpotRings: vpotRings,
             transportLEDs: Self.namedLEDs.mapValues { leds[$0] ?? false },
-            ledsLit: leds.filter(\.value).keys.sorted()
+            ledsLit: leds.filter(\.value).keys.sorted(),
+            meterLevels: meterLevels,
+            meterOverloads: meterOverloads,
+            meterEvents: meterCount
         )
     }
 
@@ -181,9 +215,13 @@ final class MIDIParser {
                     if channel < s.faders.count { s.faders[channel] = value }
                 }
                 index += 2
-            case 0xA0: // channel pressure pairs used for meters — ignore payload
+            case 0xA0: // polyphonic aftertouch: two data bytes, unused by the MCU
                 index += 2
-            case 0xD0:
+            case 0xD0: // channel pressure = the per-strip meters (see MCUMeter)
+                let event = MCUMeter.decode(byte)
+                state.updateMeters { s in
+                    MCUMeter.apply(event, levels: &s.meterLevels, overloads: &s.meterOverloads)
+                }
                 index += 1
             default:
                 index += 1
@@ -423,6 +461,25 @@ func pressButton(note: UInt8) {
     send([0x90, note, 0x00])
 }
 
+/// Moves a motor fader to an absolute 14-bit position, as a hand on the
+/// surface would: touch on, position, touch off.
+///
+/// The touch notes are NOT decoration and they are NOT the thing that makes
+/// Logic obey. Measured live 2026-08-28 on Logic Pro 12.3.1: a bare pitch bend
+/// with no touch note at all moves the fader just as reliably (master fader
+/// 12443 → 11009, ordinary strip 6135 → 4130 and back, both bit-exact on the
+/// way home). The touch pair is kept because it is what the MCU convention
+/// says a real surface sends, and because Logic uses fader-touch to punch
+/// automation — but the roadmap's claim that its absence is why "Logic ignores
+/// the position" was wrong on both halves: the bridge already sent the notes,
+/// and Logic follows either framing.
+///
+/// What DOES surprise a caller is that Logic SNAPS the position to its own
+/// fader resolution. 5631, 5632, 5633, 5634 and 5635 all came back as 5628.
+/// So an equality check against the value you asked for reads as failure on a
+/// write that worked; compare with a tolerance, or — better — write back a
+/// value Logic itself reported, which is on the grid by construction and
+/// round-trips exactly.
 func setFader(channel: Int, value14: Int) {
     let clamped = max(0, min(16383, value14))
     let touch = UInt8(0x68 + channel)
@@ -431,6 +488,31 @@ func setFader(channel: Int, value14: Int) {
     send([UInt8(0xE0 + channel), UInt8(clamped & 0x7F), UInt8((clamped >> 7) & 0x7F)])
     Thread.sleep(forTimeInterval: 0.02)
     send([0x90, touch, 0x00]) // touch off commits
+}
+
+/// Waits for Logic's own echo on `channel` to stop moving, and reports where
+/// it landed. `nil` when the mirror has never seen that fader.
+///
+/// This is the piece the `fader` command was missing. It used to answer a bare
+/// `{"ok": true}` — the write had no readback of any kind, so "Logic followed"
+/// and "Logic did nothing" were indistinguishable, and a session in v0.54.1
+/// concluded the write was ignored when it had in fact worked and snapped.
+func awaitFaderEcho(channel: Int, timeoutMs: Int = 400) -> Int? {
+    let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000)
+    var last: Int?
+    var stableSince = Date()
+    while Date() < deadline {
+        let current = state.snapshot().faders14bit
+        guard channel < current.count, current[channel] >= 0 else { return nil }
+        if current[channel] != last {
+            last = current[channel]
+            stableSince = Date()
+        } else if Date().timeIntervalSince(stableSince) > 0.08 {
+            return last // held still long enough to call it settled
+        }
+        usleep(10000)
+    }
+    return last
 }
 
 func turnVPot(index: Int, delta: Int) {
@@ -502,8 +584,20 @@ func handleCommand(_ object: BridgeCommand) -> BridgeResponse {
               let value = object.value else {
             return .failure("channel 0-8 and value (14-bit) required")
         }
+        let before = state.snapshot().faders14bit
         setFader(channel: channel, value14: value)
-        return .success
+        guard object.verify == true else { return .success }
+        // Opt-in readback: Logic's echo is the only evidence that the write
+        // landed, and the value it settles on is its own snapped one.
+        var response = BridgeResponse.success
+        let settled = awaitFaderEcho(channel: channel)
+        response.finalValue = settled.map(Double.init)
+        let started = channel < before.count ? before[channel] : -1
+        // "Followed" means Logic's echo now agrees with the request within its
+        // own snapping grain — NOT that it equals the requested value.
+        response.followed = settled.map { abs($0 - max(0, min(16383, value))) <= 64 }
+            ?? (started >= 0 ? false : nil)
+        return response
     case .vpot:
         guard let index = object.index, (0...7).contains(index),
               let delta = object.delta else {
@@ -681,7 +775,7 @@ private var instanceLockDescriptor: Int32 = -1
 /// silent-orphaning failure the fixed IDs exist to prevent, with no error
 /// anywhere. Must run BEFORE unlink(socketPath).
 func acquireInstanceLock() -> Bool {
-    let lockPath = directory.appendingPathComponent("bridge.lock").path
+    let lockPath = directory.appendingPathComponent(BridgeProcess.lockFileName).path
     let fd = open(lockPath, O_CREAT | O_RDWR, 0o600)
     guard fd >= 0 else { return true } // cannot lock: do not block startup
     guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
@@ -689,6 +783,17 @@ func acquireInstanceLock() -> Bool {
         return false
     }
     instanceLockDescriptor = fd // held until the process exits
+    // Publish our pid into the file we now exclusively hold, so an upgrading
+    // server can address this daemon by NUMBER instead of guessing at how its
+    // command line was spelled. Matching a command line is what made every
+    // "replacing outdated bridge daemon" a silent no-op when the daemon had
+    // been started with a relative path (FINDINGS 2026-08-28).
+    ftruncate(fd, 0)
+    lseek(fd, 0, SEEK_SET)
+    let pid = Data("\(getpid())\n".utf8)
+    _ = pid.withUnsafeBytes { raw in
+        raw.baseAddress.map { Darwin.write(fd, $0, raw.count) }
+    }
     return true
 }
 
