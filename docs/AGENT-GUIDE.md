@@ -70,7 +70,7 @@ When the Tempo List cannot be read at all, the pre-map behavior is the fallback:
 `logic_select_region {track_name, start_bar}` → `logic_list_events` for the region's actual notes (position, pitch, velocity, length). The Event List shows the SELECTED region only — an empty result means nothing is selected, not that the project has no MIDI. `logic_list_events` will do the selecting for you if you pass `track_name`.
 
 **Mark the map:**
-`logic_markers {action: "create", bar: 33, name: "drop"}` → `logic_markers {action: "list"}` → `logic_markers {action: "goto", name: "drop"}`. Markers are created at the playhead, and Logic's position stepping lands inside the bar rather than exactly on its line.
+`logic_markers {action: "create", bar: 33, name: "drop"}` → `logic_markers {action: "list"}` → `logic_markers {action: "goto", name: "drop"}`. Markers are created at the playhead, and Logic's position stepping lands inside the bar rather than exactly on its line — read the bar/beat back. Logic also renumbers its own default marker names by position, so address markers by `bar` when identity matters.
 
 **Work on the master chain (or a bus):**
 Use the strip name directly — `logic_mcu_plugin_inserts {track_name: "Stereo Out"}` to see the MCU slots → `logic_mcu_plugin_parameters {track_name: "Stereo Out", insert_slot}` → `logic_mcu_set_plugin_parameter {...}`. `logic_list_tracks` will not mention `Stereo Out`; that is expected (see concept 3b). A/B a master change with `logic_evaluate_change` method `bounce`, which captures the whole mix and needs no solo.
@@ -787,7 +787,7 @@ Parameters:
 
 #### `logic_list_events`
 
-Read the MIDI events of a region out of Logic's Event List (`View > List Editors > Event`) — position, type, pitch, velocity and length, as Logic's own cells print them. This is the read side of `logic_record_midi`. **Scope**: the Event List shows the SELECTED region (or the selected track's region at the playhead), never the whole project — pass `track_name` (plus `region_name` and/or `start_bar`) and the tool selects it first, or select with `logic_select_region` and call this with no arguments. An empty list means nothing is selected, not that there is no MIDI, and the result says so. Rows carry Logic's published columns verbatim plus parsed `bar`/`beat`/`pitch`/`velocity`/`length` where the columns were recognised. The row count is cross-checked against the list's own "Number of Items"; a mismatch refuses rather than returning a truncated take on the region.
+Read the MIDI events of a region out of Logic's Event List (`View > List Editors > Event`) — position, type, pitch, velocity and length, as Logic's own cells print them. This is the read side of `logic_record_midi`, and the pitch comes back as a NOTE NAME (`D♯2`), the same vocabulary `logic_record_midi` accepts. **Scope**: the Event List shows the SELECTED region (or the selected track's region at the playhead), never the whole project — pass `track_name` (plus `region_name` and/or `start_bar`) and the tool selects it first, or select with `logic_select_region` and call this with no arguments. An empty list means nothing is selected, not that there is no MIDI, and the result says so. Rows carry Logic's published columns verbatim plus parsed `bar`/`beat`/`pitch`/`velocity`/`length` where the columns were recognised. The row count is cross-checked against the list's own "Number of Items"; a mismatch refuses rather than returning a truncated take on the region.
 
 Parameters:
 
@@ -795,6 +795,8 @@ Parameters:
   - `region_name` (string): With track_name: which region.
   - `start_bar` (integer): With track_name: the region's current start bar.
   - `track_name` (string): Select this track's region first. Omit to read whatever is selected.
+
+The result's `region` field is Logic's own answer to "which region is this?", read off the Event tab's Region Path label — check it rather than assuming your selection took. With NO region selected the Event List shows the project's REGIONS instead of any events (one row per region, with a `Name` and a `Length` and no `Status`); that is a real answer, not a failure, and `columns` tells you which of the two you got.
 
 #### `logic_markers`
 
@@ -806,6 +808,8 @@ Parameters:
   - `bar` (integer): Which marker (its bar) — or, for 'create', where to park the playhead first.
   - `name` (string): Which marker (exact name) — or, for 'create', the name to give it (applied as a separate write, reported separately).
   - `new_name` (string): Required for 'rename'.
+
+Two behaviours worth knowing, both measured. **Logic renumbers its default marker names by position**: creating a marker at bar 33 in front of an existing "Marker 1" at bar 161 renames the OLD one to "Marker 2" and calls the new one "Marker 1". Address markers by `bar` whenever identity matters, and re-read the list after any create. And **the playhead does not land exactly on a bar line** — `bar: 33` was observed parking at bar 33 beat 4 — so the created marker inherits that, and the result reports the bar and beat it actually got.
 
 #### `logic_list_signatures`
 

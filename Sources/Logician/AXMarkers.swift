@@ -70,8 +70,10 @@ extension LogicAccessibility {
     }
 
     func markerName(of row: ListEditorRow, in table: ListEditorTable) -> String? {
+        // Logic titles it "Marker Name" (measured 2026-08-28); matching by
+        // containment also catches a version that shortens or prefixes it.
         for (index, column) in table.columns.enumerated()
-        where ["marker", "name", "text"].contains(column.lowercased()) {
+        where ["marker", "name", "text"].contains(where: { column.lowercased().contains($0) }) {
             let value = row.cell(index)
             if !value.isEmpty { return value }
         }
@@ -87,6 +89,33 @@ extension LogicAccessibility {
         return TempoMap.parseTempoListPosition(row.cell(positionIndex))?.bar
     }
 
+    /// Presses the Marker tab's own `Create new Marker` button, inside the pane
+    /// scope. Returns false when the tab publishes no such button.
+    ///
+    /// Preferred over the `Create Marker` KEY COMMAND that COVERAGE named as the
+    /// route (G46), and the reason is worth recording: the button is right there
+    /// in the list the result is verified against, it needs no learned
+    /// assignment, and it cannot be orphaned the way a MIDI-note binding is when
+    /// Logic's ports are recreated. The key command stays as the fallback for a
+    /// Logic version that does not publish the button.
+    func pressCreateMarkerButton() -> Bool {
+        let read = withListEditorsTab(named: "Marker") { window -> Bool in
+            guard let table = self.readListEditorTable(tab: "Marker", in: window).table
+            else { return false }
+            guard let button = self.children(of: table.group).first(where: {
+                self.stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
+                    && self.stringAttribute($0, kAXDescriptionAttribute as String)
+                        .localizedCaseInsensitiveContains("Create new Marker")
+            }) else { return false }
+            let pressed = AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
+            // Settle inside the scope: the pane closes on the way out and the
+            // new row should exist before that happens.
+            Thread.sleep(forTimeInterval: 0.5)
+            return pressed
+        }
+        return read.value ?? false
+    }
+
     /// Deletes one marker through the row's own `Delete` action — the action
     /// every List Editors row was observed to carry (2026-08-28, on a Tempo
     /// row). Verified by the marker being gone from a fresh read, never by the
@@ -94,9 +123,12 @@ extension LogicAccessibility {
     func deleteMarker(name: String?, bar: Int?) throws -> [String: Any] {
         let before = readMarkerList().markers?.count
         let performed = try withMarkerRow(name: name, bar: bar) { row, _ in
-            self.performListEditorRowDelete(row)
+            let done = self.performListEditorRowDelete(row)
+            // Settle BEFORE the scope ends: the pane closes on the way out, and
+            // a row action still being applied should not race a menu toggle.
+            Thread.sleep(forTimeInterval: 0.4)
+            return done
         }
-        Thread.sleep(forTimeInterval: 0.3)
         let after = readMarkerList()
         let remaining = after.markers?.count
         let gone = (before != nil && remaining != nil) ? remaining! < before! : false
@@ -121,8 +153,8 @@ extension LogicAccessibility {
     /// never worked around by typing into the UI.
     func renameMarker(name: String?, bar: Int?, newName: String) throws -> [String: Any] {
         let outcome = try withMarkerRow(name: name, bar: bar) { row, table -> (Bool, String, String) in
-            let nameIndex = table.columns.firstIndex {
-                ["marker", "name", "text"].contains($0.lowercased())
+            let nameIndex = table.columns.firstIndex { column in
+                ["marker", "name", "text"].contains { column.lowercased().contains($0) }
             } ?? max(row.cells.count - 1, 0)
             let cells = self.children(of: row.element)
             guard cells.indices.contains(nameIndex) else { return (false, "", "no name cell") }

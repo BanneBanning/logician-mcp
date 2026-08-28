@@ -41,13 +41,19 @@ extension LogicAccessibility {
     /// the region holds thirty notes. A mismatch is a failure, never a shorter
     /// answer.
     func readListEditorEntries(
-        tab: String
+        tab: String,
+        inspectGroup: ((AXUIElement) -> Void)? = nil
     ) -> (
         entries: [ListEditorEntry]?, columns: [String], declaredCount: Int?,
         failure: ListEditorFailure?
     ) {
-        let read = withListEditorsTab(named: tab) { window in
-            self.readListEditorTable(tab: tab, in: window)
+        let read = withListEditorsTab(named: tab) { window -> (table: ListEditorTable?, failure: ListEditorFailure?) in
+            let inner = self.readListEditorTable(tab: tab, in: window)
+            // Anything a caller wants off the tab's own group (buttons, the
+            // "Region Path" label) has to be read INSIDE the pane's scope: the
+            // pane closes on the way out and the elements go with it.
+            if let group = inner.table?.group { inspectGroup?(group) }
+            return inner
         }
         if let failure = read.failure { return (nil, [], nil, failure) }
         guard let inner = read.value else { return (nil, [], nil, .tableNotFound(tab)) }
@@ -79,13 +85,25 @@ extension LogicAccessibility {
     /// the caller's job, done with `logic_select_region` before the call.
     func readEventList() -> (
         events: [[String: Any]]?, columns: [String], declaredCount: Int?,
-        failure: ListEditorFailure?
+        region: String?, failure: ListEditorFailure?
     ) {
-        let read = readListEditorEntries(tab: "Event")
-        guard let entries = read.entries else {
-            return (nil, read.columns, read.declaredCount, read.failure)
+        var region: String?
+        let read = readListEditorEntries(tab: "Event") { group in
+            // "Region Path" is the Event tab's own answer to "what am I
+            // showing?" -- it read `Inst 4` while the list held that region's
+            // 18 notes. Reported so the SCOPE of the answer travels with it
+            // instead of being something the caller has to remember.
+            region = self.children(of: group).first {
+                self.stringAttribute($0, kAXDescriptionAttribute as String) == "Region Path"
+            }.map { self.stringAttribute($0, kAXValueAttribute as String) }
         }
-        return (entries.map(ListEditorPayload.event(from:)), read.columns, read.declaredCount, nil)
+        guard let entries = read.entries else {
+            return (nil, read.columns, read.declaredCount, region, read.failure)
+        }
+        return (
+            entries.map(ListEditorPayload.event(from:)),
+            read.columns, read.declaredCount, region, nil
+        )
     }
 
     /// The Marker tab's rows: position and name, plus every other column the
@@ -123,9 +141,20 @@ enum ListEditorPayload {
         // and only the NOTE reading is spelled out under names of its own.
         if let status = entry.field(["Status"]),
            status.localizedCaseInsensitiveContains("note") {
+            // Logic prints the pitch as a NOTE NAME here (`D♯2`), which is the
+            // same vocabulary logic_record_midi accepts, so it is passed through
+            // as text rather than converted to a number this code would have to
+            // guess the convention for.
             if let pitch = entry.field(["Num", "Pitch"]) { payload["pitch"] = pitch }
+            // A velocity outside 0-127 is not a velocity. The Val slider's raw
+            // AXValue is a constant 32-bit field (see `listEditorCellText`), and
+            // if a Logic version ever routes that number here instead of the
+            // displayed one, reporting it as "velocity 3306422272" would be a
+            // confident lie -- so the field is simply absent and the verbatim
+            // cell text stays under Logic's own column name.
             if let velocity = entry.field(["Val", "Velocity"]),
-               let value = Int(velocity.trimmingCharacters(in: .whitespaces)) {
+               let value = Int(velocity.trimmingCharacters(in: .whitespaces)),
+               (0...127).contains(value) {
                 payload["velocity"] = value
             }
             if let length = entry.field(["Length/Info", "Length"]) { payload["length"] = length }
@@ -136,7 +165,11 @@ enum ListEditorPayload {
     /// One Marker List row.
     static func marker(from entry: ListEditorEntry) -> [String: Any] {
         var payload = base(entry)
-        if let name = entry.field(["Marker", "Name", "Text"]) { payload["name"] = name }
+        // Logic titles the column "Marker Name" (measured 2026-08-28); the
+        // others are kept in case a version or locale names it differently.
+        if let name = entry.field(["Marker Name", "Marker", "Name", "Text"]) {
+            payload["name"] = name
+        }
         return payload
     }
 

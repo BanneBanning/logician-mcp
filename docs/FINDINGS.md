@@ -1918,3 +1918,127 @@ Det är i sig ett arkitektoniskt argument som är värt att skriva ned: **datav�
 Allt annat är återställt och verifierat: `Stereo Out`s volym (12443) och mute (av), masterfadern (12443), Channel EQ:s `Pea3Ga` (0,0 dB), och Limiterns åtta parametrar plus dess etikett.
 
 `swift test`: 278 tester gröna (22 nya), 1,4 s, ingen Logic behövs. `swift build -c release` grön.
+
+
+### List Editors som fyra läsningar: händelser, markörer, taktarter — plus insert-bypass och Mixern (2026-08-28, v0.54.0)
+
+COVERAGE:s öppna fråga 3 var: **publicerar Event-, Marker- och Signature-flikarna rader på samma sätt som Tempo-fliken?** Tempo-grammatiken var verifierad för EN flik, och de tre andra antogs vara likadana "eftersom de delar panel". Den här slicen ställde frågan i stället för att fortsätta anta — och byggde ovanpå svaret G04 (`logic_list_events`), G46 (`logic_markers`), G48 (taktkartan i bar-matematiken), G36 (`logic_set_insert_bypass`) och G57 (`logic_set_mixer`), plus COVERAGE:s composability-pass U1–U10.
+
+**Miljö:** körande Logic Pro 12.3.1 (`Testlåt Copy.logicx` — sandlådekopian användaren uttryckligen godkänt skrivningar i), användarens bryggdaemon pid 24761 orörd, ingen `logician --bridge` startad, projektet aldrig sparat. Tillfällig XCTest-harness (`LiveProbe.swift`) som togs bort efteråt. **Tre agenter arbetade parallellt mot samma Logic**, så varje live-batch kördes under ett rådgivande lås (`mkdir` på en låskatalog) och lämnade panelen i det läge den hittades. Hela harnessen låg dessutom bakom `LOGICIAN_LIVE=1` efter att ett vanligt `swift test` en gång råkat köra den utan lås — en probe som rör Logic får inte ligga i den vanliga sviten.
+
+#### Fyndet: flikarna DELAR panel men INTE cellgrammatik
+
+Svaret på öppen fråga 3 är **ja med förbehåll**. Alla fyra flikarna publicerar samma yttre struktur — en `AXGroup` vars `AXDescription` är flikens namn, med ett `Number of Items`-barn och en `AXTable` under sig — så panelvägen och trunkeringskontrollen bär rakt över. Men **celltexten ligger inte på samma attribut i alla flikar**, och Tempo-fliken råkade vara det enklaste fallet.
+
+**Kolumnrubrikerna** (tabellens `AXHeader`-barns `AXTitle`):
+
+| flik | kolumner | Number of Items |
+|---|---|---|
+| Event | `L`, `M`, `Position`, `Status`, `Ch`, `Num`, `Val`, `Length/Info` | `"18 Events"` |
+| Marker | `L`, `Position`, `Marker Name`, `Length` | `"1 Marker"` (singular!) |
+| Signature | `Position`, `Type`, `Value` | `"2 Events"` |
+| Tempo | `Position`, `Tempo`, `SMPTE Position` | `"2 Events"` |
+
+**Celltexten: `AXDescription` → `AXValueDescription` → `AXValue`, sammanfogat över cellens alla barn.** Fyra former, och de tre sista var okända:
+
+- **Grupper med text i beskrivningen** — positioner och längder i alla flikar: `"1 1 1 1 "`, `"0 2 0 0"`, `"∞"`. Det var det Tempo-forskningen såg, och det är den enda formen den såg.
+- **Ett textfält med texten på VÄRDET** — Event-flikens `Name`-kolumn: `AXTextField` med tom beskrivning och `AXValue = "Inst 4"`.
+- **En slider vars `AXValue` INTE är den visade texten** — och det här är det farliga. Event-flikens `Num` läser `AXValue = 51` medan Logic visar `D♯2`, och `Val` läser **samma `3306422272` på VARENDA not** (ett rått 32-bitarsfält, `AXMaxValue = 4294967295`) medan Logic visar anslaget, `98`. Båda lägger den riktiga texten på **`AXValueDescription`**. En läsare som litade på `AXValue` hade rapporterat en konstant som varje nots anslag — sämre än att inte rapportera något — så koden tar beskrivningen först, och en "velocity" utanför 0–127 släpps helt hellre än att skickas vidare (enhetstestat med det observerade talet).
+- **Två element i EN cell** — Signature-flikens `Value`: en `AXSlider` med täljaren och en `AXPopUpButton` med `"/4"`. Taktarten finns alltså inte som sträng förrän barnen fogas ihop: `"4"` + `"/4"` = `"4/4"`.
+
+**Event-fliken har TVÅ nivåer.** Utan region vald listar den projektets REGIONER — 54 rader med `Position`/`Name`/`Trk`/`Length` och en `Leave Folder`-knapp i gruppen. Med en region vald listar den den regionens HÄNDELSER, och gruppens `Region Path`-text namnger vilken (`Inst 4`). Verktyget rapporterar den texten som `region`, så svarets räckvidd följer med svaret. Live: 18 händelser lästa ur `Inst 4`, med tonhöjder som notnamn och riktiga anslag.
+
+**Signature-fliken: de INITIALA raderna publicerar ingen position — och ingen Delete.** Projektets egen första taktart och första tonart kommer tillbaka med en **tom** positionscell (inga barn, inget värde), medan en taktart skapad senare publicerar `"41 1 1 1 "` som alla andra listor. De initiala raderna saknar också radens `Delete`-aktion, vilket är samma sak sett från andra hållet: de är de förval projektet inte kan vara utan. **Att läsa den tomma cellen som ett parsningsfel fick hela taktartsläsningen att misslyckas på VARJE projekt** — det var så regeln hittades. En tom position är alltså takt 1, och det är en ren, enhetstestad funktion (`MeterMap.parseSignatureRow`).
+
+**Radens `Delete`-aktion heter inte `Delete`.** Logic publicerar den som en CUSTOM action, och `AXUIElementCopyActionNames` returnerar hela deskriptorn som namnet: `"Name:Delete\nTarget:0x0\nSelector:(null)"`. Att utföra `"Delete"` returnerar fel och gör ingenting — vilket är exakt vad första skarpa körningen gjorde, tyst. Namnet slås nu upp i stället för att antas. (Tempo-sessionen 2026-08-28 såg aktionen och skrev "det är så en händelse tas bort"; den kördes aldrig, och namnet var fel.)
+
+**Marker-fliken har en egen `Create new Marker`-knapp**, som nu används i stället för det inlärda `Create Marker`-kommandot COVERAGE pekade ut: knappen sitter i samma lista som resultatet verifieras mot, behöver ingen inlärd tilldelning, och kan inte bli föräldralös när Logics MIDI-portar skapas om. Key command-vägen är kvar som reserv.
+
+**Logic OMNUMRERAR sina förvalda markörnamn efter position.** En markör skapad vid takt 33 framför den befintliga `Marker 1` vid takt 161 döpte om den befintliga till `Marker 2` och gav den nya namnet `Marker 1`. Radindex är alltså inte identitet och namnet är det inte heller: `create` identifierar den nya markören på sin TAKT, och verktygets not säger åt agenten att adressera markörer per takt när det spelar roll.
+
+**Verifierat live, genom den shippade koden:**
+
+- **Taktkartan läses.** `readMeterMap()` gav `[takt 1: 4/4, takt 41: 5/4]`, `source: .signatureList`, en tonartsrad räknad och överhoppad. G48:s läsdel är därmed live-bevisad — och testprojektet har nu en riktig varierande taktart, vilket ingen tidigare session haft.
+- **Markörlistan läses**: `Marker 1` på takt 161, kolumnerna som ovan.
+- **Händelselistan läses**: 18 händelser ur regionen `Inst 4`, `declared_count` 18, bar/beat/pitch/velocity/length tolkade.
+- **Markörskapande fungerar och verifieras**: 1 → 2 markörer via knappen, `write_route: list_editor_create_marker_button`, `verified: true`.
+- **`setPlayhead(bar: 33)` landade på takt 33 slag 4** — kontrollradens egen läsning. Att playheaden inte hamnar på taktlinjen är alltså värre än förra sessionens "inom slaget"; slagfältet följde inte med. Allt som placeras vid playheaden ärver det.
+
+**Overifierat, och det ska stå:** insert-bypass-skrivningen (`AXPress` på kryssrutan), `logic_set_mixer` och därmed påståendet att en öppen Mixer lyfter AX-begränsningen, U1:s rullningslistsignal, `rename` på en markörrad, och trunkeringskontrollen mot en verkligt lång lista. Alla fyra har en färdig probe; ingen av dem hann köras.
+
+#### Och sedan degraderade macOS hjälpmedelslager igen, systemomfattande
+
+Andra gången på två dygn, samma signatur som v0.53.0 fynd 11: `AXWindows` returnerar **applikationselementet** i stället för fönstren, `AXMainWindow` och `AXFocusedWindow` likaså, och `projectWindow()` hittar ingenting. Inte Logic-specifikt — samma probe mot `Finder` gav fönsterrollerna `["AXApplication", "AXScrollArea"]` och mot `Terminal` `["AXApplication"]`. Logic mådde bra och `AXIsProcessTrusted()` var fortfarande sant.
+
+Det inträffade mitt i städningen efter markörexperimentet, vilket är den dyraste tänkbara tidpunkten: skrivningarna var gjorda och borttagningarna inte. Sessionsregeln ("degraderar AX igen — stoppa och rapportera") följdes, låset släpptes direkt så att de parallella agenterna inte blockerades, och inget mer AX-arbete gjordes.
+
+#### Vad som blev kvar i användarens projekt (osparat, inget har nått disken)
+
+1. **Tre markörer vid takt 33 slag 4** (`Marker 1`–`Marker 3`), en per körning av markörproben — den andra och tredje kom av att borttagningen misslyckades tyst på fel aktionsnamn innan det var förstått. Den befintliga markören vid takt 161 heter därför nu `Marker 4` och får tillbaka sitt namn när de tre tas bort.
+2. **En taktartshändelse `5/4` vid takt 41**, skapad av signaturproben (`Create new Time/Key Signature Change` gav 5/4, inte 4/4 — Logics eget förval här är inte kopierat från föregående taktart). Projektet har alltså en varierande taktart det inte hade när sessionen började. Till skillnad från de initiala raderna BÄR den en Delete-aktion, så den går att ta bort via radens egen Delete när AX-planet är tillbaka.
+3. **Playheaden står på takt 33 slag 4** (var takt 62 slag 1 när låsfönstret började).
+4. Sedan tidigare sessioner, oförändrat: den andra tempohändelsen vid takt 9 (121 BPM) och `Bas` → `Compressor` med `Output Gain` på 60.
+
+Städningen kräver bara att AX-planet kommer tillbaka (utloggning eller omstart av hjälpmedelstjänsten — användarens beslut): öppna `View > List Editors`, ta bort de tre markörraderna vid takt 33 i Marker-fliken och 5/4-raden i Signature-fliken.
+
+
+#### Taktkartan: `MeterMap`, och kontraktet som gör den ofarlig
+
+Varje takt→sekunder-omräkning i den här servern är två halvor: **takter till slag**, sedan **slag till sekunder**. Tempokartan (v0.51.0) gjorde den andra halvan rätt under ett tempospår. Den första halvan var fortfarande *en* multiplikation med ett slag-per-takt — det sista antagandet i bar-matematiken, och roadmap-punkt 3:s parkerade uppföljning.
+
+`MeterMap` bär Signature List:s taktarter på sina takter och gör den bar→beat-aritmetik som en skiftande taktart gör icke-linjär. Logics BPM räknar **fjärdedelar**, så en takts längd är `täljare × 4 / nämnare`: 3/4 är tre slag, 6/8 är tre, 7/8 är tre och en halv, 5/4 är fem. Notationsfrågan och aritmetikfrågan är alltså olika frågor — en karta med 3/4 och 6/8 är *konstant* för matematiken, och det står som ett eget test.
+
+**Konstant-takt-kontraktet är hela säkerhetsargumentet.** En karta vars taktarter alla beskriver samma taktlängd **rapporteras och används aldrig**: varje konsument frågar `isVariable` först och faller tillbaka på anroparens skalära `beats_per_bar`. Det är inte lättja — det är det som gör att ett konstant-takts-projekts gränser förblir **bit för bit** vad de alltid varit, samma disciplin som `TempoMap.rangeSeconds` en-händelse-snabbväg redan hade. Testerna hävdar den likheten med exakt likhet, inte med tolerans, på båda nivåerna. En konstant karta tar heller inte ifrån anroparen `beats_per_bar`-overriden; en *varierande* karta gör det, och säger det i sin varning.
+
+Inkopplat på de fyra ställen som räknar takter själva:
+
+- `barRangeSeconds` — och när tempokartan INTE gick att läsa men taktkartan varierar uttrycks det enda tempot som en en-händelses `TempoMap`, så de två halvorna komponeras genom samma kodväg i stället för genom en andra formel.
+- `takeEnd` — var en tagning SLUTAR är ett taktantal, och under skiftande taktart är det en vandring över takterna, inte en division. Fallet som skiljer dem åt: en 12-slagston som börjar i sista 4/4-takten löper tre 3/4-takter in och ut på andra sidan takt 11, vilket en-taktartsdivisionen rapporterar som slut på takt 11 — en tagning mätt (och renderad, och tempoläst) en hel takt för kort.
+- `logic_record_midi`s per-event-offsets.
+- `logic_record_automation`s punktplacering och dess ms-per-slag.
+
+Resultaten bär ett `meter_map`-block **närhelst en läsning försöktes** — en oläst Signature List rapporteras som oläst, aldrig som en konstant taktart, för det är precis det fallet där det gamla antagandet fortfarande lever — och en varning bara när kartan faktiskt varierar (samma regel som tempokartans: en konstant karta har inget förbehåll att bära).
+
+Panel-disciplinen som `readTempoMap` etablerade (öppna om stängd, återställ fliken, stäng det vi öppnade) flyttade in i `withListEditorsTab` så att de tre andra flikarna inte kan uppfinna halva den var för sig; `readTempoMap` går nu genom den, oförändrad i beteende.
+
+#### `logic_list_events` (G04): MIDI var skrivbart men inte läsbart
+
+`logic_record_midi` kunde komponera in noter i ett projekt vars befintliga noter agenten inte kunde läsa tillbaka — dess enda bevis var en renderings nivåmätning. Event-fliken stänger det.
+
+Två designval är värda att skriva ned. **Raderna mappas mot tabellens EGNA kolumnrubriker**, inte mot hårdkodade positioner: Event-flikens kolumnuppsättning beror på vad som är valt, och en läsare som räknar positioner rapporterar fel den dag Logic lägger till en kolumn. Varje rad bär därför både Logics egna celltexter under Logics egna kolumnnamn OCH en tolkad vy (`bar`, `beat`, `pitch`, `velocity`, `length`) för de kolumner som gick att känna igen — plus `cells` ovillkorligt, så att en rad som tappar sina fält rapporteras som en rad vi inte kunde namnge i stället för som en tom rad. **`Num` och `Val` betyder tonhöjd/anslag på en note-rad och kontrollernummer/värde på en CC-rad**, så bara note-läsningen får egna namn; CC-raden behåller Logics kolumnnamn och hittar inte på något.
+
+Och räckvidden, som är hela ärlighetsberättelsen: **Event List visar den VALDA regionen**, aldrig projektets MIDI som helhet. Verktyget kan välja åt anroparen (`track_name` + `region_name`/`start_bar`), och en tom lista bär en varning som säger att tomt betyder "inget är valt", inte "projektet har ingen MIDI". `Number of Items`-korskontrollen gäller här av exakt samma skäl som i tempokartan: en lista som tyst stannar på rad 30 av 400 är värre än en som vägrar, för en agent skulle dra slutsatsen att regionen har trettio noter.
+
+#### `logic_markers` (G46): `Create Marker` hade legat inlärt utan verktyg bakom sig
+
+`list` / `create` / `goto` / `rename` / `delete`. `create` fyrar Logics eget `Create Marker`-kommando (som legat i den inlärda uppsättningen sedan key command-arbetet, med ingenting bakom sig) och verifierar mot en ny läsning av listan. `delete` går via radens egen `Delete`-aktion — den aktion varje List Editors-rad observerades bära 2026-08-28 — och verifieras av att markören är borta, aldrig av aktionens returkod.
+
+`rename` är medvetet en **körtidsfråga, inte ett antagande**: Tempo List:s positions- och tempoceller visade sig vara *stegare* (`AXIncrement`/`AXDecrement`), inte fält, så markörradens namncell testas för skrivbarhet och en icke-skrivbar cell vägras med skälet i stället för att kringgås med tangenttryck. Markörer adresseras på exakt namn (skiftlägesokänsligt, aldrig luddigt — att döpa om eller radera fel markör är tyst skada) eller på takt; tvetydighet vägras med kandidaterna listade.
+
+En sak följer med från tempoarbetet och står i verktygets not: **`Create Marker` lägger markören på PLAYHEADEN, och `setPlayhead` landar inom slaget, inte på det**, så en markör kan hamna en bråkdel av ett slag sent.
+
+#### `logic_set_insert_bypass` (G36): läsbart sedan första insert-listningen, oskrivbart tills nu
+
+`insertSlots` har rapporterat `bypassed` från en `AXCheckBox` med `AXDescription` `bypass` sedan insert-listningen shippade, och ingenting kunde skriva den — medan bypass-och-lyssna är den snabbaste ärliga A/B:n i mixning och kostar en bråkdel av `logic_evaluate_change`s trettio-plus sekunder.
+
+Kontrollen publicerar bara `AXPress` och ingen absolut skrivning, så en tryckning utan läsning först vore ett myntkast: verktyget läser, jämför mot `expected_current_bypassed` när det ges, och ett insert som redan står rätt är en **verifierad nolloperation** (`already_bypassed` / `already_active`) i stället för en blind toggling. Strippen resolvas genom `stripForControls`, alltså samma regel — och samma begränsning — som varje annat AX-plans-strippverktyg.
+
+#### `logic_set_mixer` (G57): begränsningen som bara var dokumenterad
+
+AX-planets strippverktyg når bara en kanalstripp som en **inspektor visar**, vilket är varför `Stereo Out` (det valda spårets utgång) går att nå och `Master` och auxarna inte gör det. Guiden har dokumenterat det som en begränsning med en åtgärd agenten inte kunde utföra. Nu kan den.
+
+Verktyget rapporterar `inspector_strips` — varenda strippnamn Accessibility ser i det ögonblicket — just för att påståendet "en öppen Mixer lyfter begränsningen" ska gå att KONTROLLERA i resultatet i stället för att tros på en doc-kommentars ord.
+
+#### Composability-passet U1–U10
+
+COVERAGE:s U-avsnitt räknar *användbarhet*: fall där verktyget finns och en kompetent agent ändå misslyckas. Sju av tio var text eller schema och åtgärdades här.
+
+- **U1 — den farligaste läsningen såg ut som den ofarligaste.** `logic_list_tracks` svarade `success: true` med en PARTIELL värld (13 av 27 spår på referensprojektet) och förbehållet låg som en fotnot på ett lyckat resultat. Nu bär resultatet `partial`, `partial_evidence` (en mening per signal), `missing_track_numbers` där numreringen namnger dem, `visible_tracks` och `completeness`. **Det finns ingen "complete"-dom, och kan inte finnas**: Accessibility publicerar det som är renderat och säger ingenting om det som inte är det, så frånvaro av bevis är inte bevis på frånvaro. De två svaren är `partial` (något saknas bevisligen, och här är vad) och `unknown`. Fyra signaler: rubriker utrullade ovanför (numreringen börjar inte på 1), luckor i numreringen, kollapsade spårstaplar, och Tracks-områdets egen rullningslist. Den sista är den avgörande för det dokumenterade 13-av-27-fallet, eftersom tretton sammanhängande rader från spår 1 inte lämnar något spår i numreringen — och den är trevärd (`true`/`false`/`nil`), för en rullningslist koden inte hittade får aldrig läsas som "allt får plats".
+- **U2 — två numreringssystem delade ett ord.** `insert_index` (Accessibility-ordinal) och `insert_slot` (Mackie fysisk slot) heter nu ACCESSIBILITY respektive MACKIE i varje schema där de förekommer, med den observerade omvändningen på `Stereo Out` som konkret exempel och regeln "lista med det verktyg du ska använda" på plats.
+- **U5 — en tanke, två anrop.** `logic_add_send` tar `level_db` och sätter nivån i samma anrop (samma konvergering och återläsning som `logic_mcu_set_send`, på strippen anropet redan valt). Misslyckas nivåskrivningen finns SENDEN kvar — det är en verifierad skrivning och får inte rapporteras som ett misslyckande — så resultatet säger att den står på -oo dB och namnger uppföljningsanropet.
+- **U6 — kliffet som såg ut som en platå.** `logic_create_track`s beskrivning säger nu rakt ut att den inte laddar något instrument, att instrumentplatsen är en annan mekanism än insert-platserna, och att "skapa instrumentspår" + "lägg till plugin" båda rapporterar framgång medan spåret fortfarande är tyst.
+- **U7** — `logic_render_track` säger att den skriver en FIL, inte en region: den är inte bounce-in-place. **U8** — `logic_list_regions` säger att regioner saknar stabilt handtag och att kartan ska läsas om mellan två redigeringar. **U9** — `logic_evaluate_change`s `method` säger att ingenting läser om ett spår är en stapel-subtrack eller delar kanalstripp, så valet upptäcks genom en snabb vägran. **U10** — `logic_evaluate_change` heter fortfarande samma sak men beskrivningen börjar med vad den GÖR ("A/B a change and hear both versions"), och båda inspelningsverktygen börjar med att de tar verklig väggklockstid.
+
+Kvar av U-avsnittet, medvetet: **U3** (`logic_split_region`) och **U4** (`logic_list_key_commands`) hör till key command-slicen och byggdes inte här för att inte kollidera med den parallella agenten.
+
+`swift test`: 325 tester gröna (47 nya), 1,4 s, ingen Logic behövs. `swift build -c release` grön. `serverVersion` är MEDVETET inte bumpad — tre slicear landar parallellt och versionen sätts när de slås ihop.

@@ -55,34 +55,21 @@ extension LogicAccessibility {
                 0
             )
         }
+        // Which column is the position is read off the header rather than
+        // assumed: it is column 0 on the Signature tab and column 1 on the
+        // Marker tab, and the two tables are read by the same code.
+        let positionIndex = table.columns.firstIndex { $0.lowercased().contains("position") } ?? 0
         var events: [MeterEvent] = []
         var keyRows = 0
         for row in table.rows {
-            guard let position = MeterMap.parsePosition(row.cell(0)) else {
-                return (
-                    nil,
-                    .rowsUnreadable(
-                        tab: "Signature",
-                        detail: "position '\(row.cell(0))' is not bar/beat/division/tick"
-                    ),
-                    keyRows
-                )
-            }
-            // The signature is looked for in every cell but the position: which
-            // column holds it differs between a time-signature row and a key
-            // row, and a row that carries none is a key change.
-            let signature = row.cells.dropFirst().lazy
-                .compactMap { MeterMap.parseSignature($0) }
-                .first
-            guard let signature else {
+            switch MeterMap.parseSignatureRow(cells: row.cells, positionIndex: positionIndex) {
+            case .timeSignature(let event):
+                events.append(event)
+            case .keySignature:
                 keyRows += 1
-                continue
+            case .unreadable(let detail):
+                return (nil, .rowsUnreadable(tab: "Signature", detail: detail), keyRows)
             }
-            events.append(MeterEvent(
-                bar: position.bar,
-                numerator: signature.numerator,
-                denominator: signature.denominator
-            ))
         }
         guard let map = MeterMap(events: events, source: .signatureList) else {
             // A Signature List with no time signature at all is not a project

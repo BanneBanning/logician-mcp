@@ -146,9 +146,11 @@ struct MeterMap: Equatable, Codable {
         guard beats > 0 else { return (1, 1 + beats) }
         var bar = 1
         var consumed = 0.0
-        // Walk bar by bar. Bounded by the caller's own range (takes are bars,
-        // not hours), and exact rather than a division that assumes one meter.
-        while true {
+        // Walk bar by bar: exact, rather than a division that assumes one meter.
+        // The cap is not a correctness limit but a refusal to hang — Logic's own
+        // maximum project length is far inside it, and a caller that asks about
+        // bar 100 001 gets the last bar this walk reached rather than a spin.
+        while bar < 100_000 {
             let length = beatsPerBar(atBar: bar)
             if consumed + length > beats + 1e-9 { break }
             consumed += length
@@ -174,6 +176,52 @@ struct MeterMap: Equatable, Codable {
               // Logic's denominators are powers of two, 1 to 64.
               [1, 2, 4, 8, 16, 32, 64].contains(denominator) else { return nil }
         return (numerator, denominator)
+    }
+
+    /// What one Signature List row is, decided from its cell texts alone.
+    ///
+    /// Pure because the rules came out of a live session and should not need one
+    /// to stay true. Both of them are things this code got wrong before it was
+    /// measured (2026-08-28):
+    ///
+    /// - **An empty Position cell means bar 1**, not an unreadable row. The
+    ///   project's own first time signature and first key signature publish no
+    ///   position at all (no children, no value) while a signature created later
+    ///   publishes `"41 1 1 1 "` like every other list. Treating the empty cell
+    ///   as a parse failure made the meter read fail on EVERY project.
+    /// - **A row with no `n/d` anywhere is a key change**, not an error: the
+    ///   Signature List holds time and key signatures in one table, and a key
+    ///   row's Value cell reads `"B♭ Major"`.
+    enum SignatureRow: Equatable {
+        case timeSignature(MeterEvent)
+        /// A key-signature row: counted for the truncation cross-check, and
+        /// then skipped, because it says nothing about bar lengths.
+        case keySignature(bar: Int)
+        case unreadable(String)
+    }
+
+    static func parseSignatureRow(cells: [String], positionIndex: Int) -> SignatureRow {
+        let raw = positionIndex < cells.count ? cells[positionIndex] : ""
+        let bar: Int
+        if raw.trimmingCharacters(in: .whitespaces).isEmpty {
+            bar = 1
+        } else if let position = parsePosition(raw) {
+            bar = position.bar
+        } else {
+            return .unreadable(
+                "position '\(raw)' is neither empty (the project's initial signature)"
+                    + " nor bar/beat/division/tick"
+            )
+        }
+        let signature = cells.enumerated()
+            .filter { $0.offset != positionIndex }
+            .lazy
+            .compactMap { parseSignature($0.element) }
+            .first
+        guard let signature else { return .keySignature(bar: bar) }
+        return .timeSignature(MeterEvent(
+            bar: bar, numerator: signature.numerator, denominator: signature.denominator
+        ))
     }
 
     /// The bar out of a Signature List Position cell (`"9 1 1 1 "` — same

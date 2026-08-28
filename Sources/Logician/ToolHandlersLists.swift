@@ -44,6 +44,9 @@ extension MCPServer {
                 + " bar/beat/pitch/velocity/length where the columns were recognised."
         ]
         if let declared = read.declaredCount { payload["declared_count"] = declared }
+        // Logic's own answer to "which region is this?", read off the Event
+        // tab's Region Path label.
+        if let region = read.region, !region.isEmpty { payload["region"] = region }
         if truncated {
             payload["truncated"] = true
             payload["limit"] = limit
@@ -144,14 +147,25 @@ extension MCPServer {
     }
 
     /// Creates a marker at the playhead (moving it first when a bar is given)
-    /// through the `Create Marker` key command, and verifies against the Marker
-    /// List — the count grew, and a marker is at the bar asked for.
+    /// and verifies against the Marker List — the count grew, and a marker is at
+    /// the bar asked for.
+    ///
+    /// Two routes, button first: the Marker tab publishes its own `Create new
+    /// Marker` button (observed 2026-08-28), which needs no learned assignment
+    /// and sits in the same list the result is verified against. Logic's
+    /// `Create Marker` KEY COMMAND — the route COVERAGE named — is the fallback,
+    /// and it is second because a MIDI-note binding can be silently orphaned
+    /// when Logic's ports are recreated while a button cannot.
     private func createMarker(bar: Int?, name: String?) throws -> [String: Any] {
         let before = logic.readMarkerList().markers ?? []
         var moved: [String: Any]?
         if let bar { moved = try logic.setPlayhead(barNumber: bar, beat: nil) }
-        let command = try MCUController.resolveKeyCommand(named: "Create Marker", logic: logic)
-        _ = try MCUController.triggerKeyCommand(note: command.note, channel: command.channel)
+        var route = "list_editor_create_marker_button"
+        if !logic.pressCreateMarkerButton() {
+            route = "midi_key_command_create_marker"
+            let command = try MCUController.resolveKeyCommand(named: "Create Marker", logic: logic)
+            _ = try MCUController.triggerKeyCommand(note: command.note, channel: command.channel)
+        }
         var after: [[String: Any]] = []
         var created = false
         for _ in 0..<20 {
@@ -159,8 +173,20 @@ extension MCPServer {
             after = logic.readMarkerList().markers ?? []
             if after.count > before.count { created = true; break }
         }
-        let beforeRows = Set(before.compactMap { $0["row"] as? Int })
-        let fresh = after.first { !beforeRows.contains(($0["row"] as? Int) ?? -1) }
+        // WHICH row is the new one is neither the row INDEX nor the name: Logic
+        // renumbers markers by position, so creating one at bar 33 in front of
+        // an existing "Marker 1" at bar 161 renamed THAT one to "Marker 2" and
+        // gave the new one the old one's name (observed live 2026-08-28, and it
+        // made the first version of this code report the wrong marker). The new
+        // marker is identified by its BAR — the playhead's, which is where Logic
+        // just put it.
+        let playheadBar = (moved?["after"] as? [String: Any])?["bar"] as? Int ?? bar
+        let beforeBars = before.compactMap { $0["bar"] as? Int }
+        let fresh = after.first { marker in
+            guard let markerBar = marker["bar"] as? Int else { return false }
+            if let playheadBar { return markerBar == playheadBar }
+            return !beforeBars.contains(markerBar)
+        }
         var payload: [String: Any] = [
             "success": created,
             "verified": created,
@@ -168,13 +194,15 @@ extension MCPServer {
             "markers_before": before.count,
             "markers_after": after.count,
             "markers": after,
-            "write_route": "midi_key_command_create_marker",
+            "write_route": route,
             "readback_route": "marker_list_reread",
             "note": created
-                ? "Created at the PLAYHEAD (Logic's Create Marker places it there, and the"
-                    + " playhead lands within the bar rather than exactly on its line). Remove it"
-                    + " with action 'delete' or logic_trigger_key_command {name: \"Undo\"}."
-                : "No new marker appeared in the Marker List after the key command fired."
+                ? "Created at the PLAYHEAD, and Logic's position stepping lands inside the bar"
+                    + " rather than exactly on its line, so read the reported bar/beat back."
+                    + " NOTE that Logic RENUMBERS its default marker names by position: creating"
+                    + " a marker before an existing one renames that one, so address markers by"
+                    + " BAR when it matters. Remove this one with action 'delete'."
+                : "No new marker appeared in the Marker List after the create."
         ]
         if let moved { payload["playhead"] = moved }
         if let fresh { payload["marker"] = fresh }

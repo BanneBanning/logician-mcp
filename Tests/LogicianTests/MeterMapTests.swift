@@ -341,6 +341,65 @@ final class MeterMapTests: XCTestCase {
         XCTAssertEqual(constant.payload["integrated"] as? Bool, false)
     }
 
+    // MARK: - Signature List rows (the grammar measured live 2026-08-28)
+
+    /// The rule that broke the whole read before it was measured: the project's
+    /// OWN first signature publishes an EMPTY Position cell, and that means bar
+    /// 1 — not an unreadable row. A signature created later publishes a position
+    /// like every other list does.
+    func testAnEmptyPositionIsTheProjectsInitialSignatureAtBarOne() {
+        let row = MeterMap.parseSignatureRow(
+            cells: ["", "Time", "4/4"], positionIndex: 0
+        )
+        XCTAssertEqual(row, .timeSignature(MeterEvent(bar: 1, numerator: 4, denominator: 4)))
+    }
+
+    func testALaterSignaturePublishesItsBar() {
+        let row = MeterMap.parseSignatureRow(
+            cells: ["41 1 1 1 ", "Time", "5/4"], positionIndex: 0
+        )
+        XCTAssertEqual(row, .timeSignature(MeterEvent(bar: 41, numerator: 5, denominator: 4)))
+    }
+
+    /// The Signature List holds KEY signatures in the same table. A key row is
+    /// counted (the truncation cross-check counts every row Logic counts) and
+    /// then skipped, because it says nothing about bar lengths.
+    func testAKeySignatureRowIsSkippedNotFailed() {
+        XCTAssertEqual(
+            MeterMap.parseSignatureRow(cells: ["", "Key", "B♭ Major"], positionIndex: 0),
+            .keySignature(bar: 1)
+        )
+        XCTAssertEqual(
+            MeterMap.parseSignatureRow(cells: ["57 1 1 1 ", "Key", "F Minor"], positionIndex: 0),
+            .keySignature(bar: 57)
+        )
+    }
+
+    /// A position that is neither empty nor a position is a real failure: the
+    /// map is discarded rather than placed at a guessed bar.
+    func testAnUnparsablePositionFailsTheRow() {
+        guard case .unreadable = MeterMap.parseSignatureRow(
+            cells: ["not a position", "Time", "4/4"], positionIndex: 0
+        ) else { return XCTFail("expected unreadable") }
+    }
+
+    /// The Value cell is TWO elements — a numerator slider and a "/4" pop-up —
+    /// joined into one string by the cell reader. This is what the join has to
+    /// produce for the row parser to work.
+    func testTheJoinedValueCellParsesAsASignature() {
+        XCTAssertEqual(MeterMap.parseSignature("5" + "/4")?.numerator, 5)
+        XCTAssertEqual(MeterMap.parseSignature("12" + "/8")?.denominator, 8)
+    }
+
+    /// The Marker tab puts Position in column 1, the Signature tab in column 0:
+    /// the index is read off the header, so the parser must honour it.
+    func testThePositionColumnIndexIsHonoured() {
+        let row = MeterMap.parseSignatureRow(
+            cells: ["", "9 1 1 1 ", "Time", "3/4"], positionIndex: 1
+        )
+        XCTAssertEqual(row, .timeSignature(MeterEvent(bar: 9, numerator: 3, denominator: 4)))
+    }
+
     func testListEditorFailureReasonsNameTheTab() {
         XCTAssertTrue(
             ListEditorFailure.tabNotFound("Marker").reason.contains("Marker")

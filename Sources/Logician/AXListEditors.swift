@@ -181,10 +181,7 @@ extension LogicAccessibility {
         let rows = rowElements.enumerated().map { index, row in
             ListEditorRow(
                 index: index,
-                cells: children(of: row).map { cell in
-                    guard let inner = children(of: cell).first else { return "" }
-                    return stringAttribute(inner, kAXDescriptionAttribute as String)
-                },
+                cells: children(of: row).map(listEditorCellText(of:)),
                 element: row
             )
         }
@@ -197,11 +194,61 @@ extension LogicAccessibility {
         )
     }
 
-    /// The `Delete` action a List Editors row carries (observed on a Tempo row,
-    /// 2026-08-28). Returns whether the action was performed — NOT whether the
-    /// row went away; every caller re-reads the list for that.
+    /// The text of one List Editors cell.
+    ///
+    /// Measured across all four tabs (2026-08-28), because the shape is NOT one
+    /// thing and the tempo research only ever saw the simplest case:
+    ///
+    /// - Tempo/Marker/Event positions and lengths: one child `AXGroup` whose
+    ///   **AXDescription** is the text (`"1 1 1 1 "`, `"4 0 0 0"`, `"∞"`).
+    /// - The Event tab's Name cell: one child `AXTextField` with an empty
+    ///   description and the text on its **AXValue** (`"Inst 4"`).
+    /// - The Event tab's Trk cell and the Marker tab's name cell: a child
+    ///   `AXCell` carrying the text on its description.
+    /// - The Signature tab's Value cell: **two** children, an `AXSlider` whose
+    ///   value is the numerator and an `AXPopUpButton` whose value is `"/4"` —
+    ///   so the signature only exists as a string once they are joined.
+    /// - The Event tab's Num and Val cells: an `AXSlider` whose **AXValue is not
+    ///   the displayed text**. Num reads `51` while Logic shows `D♯2`, and Val
+    ///   reads the SAME `3306422272` on every note (a raw 32-bit field, max
+    ///   4294967295) while Logic shows the velocity, `98`. Both put the real
+    ///   text on **AXValueDescription** — so a reader that trusted AXValue would
+    ///   report a constant as every note's velocity, which is worse than
+    ///   reporting nothing.
+    ///
+    /// Hence the order: description, then value DESCRIPTION, then value; every
+    /// child joined; and the cell's own attributes when it has no children.
+    func listEditorCellText(of cell: AXUIElement) -> String {
+        func text(_ element: AXUIElement) -> String {
+            let description = stringAttribute(element, kAXDescriptionAttribute as String)
+            if !description.isEmpty { return description }
+            let valueDescription = stringAttribute(element, kAXValueDescriptionAttribute as String)
+            if !valueDescription.isEmpty { return valueDescription }
+            return stringAttribute(element, kAXValueAttribute as String)
+        }
+        let inner = children(of: cell)
+        guard !inner.isEmpty else { return text(cell) }
+        return inner.map(text).joined()
+    }
+
+    /// The `Delete` action a List Editors row carries. Returns whether the
+    /// action was performed — NOT whether the row went away; every caller
+    /// re-reads the list for that.
+    ///
+    /// The action's NAME is not `"Delete"`. Logic publishes these as CUSTOM
+    /// actions, and `AXUIElementCopyActionNames` returns the whole descriptor as
+    /// the name: `"Name:Delete\nTarget:0x0\nSelector:(null)"`. Performing
+    /// `"Delete"` returns an error and does nothing, which is exactly what the
+    /// first live run did (2026-08-28) — so the name is looked up rather than
+    /// assumed, and any action whose descriptor names Delete is accepted.
     func performListEditorRowDelete(_ row: ListEditorRow) -> Bool {
-        AXUIElementPerformAction(row.element, "Delete" as CFString) == .success
+        var names: CFArray?
+        guard AXUIElementCopyActionNames(row.element, &names) == .success,
+              let actions = names as? [String] else { return false }
+        guard let delete = actions.first(where: {
+            $0.localizedCaseInsensitiveContains("Delete")
+        }) else { return false }
+        return AXUIElementPerformAction(row.element, delete as CFString) == .success
     }
 
     /// Selects exactly one row (`AXSelected` is writable on these rows), which
