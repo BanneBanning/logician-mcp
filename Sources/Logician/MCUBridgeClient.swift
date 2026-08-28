@@ -41,22 +41,22 @@ enum MCUBridge {
             // An outdated daemon owns the socket (pre-versioned builds kept
             // answering pings and silently lacked newer commands) — replace it.
             FileHandle.standardError.write(Data("[logician] replacing outdated bridge daemon\n".utf8))
-            let serverPath = URL(fileURLWithPath: CommandLine.arguments[0])
-                .resolvingSymlinksInPath().path
-            // Narrow, anchored matches instead of a broad substring OR that
-            // could catch unrelated processes (an editor, a tail, a grep whose
-            // command line merely contains "logician --bridge"):
-            //  - the legacy separate binary, by EXACT process name
-            //  - this exact binary launched with --bridge, by its absolute path
-            for arguments in [["-x", "logic-mcu-bridge"],
-                              ["-f", "\(serverPath) --bridge"]] {
-                let kill = Process()
-                kill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-                kill.arguments = arguments
-                try? kill.run()
-                kill.waitUntilExit()
+            guard replaceRunningDaemon() else {
+                // The old daemon is still alive. Starting a second one now is
+                // the worst available move: it cannot claim the fixed MIDI
+                // unique IDs, so it would either die or run silently orphaned,
+                // and for a moment two bridges would be driving Logic — the
+                // exact hazard the single-instance lock exists to prevent.
+                // Keep the working old daemon and say what is wrong instead.
+                let lockName: String = BridgeProcess.lockFileName
+                var message = "[logician] could not stop the outdated bridge daemon;"
+                message += " keeping it rather than running two bridges."
+                message += " Quit it by hand (it holds"
+                message += " ~/Library/Application Support/LogicMCPMCU/" + lockName + ")"
+                message += " and rerun logic_health.\n"
+                FileHandle.standardError.write(Data(message.utf8))
+                return
             }
-            Thread.sleep(forTimeInterval: 0.5)
         }
         // The bridge daemon is this same binary launched with --bridge —
         // one distributable artifact, no sibling files to install.
@@ -74,6 +74,66 @@ enum MCUBridge {
                 return
             }
         }
+    }
+
+    /// Stops the daemon that currently owns the socket, and CONFIRMS it is
+    /// gone. Returns false when something is still answering, in which case
+    /// the caller must not start a replacement.
+    ///
+    /// Two ways to find the target, in order of precision:
+    ///  1. the pid the daemon wrote into its own lockfile — exact, and immune
+    ///     to how its command line was spelled;
+    ///  2. a `ps` scan filtered by `BridgeProcess.daemonPids`, for a daemon
+    ///     old enough to predate the pid file (which is precisely the daemon
+    ///     an upgrade is most likely to meet).
+    ///
+    /// The previous implementation did neither: it `pkill -f`'d the server's
+    /// own ABSOLUTE path plus " --bridge", which never matched a daemon
+    /// started as `./.build/release/logician --bridge`. It then started a
+    /// second bridge regardless, which is how one upgrade attempt briefly ran
+    /// two of them (FINDINGS 2026-08-28).
+    static func replaceRunningDaemon() -> Bool {
+        var targets: [Int32] = []
+        let lockURL = directory.appendingPathComponent(BridgeProcess.lockFileName)
+        if let contents = try? String(contentsOf: lockURL, encoding: .utf8),
+           let pid = BridgeProcess.parsePidFile(contents) {
+            targets.append(pid)
+        }
+        if targets.isEmpty {
+            targets = BridgeProcess.daemonPids(
+                among: BridgeProcess.parsePS(runPS()), excluding: getpid()
+            )
+        }
+        guard !targets.isEmpty else { return false }
+        for pid in targets { kill(pid, SIGTERM) }
+        // Confirm, rather than sleeping and hoping. The daemon closes its
+        // socket on exit, so a ping that no longer answers IS the proof.
+        for _ in 0..<40 {
+            usleep(100_000)
+            let alive = targets.contains { kill($0, 0) == 0 }
+            if !alive, (try? send(.ping)) == nil { return true }
+        }
+        // Still there after 4 s: escalate once, then re-check.
+        for pid in targets where kill(pid, 0) == 0 { kill(pid, SIGKILL) }
+        for _ in 0..<20 {
+            usleep(100_000)
+            if !targets.contains(where: { kill($0, 0) == 0 }) { return true }
+        }
+        return false
+    }
+
+    private static func runPS() -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        // -ww: do not truncate the argument vector to the terminal width.
+        process.arguments = ["-axww", "-o", "pid=,args="]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return "" }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(data: data, encoding: .utf8) ?? ""
     }
 
     /// The typed path: every command is built from `BridgeCommand`'s
