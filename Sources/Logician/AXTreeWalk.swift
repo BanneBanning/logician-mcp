@@ -107,6 +107,23 @@ enum AXDepth {
     /// Project window -> the "Control Bar" group (transport buttons, LCD).
     static let controlBar = 6
 
+    // MARK: Region inspector (the "Region:" panel above the channel strip)
+
+    /// Project window -> the `Inspector` group. MEASURED live 2026-08-28: it
+    /// is a direct child of the project window (depth 1), and its first
+    /// `AXList` holds the Region panel, the Track panel and the Mixer panel
+    /// in that order.
+    static let inspectorPanel = 8
+    /// The Region panel's own group -> its `AXOutline` of parameter rows,
+    /// measured at 2 (group -> scroll area -> outline).
+    static let regionInspectorOutline = 6
+    /// Application element -> the menu one of the panel's pop-ups opens.
+    /// DEEPER than `popupMenu` on purpose: the Region inspector's menus are
+    /// parented under the project window's own tree, and the depth-7 walk
+    /// `popupMenus()` uses does not reach them (measured 2026-08-28 — the
+    /// press worked and the menu was invisible until the cap was raised).
+    static let regionInspectorMenu = 14
+
     // MARK: List Editors (Event / Marker / Tempo / Signature)
 
     /// Project window -> the List Editors pane's tab strip (the `AXRadioButton`s

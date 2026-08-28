@@ -511,6 +511,12 @@ enum LogicianError: LocalizedError {
     /// The name is neither a track header nor a control-surface strip: both
     /// planes were asked, and the message says so.
     case stripNotFound(name: String, tracks: [String], cells: [String])
+    /// A precondition for a write was not met and the message says exactly
+    /// which — for the cases the specific mismatches above do not fit. The
+    /// string IS the whole message: it is written for the agent that has to
+    /// decide what to do next, so it names the state that was found and the
+    /// move out of it.
+    case preconditionUnmet(String)
     case projectTempoModeUnsafe(mode: String, detail: String)
     case tempoMapUnsafe(operation: String, detail: String)
     /// The requested plugin setting is not in the setting menu. Carries the
@@ -536,7 +542,7 @@ enum LogicianError: LocalizedError {
              .stripAmbiguous, .presetAmbiguous: return "ambiguous"
         case .valueNotWritable, .trackNotExposed, .windowNotClosable, .trackNotStack: return "not_exposed"
         case .currentValueMismatch, .projectMismatch, .insertMismatch, .pluginNotOpen, .trackMismatch,
-             .projectTempoModeUnsafe, .tempoMapUnsafe: return "precondition_failed"
+             .preconditionUnmet, .projectTempoModeUnsafe, .tempoMapUnsafe: return "precondition_failed"
         case .writeFailed, .confirmationFailed: return "write_failed"
         case .verificationFailed, .openVerificationFailed, .selectionFailed: return "verification_failed"
         case .invalidArguments: return "invalid_arguments"
@@ -567,6 +573,8 @@ enum LogicianError: LocalizedError {
             return "Readback mismatch. Requested \(requested), found \(actual). Restored: \(restored)."
         case .invalidArguments(let detail):
             return "Invalid arguments: \(detail)"
+        case .preconditionUnmet(let detail):
+            return detail
         case .projectMismatch(let expected, let actual):
             return "Open project mismatch. Expected \(expected), found \(actual). No action was taken."
         case .trackNotExposed(let requested, let exposed):
