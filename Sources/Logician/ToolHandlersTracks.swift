@@ -248,6 +248,16 @@ extension MCPServer {
         )
     }
 
+    func handleRenameRegion(_ arguments: [String: Any]) throws -> Any {
+        return try logic.renameRegion(
+            trackName: requiredString("track_name", in: arguments),
+            regionName: arguments["region_name"] as? String,
+            startBar: arguments["start_bar"] as? Int,
+            newName: requiredString("new_name", in: arguments),
+            expectedCurrentName: arguments["expected_current_name"] as? String
+        )
+    }
+
     func handleCopyRegion(_ arguments: [String: Any]) throws -> Any {
         guard let toBar = arguments["to_bar"] as? Int else {
             throw LogicianError.invalidArguments("missing integer: to_bar")
