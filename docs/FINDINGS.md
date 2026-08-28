@@ -3298,3 +3298,13 @@ Verifieringen är hela kartan, läst om och jämförd mot kartan före: antalet 
 `AXProjectSettings.swift` (ny) · `ChannelStrip.swift` (ny, ren: remsgrammatiken, typinferensen, routningsetiketterna) · `AXChannelStrip.swift` (ny: läsningen, `logic_track_info`, `logic_set_track_routing`, menyöppnandet med Escape-knepet) · `AXTempoEvents.swift` (ny: `logic_tempo_events`, tempocellens stegning) · `AXTransport.swift` (`projectTempoMode(allowingSettingsWindow:)`, `getTransport(readSmartTempoMode:)`) · `AXTreeWalk.swift` (två djupkonstanter) · `ToolHandlersTracks.swift`, `ToolHandlersTransport.swift`, `ToolRegistry.swift` (tre nya verktyg, två utökade) · AGENT-GUIDE (tre nya avsnitt, två uppdaterade) · ROADMAP (punkt 1 stängd).
 
 `swift test`: **503 tester gröna** (20 nya i `ChannelStripTests`, plus de 4 som följde med `MIDIPacketWalkTests` i cherry-picken av bryggfixen `ea24a49`), ingen Logic behövs. `swift build -c release` grön. `serverVersion` medvetet **inte** bumpad.
+
+### Meter-experimentet avgjort: Logic matar inte den virtuella ytan med metrar (2026-08-28, v0.54.x)
+
+Protokoll 5-daemonen speglar 0xD0-metrar (`meter_events`/`meter_levels`/`meter_overloads` i state.json), och dagens live-mätning gav ett entydigt negativt svar för standardkonfigurationen. Metod: play-knappen via kommandosocketen, transporten VERIFIERAT rullande (timecode takt 1→7, play-LED tänd) genom projektets faktiska ljudinnehåll, state samplat varje sekund i 8 s.
+
+- **Noll meter-events under uppspelning.** `meter_events` stod stilla (16 före = 16 efter), alla nivåer 0, inga overloads — i två separata körningar (takt 17+, takt 1–7).
+- **Sporadiska 0xD0 i vila:** räknaren växte 8 → 16 mellan två avläsningar UTAN uppspelning. Alltså enstaka channel pressure-bytes vid tillståndsändringar (nivå 0), aldrig en meterström. Grammatikavkodningen är alltså inte motbevisad — det finns bara ingen ström att avkoda.
+- **Slutsats per räknarens tre-utfallsdesign:** utfall 3, "Logic matar inte den här ytan" — med nyansen att det gäller *nuvarande* Control Surfaces-konfiguration. Riktiga Mackie-ytor får metrar när värden aktiverar meterläget; kandidat-experiment är Mackie Control-enhetens inställningar i Control Surfaces Setup (och/eller MCU:ns meterläges-sysex). Tills det körts ska `meter_level` förväntas vara 0/frånvarande, och verktygsbeskrivningen säger nu det rakt ut.
+
+Mätningen gjordes utanför agentsessionerna (koordinatorn, via socketen direkt: `{"cmd":"press","button":"play"}`, half-close-framing). Transporten stoppades efteråt; playheaden lämnades vid takt 7 (dubbel-stop hade parkerat den på takt 1 före körningen).
