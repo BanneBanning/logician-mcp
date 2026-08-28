@@ -4,12 +4,14 @@ The concrete plan for the four items the README's roadmap line has been promisin
 
 Status legend: 🎯 planned · 🔬 needs a research session against Logic first · ⏸ parked.
 
+> **A hazard every research session should know about** (seen 2026-08-28): macOS's accessibility layer can degrade **system-wide** mid-session — `AXWindows` starts returning the application element instead of the windows, in every app, not just Logic. Logic itself stays healthy and the **control-surface plane keeps working throughout**; only the AX-borne capabilities (Tempo List, plugin windows, the preset menu, track headers) go dark. Nothing in-process recovers it — not `activate()`, hide/unhide, `AXEnhancedUserInterface`, or waking the display — so a session that hits it should finish on the MCU plane and hand the machine back. It is also the sharpest argument yet for the two-plane architecture.
+
 | # | Item | Size | Status |
 |---|------|------|--------|
 | 1 | [Tempo honesty guards](#1-tempo-honesty-guards) | small | 🎯 · bar-math guards shipped, 5 of 6 bullets done (2026-08-27); blocked on Logic publishing the Smart Tempo mode |
-| 2 | [Stereo Out / master-chain addressing](#2-stereo-out--master-chain-addressing) | medium | 🎯🔬 |
-| 3 | [Variable tempo (tempo track / Smart Tempo)](#3-variable-tempo-tempo-track--smart-tempo) | large | 🎯 · acquisition + integration + all four call sites shipped (2026-08-27); curves unreadable, multi-row grammar unverified |
-| 4 | [Plugin preset browsing](#4-plugin-preset-browsing) | medium | 🎯 · `list`/`select`/`step` shipped and live-verified on a track (2026-08-27); `select` on a headerless strip and the MCU route still unverified |
+| 2 | [Stereo Out / master-chain addressing](#2-stereo-out--master-chain-addressing) | medium | 🎯 · addressing + volume/mute/plugin-parameter writes live-verified (2026-08-28); the master A/B is blocked on the chain's plugins, not on us |
+| 3 | [Variable tempo (tempo track / Smart Tempo)](#3-variable-tempo-tempo-track--smart-tempo) | large | 🎯 · multi-row grammar and the sub-beat conversion live-verified (2026-08-28); curves unreadable, the boundary cross-check against a bounce still unrun |
+| 4 | [Plugin preset browsing](#4-plugin-preset-browsing) | medium | ✅ · `list`/`select`/`step`/`undo`, live-verified on a track AND on a headerless strip (2026-08-28); only the MCU route is unexplored, and deliberately |
 | 5 | [Homebrew packaging](#5-homebrew-packaging) | small | ⏸ blocked on the repo going public |
 | — | [Deliberately parked](#parked) (localization, track-stack freeze) | — | ⏸ |
 
@@ -73,6 +75,25 @@ Status legend: 🎯 planned · 🔬 needs a research session against Logic first
 - Known name gap: Logic sometimes *substitutes* words when abbreviating (`Ivan Effect` → `IvanFx`), which subsequence matching cannot recover. Such a name fails as `not_found`, never as a wrong strip.
 - **Step 4 is shipped but UNVERIFIED**: `logic_evaluate_change` method `bounce` had its own unconditional `selectTrack` (`AXBounce.swift:744`) and now takes the headerless fallback, so a limiter A/B on `Stereo Out` is reachable end to end — via the plugin *window* (Accessibility), which means the strip has to be visible in an inspector and the plugin has to expose its parameter to AX. Never run. Methods `render` (freeze) and `solo_bounce` (solo) stay track-only by nature.
 
+### Status after v0.53.0 (2026-08-28) — the writes have run
+
+Every write item 2 flagged as UNVERIFIED has now been performed against the running Logic on the sandbox copy (full log in FINDINGS, "Skrivrundan mot masterkedjan"). Three of the four found bugs first.
+
+**Verified live:**
+
+- **`logic_set_volume` on `Stereo Out`** — +0.0 → -3.7 → +0.0 dB, `verified: true` both ways, fader back on 12443 exactly. The per-channel convergence does land on an output strip. It did NOT the first time: the rightmost strip's minus sign falls into the neighbouring LCD cell, the convergence read its own downward step as upward and drove the master fader to the +6.0 dB end stop while reporting success. Fixed in `MCULCDRow` (shared by both planes), `bridgeProtocolVersion` → 4, and `fastConverge` declines the rightmost cell against an older daemon so the fix works before the daemon is replaced. **Not master-specific** — any strip on channel 7 of its bank was affected, and had been since the convergence shipped.
+- **Mute on `Stereo Out`** — on → LED, off → LED, restored.
+- **A plugin parameter on the master chain** — `Channel EQ` / `Pea3Ga` on `Stereo Out`, 0.0 → -2.1 dB in 17.9 s, LCD-echo verified, `selection_route: mcu_channel`, restored.
+- **Experiment (c) is settled, and the answer needed a write:** mirror fader index 8 moved `Master` and left `St Out`'s own fader untouched, confirmed by banking to the row where both are visible. **MCU fader 8 is the `Master` strip, not `Stereo Out`.**
+
+**Still open, with the reason now known:**
+
+- **Step 4 (the master A/B) is blocked by the master chain's plugins, not by the addressing.** `logic_evaluate_change` method `bounce` writes through the plugin WINDOW, and a plugin window is read through its sliders but written through its editable "knob and field" controls — which `Channel EQ` (26 sliders / 0 fields), `Limiter` (4 / 0) and `Sensor` (0 / 0) do not have, while `Compressor` does (22 / 10). The reference project's whole master chain is therefore unwritable from the Accessibility plane. `logic_list_plugin_parameters` now says so per parameter (`ax_writable`), `setParameter` tells that apart from "no such parameter", and `bounce` refuses BEFORE its baseline bounce instead of after. Making the A/B work on such a chain means one of: teaching `bounce` to write through the MCU (it takes `plugin_name`, the surface takes `insert_slot` — a real design question), or converging the slider's own `AXValue` against its `AXValueDescription` the way the vpot path does. Neither is a small change.
+- **The PL view can show a different strip than the SELECT LED says** — observed with the LED on strip 8 (`Stereo Out`, confirmed on two banks) while the PL row was the track `Bas`. A SELECT press on an already-lit strip is a no-op, so re-selecting cannot recover it; selecting a neighbour and coming back does. The two browser writes now take a third proof (the PL list must agree with Accessibility's insert list for the same strip), but **the mechanism is not reproduced** — two targeted attempts failed to provoke it. Worth another session: it is the wrong-channel failure class this project cares most about.
+- **A fader cannot be written absolutely.** The bridge's `fader` command sends pitch bend without the fader-touch note and Logic ignores the position — while the mirror briefly reports the written value, so a read straight afterwards looks like success. Every path that matters converges a vpot instead, so nothing shipped depends on it; the command itself is a trap and should either send touch/untouch or be removed.
+- **Automation on a headerless strip** is still unimplemented (`setAutomationMode` reads the track header's label) — unchanged from v0.51.0.
+- `global_view` (note 0x33) is still never pressed.
+
 ## 3. Variable tempo (tempo track / Smart Tempo)
 
 **Ground truth.** FINDINGS.md:712 already names the shape: *"tempo-track following in the bar math: read tempo changes, piecewise integration."* All the damage concentrates in the one primitive plus the two recording paths: `barRangeSeconds` and its four callers; `logic_record_midi`'s single linear ms ramp (`ToolHandlersTransport.swift:138`); automation recording's single `msPerBeat` (`Sources/Logician/MCUAutomation.swift:114, 399`). The bridge itself is tempo-agnostic (offsets arrive as ms) — no bridge changes needed.
@@ -94,7 +115,12 @@ The item-1 honesty guards remain the safety net underneath: when the Tempo List 
 **Still open, and now the whole item:**
 
 - 🔬 **Curves are invisible to this route.** The Tempo List publishes Position, Tempo and SMPTE Position only, so a tempo *curve* is read as a step. The map therefore reports `curveUncertaintySeconds` — the exact difference between integrating each adjacent pair as a step and as a ramp — and the warning names it in ms when a range could be affected. Closing this needs another source for the curve flag: the **tempo track** itself (a global track; are curve handles AX-visible?) or the Smart Tempo Editor. Until then, a ramping project's boundaries carry a quantified caveat rather than a guarantee.
-- 🔬 **Multi-entry grammar and the mismatch branches** are unit-tested against captured strings, not observed. A scratch project with two or three tempo points (one of them a curve) would confirm the row grammar, the item-count cross-check, and — as a bonus — whether the control-bar slider publishes decimals, which the 0.05 BPM epsilon was chosen for and has still never seen.
+- ✅ **The multi-entry grammar is observed** (2026-08-28). A second tempo event was created in the Tempo List on the sandbox copy and `readTempoMap()` parsed both rows live — `bar 1, beat 1, 120` and `bar 9, beat 1.9583, 120`, `source: .tempoList`, `subBeatPositions: true` — with `Number of Items` moving `1 Event` → `2 Events`, so the truncation cross-check works past one row too. Three things came with it:
+  - **`Create new Tempo Event` places the event at the PLAYHEAD**, not at the nearest bar line.
+  - **`setPlayhead` lands within the beat, not on it.** A verified "bar 9, beat 1" was really 0.96 beats into the bar, and the control bar shows only bar/beat so the deviation is invisible from there. Anything that assumes a parked playhead is exactly on a bar line is off by up to a beat — the tempo *sampling* does not care, but `Create new Tempo Event` did.
+  - **The sub-beat conversion is confirmed, not assumed.** `9 1 4 201` ⇒ 0.75 + 200/960 = 0.9583 beats = 0.4792 s at 120 BPM = 11.98 frames at 25 fps ⇒ `01:00:16:11.78`, which is exactly what Logic's own SMPTE column printed; the same held after a one-division step. **1/16 division and 960 ppq are right** for the default settings, which retires the third honesty caveat below for that case.
+  - The position and tempo cells' `AXSlider`s are **steppers, not fields**: any `AXUIElementSetAttributeValue` moves one step and the action set is `AXIncrement`/`AXDecrement`, so there is no absolute write of a position or a BPM by that route. Each row does carry a `Delete` action, which is how an event is removed.
+- 🔬 **Still unrun: the boundary cross-check and the mismatch branches.** The session that built the two-row map lost the Accessibility plane before it could render a slice across the change and compare it against a `logic_bounce_range` of the same bars (the tempo-safe ground truth), or watch `logic_set_tempo` and `record_midi speed > 1` refuse on a real map. Those three are the whole remainder of the item, and the map to run them against now exists — see the FINDINGS cleanup list. Whether the control-bar slider publishes decimals, which the 0.05 BPM epsilon was chosen for, is still unseen.
 - **Meter is the last assumption.** Signature changes live in their own list (the Signature tab of the same List Editors, which *does* have its own menu item: `Window > Open Signature List`), and reading them is the natural follow-up — the same acquisition pattern, one tab over.
 
 ## 4. Plugin preset browsing
@@ -119,9 +145,13 @@ The item-1 honesty guards remain the safety net underneath: when the Tempo List 
 4. **The bug: `pluginPresetLabel` was reading the wrong pop-up.** "The rightmost pop-up with a value" returned a *parameter* pop-up on `Channel EQ` (stereo mode), `Limiter` (algorithm) and `Pitch Shifter` (mode) — values that never move when the preset does, so `step` reported `stepped: false` on steps that worked. The pop-ups are told apart by their action set (setting pop-up: `AXPress` only), which is what ships.
 5. **Step 3 of the plan ("master-chain presets come along for free once item 2 lands") held**, with item 2's own caveat: the setting menu lives in the plugin *window*, so a headerless strip must be showing in an inspector. `Stereo Out` enumerates today; `Master`/`Aux 1` need the Mixer open.
 
-**Not done — deliberately, and honestly:**
+### Status after v0.53.0 (2026-08-28) — done, and one more thing shipped
 
-- **`select` has never run on a headerless strip.** The `Stereo Out` path is proven up to and including `list`, not past it.
+- **`select` on a headerless strip is verified.** Run on `Stereo Out`'s `Limiter` (four parameters instead of Channel EQ's 26, so the state it overwrites could be checked and put back): `Default Preset` → `Warm Master`, `verified: true`, `selection_route: mcu_channel`, and four of the eight MCU parameters really moved (`Gain` 0.0 → +12.0 dB, `Lookahead` 5.0 → 0.5 ms, `Output Level` -0.0 → -0.1 dB, `Release` 250.0 → 6.0 ms). `list` still answers 114 on Channel EQ and 11 on the Limiter.
+- **The restore route is real, and it is now a feature.** The overwrite warning told agents to use the plugin window's own `Setting ▸ Undo` and left them to find it. One Undo brought back all eight Limiter parameters EXACTLY, label included — back to the *unnamed* `Default Preset` state that no `select` could have recovered. It ships as `action: "undo"`, reporting `verified: false` on purpose: an undo between two unnamed states leaves the label identical while the parameters move, so the note says to read the parameters back rather than claim a verdict off the header.
+- **A bug the run found:** the press that opens the setting menu was being swallowed. `ensureLogicFrontmost` returns as soon as the APPLICATION is frontmost, which says nothing about which of Logic's windows holds the focus, and a press into an unfocused window arrives nowhere — two consecutive `list` calls failed while the terminal held the front, and every call after a first successful one opened on the first poll. The plugin window is now raised and focused before the press, and the press is retried.
+
+**Not done — deliberately, and honestly:**
 - **The `presets: null` branch** (a plugin with no Logic setting pop-up at all) is unit-tested but never seen live — all five plugins opened, `Trilian` included, had one. The new pop-up rule is measured on five plugins; a plugin that publishes `AXShowMenu` on its setting pop-up too would get `null` instead of a wrong value, which is the right direction but not coverage.
 - **The MCU route (question (a)) is still unanswered, and was not hunted for.** Finding it would have meant vpot presses inside a plugin edit view, which are parameter writes. Item 4 is therefore an AX-only capability, as the plan guessed.
 - **A shortcut left on the table:** the setting menu carries its own `Next`/`Previous` items (indices 6 and 7), so relative stepping exists in the AX plane and would need no learned key command. Untested; `step` was left exactly as it was.
@@ -131,7 +161,7 @@ The item-1 honesty guards remain the safety net underneath: when the Tempo List 
 
 **Blocked on the repo going public** — a formula needs a public URL to fetch. When that happens, the shape is standard and small:
 
-1. Tag releases (`v0.51.0` — the version already lives in `Sources/Logician/Support.swift`).
+1. Tag releases (`v0.53.0` — the version already lives in `Sources/Logician/Support.swift`).
 2. A tap repo (`BanneBanning/homebrew-logician`) with a formula that fetches the release tarball and runs `swift build -c release` (build-from-source; `depends_on :macos` ≥ 13 and the Xcode CLT).
 3. README install step 1 gains the alternative: `brew install bannebanning/logician/logician`.
 

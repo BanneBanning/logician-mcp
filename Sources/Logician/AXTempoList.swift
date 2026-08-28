@@ -57,7 +57,14 @@ extension LogicAccessibility {
     /// It never throws: a map that cannot be read is a fallback, not a failure —
     /// callers drop back to the two-point sampling that shipped before it.
     func readTempoMap() -> (map: TempoMap?, failure: TempoListFailure?, tempoSet: String?) {
-        guard let window = (try? logicWindows())?.first else {
+        // The pane is a child of the PROJECT window, and `logicWindows()` is
+        // ordered by Logic, not by us: with any plugin window open, `.first`
+        // was that plugin window and the read came back `tempoTabNotFound`
+        // while a perfectly readable Tempo List sat one window over
+        // (2026-08-28 — every plugin tool leaves a window open long enough for
+        // this to happen, and the caller then silently fell back to parking
+        // the playhead for a two-point sample).
+        guard let window = try? projectWindow() else {
             return (nil, .listEditorsUnavailable, nil)
         }
         // Already open? Then leave it open afterwards.

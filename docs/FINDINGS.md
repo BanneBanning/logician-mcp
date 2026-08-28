@@ -1,6 +1,6 @@
 # Logic MCP — verifierade fynd och teknisk handoff
 
-Senast uppdaterad: 2026-08-27
+Senast uppdaterad: 2026-08-28
 
 ## Syfte
 
@@ -1731,7 +1731,6 @@ Roadmap-punkt 3. Punkt 1 gjorde matematiken ärlig; den här gör den **rätt**.
 **Kvar som antagande:** **taktarten**. Signaturändringar bor i sin egen lista (Signature-fliken i samma List Editors, och den HAR en egen menypost) och läses inte — all takt→slag-omräkning använder fortfarande ett enda slag-per-takt. Det är nu det enda kvarvarande antagandet i bar-matematiken, och det är dokumenterat i `TempoMap` och i AGENT-GUIDE.
 
 **Overifierat, för ärlighetens skull:** allt om FLERA rader och om kurvor. Testprojektet har en enda tempohändelse, och att bygga en karta hade betytt att skriva i användarens projekt. Radgrammatiken är alltså verifierad för en rad; parsningen av flera rader, integrationen över steg och ramper, trunkeringskontrollen och varningstexterna är enhetstestade. Kurvor kan inte läsas alls (se ovan). Att `readTempoMap` beter sig när Logic rullar är overifierat — panelen togglades bara i stillastående transport.
-=======
 
 ### Pluginpresets: fel popup lästes, och menyn går att räkna upp helt (2026-08-27, v0.52.0)
 
@@ -1793,3 +1792,129 @@ Gränsen mellan kommandon och inställningar bestäms av två regler i ordning: 
 **Kvar att städa i användarens projekt:** rundturen i fynd 6 lämnade `Bas` → `Compressor` (insert 1) med `Output Gain` på råvärde 60 i stället för 54. Återställningen kunde inte köras (behörighetsspärr i sessionen). Fixen är pluginfönstrets `Setting ▸ Undo` två gånger, eller att skruva `Output Gain` tillbaka; projektet är osparat, så ingenting har nått disken.
 
 `swift test`: 220 tester gröna (31 nya), 1,4 s, ingen Logic behövs.
+
+### Skrivrundan mot masterkedjan: teckenbortfallet, den låsta pressen, och en AX-krasch som avbröt tempodelen (2026-08-28, v0.53.0)
+
+Den här sessionen körde de skrivningar som roadmap-punkterna 2, 3 och 4 shippat men aldrig utfört. Fyra buggar föll ut, tre av dem farliga, och sessionen slutade i förtid när **macOS hjälpmedelslager degraderade systemomfattande** — inte av Logic, och inte av oss.
+
+**Miljö:** körande Logic Pro 12.3.1 (`Testlåt Copy.logicx`, pid 25052 — en sandlådekopia som användaren uttryckligen godkänt skrivningar i), användarens bryggdaemon pid 24761 (protokoll 3, **aldrig omstartad**), tillfälliga XCTest-harness som togs bort efteråt. Ingen `logician --bridge` startades, projektet sparades aldrig, allt ligger osparat i minnet. Varje skrivning föregicks av kontrollen att projektsökvägen innehåller "Copy".
+
+#### Fynd 1 — den högraste strippens minustecken hamnar i grannens LCD-cell
+
+Det första `logic_set_volume("Stereo Out", -2 dB)` gick från +0,0 dB till **+6,0 dB**, alltså rakt upp i fadertoppen, och svarade `success: true, verified: false`. Bryggans egen diagnostik: **62 iterationer, slutratio -3,29 (negativ)**.
+
+Orsaken mättes fram genom att vrida en vpot åtta steg ned på kanal 1, 3, 5 och 7 i samma bank och läsa hela raden:
+
+```
+ch 5: |-19,5  +0,0 dB                     -1,7 dB              |
+ch 7: |-19,5  +0,0 dB                                  -1,7 dB |
+                                              cell 6 ^^ cell 7
+```
+
+När en vpot vrids byter Logic ut flerkanalsraden mot en enkanalsbanner och målar den berörda strippens värde som en **ÅTTA tecken bred grupp** — värdet plus dess efterföljande blanksteg — vänsterställd i strippens egen cell. På den högraste cellen skulle gruppen gå ett tecken förbi radens 56, så Logic börjar ett tecken TIDIGARE, och tecknet hamnar i cell 6:s sista kolumn. Bara kanal 7 skiftar; 1, 3 och 5 ligger exakt i sina celler.
+
+En strikt 7-teckens skivning läste alltså `-1,7 dB` som `1,7 dB` — magnituden utan sitt tecken, vilket är **värre än ett oläsbart värde**: konvergensen läste sitt eget steg nedåt som ett steg uppåt, inverterade sin adaptiva tickratio och gick till ändläget medan den rapporterade framgång. Bara negativa värden korrumperas; ett `+` som faller bort parsas ändå rätt.
+
+Buggen är INTE masterspecifik. Den träffar **vilken stripp som helst som råkar ligga på kanal 7 i sin bank** — på det här projektet är det `IvnSlg` (bank 0), `Crash` (bank 1), `St Out` (bank 2) och `Master` (bank 3) — och den har legat där sedan konvergensen shippade. Att de sju tidigare volymanropen (v0.49.2) fungerade betyder bara att ingen av dem låg på kanal 7 med ett negativt mål.
+
+Fixen är en delad ren funktion, `MCULCDRow`, som BÅDA planen importerar: `cell` är den bokstavliga skivningen (namn läses så), `valueCell` återvinner det skiftade tecknet på sista cellen — på positiva belägg bara, eftersom teckenkolumnen tillhör cell 6 och ett cell 6-värde som slutar på `+`/`-` aldrig observerats, medan streckplaceholdern som skulle kunna förväxlas med ett tecken sitter sex kolumner till vänster. Alla eko som en skrivning konvergeras eller verifieras mot går nu genom den: daemonens in-process-konvergens, `setVolume`s dB-återläsning, plugin- och instrumentparametersidorna och sändnivån.
+
+Daemonen som äger socketen kan vara äldre än fixen, så `bridgeProtocolVersion` går till **4** och `fastConverge` **avböjer den högraste cellen** mot en äldre daemon — anroparna äger alla en egen långsammare loop som läser via `lcdValueFields`, så ett avböjande betyder "gör det här", inte "ge upp". Det är också vad som gjorde fixen live-verifierbar i den här sessionen utan att röra användarens daemon.
+
+**Live efter fixen:** `Stereo Out` +0,0 → -3,7 → +0,0 dB, `verified: true` båda vägarna, fadern tillbaka på exakt 12443. 6,8 s per anrop via serverloopen (mot ~3 s för bryggans, som återfår sin roll när daemonen är protokoll 4).
+
+#### Fynd 2 — `Master` och `Stereo Out` är två olika objekt, och spegelfader 8 är `Master`
+
+Roadmapens experiment (c), som v0.51.0 lämnade *inconclusive* eftersom varje stripp stod på 12443 och alltså inte gick att skilja åt genom läsning. En faderflytt avgjorde det:
+
+Spegelindex 8 skrevs 12443 → 11543 (Logic ekade 11527 — faderupplösningen kvantiserar). På `St Out`-banken rörde sig **bara index 8**; `St Out`s egen stripfader (index 7) stod stilla. Ett banksteg till höger, där `Master` ligger på kanal 7 och `St Out` på 6, visade **index 7 = 11527**. Alltså:
+
+> **MCU:ns dedikerade masterfader (spegelindex 8) är Logics `Master`-stripp, inte `Stereo Out`.** De är skilda objekt, och index 8 speglar `Master`-strippens fader var den än råkar ligga i en bank.
+
+Återställt till 12443 och verifierat på båda bankerna.
+
+#### Fynd 3 — en fader kan inte skrivas absolut; Logic ignorerar positionen utan touch
+
+Sidofynd med en kostnad. Bryggans `fader`-kommando skickar pitch bend utan att först skicka faderns touch-not, och **Logic följer inte**. Värre: spegeln rapporterar kortvarigt det skrivna värdet (vårt eget meddelande), så en läsning direkt efteråt ser ut som en lyckad återställning innan Logic ekar tillbaka sitt riktiga värde. Tre strippar (`Audio 8`, `Aux 1`, `Aux 3`) troddes därför återställda i ett tidigt probe och var det inte — se städlistan. Vpot-vägen i CS-volymvyn fungerar; faderskrivningen gör det inte. **Inte fixad** (den kräver touch/untouch-noterna och ett eget verifieringspass) — se roadmapen.
+
+#### Fynd 4 — mute och pluginparameter på masterkedjan fungerar rakt av
+
+- `logic_set_track_mute("Stereo Out")` på → LED not 23 tänd → av → släckt. `route: mcu`, `readback_route: mcu_channel_led`. Återställd.
+- `logic_mcu_set_plugin_parameter` på `Stereo Out` → MCU-slot 1 (`Cha EQ`) → `Pea3Ga` 0,0 dB → **-2,1 dB** på 17,9 s, LCD-eko-verifierat, `selection_route: mcu_channel`, `mcu_strip: 8`. Återställd till 0,0 dB.
+- Channel EQ på `Stereo Out` räknar upp **6 sidor / 42 parametrar** över MCU.
+
+#### Fynd 5 — masterkedjans A/B går inte, och skälet är inte adresseringen
+
+`logic_evaluate_change` metod `bounce` föll på `parameterNotFound("Peak 3 Gain")` — **efter** att baseline-bouncen redan kört. Roten är att ett pluginfönster **LÄSES genom sina sliders och SKRIVS genom sina redigerbara fält**, och de två mängderna är inte samma plugin till plugin:
+
+| plugin | AXSlider | AXTextField |
+|---|---|---|
+| `Compressor` (spår `Bas`) | 22 | **10** |
+| `Channel EQ` (`Stereo Out`) | 26 | **0** |
+| `Limiter` (`Stereo Out`) | 4 | **0** |
+| `Sensor` (`Stereo Out`) | 0 | **0** |
+| `Trilian` (`Bas`) | 0 | 0 |
+
+Apples äldre effekter bygger på "knob and field"-kontroller och publicerar båda; ett rent rattbaserat plugin publicerar sliders och **inget fält alls**. Referensprojektets HELA masterkedja är rattbaserad, alltså oskrivbar från AX-planet — medan `logic_list_plugin_parameters` rapporterade var och en som `writable: true`, för den läste **sliderns** skrivbarhet för en skrivning som går genom ett fält som inte finns.
+
+Tre ändringar: `listParameters` svarar nu per parameter på den fråga anroparen faktiskt ställer (`ax_writable`); `setParameter` skiljer "ingen sådan parameter" från "det här pluginet har inga skrivbara parametrar alls" — olika åtgärder, och den andra namnger kontrollytevägen som fungerar; och `evaluateChangeBounced` slår upp fältet **före** sin baseline-bounce. 9,7 s plus en herrelös ljudfil blev 1,1 s och en vägran.
+
+Punkt 2:s steg 4 ("mix bus compressor A/B faller ut för fritt") är alltså **fortfarande inte körd**, men skälet är nu känt och namngivet: A/B:t behöver ett plugin med redigerbara fält på strippen. Att lägga dit en `Compressor` för ändamålet försöktes och avbröts — se fynd 6.
+
+#### Fynd 6 — PL-vyn kan visa en annan stripp än SELECT-lysdioden säger
+
+Det farligaste fyndet. `logic_add_plugin("Stereo Out", "Compressor")` misslyckades ("bläddraren visade aldrig Compressor på 500 steg"), och efteråt läste PL-raden `Cha EQ | *PShft | Cha EQ | Comprs` — vilket är spåret **`Bas`**, inte `Stereo Out` (vars PL är `Cha EQ | Limitr | Sensor`). Samtidigt lyste SELECT-lysdioden på stripp 8, bekräftat på TVÅ banker (kanal 7 på bank 2, kanal 6 på bank 3 — samma stripp), och AX bekräftade att `Stereo Out`s insert-lista var orörd.
+
+Alltså: **båda de bevis `selectChannelVerified` tar — LCD-namnet före tryckningen och SELECT-lysdioden efter — kan vara rätt medan PL-vyn redigerar en annan stripp.** Ett SELECT-tryck på en stripp vars lysdiod REDAN lyser är en nolloperation, så ett omval kan inte laga det; att välja en granne och komma tillbaka kan (verifierat: `Vinyl` → `Stereo Out` gav rätt lista igen). En bläddrarskrivning i det läget hade landat i `Bas`. Det är fel-kanal-buggen från v0.31.0 igen, förbi båda de befintliga vakterna.
+
+**Mekanismen är inte reproducerad.** Två riktade försök misslyckades med att framkalla tillståndet (AX-spårval av ett annat spår, och ett AX-pluginfönster öppnat på ett annat spår, gav båda rätt PL-vy). Det som är BEVISAT är att tillståndet uppstår och att det inte syns i de bevis vi tar.
+
+Därför tar de två bläddrarskrivningarna nu ett **tredje, oberoende bevis** innan de bläddrar: listan ytan visar måste stämma med den Accessibility läser på samma stripp. Slot-ORDNINGEN jämförs medvetet inte (en utgångsstripp vänder på den, v0.51.0 fynd 5) — bara multimängden av upptagna namn, där varje MCU-cell ska vara en rimlig förkortning av något AX-namn. En stripp ingen inspektor visar svarar med ingenting, och en fråga som inte går att ställa får aldrig fälla en fungerande operation: den degraderar till `pl_view_check: "unavailable"`.
+
+#### Fynd 7 — `select` på en huvudlös stripp, och vägen tillbaka som aldrig testats
+
+Punkt 4:s flaggade hål. Körd på `Stereo Out`s **`Limiter`** i stället för Channel EQ, medvetet: den har fyra parametrar i stället för 26, alltså ett tillstånd som går att kontrollera och lägga tillbaka.
+
+- `list` gav **114** inställningar på Channel EQ och **11** på Limiter, båda på `Stereo Out` — samma siffror som 2026-08-27.
+- `select "Warm Master"`: `Default Preset` → `Warm Master`, `verified: true`, `selection_route: mcu_channel`. Fyra av åtta MCU-parametrar flyttade sig verkligen: `Gain` 0,0 → +12,0 dB, `Lookha` 5,0 → 0,5 ms, `OutLev` -0,0 → -0,1 dB, `Rel` 250,0 → 6,0 ms.
+- **`Setting ▸ Undo` återställde ALLA ÅTTA exakt**, etiketten inkluderad — tillbaka till det ONAMNGIVNA `Default Preset`-tillstånd som inget `select` kunde ha återskapat.
+
+Den sista raden stängde 2026-08-27:s öppna fråga, så den blev en funktion: `logic_plugin_preset` har nu `action: "undo"`. Den rapporterar `verified: false` med flit — etiketten är belägg, inte bevis: en undo mellan två onamngivna tillstånd lämnar den oförändrad medan parametrarna rör sig, så noten säger att läsa tillbaka parametrarna när tillståndet spelar roll i stället för att avge en dom på headern.
+
+#### Fynd 8 — pressen som öppnar inställningsmenyn svaldes, och `ensureLogicFrontmost` kan inte se det
+
+Två `list`-anrop i rad på `Stereo Out`s Channel EQ misslyckades med "menyn öppnades inte" medan terminalen låg i förgrunden; varje anrop EFTER ett första lyckat — samma plugin, samma fönster — öppnade på FÖRSTA pollningen. Att vänta längre hjälpte aldrig (3,75 s räckte inte två gånger) eftersom pressen aldrig kom fram: `ensureLogicFrontmost` returnerar så snart APPLIKATIONEN är frontmost, vilket inte säger något om vilket av Logics fönster som har fokus, och en press på en kontroll i ett ofokuserat fönster sväljs. Pluginfönstret höjs och fokuseras nu före pressen, och pressen görs om i upp till tre försök med den befintliga menyavvisningen emellan, så en press som FAKTISKT fungerade men pollades för tidigt inte stängs igen av omförsöket.
+
+#### Fynd 9 — `readTempoMap` läste fel fönster
+
+`readTempoMap` tog `logicWindows().first`. Med ett pluginfönster öppet var det pluginfönstret, och läsningen kom tillbaka `tempoTabNotFound` medan en fullt läsbar Tempo List satt ett fönster bort — varpå anroparen tyst föll tillbaka på att parka playheaden för en tvåpunktssampling (upp till 14 s). Varje pluginverktyg lämnar ett fönster öppet tillräckligt länge för att det ska hända. Använder nu `projectWindow()`.
+
+#### Fynd 10 — Tempo List: knappen, positionen, och att sub-beat-antagandet stämmer
+
+Punkt 3:s flerradsgrammatik. Med playheaden parkerad på takt 9:
+
+- **`Create new Tempo Event` lägger händelsen på PLAYHEADEN**, inte på närmaste taktlinje. Den nya raden blev `9 1 4 201` — och kontrollradens playhead-läsning sa "takt 9, slag 1". Alltså: **`setPlayhead` landar INOM slaget, inte på det**, och kontrollraden visar bara takt/slag, så avvikelsen är osynlig därifrån. En takt-9-parkering låg i verkligheten 0,96 slag in i takten.
+- **Flerradsgrammatiken parsas live.** `readTempoMap()` gav två händelser: `bar 1, beat 1, 120` och `bar 9, beat 1.9583, 120`, `source: .tempoList`, `subBeatPositions: true`, och `Number of Items` gick från `1 Event` till `2 Events` — så korskontrollen mot radantalet fungerar också med fler än en rad.
+- **Sub-beat-konverteringen är BEKRÄFTAD mot Logics egen SMPTE-kolumn**, inte längre ett antagande. `9 1 4 201` ⇒ 0,75 + 200/960 = 0,9583 slag = 0,4792 s vid 120 BPM = 11,98 bildrutor vid 25 fps ⇒ `01:00:16:11.78` (Logic skriver underbildrutor i 1/80). Observerat: exakt `01:00:16:11.78`. Efter ett steg till division 3: 0,7083 slag ⇒ `01:00:16:08.68`, observerat `01:00:16:08.68`. **1/16-division och 960 ppq stämmer**, och bildfrekvensen i den här kolumnen är 25 fps. Punkt 3:s tredje ärlighetsförbehåll är därmed inlöst för default-inställningarna.
+- **Positionsfältens `AXSlider`ar är STEGARE, inte fält.** En `AXUIElementSetAttributeValue` med vilket värde som helst flyttar ett steg (tick 201 → 200, tempo 120 → 121); aktionsmängden är `["AXIncrement", "AXDecrement"]`. Det finns alltså ingen absolut skrivning av en position eller ett tempo den här vägen — bara stegning.
+- **Raden bär en `Delete`-aktion** (`"Name:Delete\nTarget:0x0\nSelector:(null)"`) och `AXSelected` är skrivbar, så borttagning av en tempohändelse har en AX-väg. Den hann aldrig köras — se nedan.
+
+#### Fynd 11 — och sedan slutade macOS hjälpmedelslager fungera, systemomfattande
+
+Mitt i tempoarbetet började varje AX-anrop komma tillbaka fel: Logics `AXWindows` returnerade **applikationselementet självt, två gånger** (`AXRole` = `AXApplication`, `AXPosition`/`AXSize`/`AXMain` = `AXError -25205`), `AXChildren` gav `[app, app, menubar]`, och `projectWindow()` hittade ingenting.
+
+Logic var **inte** trasigt: bryggan svarade hela tiden, ett `bank_right` följt av `bank_left` ekades korrekt av Logic, och processen låg på normala 13 % CPU. Och felet var inte Logic-specifikt — samma probe mot andra processer gav `Finder` med fönsterroll `AXScrollArea` och `Terminal` med `AXApplication`. **Hela maskinens hjälpmedelsträd hade degraderat.** Varken `activate()`, hide/unhide, `AXEnhancedUserInterface`-växling eller att väcka skärmen tog tillbaka det; boten är sannolikt en utloggning eller en omstart av systemets hjälpmedelstjänst, vilket är användarens beslut och inget en agent ska göra.
+
+Det är i sig ett arkitektoniskt argument som är värt att skriva ned: **datavägen överlevde det AX-vägen inte gjorde.** Volym, mute, pluginparametrar och bankscanning gick att köra vidare på MCU-planet efteråt; allt AX-buret — Tempo List, pluginfönster, presetmenyn — var borta.
+
+#### Vad som blev kvar i användarens projekt (osparat, inget har nått disken)
+
+1. **En andra tempohändelse på takt 9**, position `9 1 3 210`, **121,0000 BPM** (120 plus ett steg från stegarproben). Den skulle ha tagits bort med radens `Delete`-aktion; AX föll innan dess. Fixen: öppna `View > List Editors`, Tempo-fliken, markera rad 2 och radera — eller Ångra tills den är borta. Projektet har alltså en tempokarta det inte hade när sessionen började.
+2. **`Audio 8`, `Aux 1` och `Aux 3` står på -0,1 dB** (fader 12403) i stället för +0,0 dB (12443). De sattes åtta vpot-steg ned i teckenproben och "återställdes" med en absolut faderskrivning som Logic ignorerade (fynd 3); konvergensen tog dem tillbaka till inom sin egen tolerans men inte till exakt samma råvärde.
+3. **Playheaden står på takt 9** (var takt 57 slag 4 vid sessionens start).
+4. Ett eller flera **pluginfönster kan stå öppna** på `Stereo Out` — de stängs normalt av den `defer` som öppnade dem, men AX-kraschen kan ha avbrutit en stängning.
+5. Sedan förra sessionen, oförändrat: `Bas` → `Compressor` med `Output Gain` på råvärde 60 i stället för 54 (v0.52.0:s städnot).
+
+Allt annat är återställt och verifierat: `Stereo Out`s volym (12443) och mute (av), masterfadern (12443), Channel EQ:s `Pea3Ga` (0,0 dB), och Limiterns åtta parametrar plus dess etikett.
+
+`swift test`: 278 tester gröna (22 nya), 1,4 s, ingen Logic behövs. `swift build -c release` grön.
