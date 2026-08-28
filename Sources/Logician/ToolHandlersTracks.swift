@@ -149,6 +149,38 @@ extension MCPServer {
         )
     }
 
+    func handleRemoveSilence(_ arguments: [String: Any]) throws -> Any {
+        return try logic.removeSilence(
+            trackName: try requiredString("track_name", in: arguments),
+            regionName: arguments["region_name"] as? String,
+            startBar: arguments["start_bar"] as? Int,
+            apply: (arguments["apply"] as? Bool) ?? false
+        )
+    }
+
+    func handleSelectRegions(_ arguments: [String: Any]) throws -> Any {
+        return try logic.selectRegions(
+            mode: try requiredString("mode", in: arguments),
+            trackName: arguments["track_name"] as? String,
+            regionName: arguments["region_name"] as? String,
+            startBar: arguments["start_bar"] as? Int
+        )
+    }
+
+    func handleSplitRegion(_ arguments: [String: Any]) throws -> Any {
+        guard let atBar = arguments["at_bar"] as? Int else {
+            throw LogicianError.invalidArguments("missing integer: at_bar")
+        }
+        return try logic.splitRegion(
+            trackName: requiredString("track_name", in: arguments),
+            regionName: arguments["region_name"] as? String,
+            startBar: arguments["start_bar"] as? Int,
+            atBar: atBar,
+            atBeat: arguments["at_beat"] as? Int ?? 1,
+            notesCrossing: (arguments["notes_crossing"] as? String) ?? "split"
+        )
+    }
+
     func handleMoveRegion(_ arguments: [String: Any]) throws -> Any {
         return try logic.moveRegion(
             trackName: requiredString("track_name", in: arguments),
