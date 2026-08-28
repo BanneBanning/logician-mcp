@@ -15,13 +15,13 @@
 
 </div>
 
-Talk to your AI the way you'd talk to an engineer at the desk — and it actually does it, in your real Logic project. Logician gives Claude, Gemini, Cursor — any MCP client — hands and ears in Logic Pro: it mixes, edits, composes and bounces, and **hears the result**, because renders come back as audio the agent listens to. Point a multimodal agent at your session and it can listen to the actual mix and come back with concrete, doable moves — today's models make a sharp assistant; the ones coming will make a producer. No UI scripting, no window juggling, no mouse takeover.
+Logic Pro has no API, so every AI assistant could talk about your mix without being able to touch it. That always bugged me, so I built Logician. It gives Claude, Gemini, Cursor — any MCP client — hands and ears inside a real Logic project: it mixes, edits, composes and bounces, and it **hears the result**, because every render comes back as audio the agent actually listens to. Ask a multimodal agent to listen through your session and it returns with concrete moves it can execute itself the moment you say yes. Today's models already make a sharp assistant, and the ones coming will make a producer — this is the instrument I want waiting for them. No UI scripting, no window juggling, no mouse takeover.
 
 ## What you can say
 
 | You say | The agent does |
 |---|---|
-| *"Bounce bars 1–4 and tell me what you hear."* | Renders the master offline — no dialogs, session untouched — then answers from the audio, not from guesses. |
+| *"Bounce bars 1–4 and tell me what you hear."* | Renders the master offline (no dialogs, session untouched), listens, and tells you what is actually in the audio. |
 | *"More bass around 500 Hz, about 2 dB."* | Finds the bass track → finds the EQ (or adds one) → nudges the band → confirms the change against Logic's own readout. |
 | *"The hats are too stiff — quantize them, but keep some feel."* | Sets the region's quantize with swing. The notes you played stay yours. |
 | *"A/B that compressor setting on the master."* | Prints the mix twice — before and after — and hands you both versions, so the call is made with ears. |
@@ -112,9 +112,9 @@ Ask your agent one more time:
 
 ---
 
-## Measured, not promised
+## How fast is it?
 
-Wall-clock timings from a live reference project (25 mixer strips, 19 track headers). Anything not actually stopwatched says **est.** — that distinction is the whole point of the table.
+I stopwatch everything against a live reference project (25 mixer strips, 19 track headers). The rows I haven't clocked yet say **est.** until I have.
 
 | Capability | Measured |
 |---|---|
@@ -153,13 +153,13 @@ Wall-clock timings from a live reference project (25 mixer strips, 19 track head
 
 ## Under the hood
 
-Logic Pro has no automation API. Every other Logic MCP drives the UI: blind keypresses, dialog clicking, coordinate mouse moves, window scraping. Logician instead speaks **Mackie Control** — Logic's documented, bidirectional control-surface protocol — over virtual MIDI ports, and reads Logic's own LCD/LED/fader echoes back as verification. Where the surface protocol ends it uses macOS Accessibility *semantics* (element-addressed, never coordinates) and a dedicated MIDI port bound to Logic key commands.
+Logic Pro has no automation API. Every other Logic MCP drives the UI: blind keypresses, dialog clicking, coordinate mouse moves, window scraping. Logician instead speaks **Mackie Control** — Logic's documented, bidirectional control-surface protocol — over virtual MIDI ports, and reads Logic's own LCD/LED/fader echoes back as verification. Where the surface protocol ends it uses macOS Accessibility semantics and a dedicated MIDI port bound to Logic key commands.
 
 That buys three things UI automation can't give you:
 
 1. **Universal plugin control.** Third-party plugins with fully custom UIs (Trilian, Decapitator, …) expose nothing to Accessibility — but everything to the control-surface host automation layer. Logician reads and writes any parameter of any plugin.
 2. **Hardware-level ground truth.** Every write is compare-and-set: read the current value, refuse on mismatch, converge to the target, read Logic's echo back, report exactly what happened. The agent cannot hallucinate a parameter value — the LCD echo is the value.
-3. **Your mouse stays yours.** Nothing needs to be open, arranged or visible for the agent to work — it drives Logic's control-surface protocol, not your screen. The few times it presses one of Logic's own shortcuts, your pointer ends up exactly where you left it, and every write reports which route it took. You can keep working while the agent mixes.
+3. **Your mouse stays yours.** Nothing needs to be open, arranged or visible for the agent to work, because it talks to Logic the way a hardware mixing desk does. The few times it presses one of Logic's own shortcuts, your pointer ends up exactly where you left it, and every write reports which route it took. You can keep working while the agent mixes.
 
 <details>
 <summary><b>Architecture</b></summary>
@@ -173,7 +173,7 @@ logician  ──spawns──▶  logician --bridge (daemon)
    │        └────────────────────┤   "Logic MCP Commands" (key commands → Logic)
    │                             │   "Logic MCP MIDI In"  (performance MIDI → Logic)
    └─ macOS Accessibility (element-addressed reads, track selection,
-      region editing, dialogs) — semantic, never coordinates
+      region editing, dialogs)
 ```
 
 Safety model: read before write, abort on ambiguity, verify by readback, roll back on mismatch, never save without being asked, duplicate before destructive experiments.
@@ -182,7 +182,7 @@ Safety model: read before write, abort on ambiguity, verify by readback, roll ba
 
 ## Known limitations & roadmap
 
-- The biggest limitation is the models themselves: today's multimodal agents — Gemini's included — are not yet the mixing engineers you might wish for. That is exactly why Logician exists: give them real hands and ears in Logic, and you can *measure* how good they actually are instead of guessing.
+- The biggest limitation is the models themselves: today's multimodal agents are not yet the mixing engineers you might wish for. Half the reason I built this was to find out exactly how good they really are — sharp assistant, not yet a producer. The tool is ready for the day that changes.
 - English Logic UI assumed (Accessibility string matching; locale tables are future work)
 - Tempo and meter maps are read from Logic's own lists and integrated into all bar math; tempo *curves* are approximated as steps (the Tempo List does not expose them) with the uncertainty quantified. MIDI recording takes real time.
 - Track stacks cannot be freeze-rendered (Logic limitation — `solo_bounce` covers their subtracks)
