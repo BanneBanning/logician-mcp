@@ -2531,3 +2531,207 @@ Efter fixen: `logic_delete_track {track_name: "LogicianScratchBIP"}` → `confir
 `AXMixerWindow.swift` (titelbaserad igenkänning, `mixerStripNames`, tvådelad census, varning, frontmost i båda riktningarna) · `AXHelpers.projectWindow()` (hoppar över Mixerfönster, säger varför) · `AXBounce.setBouncePosition` (displaydriven konvergering med budget/stall/överskjutningsvakter) och `bounceRange` (dynamisk skrivordning) · `BounceOptions.swift` (`BouncePosition`, `BounceWriteOrder`, `ArrangementRegion`, `PrintedRegion`) · `AXBounceInPlace` (rätt region via `PrintedRegion.find`) · `AXTracks.swift` (`TrackDeletionAlert` + dialogdrivningen) · `ToolHandlersTracks.handleDeleteTrack` (svarar på bekräftelsen, rapporterar den) · `StripAddressing`/`Tool.swift`/ToolRegistry/AGENT-GUIDE/COVERAGE (ärlighetsmarkörerna: "aldrig körd" och "öppna Mixern" är ersatta av vad som nu är mätt).
 
 `swift test`: 387 tester gröna (12 nya: positionsparsning, skrivordning, utskriftsmatchning, dialogsvar), 1,4 s, ingen Logic behövs. `swift build -c release` grön. `serverVersion` är medvetet **inte** bumpad — inget cache-relevant beteende ändrades.
+
+### Regionsinspektorn, hela grammatiken: en AXOutline, tre kontrolltyper och en relativ fälla (2026-08-28, v0.54.0)
+
+COVERAGE:s öppna fråga 5 var den högst värderade okända i hela dokumentet: **"Regionsinspektorns hjälpmedelsyta (G06, G17, G25, G27, G28, G29) — om den läser och skriver som kanalremsans inspektor avgör klassen på sex rader på en gång."** Den här sessionen ställde frågan mot körande Logic. Svaret är ja, och mer än så: panelen är en **tabell** snarare än en samling kontroller, den publicerar HELA parameteruppsättningen för både MIDI- och ljudregioner, och alla tre kontrolltyperna går att skriva. Sex rader i gaptabellen är därmed klass **A**, inte B — och en av dem (G25, regionsnamn) visade sig vara ett enda `AXValue`-skrivande fält.
+
+**Miljö:** körande Logic Pro 12.3.1 (`Testlåt Copy.logicx`, pid 75391 — sandlådekopian användaren uttryckligen godkänt experiment i), användarens bryggdaemon pid 24761, **aldrig omstartad**, ingen `logician --bridge` startad. Projektet **sparades aldrig**. Dokumentsökvägen kontrollerades innehålla "Copy" före första skrivningen. Tillfällig XCTest-harness (`LiveProbe.swift` bakom `LOGICIAN_LIVE=1`), borttagen efteråt. Ensam agent, inget rådgivande lås behövdes. **Ingen blind Ångra fyrades** — varje kladdregion togs bort med `logic_delete_region`. En sak gick INTE att göra: `screencapture` nekas skärminspelning för den här terminalen (`could not create image from display`), så allt nedan är läst ur hjälpmedelsträdet och ingenting är bekräftat mot vad Logic faktiskt ritar. Där de två kan tänkas skilja sig står det utsatt.
+
+#### Fynd 1 — panelen är en tabell, och den är hopfälld som förval
+
+Vänsterinspektorn är en `AXGroup desc='Inspector'` direkt under projektfönstret. Dess första `AXList` har exakt tre barn, i ordning: **regionspanelen**, **spårpanelen**, och gruppen som bär kanalremsorna. Regionspanelen känns igen på sin egen `AXStaticText val='Region:'`.
+
+```
+AXGroup desc='Inspector'
+  AXList
+    AXGroup                              <- regionspanelen (38 pt hög = hopfälld)
+      AXDisclosureTriangle val='0'       <- AXPress fäller ut; AXValue är INTE skrivbar
+      AXTextField  val[W]='Crash'        <- regionens NAMN, och det är skrivbart
+      AXStaticText val='Region:'
+      AXScrollArea                       <- finns bara när triangeln är öppen
+        AXOutline                        <- 12 rader, 22 med "More" öppen
+          AXRow [ etikettcell , värdecell ]
+    AXGroup  … 'Track:' …
+    AXGroup  → AXLayoutArea desc='Mixer' → kanalremsorna
+```
+
+Två saker som avgör hur ett verktyg måste bete sig. **Triangeln står på 0 i det här projektet**, alltså finns `AXOutline` inte alls förrän den tryckts — en läsning som inte fäller ut panelen hittar ingenting och skulle rapportera "regionen har inga parametrar". Och **`More` är en andra hopfällning inuti tabellen**, sista raden, med sin egen triangel: utan den är Delay, Dynamics, Gate Time och hela Q-familjen osynliga. Båda återställs av verktygen till det läge de hittades i, samma disciplin som List Editors-läsningarna.
+
+#### Fynd 2 — MIDI-regionens 22 rader, ordagrant
+
+Med `Crash` (MIDI, takt 41) vald, More utfälld. `val[W]` = `AXValue` skrivbar, `range` = `AXMinValue…AXMaxValue`, `ENABLED=0` = utgråad:
+
+| # | etikettcell | värdecell | intervall | anteckning |
+|---|---|---|---|---|
+| 0 | `Mute:` | `AXCheckBox` | | |
+| 1 | `Loop:` | `AXCheckBox` | | |
+| 2 | **`Quantize` (AXPopUpButton!)** | `AXPopUpButton 'Off'` | | etiketten är själv en meny: `Classic Quantize` / `Smart Quantize` |
+| 3 | `Q-Swing:` | `AXSlider 50` | 1…99 | `ENABLED=0` medan Quantize är Off |
+| 4 | `Transpose:` | `AXSlider[W] 0` | −96…96 | halvtoner |
+| 5 | `-` | `-` | | platshållare (ljudregionens `Fine Tune`) |
+| 6 | `Pitch Source:` | `AXPopUpButton 'Off'` | | `Off` / `Key Signature` |
+| 7 | `Flex:` | `AXCheckBox` | | |
+| 8 | `-` | `-` | | platshållare (`Smart Tempo`) |
+| 9 | `-` | `-` | | platshållare (`File Tempo`) |
+| 10 | `Velocity Offset:` | `AXSlider[W] 0` | −99…99 | |
+| 11 | ` More` (grupp med triangel) | ` More` | | |
+| 12 | `Delay:` | `AXSlider[W] 0` | −999…9999 | ticks; visas musikaliskt (`-1/32` = −120) |
+| 13 | `Dynamics:` | `AXSlider[W] 6` | 0…14 | **index**, inte procent |
+| 14 | `Gate Time:` | `AXSlider[W] 6` | 0…15 | index, 15 = `Legato` |
+| 15 | `Clip Length:` | `AXCheckBox 1` | | |
+| 16 | `Score:` | `AXPopUpButton 'Show'` | | |
+| 17 | `Q-Velocity:` | `AXSlider 0` | −99…127 | `ENABLED=0` medan Quantize är Off |
+| 18 | `Q-Length:` | `AXSlider 0` | −99…127 | dito |
+| 19 | `Q-Flam:` | `AXSlider 0` | −3840…3840 | dito |
+| 20 | `Q-Range:` | `AXSlider 0` | −3840…3840 | dito |
+| 21 | `Q-Strength:` | `AXSlider 100` | 0…100 | dito |
+
+Två saker att inte missa. **Rad 6 och 7 heter `Pitch Source` och `Flex` även på en MIDI-region** — det är ljudregionens etiketter, aktiverade, med värden. Panelen byggdes om (hopfälld och utfälld på nytt, med två olika MIDI-regioner valda) och de kom tillbaka likadant, så det är inte en gammal etikett som hängt kvar. Vad Logic faktiskt RITAR på de raderna gick inte att kontrollera utan skärmdump; ingenting shippas på dem. Och **de tre `-`-raderna är platshållare**: båda cellerna läser `-` och är utgråade, och de sitter exakt där ljudregionen har `Fine Tune`, `Smart Tempo` och `File Tempo`. Radmallen är alltså gemensam för de två regionstyperna, och parametrar som inte gäller nollas ut i stället för att försvinna.
+
+#### Fynd 3 — ljudregionens 22 rader
+
+Med `Fills` (ljud, takt 39) vald. Diffen mot MIDI är hela svaret på G28 och G29:
+
+| # | etikettcell | värdecell | intervall | anteckning |
+|---|---|---|---|---|
+| 0–1 | `Mute:` / `Loop:` | `AXCheckBox` | | samma som MIDI |
+| 2 | `Quantize:` (**vanlig textcell här**) | `AXPopUpButton 'Off'` | | samma meny som MIDI |
+| 3 | `Q-Swing:` | `AXSlider 50` | 1…99 | |
+| 4 | `Transpose:` | `AXSlider[W] 0` | **−36…36** | halvtoner (MIDI har ±96) |
+| 5 | `Fine Tune:` | `AXSlider[W] 0` | −50…50 | cent; visas `+25` |
+| 6 | `Pitch Source:` | `AXPopUpButton 'Off'` | | `ENABLED=0` här |
+| 7 | `Flex:` | `AXCheckBox` | | |
+| 8 | `Smart Tempo:` | `AXPopUpButton 'On'` | | `Off` / `On` / `On + Align Bars` / `On + Align Bars and Beats` |
+| 9 | `File Tempo:` | **tre `AXSlider desc='Segment 0..2'`** | 0…1 vardera | en segmenterad sifferdisplay, inte en kontroll |
+| 10 | `Gain:` | `AXSlider[W] 0` | **−300…300** | **tiondels dB**: 30 → `+3,0 ㏈`, −65 → `-6,5 ㏈` |
+| 11 | ` More` | | | |
+| 12 | `Delay:` | `AXSlider[W] 0` | −999…9999 | |
+| 13 | **`Fade-In` (AXPopUpButton)** | `AXSlider[W] 0` | 0…99999 | **millisekunder** (500 → `500`); etikettmenyn är `Fade-In` / `Speed Up` |
+| 14 | `Curve:` | `AXSlider[W] 0` | −99…99 | fade-in-kurvan |
+| 15 | **`Fade-Out` (AXPopUpButton)** | `AXSlider[W] 0` | 0…99999 | etikettmenyn är `Fade-Out` / `Slow Down` |
+| 16 | `Type:` | `AXPopUpButton 'Out'` | | `Out` / `X (Crossfade)` / `EqP (Equal Power Crossfade)` / `X S (S-Curved Crossfade)` |
+| 17 | `Curve:` | `AXSlider[W] 0` | −99…99 | fade-out-kurvan |
+| 18 | `Reverse:` | `AXCheckBox` | | **G29:s reverse är en kryssruta** |
+| 19 | `-` | `-` | | |
+| 20–21 | `Q-Range:` / `Q-Strength:` | `AXSlider` | | utgråade medan Quantize är Off |
+
+**Varning till nästa agent:** raderna 14 och 17 heter BÅDA `Curve`. Etikett räcker inte som adress för fades — ordningen gör det (första `Curve` hör till Fade-In, andra till Fade-Out). Läsverktyget returnerar därför raderna i Logics ordning med index, och `logic_set_region_params` skriver medvetet inga ljudparametrar.
+
+#### Fynd 4 — tre kontrolltyper, tre skrivsätt, alla verifierade
+
+| kontroll | skrivning | verifiering | anteckning |
+|---|---|---|---|
+| `AXSlider` | `AXValue` **absolut**, `AXUIElementSetAttributeValue` → `.success` | läs `AXValue` tillbaka | slår igenom omedelbart; ingen konvergering, inget stegande |
+| `AXCheckBox` | `AXPress` | `AXValue` 0/1 | pressen returnerar **AXError −25205** och fungerar ändå, samma lögn som plugin-väljaren |
+| `AXPopUpButton` | `AXPress`, sedan `AXPress` på menyposten | pop-upens eget `AXValue` | pressen returnerar också −25205 |
+
+Två detaljer som kostade tid. **`AXShowMenu` är fel action på en pop-up här** — den öppnar högerklicksmenyn (`Region Inspector Float`), inte värdemenyn; `AXPress` är rätt trots felkoden. Och **menyn som öppnas ligger djupare i trädet än `popupMenus()` letar** (djup 7): den hittas först på djup 12+ från applikationselementet. Det finns nu en egen `AXDepth.regionInspectorMenu = 14` och en egen avfärdare, eftersom en meny som lämnas öppen sväljer hela nyckelkommandoplanet.
+
+`AXValueDescription` bär Logics egen text för värdet — `+12`, `-1/32`, `75%`, `Legato`, `+3,0 ㏈` — och den är **tom (tre blanksteg) när parametern står på sitt förval**. Det är ett riktigt svar ("ingenting ändras"), inte ett saknat, och läsverktyget rapporterar det som frånvarande `display` i stället för som `"   "`.
+
+#### Fynd 5 — Dynamics och Gate Time är index i en lista, inte procent
+
+Svept steg för steg med `AXValueDescription` avläst vid varje värde:
+
+```
+0 Fixed · 1 25% · 2 50% · 3 75% · 4 88% · 5 94% · 6 (blank = 100%) · 7 106%
+8 112% · 9 125% · 10 150% · 11 175% · 12 200% · 13 300% · 14 400%      (Dynamics)
+… samma lista, plus 15 Legato                                          (Gate Time)
+```
+
+Ett verktyg som tog "125" och skrev 125 skulle klampa till 14 (`400%`) — därför tar `dynamics` och `gate_time` Logics egna ORD, och index 6 rapporteras tillbaka som `100%` från den uppmätta tabellen fastän Logic ritar cellen tom.
+
+#### Fynd 6 — värdena ligger i REGIONEN, och Quantize öppnar sex rader
+
+Två bevis, båda billiga och båda körda:
+
+1. `1/16 Note` + Q-Swing 75 % skrevs på kladdregionen vid takt 55. Val av originalregionen vid takt 41 visade `Off` och en utgråad Q-Swing på 50; tillbaka till takt 55 visade `1/16 Note` och 75 %. Parametrarna är regionens, inte panelens.
+2. Så länge Quantize är `Off` är Q-Swing, Q-Velocity, Q-Length, Q-Flam, Q-Range och Q-Strength alla `ENABLED=0` **och `AXValue` icke skrivbar**. I samma ögonblick som Quantize sätts blir alla sex skrivbara. Därför skriver `logic_set_region_params` alltid **quantize först** och läser om hela tabellen mellan varje parameter — "kvantisera till 1/16 med 75 % swing" är ett anrop, inte två, och det andra anropet skulle ha träffat en död kontroll.
+
+#### Fynd 7 — panelen visar inte alltid en region, och det är den farligaste raden i hela grammatiken
+
+Namnfältet svarar på frågan "vems parametrar är det här?", och svaret är inte alltid "en regions":
+
+- **en region vald** → regionens namn i ett **`AXTextField`** (skrivbart — se fynd 9)
+- **flera valda** → `2 selected`, fortfarande textfält
+- **ingenting valt** → **`MIDI Defaults`** eller **`Audio Defaults`**, och då är namnet en **`AXStaticText`** (det finns inget att döpa om) och `Mute`-raden är utgråad
+
+Det tredje fallet är fällan. Panelen ser likadan ut, raderna är skrivbara, och en skrivning där ändrar **spårets regionsförval** — vad varje framtida region på spåret ärver — utan att någonting i trädet säger det. `logic_set_region_params` klassificerar därför namnfältet före varje skrivning och vägrar med `precondition_failed` när svaret är `defaults`. (Att namnfältet byter roll mellan `AXTextField` och `AXStaticText` upptäcktes genom att den första implementationen krävde ett textfält och därför vägrade med fel skäl.)
+
+#### Fynd 8 — flervalet: pop-up och kryssruta är absoluta, ALLA reglage är RELATIVA
+
+Det här är sessionens viktigaste fynd, och det hittades av att verktygets egen återläsning vägrade.
+
+Med två regioner valda (`logic_select_regions mode: track`) läser panelen `2 selected`, och:
+
+- **pop-up med olika värden** → `*`. En skrivning är **absolut**: `1/16 Note` valdes med den ena regionen på `1/8 Note` och den andra på `Off`, och båda läste `1/16 Note` efteråt.
+- **kryssruta med olika värden** → `AXValue` **2**, macOS blandade läge. En press tänder ALLA; för att släcka från blandat krävs två pressar. Panelen läser tillbaka 0/1 korrekt, så det går att verifiera.
+- **reglage** → läser sitt eget **FÖRVAL**, oavsett vad regionerna håller (Q-Strength visade 100 när regionerna stod på 50 och 90; Q-Swing visade 50). En `AXValue`-skrivning av 90 flyttade dem till **40 och 80** — alltså delta −10 från förvalet, applicerat på var region för sig — och kontrollen **studsade tillbaka till 100** direkt efteråt.
+
+Ett reglage över ett flerval är alltså varken absolut eller verifierbart. `scope: "selection"` accepterar därför bara `quantize`, `loop` och `mute`, och vägrar de numeriska vid namn med skälet och alternativet (`scope: "region"`). Det tidiga "beviset" att flervalsskrivning fungerar — Transpose 5 på två regioner som båda stod på 0 — var **tvetydigt**: 0 → 5 stämmer lika bra med delta +5 som med absolut 5. Den mätningen räddades av att en senare skrivning på regioner med OLIKA värden misslyckades högljutt.
+
+#### Fynd 9 — G25 föll ut på köpet: regionsnamnet är ett skrivbart fält
+
+`AXUIElementSetAttributeValue(namnfältet, AXValue, "LogicianScratchMIDI")` + `AXConfirm` → arrangemangskartan visade det nya namnet direkt. Regionsomdöpning behöver alltså varken dialog eller nyckelkommando. Det shippas **inte** i den här slicen (uppdraget var parametrarna), men mekanismen är bevisad och ett anrop lång.
+
+En asymmetri värd att känna till: en mutad region heter `Crash, muted` i arrangemangskartan medan panelens namnfält visar `Crash`. Det är samma mute-suffix som `PrintedRegion.canonicalName` redan normaliserar bort.
+
+#### Fynd 10 — kvantiseringsmenyn, ordagrant
+
+43 poster (separatorer borträknade), med `✓` på den laddade:
+
+```
+Off
+1/1 · 1/2 · 1/4 · 1/8 · 1/16 · 1/32 · 1/64 Note
+1/2 · 1/4 · 1/8 · 1/16 · 1/32 · 1/64 · 1/128 Triplet (1/3, 1/6, 1/12, 1/24, 1/48, 1/96, 1/192)
+1/16 Swing A–F · 1/8 Swing A–F
+5-Tuplet/4 · 5-Tuplet/8 · 7-Tuplet · 9-Tuplet
+1/16 & 1/16 Triplet · 1/16 & 1/8 Triplet · 1/8 & 1/8 Triplet
+Make Groove Template · Remove Groove Template from List   (kommandon, inte värden)
+```
+
+GrooveMALLAR finns alltså i samma meny — G17:s groove-halva är nåbar samma väg så snart projektet har en mall. `Make Groove Template` trycks inte av det här servern; `logic_get_region_params {include_quantize_values: true}` läser listan utan att röra något.
+
+#### Vad som shippades, och vad som medvetet inte gjorde det
+
+**`logic_get_region_params`** (läsning: hela tabellen ordagrant + de namngivna parametrarna + `subject` + `region_type` + valfritt kvantiseringsmenyn) och **`logic_set_region_params`** (skrivning: `quantize`, `q_swing`, `q_strength`, `transpose`, `velocity_offset`, `dynamics`, `gate_time`, `delay_ticks`, `loop`, `mute`, med compare-and-set per parameter, `already_set`-nolloperationer och återläsning efter varje skrivning). 75 → 77 verktyg.
+
+**Inte shippat, med skäl:** ljudregionens `gain`, `fine_tune`, `fade_in`/`fade_out` med kurvor och typ, `reverse`, `smart_tempo`, `pitch_source`, samt MIDI:s `score`, `clip_length`, `flex` och de tre återstående Q-raderna. Grammatiken för alla står i fynd 2–3 och maskineriet är regionstypsmedvetet, så nästa agent bygger dem utan ny forskning. Regionsomdöpning (fynd 9) likaså. `File Tempo`-raden är tre segmentreglage och skrivs inte.
+
+#### Live-bevis per skrivning (allt på kladdregioner, allt borttaget efteråt)
+
+Kladd: `Crash`-regionen (takt 41) kopierad till takt 55 och takt 60 med `logic_copy_region`, och `Fills` (ljud, takt 39) kopierad till takt 55 på spåret `Fill`.
+
+```
+quantize      Off        -> 1/16 Note      ax_popup_menu_press      verifierad
+q_swing       50         -> 62  ('62%')    ax_value_absolute        verifierad (först efter quantize)
+q_strength    100        -> 80  ('80%')    ax_value_absolute        verifierad
+transpose     0          -> +12 -> -5      ax_value_absolute        verifierad
+velocity_off  0          -> +20            ax_value_absolute        verifierad
+dynamics      6 (100%)   -> 9  ('125%')    ax_value_absolute        verifierad
+gate_time     6 (100%)   -> 15 ('Legato')  ax_value_absolute        verifierad
+delay_ticks   0          -> -120 ('-1/32') ax_value_absolute        verifierad
+loop          false      -> true           ax_checkbox_press        verifierad
+mute          false      -> true -> false  ax_checkbox_press        verifierad
+```
+
+Plus: `expected_current: {quantize: "Off"}` mot en region som redan stod på `1/16 Note` gav `precondition_failed` och skrev ingenting · ett andra identiskt anrop gav `state: "already_set"` med båda parametrarna i `unchanged` · `velocity_offset` på en LJUDregion vägrades med `not_exposed` och skälet · en skrivning utan vald region vägrades med regionsförvals-skälet · `scope: "selection"` med `q_strength` vägrades med den relativa förklaringen, medan `quantize: "Off"` + `mute: false` över två regioner (varav en mutad, alltså blandat läge) gick igenom och båda regionerna lästes tillbaka omutade.
+
+**Renderingsbeviset** (det som visar att det här är projektparametrar och inte trädtillstånd): `logic_render_track {track_name: "Crash", start_bar: 55, end_bar: 58}` på kladdregionen gav **peak −5,48 dB / RMS −23,02 dB**. Efter `velocity_offset: -99` gav samma render **peak −25,25 dB / RMS −42,79 dB**. Nästan 20 dB, från ett reglage i en panel.
+
+#### Vad som blev kvar i användarens projekt (osparat, inget har nått disken)
+
+1. **Kladden är borta och verifierad borta.** Tre kopierade regioner (`Crash` vid takt 55 och 60, `Fills.1` vid takt 55) raderade med `logic_delete_region`, alla tre `verified: true`. Arrangemangskartan visar åter `Crash` med sin enda region vid takt 41 och `Fill` med sin enda vid takt 39. Inga kladdSPÅR skapades, så radera-spår-dialogen kom aldrig upp.
+2. **Regionsinspektorns två trianglar står som vid start**: regionspanelen hopfälld, `More` hopfälld. (Verktygen återställer dem själva; sonderna gjorde det inte, så det gjordes till sist för hand.)
+3. **Ingen originalregion rördes.** `Crash` vid takt 41 lästes flera gånger och skrevs aldrig; dess parametrar står kvar på `Off` / 0 / förval.
+4. **Nya filer på disk** i `~/Library/Application Support/Logician/captures/`: två renderingar (`regparam-A`, `regparam-B`) med sina slices och m4a-förhandsvisningar. Projektet självt har inte rörts på disken.
+5. **5/4-händelsen vid takt 41 och tempohändelsen vid takt 9 ligger kvar** sedan tidigare sessioner, medvetet. Renderingens bar-slice integrerade båda korrekt, vilket är ännu ett kvitto på taktkartan.
+6. **Ingen dialog stod uppe vid start och ingen står uppe vid överlämningen.** Gårdagens ljudenhetsdialog («…iPhone-mikrofon…») var borta när sessionen började.
+7. `screencapture` nekades skärminspelning hela sessionen; ingen skärmdump togs och ingen behövdes för det som shippades.
+
+#### Vad som ändrades i koden
+
+`RegionInspector.swift` (ny, ren: panelklassificering, etikettnormalisering, parameterkatalogen med intervall och regionstyper, de två indexvokabulärerna, argumentkonvertering) · `AXRegionInspector.swift` (ny: panelsökning, de två hopfällningarna med återställning, radläsning, de tre skrivsätten, den djupa menyhanteringen) · `AXTreeWalk.swift` (`inspectorPanel`, `regionInspectorOutline`, `regionInspectorMenu = 14`) · `Support.swift` (`LogicianError.preconditionUnmet` — ett `precondition_failed` vars meddelande ÄR hela förklaringen, för de vägringar där de befintliga mismatch-fallen ljuger om vad som hände) · `ToolHandlersTracks.swift` + `ToolRegistry.swift` (de två verktygen) · AGENT-GUIDE (två verktygsavsnitt, arbetsflödet "tighten a sloppy take" och flervalsnoten).
+
+`swift test`: 407 tester gröna (20 nya: panelklassificering, etiketter, skrivordningen, de två vokabulärerna, intervallvakterna, blandade kryssrutor), 1,4 s, ingen Logic behövs. `swift build -c release` grön. `serverVersion` är medvetet **inte** bumpad — inget cache-relevant beteende ändrades.

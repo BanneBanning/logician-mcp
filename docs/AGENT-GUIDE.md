@@ -88,10 +88,15 @@ Use the strip name directly — `logic_mcu_plugin_inserts {track_name: "Stereo O
 `logic_record_automation {track_name, parameter: "volume"|"pan"|"send"|"plugin", points: [{bar, beat?, value}], ramp: true}` — for sends add `send: N`, for plugins add `insert_slot` + `plugin_parameter`. Values: dB for volume/send, −64..63 for pan, the parameter's own units for plugins. Verification replays or playhead-chases each point and reports expected vs observed. First point needs bar ≥ 2.
 
 **Edit the arrangement:**
-`logic_list_regions` → `logic_select_region {track_name, start_bar}` → `logic_move_region {by_bars, by_beats}` / `logic_copy_region {to_bar, to_track?, move?}` / `logic_delete_region` / `logic_split_region {at_bar}`. Split is one call, not the old three-step recipe — it parks the playhead EXACTLY (see caution below), checks that the point is inside the region, fires the command and proves the result against the arrangement map.
+`logic_list_regions` → `logic_select_region {track_name, start_bar}` → `logic_move_region {by_bars, by_beats}` / `logic_copy_region {to_bar, to_track?, move?}` / `logic_delete_region` / `logic_split_region {at_bar}`. A region's own parameters — quantize, transpose, velocity, loop, mute, and on audio regions gain and fades — live in the Region inspector and are read with `logic_get_region_params` and written with `logic_set_region_params` (see "Tighten a sloppy take" below). Split is one call, not the old three-step recipe — it parks the playhead EXACTLY (see caution below), checks that the point is inside the region, fires the command and proves the result against the arrangement map.
 
 **Edit many regions at once:**
 `logic_select_regions {mode, track_name, start_bar}` extends a selection the way Logic does — `track` (the whole track), `following` (everything after the anchor, all tracks), `following_same_track`, `all`, `none` — and reports how many regions ended up selected. Then fire ONE edit across all of them (`logic_trigger_key_command {name: "Delete"}`, a nudge, `Cut`). This is the difference between one call and a thousand round trips on a podcast edit. The count only sees VISIBLE track rows; the selection itself is project-wide, so an edit can reach more than the number you were shown.
+
+**Tighten a sloppy take (quantize with feel):**
+`logic_get_region_params {track_name, start_bar}` to see what the region already carries → `logic_set_region_params {track_name, start_bar, quantize: "1/16 Note", q_swing: 58, q_strength: 80}` — one call, because the tool writes quantize FIRST (Logic greys every Q-row out while Quantize is Off, so a separate swing call would land on a dead control). `q_strength` below 100 is the "leave some feel" knob: it pulls notes part of the way to the grid instead of all the way. Nothing is destroyed — these are Logic's playback parameters, the recorded notes are untouched (`logic_list_events` keeps showing where they were actually played), and `quantize: "Off"` puts the take back exactly as it was. Then bounce and listen: a grid is a decision, not a fix.
+
+**Same move across a whole track:** `logic_select_regions {mode: "track", track_name, start_bar}` → `logic_set_region_params {scope: "selection", quantize: "1/16 Note"}`. Only `quantize`, `loop` and `mute` work that way — over a multi-selection Logic turns every NUMERIC region control into a relative one and the tool refuses them by name rather than writing something it cannot verify.
 
 **Strip the silence out of a speech take:**
 `logic_remove_silence {track_name, start_bar}` first — with `apply: false` (the default) it opens Logic's Remove Silence window, reads its LIVE preview ("this would leave 9 regions") and closes it again, changing nothing. If the number looks right, call again with `apply: true`.
@@ -167,7 +172,7 @@ Every successful result carries the same four fields, and they mean different th
 
 ## Tool reference
 
-All 75 tools, generated from the live server schemas (v0.49.0), with the strip-addressing notes added by hand in v0.51.0, the `logic_plugin_preset` section rewritten by hand in v0.52.0, and the v0.54.0 additions added by hand — the five List-Editors/bypass/window tools, the key-command / region / delivery tools, the six control-surface tools, and the composability corrections — where an entry and the live schema differ in wording, the schema is authoritative. Every write is compare-and-set with readback; every failure names what was observed.
+All 77 tools, generated from the live server schemas (v0.49.0), with the strip-addressing notes added by hand in v0.51.0, the `logic_plugin_preset` section rewritten by hand in v0.52.0, and the v0.54.0 additions added by hand — including the two Region-inspector tools — the five List-Editors/bypass/window tools, the key-command / region / delivery tools, the six control-surface tools, and the composability corrections — where an entry and the live schema differ in wording, the schema is authoritative. Every write is compare-and-set with readback; every failure names what was observed.
 
 #### `logic_health`
 
@@ -531,6 +536,40 @@ Parameters:
   - `notes_crossing` (`keep` | `shorten` | `split`): what happens to a note that straddles the cut. Default `split`, Logic's own pre-selection. Audio regions raise no dialog and report `notes_crossing: "not_asked"`.
 
 **Why this parks the playhead itself.** The control bar publishes only `bar` and `beat`, and both are RELATIVE steppers: a sub-beat offset already in the playhead is carried along by every step, so a *verified* "bar 5, beat 1" can sit 0.96 beats late while the display reads `5 bars 1 beat` (measured). This presses `Go to Beginning` first when the MCU position display shows an offset, which is the one absolute move Logic offers, and reports `playhead.on_grid` from the MCU's division/tick fields — `null`, never `true`, when the surface cannot be read.
+
+#### `logic_get_region_params`
+
+Read a region's own parameters out of Logic's Region inspector — the "Region: <name>" panel at the top of the left inspector. Pass `track_name` (plus `region_name`/`start_bar`) and the region is selected first; call it bare to read whatever is selected.
+
+Parameters:
+
+  - `track_name`, `region_name`, `start_bar` — which region.
+  - `include_quantize_values` (boolean): also open the Quantize pop-up and return every value Logic offers.
+
+Three fields to read before the values. **`subject`** says whose parameters these are — `region`, `multiple` (several selected; values that differ read as mixed), or **`defaults`**: with NOTHING selected the panel shows the TRACK's region defaults (`MIDI Defaults` / `Audio Defaults`), which decide what every future region on that track inherits. **`region_type`** is inferred from the rows Logic published, independently of the arrangement map: a MIDI region has `Velocity Offset`, `Dynamics`, `Gate Time` and the Q-rows, an audio region has `Gain`, `Fine Tune`, `Fade-In`/`Fade-Out`, `Reverse` and `Smart Tempo`. And **`enabled`** per row is load-bearing: Logic greys out every Q-row while Quantize is Off, and a disabled control cannot be written.
+
+`rows` is the whole panel verbatim, in Logic's order, including the rows this server does not write (`Pitch Source`, `Flex`, `Score`, `Clip Length`, the audio gain and fades). `display` is Logic's own text and is **absent at a parameter's default**, because Logic prints the default blank — `transpose` 0 shows nothing, `+12` shows `+12`. The panel and its `More` section are opened and put back exactly as they were found.
+
+#### `logic_set_region_params`
+
+Set a region's own parameters: `quantize`, `q_swing`, `q_strength`, `transpose`, `velocity_offset`, `dynamics`, `gate_time`, `delay_ticks`, `loop`, `mute`. Pass as many as you like in one call.
+
+Parameters:
+
+  - `track_name`, `region_name`, `start_bar` — which region (scope `region`).
+  - `scope`: `region` (default) selects that one region and writes to it alone; `selection` writes to every currently selected region and changes no selection.
+  - `quantize` (string, Logic's own menu spelling), `q_swing` 1–99, `q_strength` 0–100, `transpose` −96..96 (audio caps at ±36), `velocity_offset` −99..99 (MIDI), `dynamics` / `gate_time` (Logic's scaling NAMES), `delay_ticks` −999..9999, `loop` / `mute` (booleans).
+  - `expected_current` (object): compare-and-set, per parameter. Any mismatch refuses with `precondition_failed` and writes nothing.
+
+**These are Logic's non-destructive playback parameters.** The notes on disk are untouched, so `logic_list_events` keeps reporting where the notes were actually played, and every parameter is reversible by setting it back (`quantize: "Off"`, `transpose: 0`). They do change how the region sounds — verified live: `velocity_offset: -99` on a scratch region moved a rendered slice from −5.48 dB peak / −23.02 dB RMS to −25.25 / −42.79.
+
+**Order matters and the tool handles it.** Quantize is written FIRST, because Logic disables Q-Swing, Q-Strength, Q-Velocity, Q-Length, Q-Flam and Q-Range while Quantize is Off — so "quantize to 1/16 with 75 % swing" is one call. A parameter already at the value you asked for is a verified no-op in `unchanged` and nothing is pressed; a call where nothing had to move comes back `state: "already_set"`.
+
+**`dynamics` and `gate_time` are Logic's scalings, not percentages you invent**: `Fixed, 25%, 50%, 75%, 88%, 94%, 100%, 106%, 112%, 125%, 150%, 175%, 200%, 300%, 400%`, plus `Legato` for `gate_time` only. `delay_ticks` counts ticks — 240 ticks is a 1/16 — and Logic displays it musically (`-1/32`).
+
+**Two refusals worth knowing.** With **nothing selected** the panel is showing the track's region DEFAULTS and the write is refused, because it would change what every future region on that track inherits. And under **`scope: "selection"`** only `quantize`, `loop` and `mute` are accepted: over a multi-selection Logic turns every numeric control into a RELATIVE one — it shows the parameter's default, applies the difference to each region and springs back — so a numeric value there can be neither set nor verified (measured 2026-08-28: two regions at 50 and 90 both moved by −10 when 90 was written). The refusal names the parameters and points at `scope: "region"`.
+
+**Audio-region parameters are read but not written here.** The same panel publishes `Gain` (±30.0 dB in tenths), `Fine Tune` (cents), `Fade-In`/`Fade-Out` (ms) with their curves and crossfade type, `Reverse`, `Smart Tempo` and `Pitch Source`; `logic_get_region_params` reports all of them and `logic_set_region_params` refuses a MIDI-only parameter on an audio region by name.
 
 #### `logic_select_regions`
 
