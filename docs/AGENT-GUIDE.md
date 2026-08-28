@@ -79,7 +79,16 @@ Use the strip name directly — `logic_mcu_plugin_inserts {track_name: "Stereo O
 `logic_record_automation {track_name, parameter: "volume"|"pan"|"send"|"plugin", points: [{bar, beat?, value}], ramp: true}` — for sends add `send: N`, for plugins add `insert_slot` + `plugin_parameter`. Values: dB for volume/send, −64..63 for pan, the parameter's own units for plugins. Verification replays or playhead-chases each point and reports expected vs observed. First point needs bar ≥ 2.
 
 **Edit the arrangement:**
-`logic_list_regions` → `logic_select_region {track_name, start_bar}` → `logic_move_region {by_bars, by_beats}` / `logic_copy_region {to_bar, to_track?, move?}` / `logic_delete_region`. Split at a position: `logic_set_playhead {bar}` + select + `logic_trigger_key_command {name: "Split Regions/Events at Playhead Position"}`.
+`logic_list_regions` → `logic_select_region {track_name, start_bar}` → `logic_move_region {by_bars, by_beats}` / `logic_copy_region {to_bar, to_track?, move?}` / `logic_delete_region` / `logic_split_region {at_bar}`. Split is one call, not the old three-step recipe — it parks the playhead EXACTLY (see caution below), checks that the point is inside the region, fires the command and proves the result against the arrangement map.
+
+**Edit many regions at once:**
+`logic_select_regions {mode, track_name, start_bar}` extends a selection the way Logic does — `track` (the whole track), `following` (everything after the anchor, all tracks), `following_same_track`, `all`, `none` — and reports how many regions ended up selected. Then fire ONE edit across all of them (`logic_trigger_key_command {name: "Delete"}`, a nudge, `Cut`). This is the difference between one call and a thousand round trips on a podcast edit. The count only sees VISIBLE track rows; the selection itself is project-wide, so an edit can reach more than the number you were shown.
+
+**Strip the silence out of a speech take:**
+`logic_remove_silence {track_name, start_bar}` first — with `apply: false` (the default) it opens Logic's Remove Silence window, reads its LIVE preview ("this would leave 9 regions") and closes it again, changing nothing. If the number looks right, call again with `apply: true`.
+
+**Resample — print audio back INTO the project:**
+`logic_bounce_in_place {track_name, region_name, start_bar, bypass_effect_plugins: false}`. This is NOT `logic_render_track`, which writes a file to disk: this creates a new audio REGION you can chop, move and bounce again. Watch the `warning` — Logic's own "Bypass Effect Plug-ins" setting may be on, and a dry print is rarely what "print that" means.
 
 **Experiment safely on a copy:**
 `logic_duplicate_project {save_first: true}` — copies the open project on disk and opens the COPY as the active project; the original is untouched. Do this FIRST whenever you intend to make changes the user has not individually approved. Tell the user which file you are working in.
@@ -90,7 +99,10 @@ Use the strip name directly — `logic_mcu_plugin_inserts {track_name: "Stereo O
 All three methods return the **same keys**, so you can read a result without knowing which method produced it: `decision` (`kept` / `rolled_back` / `rollback_failed`), `change` (track, parameter, `before`, `applied`), `range`, `deltas`, `baseline_metrics` / `after_metrics`, and four audio paths — `baseline_audio` / `after_audio` plus `baseline_full_audio` / `after_full_audio` and `baseline_preview` / `after_preview`. A key a method genuinely has nothing for is present and **null** (a freeze render has no compressed preview sibling), never missing. The two versions also ride along as MCP audio blocks in order: **first block = baseline, second = after**.
 
 **Deliver audio:**
-`logic_render_track {track_name, start_bar?, end_bar?}` — dialog-free track export (32-bit float AIFF + optional bar-sliced WAV with RMS/peak metrics), ~9–13 s. `logic_bounce_range` for the master.
+`logic_render_track {track_name, start_bar?, end_bar?}` — dialog-free track export (32-bit float AIFF + optional bar-sliced WAV with RMS/peak metrics), ~9–13 s. `logic_bounce_range` for the master, now with the delivery options the dialog actually has: `file_type` (AIFF/WAVE/CAF), `bit_depth`, `sample_rate` (`"48 kHz"`, `"48k"` and `48000` all work), `dithering`, `normalize`, `include_audio_tail`. Whatever you do not pass is left as the user set it, and the result's `delivered_as` says what the file really is. Those are the user's own settings and Logic keeps them — `options_changed` lists what you moved, and nothing puts it back.
+
+**Stems for a mixer or a picture editor:**
+`logic_export_stems {tracks: [...], start_bar, end_bar}` — one offline bounce per track over the SAME range, each with only that track soloed, and the frame counts compared afterwards so `aligned` is an observation. Read the contents note before you promise anything about them: a stem here is the full master output heard one track at a time (post-fader, post-pan, with that track's send returns and the master chain), so summing them reproduces the mix only while the master chain is linear.
 
 ## Listening to audio (IMPORTANT)
 
@@ -137,12 +149,14 @@ Every successful result carries the same four fields, and they mean different th
 - On a headerless strip (`Stereo Out`, an aux, a bus) the independent Accessibility cross-check that `logic_add_plugin` / `logic_remove_plugin` normally run can be UNAVAILABLE — no inspector is showing that strip. The write then stands on the control surface's own echo alone and the result carries a `warning` plus `cross_check: "unavailable"`. Open the Mixer (or select a track routed to the strip) and re-read the inserts if you want a second source.
 - Logic sometimes SUBSTITUTES words when it abbreviates a name onto the LCD (the track "Ivan Effect" appears as `IvanFx`). Such a name cannot be resolved on the control surface at all: you get `not_found` with the visible strips listed — never a write on the wrong strip. Rename the track, or reach it via a track-plane tool.
 - A rendered file that is honestly EMPTY (a track with no regions, or MIDI with no instrument) comes back with a `warning`, not fake success.
-- Modal dialogs freeze most operations; tools detect and answer their own dialogs, and `logic_health` flags Logic's state. If something looks stuck, check for a dialog in Logic.
+- Modal dialogs freeze most operations; tools detect and answer their own dialogs, and `logic_health` flags Logic's state. If something looks stuck, check for a dialog in Logic. **The symptom is worth memorising**: while a modal is up, key commands sent over MIDI are swallowed, so every tool that uses one reports "the command fired and nothing happened" — several calls in a row failing that way means a dialog, not a broken tool. `logic_split_region` raises exactly such a modal on a MIDI region ("Notes Crossing Split Point") and answers it for you.
+- **Learning a key command writes into the user's own Logic.** `logic_learn_key_command` binds a MIDI note to a command in the user's active key command set — additive (their keyboard shortcut is untouched), removable in Logic's Key Commands window under Delete Assignment, and recorded in the registry with the tool that bound it and when (`logic_list_key_commands` reads it back; the registry is also the consent record `logic_trigger_key_command` checks before firing anything). Three habits follow. **Say what you are binding** before you bind a batch of them — this is the user's editing environment, not a scratch space. **Look first** with `dry_run: true` when you are unsure of a name: Logic 12.3.1 spells things its own way (there is no "Strip Silence" — the command is `Remove Silence from Audio Region…`; the selection command is `Select All Following of Same Track/Pitch`), and the dry run lists the real rows without binding anything. And **know which tools learn on their own**: `logic_select_regions` and `logic_remove_silence` learn the one command they need if it is missing, and say so in the result (`learned_key_command`, `consent_note`).
+- **A blind Undo is worse than it looks.** `logic_trigger_key_command {name: "Undo"}` undoes whatever is on top of Logic's stack, which is not necessarily yours — in one session an Undo fired after a tool had *failed* removed an empty track someone else had just made, and nothing could tell it apart from a no-op. Fire Undo only when a tool reported `success: true` for the edit you want back, and re-read the arrangement map afterwards. To remove something you created, address it (`logic_delete_region`) instead.
 - The `logic_set_plugin_parameter` / `logic_list_plugin_parameters` (Accessibility window) variants exist for stock-plugin windows; PREFER the `logic_mcu_*` variants, which work for every plugin including custom-UI third-party ones.
 
 ## Tool reference
 
-All 62 tools, generated from the live server schemas (v0.49.0), with the strip-addressing notes added by hand in v0.51.0, the `logic_plugin_preset` section rewritten by hand in v0.52.0, and the five List-Editors/bypass/window tools plus the composability corrections added by hand in v0.54.0 — where an entry and the live schema differ in wording, the schema is authoritative. Every write is compare-and-set with readback; every failure names what was observed.
+All 69 tools, generated from the live server schemas (v0.49.0), with the strip-addressing notes added by hand in v0.51.0, the `logic_plugin_preset` section rewritten by hand in v0.52.0, and the v0.54.0 additions added by hand — the five List-Editors/bypass/window tools, the key-command / region / delivery tools, and the composability corrections — where an entry and the live schema differ in wording, the schema is authoritative. Every write is compare-and-set with readback; every failure names what was observed.
 
 #### `logic_health`
 
@@ -178,7 +192,7 @@ Parameters:
 
 #### `logic_bounce_range`
 
-Offline-bounce a bar range of the master output to an audio file, many times faster than realtime playback. Drives Logic's bounce dialog and its XPC save panel entirely through verified accessibility (no playback). Temporarily switches the bounce destination to Uncompressed and restores the user's selection afterwards. Returns the file path.
+Offline-bounce a bar range of the master output to an audio file, many times faster than realtime playback. Drives Logic's bounce dialog and its XPC save panel entirely through verified accessibility (no playback). Switches the bounce destination to Uncompressed. Returns the file path.
 
 Parameters:
 
@@ -186,6 +200,42 @@ Parameters:
   - `expected_project_path` (string)
   - `label` (string): Filename label, e.g. 'A' or 'baseline'.
   - `start_bar` (integer) **(required)**
+  - `file_type` (string): AIFF, WAVE or CAF.
+  - `bit_depth` (string): 8-bit, 16-bit, 24-bit or 32-bit float.
+  - `sample_rate` (string or number): `"48 kHz"`, `"48k"` and `48000` all reach 48 kHz; 11.025 through 192 kHz.
+  - `dithering` (string): None, POW-r #1 (Dithering), POW-r #2/#3 (Noise Shaping), UV22HR. Only meaningful when reducing bit depth.
+  - `normalize` (string): Off, Overload Protection Only, On. `On` changes the delivered level — say so when you report the result.
+  - `include_audio_tail` (boolean): let reverb/delay tails ring past the end bar into the file.
+
+**Changing `file_type` costs you the metrics.** The metrics reader parses AIFF/AIFC only, so a WAVE or CAF bounce comes back with no `metrics` block — and therefore without the silent-bounce warning that block powers, and with `logic_export_stems`' alignment check reduced to "unverified". Bounce AIFF while you are judging the audio; switch format for the delivery itself.
+
+**The delivery options are the user's own settings.** Anything you do not pass is left exactly as it was; anything you do pass is verified by reading the pop-up back, and an unknown value is refused with the real list BEFORE the dialog does anything. The result's `delivered_as` is the whole delivery state read off the dialog just before OK — that, not your arguments, is what the file is. Logic keeps these settings for the next bounce: `options_changed` lists what moved and nothing puts it back. MP3 and M4A destinations exist in the dialog with their own option set and are not implemented here.
+
+#### `logic_bounce_in_place`
+
+PRINT a region (or a whole track) back INTO the project as audio — the resampling verb, and the one `logic_render_track` is not: that writes a file to disk, this creates a new audio REGION you can chop and re-bounce. Drives `File > Bounce > Regions in Place…` (`scope: "region"`, default) or `Tracks in Place…` and answers the sheet. Every sheet control is left as the user set it unless you pass the matching argument, and the whole sheet state comes back in the result. Verified against the arrangement map; Undo removes the print.
+
+Parameters:
+
+  - `scope` (`region` | `track`), `track_name`, `region_name`, `start_bar`
+  - `name` (string): name for the printed region (Logic's default is `<region>_bip`).
+  - `destination` (`new_track` | `selected_track`), `source` (`mute` | `leave` | `delete`)
+  - `normalize` (string), `bypass_effect_plugins`, `include_volume_pan_automation`, `include_audio_tail_in_region`, `include_audio_tail_in_file`, `bounce_second_loop_pass`, `include_instrument_multi_outputs` (booleans)
+
+**`Bypass Effect Plug-ins` is the trap.** It is a real Logic setting that may be ON in the user's project, and a print made with it on is DRY — the inserts are not rendered. The result warns when it was on; pass `bypass_effect_plugins: false` to print the sound as you hear it.
+
+#### `logic_export_stems`
+
+One offline bounce per named track over the SAME bar range, each with only that track soloed, solo restored after every one. The shared range is what makes them stems rather than a loop of renders, and the tool verifies it: the files' frame counts are compared and `aligned` says whether they really line up. Refuses before the first render if any track is already soloed. Costs one full bounce per track; 16 tracks per call.
+
+Parameters:
+
+  - `tracks` (array of strings) **(required)**: names as `logic_list_tracks` reports them; duplicates refused.
+  - `start_bar`, `end_bar` (integers) **(required)**
+  - `label` (string): filename prefix; the track name is appended per stem.
+  - `expected_project_path` (string)
+
+**What a stem here contains**: the full master output with one track audible — post-fader, post-pan, post-insert, WITH that track's send returns, and through the master chain. Two consequences to plan around: summing the stems reproduces the mix only while the master chain is LINEAR (a master limiter reacts to the whole mix and cannot react to one stem), and a bus fed by several of these tracks is counted once per stem. `logic_render_track` is the other kind of file — a pre-fader freeze of the track alone — and it is not a stem.
 
 #### `logic_evaluate_change`
 
@@ -452,6 +502,39 @@ Parameters:
   - `start_bar` (integer)
   - `track_name` (string) **(required)**
 
+#### `logic_split_region`
+
+Split ONE region at a bar (and optional beat) — the three-call recipe as a single call with one verdict. Three failure modes, checked in order, the first two before anything is written: the split point is outside the region (refused with the region's own span), the playhead did not land where it was asked (this parks it exactly — see the note below), or the command fired and the arrangement map still shows one region. Success is proven by the map. On a MIDI region whose notes cross the cut Logic raises a modal and this answers it with `notes_crossing`; on a failure path any leftover dialog is cancelled. Undo restores the single region — and the halves are NEW regions, so re-read `logic_list_regions` before addressing either.
+
+Parameters:
+
+  - `track_name` (string) **(required)**
+  - `region_name` (string), `start_bar` (integer): which region.
+  - `at_bar` (integer) **(required)**, `at_beat` (integer): where to cut. Must be inside the region.
+  - `notes_crossing` (`keep` | `shorten` | `split`): what happens to a note that straddles the cut. Default `split`, Logic's own pre-selection. Audio regions raise no dialog and report `notes_crossing: "not_asked"`.
+
+**Why this parks the playhead itself.** The control bar publishes only `bar` and `beat`, and both are RELATIVE steppers: a sub-beat offset already in the playhead is carried along by every step, so a *verified* "bar 5, beat 1" can sit 0.96 beats late while the display reads `5 bars 1 beat` (measured). This presses `Go to Beginning` first when the MCU position display shows an offset, which is the one absolute move Logic offers, and reports `playhead.on_grid` from the MCU's division/tick fields — `null`, never `true`, when the surface cannot be read.
+
+#### `logic_select_regions`
+
+Select MANY regions — what `logic_select_region` deliberately cannot do. Modes: `track` (every region on the anchor's track), `following` (the anchor and everything after it, on every track), `following_same_track`, `all`, `none`. The relative modes need an anchor (`track_name`, plus `region_name`/`start_bar` when the track holds more than one region), which is selected exclusively first. The selected count is read before and after off the arrangement map; a mode that moved nothing comes back `success: false`. Counts see visible rows only, while the selection is project-wide.
+
+Parameters:
+
+  - `mode` (string) **(required)**: `track` | `following` | `following_same_track` | `all` | `none`.
+  - `track_name` (string): the anchor's track; required for everything except `all` and `none`.
+  - `region_name` (string), `start_bar` (integer): which region is the anchor.
+
+#### `logic_remove_silence`
+
+Cut the silence out of ONE audio region (what other DAWs call strip silence; Logic 12.3.1's command is `Remove Silence from Audio Region…`). `apply: false` — the default — opens the window, reads Logic's LIVE preview of how many regions the current settings would leave, closes it and changes nothing. `apply: true` commits and verifies against the arrangement map. Refuses on a MIDI region. The window's four numeric fields (threshold, minimum silence, pre-attack, post-release) are per-digit steppers this server does not write; their current values are reported.
+
+Parameters:
+
+  - `track_name` (string) **(required)**
+  - `region_name` (string), `start_bar` (integer)
+  - `apply` (boolean): default false (preview only).
+
 #### `logic_move_region`
 
 Move one region by whole bars and/or beats via Logic's nudge key commands (no dragging, no mouse). Whole-bar moves are verified exactly against the arrangement map.
@@ -546,6 +629,24 @@ Parameters:
 
   - `commands` (array of string): Limit to these standard command names (default: all).
   - `relearn` (boolean): Force re-learning of every standard command even when an assignment is already shown. Repairs bindings orphaned by MIDI-port changes. Default false.
+
+#### `logic_learn_key_command`
+
+Learn ANY command in Logic's Key Commands window onto a MIDI note, so `logic_trigger_key_command` can fire it — not just the 22 standard ones. Give the name EXACTLY as the window spells it. **This writes into the user's own Logic key command set** (additive, removable there); the note is picked from the range reserved for learned commands (60–99, then 122–127, then 21–59), and the registry records the name, note, timestamp, search term and that this tool bound it. Already-registered commands answer immediately without opening the window. A name that matches no row fails `not_found` and LISTS the rows the panel was showing, because command names differ between Logic versions.
+
+Parameters:
+
+  - `name` (string) **(required)**: the command name as Logic's Key Commands window shows it (case-insensitive; Logic's spelling is what gets registered).
+  - `search` (string): search term for the window's filter (default: the first words of `name`).
+  - `note` (integer 0–127): force a specific note instead of the next free one; refused when another registered command holds it.
+  - `relearn` (boolean): bind again even when the registry already lists it, wiping the command's existing controller assignments first.
+  - `dry_run` (boolean): look, do not bind — returns every command name the filter shows with the assignment it already carries.
+
+#### `logic_list_key_commands`
+
+List what the key command registry holds: name, note, channel, when it was learned and which tool bound it, plus which standard commands are still unlearned. Read-only and Logic-free (it reads the registry FILE), so an entry it lists can still have been orphaned inside Logic by recreated MIDI ports — `logic_setup_key_commands` with `relearn: true` is the repair.
+
+Parameters: none.
 
 #### `logic_trigger_key_command`
 

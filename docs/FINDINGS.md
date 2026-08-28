@@ -2042,3 +2042,223 @@ COVERAGE:s U-avsnitt räknar *användbarhet*: fall där verktyget finns och en k
 Kvar av U-avsnittet, medvetet: **U3** (`logic_split_region`) och **U4** (`logic_list_key_commands`) hör till key command-slicen och byggdes inte här för att inte kollidera med den parallella agenten.
 
 `swift test`: 325 tester gröna (47 nya), 1,4 s, ingen Logic behövs. `swift build -c release` grön. `serverVersion` är MEDVETET inte bumpad — tre slicear landar parallellt och versionen sätts när de slås ihop.
+### Key commands, regionsredigering och leveransdialoger (2026-08-28, v0.53.x)
+
+Den här sessionen tog COVERAGE:s **G00** (lär vilket key command som helst), **G24** (dela region), **G26** (flerregionsval), **G53** (bounce-format), **G33** (bounce in place), **G30** ("strip silence") och **G54** (stems). Sju verktyg shippade — och vägen dit hittade **fyra buggar i kod som redan fanns**, varav två gjorde att key command-inlärningen inte fungerade alls på den här Logic-versionen.
+
+**Miljö:** körande Logic Pro 12.3.1 (`Testlåt Copy.logicx`, pid 75391 — sandlådekopian användaren godkänt skrivningar i), användarens bryggdaemon pid 24761, tillfälliga XCTest-harness som togs bort efteråt. Ingen `logician --bridge` startades. Projektet sparades aldrig. Varje skrivning föregicks av kontrollen att projektsökvägen innehåller "Copy". Tre agenter delade Logic via ett rådgivande lås (`agent-live.lock`); allt nedan kördes med låset hållet.
+
+#### Fynd 1 — inlärningen var trasig på TVÅ ställen, och båda tystnade som "menyn/fältet finns inte"
+
+`logic_setup_key_commands` har inte kunnat öppna Key Commands-fönstret på den här maskinen. Två oberoende orsaker:
+
+1. **Menyposten heter `Edit Assignments…`, inte `Edit`** — och viktigare: `Logic Pro > Key Commands`-undermenyn **publicerar inga barn alls** förrän något öppnat den. En färsk genomgång av appmenyn visade `Settings` och `Control Surfaces` fullt utbyggda medan `Key Commands` hade **ett enda namnlöst barn**. Sökningen efter en post som innehåller "Edit" hittade alltså ingenting, och felet blev `windowNotFound("menu item 'Edit' under 'Key Commands'")`.
+2. **Och när posten väl hittas är `AXPress` på den en tyst nolloperation.** Både `AXPress` och `AXPick` returnerade `.success` (0) och fönstret öppnades aldrig — med Logic verifierat frontmost (`NSWorkspace.frontmostApplication == "Logic Pro"`), menyn både stängd och nyss öppnad. Samma kodväg öppnar `File > Bounce > Project or Section…` varje gång. Det är alltså inte "menyer går inte att trycka" utan "den här menyn går inte att trycka".
+
+**Lösningen kommer från menyposten själv.** En `AXMenuItem` publicerar sitt eget tangentbordskommando:
+
+| menypost | `AXMenuItemCmdChar` | `AXMenuItemCmdModifiers` | betyder |
+|---|---|---|---|
+| `Edit Assignments…` | `K` | 10 | ⌥K |
+| `Regions in Place…` | `B` | 12 | ⌃B |
+| `Project or Section…` | `B` | 0 | ⌘B |
+
+Bitmasken är Apples: 1 = shift, 2 = option, 4 = control, och **8 = INGET kommando** — Command är default och stängs AV av bit 3, vilket är precis tvärtom mot alla andra bitar och den lätta delen att få fel. `pressMenuItem` tar nu ett valfritt `settled:`-predikat: pressen görs som förut, och om ingenting händer inom ~1,8 s syntetiseras **den genvägen posten själv annonserar** (aldrig en hårdkodad tangent — den kunde vara ombunden till något annat). ⌥K öppnade fönstret på 0,5 s, varje gång. Anropare som inte skickar `settled:` får exakt det gamla beteendet, så bounce-vägen är orörd.
+
+3. **Sökfältet hittades inte heller.** Den gamla regeln var "ett `AXTextField` med ett barn vars `AXDescription` är `search`". I 12.3.1 är fältet ett `AXTextField` med **subroll `AXSearchField` och inga barn alls**. Tre vittnen accepteras nu (subrollen, `AXHelp` som innehåller "search", det gamla barnet) — vilket som helst räcker.
+
+Fönstrets titel, för övrigt: **`Key Command Assignments – Swedish – Edited`**. Användarens set är det svenska, redigerat, med tre konflikter enligt fönstrets egen `Conflicts (3)`-knapp.
+
+#### Fynd 2 — G00: `logic_learn_key_command` och `logic_list_key_commands`
+
+Maskineriet var redan generellt; det enda som stod i vägen var schemats `enum`. Det som byggdes runt det är samtyckesberättelsen:
+
+- **Noten väljs ur ett reserverat intervall** (`KeyCommandRegistry.learnableNoteRange` = 60–99, sedan 122–127, sedan 21–59) och `takenNotes()` reserverar ALLA standardkommandonas önskade noter (100–121) oavsett om de är inlärda — ett godtyckligt kommando kan alltså aldrig ta en not produktens egna verktyg är på väg att vilja ha.
+- **Registret säger vem som band vad och när**: nya poster bär `source` (`logic_learn_key_command`, `logic_select_regions`, …), `learned_at` (ISO-tidsstämpel) och `search`. Gamla poster saknar `source` och rapporteras som `"unrecorded (bound before the registry tracked a source)"` i stället för att tillskrivas onboardingen.
+- **Sökordet härleds ur namnet** (`defaultSearchTerm`: de två första orden, tre om de är korta) vilket gör det till en delsträng av namnet **per konstruktion** — det kan bara missa om namnet är fel, och det är exakt det fallet kandidatlistan finns för.
+- **`dry_run: true`** öppnar fönstret, filtrerar, läser raderna och stänger igen utan att binda något. Ett tomt resultat breddas automatiskt till namnets första ord.
+- **`not_found` listar de riktiga raderna** (ny felkod `keyCommandNotFound`). COVERAGE:s öppna fråga 7 ("namn driftar mellan versioner") är därmed inte längre ett tyst misslyckande utan en lista att välja ur.
+
+`logic_list_key_commands` är en ren filläsning (Logic rörs inte) och säger det: en post som listas kan ändå vara föräldralös inne i Logic om MIDI-portarna gjorts om.
+
+**Live:** fyra kommandon lärdes in på noterna 60–63 (se fynd 3 för namnen), registret gick 22 → 26 poster, och varje ny post bär källa och tidsstämpel. Ett femte (`Select All Following of Same Track/Pitch`, not 64) lärdes in **på begäran av `logic_select_regions`** och resultatet bar `consent_note` om det.
+
+#### Fynd 3 — vad kommandona FAKTISKT heter i Logic 12.3.1
+
+Sökningar i Key Commands-fönstret, med de befintliga bindningarna i klartext:
+
+| COVERAGE gissade | Logic 12.3.1 säger | genväg |
+|---|---|---|
+| "Strip Silence" | **`Remove Silence from Audio Region…`** | ⌃X |
+| "Select All Following of Same Track" | **`Select All Following of Same Track/Pitch`** | ⌃⇧F |
+| "Select All in Track" | **`Select All Regions/Cells of Same Track`** | — |
+| — | `Select All Following` | ⇧F |
+| — | `Select All Regions of Selected Tracks *` | — |
+| "Bounce in Place" | **`Bounce Regions/Cells in Place…`** / `Bounce Tracks in Place` | ⌃B / ⌃⌘B |
+
+`Split Regions/Events at Playhead Position` visade `⌘T ⌘1⃣ Note 103` — vår egen inlärda not, svart på vitt i användarens eget fönster. Sidofynd för framtida rader: `Normalize Region/Cell Gain…` (⌃⌥G), `Region Gain ±1 dB` och `±0.1 dB` finns som kommandon (G29), liksom `Stem Splitter…` med sex presets.
+
+`View`-menyn hade inget "Strip Silence" alls, och Edit-menyn har bara `Select All` — hela urvalsfamiljen finns ENBART som key commands, vilket gör G26 beroende av G00 precis som COVERAGE gissade.
+
+#### Fynd 4 — playheaden står inte där kontrollraden säger, och det är stegarnas fel
+
+Roadmap-punkt 3:s fynd 10 (2026-08-28) noterade att `setPlayhead` "landar inom slaget". Den här sessionen mätte **varför** och **hur mycket**.
+
+Playhead Position-gruppen i kontrollraden publicerar **exakt två `AXSlider`ar: `bar` och `beat`**. Ingen division, ingen tick — de fälten finns i displayen men inte i hjälpmedelsträdet. Och båda är RELATIVA stegare (`min`/`max` är ±1 runt nuvarande värde, aktionerna `AXIncrement`/`AXDecrement`). Alltså: ett underslag-offset som redan finns i playheaden **bärs med oförändrat genom varje steg**.
+
+MCU:ns tiosiffriga display är sensorn som ser det. Tre verifierade parkeringar i rad:
+
+```
+setPlayhead(bar: 5, beat: 1)  ->  kontrollraden "5 bars 1 beat"  ->  MCU "  5 1 4201"
+setPlayhead(bar: 6, beat: 1)  ->  kontrollraden "6 bars 1 beat"  ->  MCU "  6 1 4201"
+setPlayhead(bar: 9, beat: 1)  ->  kontrollraden "9 bars 1 beat"  ->  MCU "  9 1 4201"
+```
+
+Division 4, tick 201 = 0,9583 slag efter slaget, **varje gång**. För tempo-sampling spelar det ingen roll; för en SPLIT är det skillnaden mellan ett snitt på taktlinjen och ett snitt nästan ett helt slag senare, och kontrollraden visar bara takt/slag så avvikelsen är osynlig därifrån.
+
+**Fixen är den enda absoluta förflyttning Logic erbjuder:** kontrollradens `Go to Beginning`-knapp (`AXButton desc='Go to Beginning'`, hjälptexten "Move the playhead to the start of the project"). Från ett nollställt offset håller stegningen sig noll. `parkPlayheadOnGrid` läser MCU-timecoden först, backar bara när offsetet är nollskilt **eller oläsbart**, och rapporterar `on_grid` från division/tick — `null`, aldrig `true`, när ytan inte går att läsa. Kostnad: ~0,12 s per takt från takt 1.
+
+#### Fynd 5 — G24: `logic_split_region`, och modalen ingen visste om
+
+Verktyget slår ihop de tre stegen till ett omdöme, med tre namngivna felmoder. Två av dem vägrar innan något skrivs (snittpunkt utanför regionen; playheaden landade fel), den tredje är arrangemangskartan.
+
+**Ordningen visade sig vara load-bearing.** Första försöket valde regionen först och parkerade playheaden sedan — och splitten hände inte. Att parka playheaden går genom kontrollraden, vilket tar tangentbordsfokus från spårområdet, och ett key command som är scopat till "Main Window Tracks" gör då ingenting alls. Nu parkas playheaden FÖRST och regionen väljs SIST (`selectRegion` sätter `AXFocused` på regionen), och splitten fungerar.
+
+**Och sedan kom modalen.** En MIDI-region vars noter korsar snittet får Logic att öppna ett `AXFloatingWindow` med titeln **`Notes Crossing Split Point`**:
+
+```
+"Do you want to keep, shorten, or split the notes that cross the point where the region is being split?"
+AXRadioButton 'Keep' (0) | 'Shorten' (0) | 'Split' (1, förvald) | AXButton 'OK' | 'Cancel'
+```
+
+Den är modal på det obehagliga sättet: **key commands över MIDI-porten sväljs medan den står uppe**. Symptomet är att varje efterföljande verktyg rapporterar "kommandot avfyrades och ingenting hände" — vi förlorade tio minuter och ett par felsökningsvarv på precis det innan MCU-spegelns LCD avslöjade den (`lcd_bottom` läste `Keep Shortn Split Cancel OK`, `lcd_top` "plit the notes that cross the point where the region is"). Kontrollytans spegel är alltså en modal-detektor, vilket är värt att komma ihåg.
+
+Verktyget svarar nu deterministiskt via `notes_crossing` (`keep`/`shorten`/`split`, default = Logics egen förval `split`), rapporterar vilken gren det tog, och har ett `defer` som **avbryter (Cancel) varje kvarlämnad dialog på alla felvägar**. En ljudregion, eller ett snitt ingen not korsar, öppnar ingenting och resultatet säger `notes_crossing: "not_asked"`.
+
+**Live-verifierat** på en duplicerad kladdregion: `Crash` 60–64 → **60–62 + 62–64**, `verified: true`, `playhead.on_grid: true` (MCU: division 1, tick 1 — exakt på slaget), dialogen besvarad med `split`. En Undo återställde den enda regionen. Kladdkopian togs sedan bort med `logic_delete_region`, och spåret var tillbaka till sin ursprungliga enda region.
+
+#### Fynd 6 — `logic_copy_region` klistrade in på FEL SPÅR och rapporterade misslyckande
+
+Den farligaste buggen den här sessionen. `copyRegion` valde destinationsspåret bara när `to_track` angavs; utan det antog den att kopian landar på källspåret. Men **Paste landar på det VALDA spåret**, och att välja en REGION väljer inte dess spår.
+
+Mätt: en kopia av `Crash` (spår "Crash") till takt 60 utan `to_track` landade på **`Bas`** — spåret som råkade vara valt — varpå verifieringen tittade på "Crash" och svarade `verification_failed: nothing appeared there`. En skrivning på fel spår som rapporterar misslyckande är den värsta formen en bugg kan ha: agenten tror att ingenting hände och gör om det.
+
+Fixen är en rad: destinationsspåret väljs ALLTID, även i samma-spår-fallet. Den felplacerade regionen togs bort med `logic_delete_region` och `Bas` är tillbaka på sina tre regioner.
+
+#### Fynd 7 — G26: `logic_select_regions`, med räkningen som bevis
+
+Fem lägen, vart och ett ett riktigt Logic-kommando, och `selectedRegionCount()` före och efter som verifiering. Live på `808`-spåret:
+
+| läge | kommando | räkning |
+|---|---|---|
+| `track` | `Select All Regions/Cells of Same Track` | 1 → **9** (spårets alla regioner) |
+| `following_same_track` | `Select All Following of Same Track/Pitch` | 1 → **5** (takt 41 och framåt) |
+| `following` | `Select All Following` | 1 → **15** (alla spår) |
+| `none` | `Deselect All` | 15 → **0** |
+
+Ett läge som inte flyttade räkningen kommer tillbaka `success: false` i stället för att låtsas. Noten säger det viktiga: räkningen ser bara SYNLIGA spårrader medan urvalet är projektomfattande — en efterföljande redigering kan alltså träffa fler regioner än siffran visade.
+
+#### Fynd 8 — G53: bouncedialogens fullständiga grammatik
+
+COVERAGE:s öppna fråga 6 är besvarad. Hela dialogen, gången skrivskyddat och avbruten med Cancel:
+
+**Destinationstabellen** (redan känd): `AXCheckBox` desc `Uncompressed` / `MP3` / `M4A` / `Burn to CD / DVD`.
+
+**Uncompressed-gruppens kontroller** — och nyckeln till dem: etiketterna är `AXStaticText` och kontrollerna `AXPopUpButton`, **syskon utan beskrivning eller titel**. Det enda som binder ihop dem är geometrin: varje etikett låg på x=715 och sin popup på x=819 med popupens y exakt EN punkt över etikettens (187/186, 217/216, 247/246, 277/276, 307/306). `labelledPopUp` parar därför "samma rad, till höger, närmast" med några punkters tolerans.
+
+Varje popups fullständiga värdeförråd, uppräknat genom att öppna dem en och en (✓ = aktuellt):
+
+```
+File Type:    AIFF[✓]  WAVE  CAF
+Bit Depth:    8-bit  16-bit  24-bit[✓]  32-bit float
+Sample Rate:  11.025 / 12 / 22.05 / 24 / 32 / 44.1[✓] / 48 / 64 / 88.2 / 96 / 176.4 / 192 kHz
+Dithering:    None[✓]  POW-r #1 (Dithering)  POW-r #2 (Noise Shaping)  POW-r #3 (Noise Shaping)  UV22HR
+Format:       Split  Interleaved[✓]
+Mode:         Automatic[✓]  Offline  Realtime
+Normalize:    Off[✓]  Overload Protection Only  On
+```
+
+Plus kryssrutorna `Surround Bounce`, `Add to Project`, `Add to Apple Music Library` (i gruppen) och `Bounce 2nd Cycle Pass`, `Include Audio Tail`, `Include Tempo Information` (i dialogen), samt `Requires 11,4 MB of free disk space (Time 0:42)` som en läsbar uppskattning.
+
+**MP3-varianten** byter ut hela gruppen: `Bit Rate Mono:` / `Bit Rate Stereo:` (320 kbit/s), `Quality:` (Highest), `Stereo Mode:` (Joint Stereo), `Use Variable Bit Rate Encoding (VBR)`, `Filter frequencies below 10 Hz`, `Use best encoding`, `Write ID3 tags` + en `ID3 Settings…`-knapp. Grammatiken är alltså känd men **inte implementerad** — `logic_bounce_range` stannar på Uncompressed, och det står i verktygsbeskrivningen.
+
+`logic_bounce_range` tar nu `file_type`, `bit_depth`, `sample_rate`, `dithering`, `normalize` och `include_audio_tail`. Värden matchas överseende ("48k", "48000", "48 kHz" → `48 kHz`) men **aldrig luddigt**: ett tvetydigt prefix ("1" mot sample rate) vägras, och ett okänt värde vägras med hela listan INNAN dialogen rör sig. Varje skrivning verifieras genom att läsa popupens värde tillbaka, och resultatet bär `delivered_as` — hela leveranstillståndet läst ur dialogen strax före OK. **Ingenting återställs**: det här är användarens egna inställningar och Logic behåller dem, så `options_changed` säger vad som flyttades i stället för att låtsas att det var tillfälligt.
+
+#### Fynd 9 — G33: bounce-in-place-arket
+
+`File > Bounce > Regions in Place…` och `Tracks in Place…` finns båda i menyn (och som key commands, fynd 3). Arket är en **`AXSheet` utan titel** — det enda som namnger det är en `AXStaticText` som läser `Bounce Regions In Place`. Innehåll:
+
+```
+AXTextField 'Crash_bip' (SETTABLE)          Name:
+AXPopUpButton 'Overload Protection Only'    Normalize:
+AXRadioButton Selected Track(0) / New Track(1)   Destination:
+AXRadioButton Mute(1) / Leave(0) / Delete(0)     Source:
+AXPopUpButton 'One File'                    (fil-uppdelning vid flera regioner)
+AXCheckBox  Include Volume/Pan Automation(1)   Include Audio Tail in Region(0)
+            Include Audio Tail in File(1)      Bypass Effect Plug-ins(1)
+            Bounce Second Loop Pass(0)         Include Instrument Multi-Outputs(0)
+AXButton    Restore Defaults | Cancel | OK
+```
+
+**`Bypass Effect Plug-ins` stod på 1 i det här projektet.** En "print that" med den påslagen ger TORRT ljud — inserten renderas inte — vilket nästan aldrig är vad någon menar. `logic_bounce_in_place` ändrar bara det anroparen ber om, rapporterar hela arkets tillstånd, och **varnar** när bypass var på.
+
+#### Fynd 10 — G30: det heter inte Strip Silence, och fönstret har en LIVE-förhandsvisning
+
+`Remove Silence from Audio Region…` på en markerad ljudregion öppnar ett `AXFloatingWindow` med titeln `Remove Silence`:
+
+```
+AXStaticText '9 Regions'        <- Logics EGEN förhandsvisning, uppdateras med inställningarna
+AXCheckBox   'Search Zero Crossing' (1)
+AXGroup '0,1000' + label 'Minimum Time to accept as Silence:'   (5 sifferstegare, min 0 max 60)
+AXGroup '0,0000' + label 'Post Release-Time:'
+AXGroup '0,0060' + label 'Pre Attack-Time:'
+AXGroup '-28'    + label 'Threshold:'                            (2 sifferstegare, min -80 max 0)
+AXButton OK | Cancel
+```
+
+Sifferfälten är samma art som bouncedialogens positionsfält och Tempo Lists celler: per-siffra-`AXSlider`ar med `AXIncrement`/`AXDecrement`. **De skrivs inte** av det här verktyget — det är den ärliga uppdelningen: `logic_remove_silence` med `apply: false` (default) öppnar fönstret, läser Logics egen "N Regions"-siffra och de fyra värdena, stänger igen och ändrar ingenting; `apply: true` trycker OK och verifierar mot arrangemangskartan (en region blir N). En MIDI-region vägras innan fönstret ens öppnas.
+
+Förhandsvisningen är den verkliga vinsten: "vad skulle det här göra?" besvaras med Logics eget svar, utan att röra projektet.
+
+#### Fynd 11 — G54: stems är en komposition, och det viktiga är vad de INNEHÅLLER
+
+`logic_export_stems` gör en offline-bounce per spår över SAMMA taktintervall med bara det spåret soloat, återställer solot efter varje, och jämför filernas `frames` — `aligned` är alltså en observation, inte ett påstående. Den vägrar innan första renderingen om något spår redan är soloat (ett kvarglömt solo skulle lägga sig i varje stem).
+
+Valet av mekanism är hela poängen och står i verktygets egen not: en solo-bounce ger **masterutgången hörd ett spår i taget** — efter fader, efter panorering, efter inserts, MED spårets sändretur, genom masterkedjan. Det är vad en mixare menar med stem. Två konsekvenser sägs rakt ut: summan av stemsen återskapar mixen bara så länge masterkedjan är LINJÄR (en masterlimiter reagerar på hela mixen och kan inte reagera på en stem), och en buss som matas av flera av spåren räknas en gång per stem. `logic_render_track` är den ANDRA sortens fil — en pre-fader-frysning av spåret ensamt, utan sändningar och utan masterkedja — och den är inte en stem. `File > Export > All Tracks as Audio Files…` finns i menyn och vore den dedikerade vägen; dess dialog är inte gången och raden kvar som framtida arbete.
+
+#### Fynd 12 — en blind Undo tog bort någon annans spår
+
+Ärlighetsnoten. Tidigt i sessionen avfyrade harnesset två `Undo` efter ett verktyg som hade **misslyckats** — alltså utan något eget att ångra. Den första tog bort ett tomt spår (`Inst 9`) som en samtidig agent troligen just skapat; spårantalet gick 20 → 19. Det gick inte att göra om (en senare redigering rensar redo-stacken).
+
+Det är precis den fara AGENT-GUIDE:s "fire Undo only right after a known edit" varnar för, och den är nu skriven som en egen `Cautions`-punkt med det här som belägg. Resten av sessionens städning gjordes med riktade `logic_delete_region`-anrop i stället för Undo.
+
+#### Vad som ändrades i koden
+
+`KeyCommandRegistry` (fritt notintervall, `takenNotes`, `defaultSearchTerm`, `source`/`learned_at`/`search` i posterna) · `AXKeyCommandLearning` (delade hjälpare, `searchKeyCommands` skrivskyddad, kandidater i `not_found`, exakt-sedan-skiftlägesokänslig radmatchning, subrollsfixen, den verifierade menypressen) · `MenuShortcut.swift` (ny, ren: modifierarmasken och tangentkoderna) · `AXBounce` (`settled:`-pressen, `labelledPopUp`, `selectPopUpItem`, `setCheckBox`, `applyBounceOptions`, `readBounceOptions`) · `BounceOptions.swift` (ny, ren: värdeförråden och den överseende matchningen) · `AXBounceInPlace.swift` (ny) · `AXRemoveSilence.swift` (ny, med `RemoveSilence.previewCount` ren) · `StemExport.swift` (ny, ren: listvalidering, ramjämförelse, innehållsnoten) · `AXRegions` (`splitRegion`, `selectRegions`, modalhanteringen, paste-på-rätt-spår) · `AXTransport` (`pressControlBarButton`, `parkPlayheadOnGrid`) · `MCURender.resolveKeyCommand` (`learnIfMissing`).
+
+Sju nya verktyg: `logic_learn_key_command`, `logic_list_key_commands`, `logic_split_region`, `logic_select_regions`, `logic_remove_silence`, `logic_bounce_in_place`, `logic_export_stems`. `logic_bounce_range` fick sex nya argument. Inget verktyg döptes om.
+
+#### Vad som är LIVE-VERIFIERAT och vad som inte är det
+
+**Kört mot Logic, med belägg ovan:** inlärningen (fem kommandon, registret 22 → 26 poster, `dry_run`, `not_found` med kandidater), `logic_list_key_commands`, `logic_split_region` (kopia → delning → Undo → städning, `on_grid: true` mot MCU-timecoden, modalen besvarad), `logic_select_regions` (fyra lägen med räkningar), fel-spår-buggen i `logic_copy_region` (observerad, fixad, och fixen bevisad av en fungerande samma-spår-kopia), samt **alla tre dialoggrammatikerna** — bouncedialogen (inklusive varje popups poster och MP3-varianten), bounce-in-place-arket och Remove Silence-fönstret — gångna skrivskyddat och avbrutna med Cancel.
+
+**Overifierat, för ärlighetens skull:**
+
+- **`logic_bounce_range`s nya argument har aldrig SKRIVIT i dialogen.** Värdeförråden och geometriparningen är mätta, men `applyBounceOptions`/`selectPopUpItem` har inte körts skarpt — en bounce med `bit_depth`/`sample_rate` satta är alltså implementerad och enhetstestad, inte utförd.
+- **`logic_bounce_in_place` har aldrig tryckt OK.** Arket är gånget och avbrutet; själva utskriften, verifieringen mot arrangemangskartan och 90-sekundersvakan är oprövade.
+- **`logic_remove_silence` har aldrig körts genom verktyget** — fönstret öppnades för hand via det inlärda kommandot och avbröts. Både förhandsvisningsläget och `apply: true` är alltså kod, inte observation.
+- **`logic_export_stems` har aldrig körts.** Solo-slingan, ramjämförelsen och den vägran som utlöses av ett kvarglömt solo är enhetstestade i sina rena delar och i övrigt oprövade.
+- **MP3/M4A-destinationerna** är uppräknade men inte implementerade, och `File > Export > All Tracks as Audio Files…` (den dedikerade stem-vägen) är inte ens öppnad.
+- **Splitten är verifierad på EN MIDI-region.** En ljudregion (som inte ska ge någon modal) är inte prövad, och `notes_crossing: "keep"`/`"shorten"` är inte heller det — bara `split`.
+
+Skälet till att listan är så lång är miljön, inte designen: tre agenter delade Logic via ett rådgivande lås, och macOS hjälpmedelslager föll systemomfattande igen mitt i (samma symptom som 2026-08-28:s v0.53.0-session — `AXWindows` returnerar applikationselementet, i Finder och Terminal också). **Orsaken är nu känd**: användaren rapporterar att den utlöses av att maskinen går i strömsparläge, och ändrade energiinställningarna. En AX-probe efter uppvaknandet visade planet friskt igen, så degraderingen är återställbar och inte permanent.
+
+#### Vad som blev kvar ändrat (osparat projekt; inget har nått disken)
+
+1. **Fem nya key command-tilldelningar i användarens egna set** — det är leveransen, inte en biverkning: `Select All Following` (not 60), `Select All Regions/Cells of Same Track` (61), `Deselect All` (62), `Remove Silence from Audio Region…` (63), `Select All Following of Same Track/Pitch` (64), alla på porten `Logic MCP Commands`, alla additiva och borttagbara i Key Commands-fönstret (markera kommandot, Delete Assignment). `logic_list_key_commands` visar dem med källa och tidsstämpel.
+2. **Ett tomt spår, `Inst 9`, är borta** — se fynd 12. Spårantalet gick 20 → 19 och Redo når det inte längre.
+3. **Playheaden står inte där den stod** (sessionen parkerade den på flera takter; sist runt takt 62).
+4. Kladdregionerna är borttagna och `Bas` och `Crash` är tillbaka på sina ursprungliga regioner, verifierat mot arrangemangskartan.
+5. Från tidigare sessioner, oförändrat: tempohändelsen på takt 9 (121 BPM), `Audio 8`/`Aux 1`/`Aux 3` på -0,1 dB, och `Bas` → `Compressor` med `Output Gain` på råvärde 60.
+
+`swift test`: 311 tester gröna (33 nya), 1,4 s, ingen Logic behövs. `swift build -c release` grön.

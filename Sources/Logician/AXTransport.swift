@@ -429,6 +429,91 @@ extension LogicAccessibility {
         ]
     }
 
+    /// Presses one of the control bar's transport buttons by its
+    /// `AXDescription` ("Go to Beginning", "Forward", "Rewind").
+    func pressControlBarButton(_ description: String) throws {
+        guard let button = controlBarChild(try controlBarGroup(), description) else {
+            throw LogicianError.windowNotFound("'\(description)' button in the control bar")
+        }
+        let status = AXUIElementPerformAction(button, kAXPressAction as CFString)
+        guard status == .success else {
+            throw LogicianError.writeFailed(
+                "AXPress on '\(description)' returned AXError \(status.rawValue)"
+            )
+        }
+    }
+
+    /// Parks the playhead EXACTLY on a bar/beat — division and tick included —
+    /// and proves it.
+    ///
+    /// Why this is not just `setPlayhead`: the control bar's position display
+    /// publishes **two** sliders, `bar` and `beat`, and nothing below them
+    /// (measured 2026-08-28), while both are RELATIVE steppers. So a
+    /// sub-beat offset already in the playhead is carried along unchanged by
+    /// every step, and a "verified bar 5, beat 1" can sit almost a whole beat
+    /// late while the control bar happily reads `5 bars 1 beat`. Measured on
+    /// the sandbox project: the MCU's own 10-digit display read `  5 1 4201`,
+    /// `  6 1 4201`, `  9 1 4201` after three verified parkings — division 4,
+    /// tick 201, i.e. 0.958 beats past the beat every time. That is the
+    /// mechanism behind FINDINGS 2026-08-28 fynd 10, where a tempo event
+    /// created "at bar 9" landed at `9 1 4 201`.
+    ///
+    /// The fix uses the one control that is ABSOLUTE: the control bar's `Go to
+    /// Beginning` button, which puts the playhead on `1 1 1 1`. From a zero
+    /// offset, stepping bars and beats keeps it zero. The MCU timecode is the
+    /// sensor for both the before and the after, so `on_grid` is an
+    /// observation, not a claim — and it is `null`, never `true`, when the
+    /// surface cannot be read.
+    func parkPlayheadOnGrid(bar: Int, beat: Int) throws -> [String: Any] {
+        func residue() -> (division: Int, ticks: Int)? {
+            guard case .beats(_, _, let division, let ticks) =
+                MCUController.timecodeReading() else { return nil }
+            return (division, ticks)
+        }
+        /// Divisions and ticks are ONE-based in Logic's display and the
+        /// classifier reports a blank field as 0, so both values count as
+        /// "exactly on the beat".
+        func isZero(_ value: (division: Int, ticks: Int)?) -> Bool? {
+            guard let value else { return nil }
+            return value.division <= 1 && value.ticks <= 1
+        }
+        let before = residue()
+        // Rewind when the offset is non-zero OR unknown: an unreadable
+        // surface must not be treated as a clean playhead. It costs bar
+        // stepping (~0.12 s per bar) and buys an exact cut.
+        // Never rewind a ROLLING transport: `Go to Beginning` would throw the
+        // playhead back to bar 1 and keep playing, which is a far bigger
+        // surprise than an inexact cut. The offset is then reported as it is.
+        let rolling = (MCUController.freshStatus()?["transport_leds"] as? [String: Any])?["play"]
+            as? Bool ?? false
+        var rewound = false
+        if isZero(before) != true && !rolling {
+            try pressControlBarButton("Go to Beginning")
+            Thread.sleep(forTimeInterval: 0.4)
+            rewound = true
+        }
+        _ = try setPlayhead(barNumber: bar, beat: beat)
+        let after = residue()
+        let group = playheadGroup(in: try controlBarGroup())
+        var result: [String: Any] = [
+            "bar": group.flatMap { sliderValue($0, "bar") } ?? bar,
+            "beat": group.flatMap { sliderValue($0, "beat") } ?? beat,
+            "rewound_first": rewound,
+            "transport_rolling": rolling,
+            "on_grid": isZero(after).map { $0 as Any } ?? NSNull() as Any
+        ]
+        if let after {
+            result["timecode_division"] = after.division
+            result["timecode_ticks"] = after.ticks
+        } else {
+            result["on_grid_note"] = "the MCU position display could not be read, so whether the "
+                + "playhead sits exactly on the beat is UNVERIFIED (the control bar publishes bars "
+                + "and beats only). The playhead was rewound to the project start first, which is "
+                + "the state that makes stepping exact."
+        }
+        return result
+    }
+
     func setTransportCheckbox(
         description: String,
         key: String,

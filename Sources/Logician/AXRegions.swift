@@ -294,8 +294,12 @@ extension LogicAccessibility {
 
     // MARK: - Region editing (exclusive selection + learned key commands)
 
-    func fireKeyCommand(_ name: String) throws {
-        let command = try MCUController.resolveKeyCommand(named: name, logic: self)
+    func fireKeyCommand(
+        _ name: String, learnIfMissing: Bool = false, source: String = "logic_setup_key_commands"
+    ) throws {
+        let command = try MCUController.resolveKeyCommand(
+            named: name, logic: self, learnIfMissing: learnIfMissing, source: source
+        )
         _ = try MCUController.triggerKeyCommand(note: command.note, channel: command.channel)
     }
 
@@ -351,6 +355,369 @@ extension LogicAccessibility {
             "start_bar": selection["start_bar"] ?? NSNull(),
             "note": "Removable mistake? Undo restores it."
         ]
+    }
+
+    // MARK: - The split confirmation modal
+
+    /// Logic's `Notes Crossing Split Point` window, if it is up.
+    ///
+    /// Splitting a MIDI region whose notes cross the split point raises this
+    /// modal (observed 2026-08-28) and NOTHING else in Logic responds until it
+    /// is answered — key commands over the MIDI port included, which is how a
+    /// forgotten one looks: every later tool reports "the command fired and
+    /// nothing happened". It is an `AXFloatingWindow` titled `Notes Crossing
+    /// Split Point`, holding three radio buttons (`Keep`, `Shorten`, `Split`,
+    /// with `Split` pre-selected) plus `OK` and `Cancel`.
+    func notesCrossingSplitDialog() -> AXUIElement? {
+        (try? logicWindows())?.first {
+            stringAttribute($0, kAXTitleAttribute as String) == "Notes Crossing Split Point"
+        }
+    }
+
+    /// What each choice does to a note that straddles the cut.
+    static let notesCrossingChoices = [
+        "keep": "the note stays whole and belongs to the first region",
+        "shorten": "the note is truncated at the split point",
+        "split": "the note is cut in two, one half in each region (Logic's own default)"
+    ]
+
+    /// Answers the modal. `choice` nil presses Cancel, which abandons the
+    /// split — the safe answer when a caller cannot say what it wants.
+    /// Returns what it pressed, or nil when no dialog was up.
+    @discardableResult
+    func answerNotesCrossingSplit(choice: String?) -> String? {
+        guard let dialog = notesCrossingSplitDialog() else { return nil }
+        let buttons = children(of: dialog)
+        func button(_ role: String, _ title: String) -> AXUIElement? {
+            buttons.first {
+                stringAttribute($0, kAXRoleAttribute as String) == role
+                    && stringAttribute($0, kAXTitleAttribute as String)
+                        .caseInsensitiveCompare(title) == .orderedSame
+            }
+        }
+        guard let choice else {
+            if let cancel = button("AXButton", "Cancel") {
+                _ = AXUIElementPerformAction(cancel, kAXPressAction as CFString)
+                Thread.sleep(forTimeInterval: 0.4)
+            }
+            return "cancel"
+        }
+        if let radio = button("AXRadioButton", choice) {
+            _ = AXUIElementPerformAction(radio, kAXPressAction as CFString)
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        if let ok = button("AXButton", "OK") {
+            _ = AXUIElementPerformAction(ok, kAXPressAction as CFString)
+            Thread.sleep(forTimeInterval: 0.4)
+        }
+        return choice.lowercased()
+    }
+
+    /// G24 / U3: the documented three-call split recipe as ONE verified call.
+    ///
+    /// The recipe was `logic_select_region` → `logic_set_playhead` →
+    /// `logic_trigger_key_command {name: "Split Regions/Events at Playhead
+    /// Position"}`, with three independent failure modes and no combined
+    /// verification — so an agent could select the right region, park the
+    /// playhead somewhere else, fire the command and be told three times that
+    /// everything worked. Here the three steps share one verdict, and the
+    /// arrangement map is the proof: two regions where one was.
+    func splitRegion(
+        trackName: String, regionName: String?, startBar: Int?,
+        atBar: Int, atBeat: Int, notesCrossing: String
+    ) throws -> [String: Any] {
+        guard LogicAccessibility.notesCrossingChoices[notesCrossing.lowercased()] != nil else {
+            throw LogicianError.invalidArguments(
+                "notes_crossing must be one of: "
+                    + LogicAccessibility.notesCrossingChoices.keys.sorted().joined(separator: ", ")
+            )
+        }
+        // A modal this call raised must never outlive it: an unanswered
+        // "Notes Crossing Split Point" freezes every later tool, key commands
+        // included, and the symptom is a string of "the command fired and
+        // nothing happened" results with no hint of the cause.
+        defer {
+            if notesCrossingSplitDialog() != nil {
+                _ = answerNotesCrossingSplit(choice: nil)
+            }
+        }
+        let before = try regionSnapshot(trackName: trackName)
+        // Identify the region WITHOUT selecting it yet: the playhead has to be
+        // parked first (see below), and parking touches the control bar, which
+        // takes the keyboard focus away from the Tracks area — a Split fired
+        // in that state does nothing at all (measured 2026-08-28: select,
+        // park, split left the arrangement map unchanged). `selectRegion`
+        // hands the region the focus, so it has to be the LAST thing before
+        // the command fires.
+        let candidates = before.filter { entry in
+            if let regionName,
+               (entry["name"] as? String)?.caseInsensitiveCompare(regionName) != .orderedSame {
+                return false
+            }
+            if let startBar, entry["start_bar"] as? Int != startBar { return false }
+            return true
+        }
+        guard candidates.count == 1, let selection = candidates.first else {
+            throw LogicianError.parameterAmbiguous(
+                "region on '\(trackName)' (candidates: " + before.map {
+                    "\($0["name"] ?? "?")@bar\($0["start_bar"] ?? 0)"
+                }.joined(separator: ", ") + ")",
+                candidates.count
+            )
+        }
+        // FAILURE MODE 1: a split point outside the region. Logic would
+        // silently do nothing (or split a neighbour, if one is selected too),
+        // and the arrangement map would look untouched — so it is refused
+        // BEFORE the playhead moves and before anything fires.
+        let regionStart = selection["start_bar"] as? Int
+        let regionEnd = selection["end_bar"] as? Int
+        if let regionStart, let regionEnd, !(atBar >= regionStart && atBar < regionEnd) {
+            throw LogicianError.currentValueMismatch(
+                expected: "a split point inside '\(selection["name"] ?? "?")' (bars \(regionStart)-\(regionEnd))",
+                actual: "bar \(atBar), which is outside it. Nothing was moved, nothing was split."
+            )
+        }
+        if let regionStart, atBar == regionStart, atBeat <= 1 {
+            throw LogicianError.currentValueMismatch(
+                expected: "a split point after the region's first beat",
+                actual: "bar \(atBar) beat \(atBeat) is the region's own start; splitting there produces nothing. Nothing was moved."
+            )
+        }
+        // FAILURE MODE 2: the playhead not landing where it was asked to.
+        // `setPlayhead` verifies bar and beat and stops there; the sub-beat
+        // fields it never touched can leave the playhead most of a beat late,
+        // which for a split is a wrong cut rather than a rounding error.
+        let parked = try parkPlayheadOnGrid(bar: atBar, beat: atBeat)
+        guard (parked["bar"] as? Int) == atBar, (parked["beat"] as? Int) == atBeat else {
+            throw LogicianError.verificationFailed(
+                requested: "the playhead at bar \(atBar) beat \(atBeat)",
+                actual: "bar \(parked["bar"] ?? "?") beat \(parked["beat"] ?? "?"); nothing was split",
+                restored: false
+            )
+        }
+        // Selection LAST, for the focus reason above, and exclusive so Split
+        // cannot cut a region the caller never named.
+        _ = try selectRegion(
+            trackName: trackName, regionName: selection["name"] as? String,
+            startBar: selection["start_bar"] as? Int, exclusive: true
+        )
+        guard try selectedRegionCount() == 1 else {
+            throw LogicianError.verificationFailed(
+                requested: "exactly one selected region before Split",
+                actual: "\(try selectedRegionCount()) regions selected; refusing to fire Split "
+                    + "(it would cut every one of them at the playhead)",
+                restored: false
+            )
+        }
+        try fireKeyCommand("Split Regions/Events at Playhead Position")
+
+        // A MIDI region whose notes cross the cut raises a modal before
+        // anything is split. Answer it deterministically with the caller's
+        // choice; an AUDIO region (or a cut that no note crosses) raises
+        // nothing, and the result says which happened.
+        var dialogAnswer: String?
+        for _ in 0..<15 {
+            Thread.sleep(forTimeInterval: 0.2)
+            if notesCrossingSplitDialog() != nil {
+                dialogAnswer = answerNotesCrossingSplit(choice: notesCrossing.lowercased())
+                break
+            }
+            if (try? regionSnapshot(trackName: trackName))?.count ?? 0 > before.count { break }
+        }
+
+        // FAILURE MODE 3: the command fired and nothing happened. The
+        // arrangement map is the only evidence that counts.
+        var after: [[String: Any]] = []
+        var split = false
+        for _ in 0..<10 {
+            Thread.sleep(forTimeInterval: 0.35)
+            after = try regionSnapshot(trackName: trackName)
+            if after.count == before.count + 1 { split = true; break }
+        }
+        guard split else {
+            throw LogicianError.verificationFailed(
+                requested: "two regions where '\(selection["name"] ?? "?")' was",
+                actual: "the track still shows \(after.count) region(s). Nothing was undone - "
+                    + "if the split DID happen and only the map is stale, re-read logic_list_regions "
+                    + "before firing Undo",
+                restored: false
+            )
+        }
+        let leftHalf = after.first { $0["start_bar"] as? Int == regionStart }
+        let rightHalf = after.first { $0["start_bar"] as? Int == atBar && !isSame($0, leftHalf) }
+        var result: [String: Any] = [
+            "success": true, "verified": true, "state": "split",
+            "track": trackName, "track_name": trackName,
+            "region": selection["name"] ?? "?",
+            "at_bar": atBar, "at_beat": atBeat,
+            "notes_crossing": dialogAnswer ?? "not_asked",
+            "regions_before": before.count,
+            "regions_after": after.count,
+            "left": leftHalf ?? NSNull(),
+            "right": rightHalf ?? NSNull(),
+            "playhead_left_at": ["bar": atBar, "beat": atBeat],
+            "note": (dialogAnswer == nil
+                ? "No 'Notes Crossing Split Point' dialog appeared - either no note straddles the cut, or this is an audio region. "
+                : "Logic asked what to do with the notes crossing the cut and this answered '\(dialogAnswer ?? "?")': \(LogicAccessibility.notesCrossingChoices[dialogAnswer ?? ""] ?? ""). ")
+                + "Undo restores the single region. The two halves are new regions: their names and start bars are what logic_list_regions reports now, so re-read the map before addressing either of them."
+        ]
+        result["playhead"] = parked
+        // An honest caveat rather than a silent wrong cut.
+        switch parked["on_grid"] as? Bool {
+        case true:
+            break
+        case false:
+            result["warning"] = "The playhead did NOT land exactly on bar \(atBar) beat \(atBeat) "
+                + "(the MCU position display still shows division \(parked["timecode_division"] ?? "?"), "
+                + "tick \(parked["timecode_ticks"] ?? "?")), so the cut sits inside the beat. "
+                + "Listen across the seam, or Undo and try again."
+            result["verified"] = false
+        default:
+            result["warning"] = "Whether the cut landed exactly on the beat is UNVERIFIED: the MCU "
+                + "position display could not be read, and the control bar publishes bars and beats "
+                + "only — it cannot see a sub-beat offset. The playhead was rewound to the project "
+                + "start before stepping, which is what makes the position exact; that it is exact "
+                + "was not observed."
+        }
+        if rightHalf == nil {
+            result["warning"] = ((result["warning"] as? String).map { $0 + " ALSO: " } ?? "")
+                + "A region count of \(after.count) proves the split happened, but no region starts "
+                + "at bar \(atBar) in the map — Logic reports whole bars and beats only, so a split "
+                + "inside a bar shows up on the bar it falls in. Read logic_list_regions for the truth."
+        }
+        return result
+    }
+
+    // MARK: - Multi-region selection (G26)
+
+    /// The learned command behind each selection mode, with what it means.
+    /// The names are Logic 12.3.1's own, read out of the Key Commands window
+    /// on 2026-08-28 — `Select All Following of Same Track/Pitch` and
+    /// `Select All Regions/Cells of Same Track` are not what anyone would
+    /// guess, which is exactly why `logic_learn_key_command`'s not_found lists
+    /// the real rows.
+    static let regionSelectionCommands: [String: (command: String, meaning: String)] = [
+        "track": (
+            "Select All Regions/Cells of Same Track",
+            "every region on the same track as the anchor region"
+        ),
+        "following": (
+            "Select All Following",
+            "the anchor region and everything that starts after it, on EVERY track"
+        ),
+        "following_same_track": (
+            "Select All Following of Same Track/Pitch",
+            "the anchor region and everything after it on that track only"
+        ),
+        "all": (
+            "Select All",
+            "every region in the project"
+        ),
+        "none": (
+            "Deselect All",
+            "nothing - clears the selection"
+        )
+    ]
+
+    /// Selects MORE than one region, by anchoring on one and firing a learned
+    /// Logic selection command. The count is the proof: `selectedRegionCount()`
+    /// is read before and after, and a mode that changed nothing is reported
+    /// as `success: false` rather than as a selection that silently stayed at
+    /// one region.
+    ///
+    /// The anchor matters and is not optional for the relative modes: Logic's
+    /// selection commands all act on what is currently selected, so this
+    /// selects the anchor exclusively first — the same primitive the region
+    /// edits already guard on.
+    func selectRegions(
+        mode: String, trackName: String?, regionName: String?, startBar: Int?
+    ) throws -> [String: Any] {
+        guard let entry = LogicAccessibility.regionSelectionCommands[mode] else {
+            throw LogicianError.invalidArguments(
+                "unknown mode '\(mode)'; use one of: "
+                    + LogicAccessibility.regionSelectionCommands.keys.sorted().joined(separator: ", ")
+            )
+        }
+        var anchor: [String: Any]?
+        if mode != "all" && mode != "none" {
+            guard let trackName else {
+                throw LogicianError.invalidArguments(
+                    "mode '\(mode)' needs an anchor: pass track_name (and region_name and/or "
+                        + "start_bar when the track holds more than one region)"
+                )
+            }
+            let regions = try regionSnapshot(trackName: trackName)
+            // One region on the track needs no further identification; more
+            // than one and the caller has to say which, exactly as
+            // logic_select_region requires.
+            if regionName == nil && startBar == nil && regions.count == 1 {
+                anchor = try selectRegion(
+                    trackName: trackName, regionName: regions[0]["name"] as? String,
+                    startBar: regions[0]["start_bar"] as? Int, exclusive: true
+                )
+            } else {
+                anchor = try selectRegion(
+                    trackName: trackName, regionName: regionName,
+                    startBar: startBar, exclusive: true
+                )
+            }
+        }
+        let before = try selectedRegionCount()
+        let wasRegistered = KeyCommandRegistry.note(named: entry.command) != nil
+        try fireKeyCommand(
+            entry.command, learnIfMissing: true, source: "logic_select_regions"
+        )
+        var after = before
+        for _ in 0..<8 {
+            Thread.sleep(forTimeInterval: 0.25)
+            after = try selectedRegionCount()
+            if after != before { break }
+        }
+        let expectedChange = mode == "none" ? (after == 0) : (after > before || after > 1)
+        var result: [String: Any] = [
+            "success": expectedChange,
+            "verified": expectedChange,
+            "state": expectedChange ? "selected" : "unchanged",
+            "mode": mode,
+            "command": entry.command,
+            "means": entry.meaning,
+            "selected_before": before,
+            "selected_count": after,
+            "note": "The count is read off the arrangement map's own selection state, and it counts "
+                + "regions on VISIBLE track rows only - a scrolled-out track's regions can be "
+                + "selected and uncounted (logic_list_regions has the same limit). A following edit "
+                + "command acts on ALL of them."
+        ]
+        if !wasRegistered {
+            result["learned_key_command"] = entry.command
+            result["learned_note"] = KeyCommandRegistry.note(named: entry.command)?.note ?? NSNull()
+            result["consent_note"] = "'\(entry.command)' was not in the key command registry, so it "
+                + "was LEARNED into the user's own Logic key command set to run this call (additive, "
+                + "removable in the Key Commands window; logic_list_key_commands shows it)."
+        }
+        if let anchor {
+            result["anchor"] = [
+                "track_name": anchor["track_name"] ?? NSNull(),
+                "region": anchor["name"] ?? NSNull(),
+                "start_bar": anchor["start_bar"] ?? NSNull()
+            ]
+        }
+        if !expectedChange {
+            result["note"] = "The selection count did not move (\(before) -> \(after)). Either the "
+                + "command is not bound in this Logic (check logic_list_key_commands), or it needs a "
+                + "focus this call did not have, or there genuinely was nothing more to select. "
+                + "Nothing was edited."
+        }
+        return result
+    }
+
+    /// Same region entry? Compared on the two fields the map guarantees;
+    /// regions have no stable identity (COVERAGE U8), so this is deliberately
+    /// only used to keep the two halves apart from each other.
+    private func isSame(_ lhs: [String: Any], _ rhs: [String: Any]?) -> Bool {
+        guard let rhs else { return false }
+        return (lhs["name"] as? String) == (rhs["name"] as? String)
+            && (lhs["start_bar"] as? Int) == (rhs["start_bar"] as? Int)
     }
 
     func moveRegion(
@@ -430,9 +797,17 @@ extension LogicAccessibility {
         try fireKeyCommand(move ? "Cut" : "Copy")
         Thread.sleep(forTimeInterval: 0.4)
         let destinationTrack = toTrack ?? trackName
-        if let target = toTrack {
-            _ = try selectTrack(trackName: target, trackNumber: nil, expectedProjectPath: nil)
-        }
+        // ALWAYS select the destination — including the same-track case.
+        // Paste lands on the SELECTED TRACK, and selecting a REGION does not
+        // select its track: measured 2026-08-28, a copy of 'Crash' (track
+        // "Crash") to bar 60 with no to_track landed on "Bas", the track that
+        // happened to be selected, and the verification then reported
+        // "nothing appeared there" while a region had in fact been created on
+        // someone else's track. A wrong-track write that reports failure is
+        // the worst shape a bug can have.
+        _ = try selectTrack(
+            trackName: destinationTrack, trackNumber: nil, expectedProjectPath: nil
+        )
         // beat 1 explicitly: the bar converge alone leaves the beat wherever
         // the playhead last stood, and Paste lands at the playhead exactly.
         _ = try setPlayhead(barNumber: toBar, beat: 1)

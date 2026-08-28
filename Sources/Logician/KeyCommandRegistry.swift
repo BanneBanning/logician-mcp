@@ -32,7 +32,10 @@ enum KeyCommandRegistry {
         return (note, (hit["channel"] as? Int) ?? 16)
     }
 
-    static func register(note: Int, channel: Int, name: String, notes: String) {
+    static func register(
+        note: Int, channel: Int, name: String, notes: String,
+        source: String = "logic_setup_key_commands", search: String? = nil
+    ) {
         var root = (try? Data(contentsOf: url))
             .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             ?? ["port": "Logic MCP Commands"]
@@ -41,15 +44,70 @@ enum KeyCommandRegistry {
             (($0["name"] as? String) ?? "").caseInsensitiveCompare(name) == .orderedSame
         }
         let formatter = ISO8601DateFormatter()
-        commands.append([
+        let stamp = formatter.string(from: Date())
+        // `learned` (the date) is kept exactly as it was so an existing
+        // registry file keeps reading the same; `learned_at` and `source`
+        // are the consent record G00 needs — WHO bound this and WHEN, to the
+        // second, because an arbitrary command learned by an agent has to be
+        // tellable apart from the product's own onboarding set.
+        var entry: [String: Any] = [
             "note": note, "channel": channel, "name": name,
-            "learned": String(formatter.string(from: Date()).prefix(10)),
+            "learned": String(stamp.prefix(10)),
+            "learned_at": stamp,
+            "source": source,
             "notes": notes
-        ])
+        ]
+        if let search { entry["search"] = search }
+        commands.append(entry)
         root["commands"] = commands
         if let data = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted]) {
             try? data.write(to: url)
         }
+    }
+
+    // MARK: - Notes for arbitrary (non-standard) commands
+
+    /// Where `logic_learn_key_command` puts a command it was asked to learn.
+    /// Deliberately BELOW the 100-121 block `standardCommands` prefers: an
+    /// arbitrary command must never take a note one of the product's own
+    /// tools is about to want, because the standard learn would then land on
+    /// an alternate note and the two would be harder to tell apart in the
+    /// user's own Key Commands window.
+    static let learnableNoteRange = 60...99
+
+    /// Every note this machine has already spoken for: what the registry
+    /// holds, plus every note the standard set PREFERS (whether or not it has
+    /// been learned yet — reserving them is the whole point).
+    static func takenNotes() -> Set<Int> {
+        var taken = Set(standardCommands.map(\.preferredNote))
+        for entry in commands() {
+            if let note = entry["note"] as? Int { taken.insert(note) }
+        }
+        return taken
+    }
+
+    /// The lowest free note for an arbitrary command: the 60-99 range first,
+    /// then 122-127, then 21-59. Pure so the choice can be tested without a
+    /// registry file. nil when all three ranges are full — 112 commands is far
+    /// past anything real, and a wrong answer there would silently rebind
+    /// something, so it refuses instead of wrapping.
+    static func freeNote(taken: Set<Int>) -> Int? {
+        let order = Array(learnableNoteRange) + Array(122...127) + Array(21...59)
+        return order.first { !taken.contains($0) }
+    }
+
+    /// The Key Commands window's search field takes a substring of the row's
+    /// name, so the first words of the name the caller gave are a search term
+    /// that is correct BY CONSTRUCTION whenever the name is. Two words (three
+    /// when the first two are very short) — broad enough that a near-miss name
+    /// still puts its neighbours on screen, which is what the not_found answer
+    /// reports back.
+    static func defaultSearchTerm(for name: String) -> String {
+        let words = name.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+        guard !words.isEmpty else { return name.lowercased() }
+        var taken = Array(words.prefix(2))
+        if taken.joined().count < 6, words.count >= 3 { taken = Array(words.prefix(3)) }
+        return taken.joined(separator: " ").lowercased()
     }
 
     /// The commands the product's tools rely on, with search terms for the
