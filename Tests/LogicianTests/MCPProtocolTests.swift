@@ -301,7 +301,7 @@ final class MCPProtocolTests: XCTestCase {
         XCTAssertEqual(result["ttlMs"] as? Int, toolListCacheTTLMs)
         XCTAssertEqual(result["cacheScope"] as? String, "public")
         XCTAssertNotNil((result["_meta"] as? [String: Any])?["io.modelcontextprotocol/serverInfo"])
-        XCTAssertEqual((result["tools"] as? [[String: Any]])?.count, 84)
+        XCTAssertEqual((result["tools"] as? [[String: Any]])?.count, 81)
     }
 
     /// A legacy client has no schema for `resultType` or the caching hints, so
