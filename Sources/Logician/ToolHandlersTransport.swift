@@ -381,7 +381,10 @@ extension MCPServer {
         }
         var result: [String: Any]
         do {
-            result = try MCUController.recordMIDI(
+            // The take is roughly two thirds of this tool; the optional
+            // verification render below is the rest, and it reports on its own
+            // 0…100, so each gets its own slice of one line.
+            result = try withProgressScope(0...65) { try MCUController.recordMIDI(
                 logic: logic,
                 trackName: trackName,
                 trackNumber: arguments["track_number"] as? Int,
@@ -392,7 +395,7 @@ extension MCPServer {
                 beatsPerBar: range.beatsPerBar,
                 syncCompensationMs: (arguments["sync_compensation_ms"] as? Double)
                     ?? (arguments["sync_compensation_ms"] as? Int).map(Double.init) ?? 45
-            )
+            ) }
         } catch {
             if effectiveSpeed > 1.001 { _ = try? logic.setTempo(range.tempo) }
             throw error
@@ -464,12 +467,15 @@ extension MCPServer {
             // suspect", so reporting it here made them re-record takes that
             // had landed perfectly. A legitimately quiet passage is the same
             // trap - silence is a fact about the music, not about the write.
-            if let render = try? MCUController.renderSelectedTrack(
-                projectPath: logic.projectDocumentPath(),
-                label: "midi-verify",
-                sliceStartSeconds: verifyRange.start, sliceEndSeconds: verifyRange.end,
-                logic: logic, trackName: trackName
-            ) {
+            reportProgress("verifying the take with a freeze render", percent: 66)
+            if let render = try? withProgressScope(66...100, {
+                try MCUController.renderSelectedTrack(
+                    projectPath: logic.projectDocumentPath(),
+                    label: "midi-verify",
+                    sliceStartSeconds: verifyRange.start, sliceEndSeconds: verifyRange.end,
+                    logic: logic, trackName: trackName
+                )
+            }) {
                 let slice = render["slice"] as? [String: Any]
                 let audible = (slice?["metrics"] as? [String: Any])
                     .flatMap { ($0["peak_db"] as? [Double])?.first }

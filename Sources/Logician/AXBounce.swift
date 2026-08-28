@@ -493,10 +493,19 @@ extension LogicAccessibility {
         }
         try ensureLogicFrontmost(for: "the bounce dialog") // dialogs need key focus
 
+        // Progress runs on a 0…100 scale for this whole tool: the phases are
+        // not countable units, and one scale keeps every step comparable and
+        // strictly increasing, which is what the spec asks of `progress`.
+        // Cancellation is checked freely up to the moment OK is pressed; after
+        // that Logic owns the render and abandoning is only as clean as the
+        // existing 60 s timeout is (the file Logic is writing is left where
+        // Logic put it, and nothing is moved into the captures directory).
+        try checkCancelled()
         try pressMenuItem(containing: "Project or Section", underMenu: "Bounce")
         guard let dialog = bounceDialog() else {
             throw LogicianError.windowNotFound("bounce dialog")
         }
+        reportProgress("bounce dialog open", percent: 5)
 
         // Destinations: ensure exactly Uncompressed. Settings persist between
         // bounces, so this is usually zero presses.
@@ -523,6 +532,7 @@ extension LogicAccessibility {
             throw error
         }
         let deliveredAs = readBounceOptions(dialog: dialog)
+        reportProgress("delivery options applied", percent: 15)
 
         // Positions: start and end groups (tab-separated bar values).
         let groups = children(of: dialog).filter {
@@ -576,6 +586,10 @@ extension LogicAccessibility {
         }) else {
             throw LogicianError.windowNotFound("OK button in the bounce dialog")
         }
+        // Last cancellation point that costs nothing: after this the dialog is
+        // gone and Logic is committed.
+        try checkCancelled()
+        reportProgress("bars \(startBar)–\(endBar) set; starting the render", percent: 25)
         _ = AXUIElementPerformAction(okButton, kAXPressAction as CFString)
 
         // The save panel is hosted either inside Logic's own window (same
@@ -664,10 +678,26 @@ extension LogicAccessibility {
         // so a render longer than the deadline used to fall straight through
         // to `success: true, verified: true` over a half-written file.
         var renderSettled = false
-        let renderDeadline = Date().addingTimeInterval(60)
+        let renderBudget: TimeInterval = 60
+        let renderStart = Date()
+        let renderDeadline = renderStart.addingTimeInterval(renderBudget)
         while Date() < renderDeadline {
+            try checkCancelled()
             Thread.sleep(forTimeInterval: 0.1)
             if resultPath == nil { resultPath = findResult() }
+            // The bytes on disk are the only honest progress signal Logic
+            // gives: it publishes no percentage the Accessibility tree can
+            // read. The NUMBER therefore tracks the 60 s budget (which is
+            // bounded and monotonic) and the MESSAGE carries the byte count,
+            // rather than pretending a growing file size is a fraction of a
+            // total nobody knows.
+            let spent = Date().timeIntervalSince(renderStart) / renderBudget
+            reportProgress(
+                resultPath == nil
+                    ? "rendering; waiting for Logic to open the file"
+                    : "rendering: \(String(format: "%.1f", Double(lastSize) / 1_048_576)) MB written",
+                percent: 25 + 65 * min(spent, 0.99), throttle: 1
+            )
             if let path = resultPath {
                 let size = ((try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? UInt64) ?? 0
                 // "Same size 100 ms apart" also holds for a file Logic has
@@ -715,6 +745,7 @@ extension LogicAccessibility {
                     + " logic_get_audio_clip once Logic's progress sheet is gone."
             )
         }
+        reportProgress("render finished (\(lastSize) bytes)", percent: 91)
         // Move the render into the captures directory under the label name.
         let capturesDirectory = home.appendingPathComponent(
             "Library/Application Support/Logician/captures"
@@ -732,8 +763,10 @@ extension LogicAccessibility {
             finalPath = renderedPath
         }
 
+        reportProgress("encoding the preview", percent: 95)
         let bouncePreview = LogicAccessibility.makeAACPreview(sourcePath: finalPath)
         let earCopy = LogicAccessibility.encodeEarCopy(path: finalPath)
+        reportProgress("bounce complete", percent: 100)
         var result: [String: Any] = [
             "success": true,
             "verified": true,
@@ -1229,9 +1262,13 @@ extension LogicAccessibility {
         let window = try logicWindow(title: trackName)
         try parameterField(in: window, named: parameter, windowTitle: trackName)
 
-        let bounceA = try bounceRange(
-            startBar: startBar, endBar: endBar, label: "A", expectedProjectPath: nil
-        )
+        reportProgress("bouncing the BASELINE", percent: 4)
+        let bounceA = try withProgressScope(5...45) {
+            try bounceRange(
+                startBar: startBar, endBar: endBar, label: "A", expectedProjectPath: nil
+            )
+        }
+        reportProgress("applying the change", percent: 46)
         let change = try setParameter(
             windowTitle: trackName, parameterName: parameter,
             expectedCurrentValue: expectedCurrentValue, targetValue: targetValue
@@ -1244,9 +1281,12 @@ extension LogicAccessibility {
         }
         let bounceB: [String: Any]
         do {
-            bounceB = try bounceRange(
-                startBar: startBar, endBar: endBar, label: "B", expectedProjectPath: nil
-            )
+            reportProgress("bouncing AFTER the change", percent: 50)
+            bounceB = try withProgressScope(50...92) {
+                try bounceRange(
+                    startBar: startBar, endBar: endBar, label: "B", expectedProjectPath: nil
+                )
+            }
         } catch {
             // Never leave the change applied after a failed B bounce - the
             // render/solo_bounce methods already guarantee this.
@@ -1267,6 +1307,7 @@ extension LogicAccessibility {
 
         let pathA = bounceA["path"] as? String ?? ""
         let pathB = bounceB["path"] as? String ?? ""
+        reportProgress("measuring A against B", percent: 94)
         let metricsA = LogicAccessibility.audioFileMetrics(path: pathA)
         let metricsB = LogicAccessibility.audioFileMetrics(path: pathB)
         var deltas: [String: Any] = [:]

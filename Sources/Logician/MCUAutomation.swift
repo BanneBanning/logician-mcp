@@ -199,6 +199,11 @@ extension MCUController {
             schedule = expanded
         }
 
+        // 0…100 across arm → roll → pass → verify. The `catch` below already
+        // stops the transport, returns the track to Read and restores the
+        // fader, so a cancellation thrown from any of the loops in here leaves
+        // the lane exactly as a failed pass would.
+        reportProgress("arming latch automation", percent: 15)
         try setAutomationMode("latch", logic: logic, trackName: trackName)
         var report: [String: Any] = [:]
         do {
@@ -219,7 +224,9 @@ extension MCUController {
             // Sync: the timecode crossing into the first bar.
             let syncDeadline = Date().addingTimeInterval(20)
             var anchor: Date?
+            reportProgress("rolling; waiting for bar \(first.bar)", percent: 25)
             while Date() < syncDeadline {
+                try checkCancelled()
                 if let bar = timecodeBar(), bar >= first.bar { anchor = Date(); break }
                 Thread.sleep(forTimeInterval: 0.01)
             }
@@ -229,7 +236,12 @@ extension MCUController {
                     actual: "the timecode never got there", restored: false
                 )
             }
-            for entry in schedule {
+            for (position, entry) in schedule.enumerated() {
+                try checkCancelled()
+                reportProgress(
+                    "writing automation point \(position + 1)/\(schedule.count)",
+                    percent: 30 + 40 * Double(position) / Double(schedule.count), throttle: 1
+                )
                 let wait = entry.ms / 1000 - Date().timeIntervalSince(start)
                 if wait > 0 { Thread.sleep(forTimeInterval: wait) }
                 _ = try MCUBridge.send(.fader(channel: channel, value: entry.value))
@@ -238,6 +250,7 @@ extension MCUController {
             _ = try? setPlaying(false)
             try setAutomationMode("read", logic: logic, trackName: trackName)
             _ = try? MCUBridge.send(.fader(channel: channel, value: originalFader))
+            reportProgress("pass complete; back in Read", percent: 72)
         } catch {
             _ = try? setPlaying(false)
             _ = try? setAutomationMode("read", logic: logic, trackName: trackName)
@@ -259,12 +272,19 @@ extension MCUController {
             var samples: [[String: Any]] = []
             let syncDeadline = Date().addingTimeInterval(20)
             var anchor: Date?
+            reportProgress("replaying in Read to verify", percent: 75)
             while Date() < syncDeadline {
+                try checkCancelled()
                 if let bar = timecodeBar(), bar >= first.bar { anchor = Date(); break }
                 Thread.sleep(forTimeInterval: 0.01)
             }
             if let start = anchor {
-                for point in sorted {
+                for (position, point) in sorted.enumerated() {
+                    try checkCancelled()
+                    reportProgress(
+                        "verifying point \(position + 1)/\(sorted.count)",
+                        percent: 78 + 21 * Double(position) / Double(sorted.count), throttle: 1
+                    )
                     let sampleAt = offsetMs(point.bar, point.beat) / 1000 + 0.25
                     let wait = sampleAt - Date().timeIntervalSince(start)
                     if wait > 0 { Thread.sleep(forTimeInterval: wait) }
@@ -535,6 +555,7 @@ extension MCUController {
             schedule = expanded
         }
 
+        reportProgress("arming latch automation", percent: 15)
         try setAutomationMode("latch", logic: logic, trackName: trackName)
         do {
             _ = try logic.setPlayhead(barNumber: first.bar - 1, beat: 1)
@@ -548,7 +569,12 @@ extension MCUController {
             // first point's convergence lead.
             let syncDeadline = Date().addingTimeInterval(20)
             var anchor: Date?
+            reportProgress("rolling; waiting for the transport to move", percent: 25)
             while Date() < syncDeadline {
+                // The `catch` below stops the transport, restores Read mode and
+                // puts the vpot back on its original value, so a cancellation
+                // unwinds exactly like a failed sync.
+                try checkCancelled()
                 if let timecode = freshStatus()?["timecode"] as? String,
                    timecode != parkedTimecode { anchor = Date(); break }
                 Thread.sleep(forTimeInterval: 0.01)
@@ -571,6 +597,11 @@ extension MCUController {
                 // lane can start playback far from the target (overriding the
                 // pre-parked static value), and the anchor must be converged
                 // BEFORE its moment arrives.
+                try checkCancelled()
+                reportProgress(
+                    "writing automation point \(position + 1)/\(schedule.count)",
+                    percent: 30 + 40 * Double(position) / Double(schedule.count), throttle: 1
+                )
                 let isFirst = position == 0
                 let isLast = position == schedule.count - 1
                 let lead = isFirst ? 1.2 : 0.35
@@ -589,6 +620,7 @@ extension MCUController {
             _ = try? setPlaying(false)
             try setAutomationMode("read", logic: logic, trackName: trackName)
             try view.write(original, 2.0)
+            reportProgress("pass complete; back in Read", percent: 72)
         } catch {
             _ = try? setPlaying(false)
             _ = try? setAutomationMode("read", logic: logic, trackName: trackName)
@@ -612,7 +644,13 @@ extension MCUController {
             // the automation lane to the playhead position — stationary,
             // exact reads with no live-LCD lag, and no realtime replay.
             var samples: [[String: Any]] = []
-            for point in sorted {
+            reportProgress("chasing the playhead to verify", percent: 75)
+            for (position, point) in sorted.enumerated() {
+                try checkCancelled()
+                reportProgress(
+                    "verifying point \(position + 1)/\(sorted.count)",
+                    percent: 78 + 21 * Double(position) / Double(sorted.count), throttle: 1
+                )
                 _ = try? logic.setPlayhead(
                     barNumber: point.bar, beat: max(Int(point.beat.rounded()), 1)
                 )

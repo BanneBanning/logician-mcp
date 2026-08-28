@@ -80,7 +80,16 @@ extension MCPServer {
         var frames: [Int?] = []
         var warnings: [String] = []
 
-        for track in tracks {
+        for (index, track) in tracks.enumerated() {
+            // One stem is one whole bounce, so this is the only boundary that
+            // matters: a cancellation between stems abandons the run with the
+            // solo already down and the stems so far already on disk.
+            try checkCancelled()
+            let slot = 100 / Double(tracks.count)
+            reportProgress(
+                "bouncing stem \(index + 1)/\(tracks.count): \(track)",
+                percent: Double(index) * slot
+            )
             func setSolo(_ enabled: Bool) throws {
                 _ = try MCUController.setToggle(trackName: track, control: "solo", enabled: enabled)
                     ?? logic.setStripToggle(
@@ -90,11 +99,18 @@ extension MCPServer {
             try setSolo(true)
             var bounce: [String: Any]
             do {
-                bounce = try logic.bounceRange(
-                    startBar: startBar, endBar: endBar,
-                    label: "\(prefix)-\(sanitizedFilenameComponent(track, fallback: "track"))",
-                    expectedProjectPath: nil
-                )
+                // The bounce reports 0…100 of ITS work; this stem owns one
+                // slice of the export's, so its scale is folded into that
+                // slice and the export's line keeps climbing across stems.
+                bounce = try withProgressScope(
+                    (Double(index) * slot)...(Double(index + 1) * slot)
+                ) {
+                    try logic.bounceRange(
+                        startBar: startBar, endBar: endBar,
+                        label: "\(prefix)-\(sanitizedFilenameComponent(track, fallback: "track"))",
+                        expectedProjectPath: nil
+                    )
+                }
             } catch {
                 // Never leave a solo up: the next tool call - or the user's
                 // own next bounce - would be silently wrong.
@@ -129,6 +145,7 @@ extension MCPServer {
             }
             stems.append(stem)
         }
+        reportProgress("bounced \(stems.count) stem\(stems.count == 1 ? "" : "s")", percent: 100)
 
         // The stems are only stems if they line up.
         let alignment = StemExport.frameAlignment(frames)
@@ -276,6 +293,7 @@ extension MCPServer {
             )
             if let block = knowledge.payload { rendered["tempo_map"] = block }
             rendered["meter_map"] = meterKnowledge.payload
+            reportProgress("A/B complete", percent: 100)
             return rendered
         }
         if (arguments["method"] as? String) == "solo_bounce" {

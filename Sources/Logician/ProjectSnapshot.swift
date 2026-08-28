@@ -138,7 +138,20 @@ extension MCPServer {
         let started = Date()
         var builder = SnapshotBuilder()
 
-        for section in scope.sections {
+        for (index, section) in scope.sections.enumerated() {
+            // Sections are independent captures, so a cancellation between two
+            // of them costs nothing: no section is half-read, and the ones
+            // already taken are simply discarded with the response.
+            try checkCancelled()
+            let slot = 100 / Double(scope.sections.count)
+            reportProgress(
+                "snapshot section \(index + 1)/\(scope.sections.count): \(section.rawValue)",
+                percent: Double(index) * slot
+            )
+            // The `mixer` section is a whole logic_mixer_snapshot, which
+            // reports on its own 0…100; give it this section's slice so the two
+            // scales do not fight.
+            withProgressScope((Double(index) * slot)...(Double(index + 1) * slot)) {
             switch section {
             case .transport:
                 builder.capture(section) { try self.logic.getTransport() }
@@ -178,7 +191,9 @@ extension MCPServer {
                     builder.record(.sends, payload: walk.sends, milliseconds: walk.sendsMs)
                 }
             }
+            }
         }
+        reportProgress("snapshot complete (\(scope.sections.count) sections)", percent: 100)
 
         var result: [String: Any] = [
             "success": true,

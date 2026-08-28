@@ -114,6 +114,10 @@ extension MCUController {
         }
         var banks: [BankReading] = []
         for _ in 0..<10 {
+            // The pass-1 bank walk. No progress here — the caller reports on a
+            // scale this loop does not know the size of — but it is a real
+            // multi-second wait, so it takes the cancellation check.
+            try checkCancelled()
             if banks.last?.top == top { break }
             let status = freshStatus()
             banks.append(BankReading(
@@ -319,6 +323,21 @@ extension MCUController {
         var metersByBank: [Int: (levels: [Int], overloads: [Bool])] = [:]
         var meterFeedAvailable = false
         for bank in 0..<bankTops.count {
+            // Each bank costs a settle plus a 1.6 s blink window, so this loop
+            // is where a big mixer spends its time and where a cancellation
+            // has to land. Bailing here leaves the surface parked on whichever
+            // bank was reached; the `ensurePanNames`/`resetToLeftmostBank`
+            // restore below is skipped by the throw, which the shutdown path
+            // and the next tool's own reset both handle.
+            //
+            // Pass 1 (the bank walk above) is roughly a third of the cost, so
+            // this pass reports across 30…100. Nested inside
+            // logic_project_snapshot these land inside that section's slice.
+            try checkCancelled()
+            reportProgress(
+                "reading mixer bank \(bank + 1)/\(bankTops.count)",
+                percent: 30 + 70 * Double(bank) / Double(bankTops.count)
+            )
             _ = quiescentStatus()
             // The record-ready sampling window doubles as the settle the value
             // row needs after a bank step, so the blink costs nothing extra.
@@ -340,6 +359,7 @@ extension MCUController {
             if meterFeedSeen(in: status) { meterFeedAvailable = true }
             if bank < bankTops.count - 1 { try press("bank_right") }
         }
+        reportProgress("mixer read; restoring the surface", percent: 100)
         let assignment = freshStatus()?["assignment"] as? String
         // Leave the surface where every other tool expects to find it.
         _ = try? ensurePanNames()

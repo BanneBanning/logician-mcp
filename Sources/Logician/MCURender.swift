@@ -95,6 +95,10 @@ extension MCUController {
         _ = try? MCUBridge.send(.press(button: "stop"))
         Thread.sleep(forTimeInterval: 0.4)
         if let logic, let trackName {
+            // Progress runs 0…100 for the whole render, and the freeze wait
+            // below owns most of it: the phases before it are seconds, the
+            // render itself is minutes.
+            reportProgress("thawing the track before the render", percent: 3)
             try ensureUnfrozen(logic: logic, trackName: trackName)
         }
         let freezeDir = URL(fileURLWithPath: projectPath)
@@ -180,6 +184,7 @@ extension MCUController {
                         + "logic_setup_key_commands with relearn: true to repair the binding.")
             }
         }
+        reportProgress("freeze armed; rolling the transport", percent: 10)
         _ = try? setPlaying(true)
 
         // The render announces itself with FreezeInProgress.lock plus the
@@ -187,8 +192,24 @@ extension MCUController {
         var newAudio: String?
         var renderStarted = false
         let startDeadline = Date().addingTimeInterval(10)
-        let deadline = Date().addingTimeInterval(180)
+        let renderBudget: TimeInterval = 180
+        let renderStart = Date()
+        let deadline = renderStart.addingTimeInterval(renderBudget)
         while Date() < deadline {
+            // Cancelling here throws past `restoreUnfrozen`, so the track is
+            // left frozen and the transport rolling — which is why the throw
+            // goes through `stopAndUnfreeze` first.
+            if callSession.isCancelled {
+                _ = try? setPlaying(false)
+                _ = restoreUnfrozen(certainlyFrozen: false)
+                throw RequestCancelled()
+            }
+            // Logic publishes no render percentage, so the NUMBER tracks the
+            // 180 s budget and the MESSAGE carries the bytes actually written.
+            reportProgress(
+                "rendering (freeze)", percent: 10 + 75 * min(Date().timeIntervalSince(renderStart) / renderBudget, 0.99),
+                throttle: 1
+            )
             let fresh = freezeFiles().subtracting(baseline)
             if !fresh.isEmpty { renderStarted = true }
             if let audio = fresh.first(where: { $0.hasSuffix(".aif") || $0.hasSuffix(".wav") }),
@@ -234,7 +255,9 @@ extension MCUController {
         var stableSize: UInt64 = 0
         var stableRounds = 0
         let flushDeadline = Date().addingTimeInterval(30)
+        reportProgress("render finished; waiting for Logic to flush the file", percent: 86)
         while Date() < flushDeadline, stableRounds < 3 {
+            try checkCancelled()
             let size = (try? manager.attributesOfItem(atPath: renderedURL.path)[.size] as? UInt64)
                 .flatMap { $0 } ?? 0
             var formComplete = false
@@ -296,6 +319,7 @@ extension MCUController {
         // longer throws past the caller: the capture is already safe on disk,
         // so it is reported through `unfrozen: false` like every other way
         // this can fail to restore.
+        reportProgress("copied out (\(stableSize) bytes); unfreezing the track", percent: 92)
         let unfroze = restoreUnfrozen(certainlyFrozen: true, renderedFile: rendered)
 
         var result: [String: Any] = [
@@ -336,10 +360,12 @@ extension MCUController {
         // The rendered sound rides along as an MCP audio block (the sliced
         // bar range when one was requested, else the whole render).
         let earSource = ((result["slice"] as? [String: Any])?["path"] as? String) ?? destination.path
+        reportProgress("encoding the audio for listening", percent: 96)
         if let earCopy = LogicAccessibility.encodeEarCopy(path: earSource) {
             result["_audio"] = ["data": earCopy.base64EncodedString(), "mimeType": "audio/mp4"]
             result["listen_note"] = "This result CARRIES the rendered audio as an MCP audio block - listen now. If no audio block reached you, open preview_path with your client's file viewer instead."
         }
+        reportProgress("render complete", percent: 100)
         return result
     }
 

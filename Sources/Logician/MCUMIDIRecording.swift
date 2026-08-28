@@ -281,6 +281,7 @@ extension MCUController {
                 _ = try? logic.setPlayhead(barNumber: bar, beat: nil)
             }
         }
+        reportProgress("record pressed; waiting for the transport", percent: 10)
         // Record LED confirms Logic is actually rolling/armed.
         guard pollStatus(until: { ledLit(0x5F, in: $0) }) != nil else {
             throw LogicianError.verificationFailed(
@@ -306,7 +307,12 @@ extension MCUController {
         var rolling = false
         var recordRetried = false
         let rollDeadline = Date().addingTimeInterval(4)
+        reportProgress("armed; waiting for the playhead to reach bar \(startBar)", percent: 20)
         while Date() < syncDeadline {
+            // The `defer` above aborts the stream, stops the transport and puts
+            // the playhead back, so a cancellation here unwinds through exactly
+            // the same path a thrown sync failure does.
+            try checkCancelled()
             if !rolling {
                 let current = freshStatus()?["timecode"] as? String
                 if current != nil, current != parkedTimecode { rolling = true }
@@ -350,7 +356,25 @@ extension MCUController {
                 "midi_stream failed: \(streamResponse.error ?? "?")"
             )
         }
-        Thread.sleep(forTimeInterval: (Double(durationMs) + tailMs) / 1000)
+        // The take. This used to be one blind `Thread.sleep` for the whole
+        // duration — the single longest uninterruptible stretch in the server,
+        // and the one place a client could ask for a four-minute recording and
+        // then be unable to stop it. Polling the same wall clock costs nothing
+        // and makes the take both reportable and cancellable.
+        let takeSeconds = (Double(durationMs) + tailMs) / 1000
+        reportProgress("rolling; streaming \(events.count) events", percent: 40)
+        let takeStart = Date()
+        while true {
+            let elapsed = Date().timeIntervalSince(takeStart)
+            if elapsed >= takeSeconds { break }
+            try checkCancelled()
+            reportProgress(
+                "recording \(String(format: "%.1f", elapsed))/\(String(format: "%.1f", takeSeconds)) s",
+                percent: 40 + 58 * (elapsed / takeSeconds), throttle: 1
+            )
+            Thread.sleep(forTimeInterval: min(0.1, takeSeconds - elapsed))
+        }
+        reportProgress("take finished", percent: 100)
         // defer handles abort, stop and playhead restore
         // `verified` belongs to the RECORDING: reaching here means the
         // transport was rolling, the stream went out with host-time stamps,
@@ -402,11 +426,19 @@ extension MCUController {
             )
         }
 
-        let renderA = try renderSelectedTrack(
-            projectPath: projectPath, label: "\(trackName.lowercased())-a",
-            sliceStartSeconds: startSeconds, sliceEndSeconds: endSeconds,
-            logic: logic, trackName: trackName
-        )
+        // An A/B is four phases and two whole renders. Each render reports its
+        // own 0…100, folded into the half of the scale it occupies, so the
+        // client sees one line climbing from 0 to 100 instead of two renders
+        // each racing to 100 and a counter that never moves in between.
+        reportProgress("rendering the BASELINE", percent: 4)
+        let renderA = try withProgressScope(5...45) {
+            try renderSelectedTrack(
+                projectPath: projectPath, label: "\(trackName.lowercased())-a",
+                sliceStartSeconds: startSeconds, sliceEndSeconds: endSeconds,
+                logic: logic, trackName: trackName
+            )
+        }
+        reportProgress("applying the change", percent: 46)
         guard let change = try setPluginParameter(
             slot: insertSlot, parameter: parameter,
             targetValue: targetValue, expectedCurrentValue: expectedCurrentValue,
@@ -444,11 +476,14 @@ extension MCUController {
 
         let renderB: [String: Any]
         do {
-            renderB = try renderSelectedTrack(
-                projectPath: projectPath, label: "\(trackName.lowercased())-b",
-                sliceStartSeconds: startSeconds, sliceEndSeconds: endSeconds,
-                logic: logic, trackName: trackName
-            )
+            reportProgress("rendering AFTER the change", percent: 50)
+            renderB = try withProgressScope(50...92) {
+                try renderSelectedTrack(
+                    projectPath: projectPath, label: "\(trackName.lowercased())-b",
+                    sliceStartSeconds: startSeconds, sliceEndSeconds: endSeconds,
+                    logic: logic, trackName: trackName
+                )
+            }
         } catch {
             // Never leave the change in place after a failed B render.
             _ = rollBack()
@@ -469,6 +504,7 @@ extension MCUController {
         func sliceMetrics(_ render: [String: Any]) -> [String: Any]? {
             (render["slice"] as? [String: Any])?["metrics"] as? [String: Any]
         }
+        reportProgress("measuring A against B", percent: 94)
         let metricsA = sliceMetrics(renderA)
         let metricsB = sliceMetrics(renderB)
         var deltas: [String: Any] = [:]
@@ -576,10 +612,13 @@ extension MCUController {
 
         let bounceA: [String: Any]
         do {
-            bounceA = try logic.bounceRange(
-                startBar: startBar, endBar: endBar,
-                label: "\(trackName.lowercased())-solo-a", expectedProjectPath: nil
-            )
+            reportProgress("bouncing the BASELINE", percent: 4)
+            bounceA = try withProgressScope(5...45) {
+                try logic.bounceRange(
+                    startBar: startBar, endBar: endBar,
+                    label: "\(trackName.lowercased())-solo-a", expectedProjectPath: nil
+                )
+            }
         } catch {
             logic.cancelBounceDialog()
             unsolo()
@@ -591,6 +630,7 @@ extension MCUController {
         // unsolo, or every later master bounce comes out silent.
         let changeOpt: [String: Any]?
         do {
+            reportProgress("applying the change", percent: 46)
             changeOpt = try setPluginParameter(
                 slot: insertSlot, parameter: parameter,
                 targetValue: targetValue, expectedCurrentValue: expectedCurrentValue,
@@ -629,10 +669,13 @@ extension MCUController {
 
         let bounceB: [String: Any]
         do {
-            bounceB = try logic.bounceRange(
-                startBar: startBar, endBar: endBar,
-                label: "\(trackName.lowercased())-solo-b", expectedProjectPath: nil
-            )
+            reportProgress("bouncing AFTER the change", percent: 50)
+            bounceB = try withProgressScope(50...92) {
+                try logic.bounceRange(
+                    startBar: startBar, endBar: endBar,
+                    label: "\(trackName.lowercased())-solo-b", expectedProjectPath: nil
+                )
+            }
         } catch {
             logic.cancelBounceDialog()
             _ = rollBack() // never leave the change in place after a failed B
@@ -654,6 +697,7 @@ extension MCUController {
 
         let pathA = bounceA["path"] as? String ?? ""
         let pathB = bounceB["path"] as? String ?? ""
+        reportProgress("measuring A against B", percent: 94)
         let metricsA = LogicAccessibility.audioFileMetrics(path: pathA)
         let metricsB = LogicAccessibility.audioFileMetrics(path: pathB)
         var deltas: [String: Any] = [:]
