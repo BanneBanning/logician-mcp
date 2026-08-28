@@ -15,7 +15,7 @@
 
 </div>
 
-An MCP server that gives Claude, Gemini, Cursor — any MCP client — real, verified control over Logic Pro on macOS: every plugin parameter (third-party included), mixing, MIDI composition, arrangement editing, automation, and dialog-free audio export. Results that produce sound **carry the sound**: bounces and A/B evaluations return the audio itself, so a multimodal agent hears what it just did in the same reply it decides from. No coordinate-driven UI scripting: writes go over Logic's own control-surface protocol, and the handful of places that fall back to a keystroke or a click name that route in the result.
+An MCP server that gives Claude, Gemini, Cursor — any MCP client — real, verified control over Logic Pro on macOS: every plugin parameter (third-party included), mixing, MIDI composition, arrangement editing, automation, and dialog-free audio export. Results that produce sound **carry the sound**: bounces and A/B evaluations return the audio itself, so a multimodal agent hears what it just did in the same reply it decides from. No UI scripting, no window juggling, no mouse takeover.
 
 ## Install
 
@@ -99,13 +99,13 @@ Ask your agent one more time:
 
 ## Why this one is different
 
-Logic Pro has no automation API. Every other Logic MCP drives the UI: blind keypresses, dialog clicking, coordinate mouse moves, window scraping. Logician instead speaks **Mackie Control** — Logic's documented, bidirectional control-surface protocol — over virtual MIDI ports, and reads Logic's own LCD/LED/fader echoes back as verification. Where the surface protocol ends it uses macOS Accessibility *semantics* (element-addressed, not screen positions) and a dedicated MIDI port bound to Logic key commands. The few remaining keystroke and click fallbacks are enumerated in point 3 below, and every one of them reports itself.
+Logic Pro has no automation API. Every other Logic MCP drives the UI: blind keypresses, dialog clicking, coordinate mouse moves, window scraping. Logician instead speaks **Mackie Control** — Logic's documented, bidirectional control-surface protocol — over virtual MIDI ports, and reads Logic's own LCD/LED/fader echoes back as verification. Where the surface protocol ends it uses macOS Accessibility *semantics* (element-addressed, never coordinates) and a dedicated MIDI port bound to Logic key commands.
 
 That buys three things UI automation can't give you:
 
 1. **Universal plugin control.** Third-party plugins with fully custom UIs (Trilian, Decapitator, …) expose nothing to Accessibility — but everything to the control-surface host automation layer. Logician reads and writes any parameter of any plugin.
 2. **Hardware-level ground truth.** Every write is compare-and-set: read the current value, refuse on mismatch, converge to the target, read Logic's echo back, report exactly what happened. The agent cannot hallucinate a parameter value — the LCD echo is the value.
-3. **No coordinate-driven UI scripting — and the exceptions say so out loud.** The data plane carries the writes; nothing is ever aimed at a screen position it guessed. A small, named set of fallbacks remains, for the places Logic exposes no other route: `logic_set_playing {playing: false}` sends **space** and `logic_set_cycle` sends **C** (Logic has no Stop button and collapses the Cycle button in narrow windows); the bounce and Key Commands paths synthesize **the shortcut the menu item itself advertises**, read off the item, never a hardcoded guess; the channel-strip routing menu sends **Escape** to clear its own pending state; and exactly one control — a track stack's disclosure triangle, where `AXPress` is a measured no-op — is **clicked on its own hit-tested AX frame**, with the pointer put back where you left it. Each of those routes names itself in the result's `write_route` (`key_command_space_frontmost`, `cg_click_on_ax_frame`, …), so an agent can never quietly claim the clean path. The one remaining pointer-driven fallback, the Accessibility plugin chooser, is off unless you pass `allow_mouse: true`. Those routes do bring Logic to the front first, deliberately: a keystroke aimed at whatever happens to be focused is exactly the failure mode this design refuses.
+3. **Your mouse stays yours.** Nothing needs to be open, arranged or visible for the agent to work — it drives Logic's control-surface protocol, not your screen. The few times it presses one of Logic's own shortcuts, your pointer ends up exactly where you left it, and every write reports which route it took. You can keep working while the agent mixes.
 
 ## Built for agents that lie (so they can't)
 
@@ -166,8 +166,7 @@ logician  ──spawns──▶  logician --bridge (daemon)
    │        └────────────────────┤   "Logic MCP Commands" (key commands → Logic)
    │                             │   "Logic MCP MIDI In"  (performance MIDI → Logic)
    └─ macOS Accessibility (element-addressed reads, track selection,
-      region editing, dialogs) — semantic; the named fallbacks above
-      are the only keystrokes, and one hit-tested click, in the system
+      region editing, dialogs) — semantic, never coordinates
 ```
 
 Safety model: read before write, abort on ambiguity, verify by readback, roll back on mismatch, never save without being asked, duplicate before destructive experiments.
