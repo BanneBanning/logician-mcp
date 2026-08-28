@@ -60,16 +60,60 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(snapshot.transportLEDs["record"], false)
     }
 
-    /// Re-encoding an old-format payload must reproduce it BYTE for byte.
-    /// This is the state.json guarantee: the file is read by whichever build
-    /// happens to be running, and by the `logic_mcu_status` tool result.
-    func testReEncodingAnOldFormatSnapshotIsByteIdentical() throws {
+    /// Re-encoding an old-format payload must reproduce every historical key
+    /// BYTE for byte. This is the state.json guarantee: the file is read by
+    /// whichever build happens to be running, and by the `logic_mcu_status`
+    /// tool result.
+    ///
+    /// The check is per-key rather than whole-document because protocol 5 ADDS
+    /// keys (the meter feed, G56), which is the one change the format allows —
+    /// see the header comment. What must never happen is an existing key
+    /// changing its spelling, its type, or its value on the way through, and
+    /// that is what is asserted. `testSnapshotEncodesExactlyTheHistoricalKeys`
+    /// pins the added keys themselves, so growth still cannot go unnoticed.
+    func testReEncodingAnOldFormatSnapshotPreservesEveryHistoricalKey() throws {
         let original = Data(Self.oldFormatSnapshot.utf8)
         let snapshot = try bridgeJSONDecoder.decode(SurfaceSnapshot.self, from: original)
         let reencoded = try bridgeJSONEncoder.encode(snapshot)
+
+        let before = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: original) as? [String: Any]
+        )
+        let after = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: reencoded) as? [String: Any]
+        )
+        for (key, value) in before {
+            XCTAssertNotNil(after[key], "historical key '\(key)' disappeared")
+            XCTAssertEqual(
+                String(describing: after[key] ?? "nil"), String(describing: value),
+                "historical key '\(key)' changed on the way through"
+            )
+        }
+        // Only the protocol-5 meter fields may be new.
         XCTAssertEqual(
-            String(data: reencoded, encoding: .utf8),
-            String(data: original, encoding: .utf8)
+            Set(after.keys).subtracting(before.keys),
+            ["meter_levels", "meter_overloads", "meter_events"]
+        )
+    }
+
+    /// ...and a CURRENT-format payload still round-trips byte for byte, which
+    /// is the property state.json actually relies on day to day.
+    func testReEncodingACurrentFormatSnapshotIsByteIdentical() throws {
+        let snapshot = SurfaceSnapshot(
+            updated: 1756200001.25, lastReceive: 1756200000.5, receivedEvents: 4211,
+            online: true, lcdTop: "Kick", lcdBottom: "0.0", timecode: "001 01 01 000",
+            assignment: "PN", faders14bit: [8192, -1], vpotRings: [0, 1],
+            transportLEDs: ["play": true], ledsLit: [86, 94],
+            meterLevels: [0, 12, -1, 4, 5, 6, 7, 8],
+            meterOverloads: [false, true, false, false, false, false, false, false],
+            meterEvents: 1234
+        )
+        let encoded = try bridgeJSONEncoder.encode(snapshot)
+        let reencoded = try bridgeJSONEncoder.encode(
+            try bridgeJSONDecoder.decode(SurfaceSnapshot.self, from: encoded)
+        )
+        XCTAssertEqual(
+            String(data: reencoded, encoding: .utf8), String(data: encoded, encoding: .utf8)
         )
     }
 
@@ -84,7 +128,10 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(Set(try encode(snapshot).keys), [
             "updated", "last_receive", "received_events", "online",
             "lcd_top", "lcd_bottom", "timecode", "assignment",
-            "faders_14bit", "vpot_rings", "transport_leds", "leds_lit"
+            "faders_14bit", "vpot_rings", "transport_leds", "leds_lit",
+            // Added at protocol 5 (G56). Additive: an older SERVER reading a
+            // newer daemon ignores them, an older DAEMON simply omits them.
+            "meter_levels", "meter_overloads", "meter_events"
         ])
     }
 

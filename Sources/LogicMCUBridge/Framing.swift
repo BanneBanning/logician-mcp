@@ -62,4 +62,10 @@ public func readToEOF(_ fd: Int32, limit: Int = 8 * 1024 * 1024) -> Data {
 /// `MCULCDRow.valueCell`. Version 3 dropped the rightmost strip's minus sign
 /// and converged the wrong way, so the server refuses to converge cell 7 in a
 /// daemon older than this and runs the loop itself instead.
-public let bridgeProtocolVersion = 4
+/// 5 (2026-08-28): the snapshot grew `meter_levels`, `meter_overloads` and
+/// `meter_events` (Logic's own per-strip meter feed, previously received and
+/// discarded — G56), and `fader` gained an opt-in `verify` that answers with
+/// `final_value` + `followed`. Both are ADDITIVE: an older daemon simply omits
+/// the keys, `SurfaceSnapshot` defaults them rather than failing to decode,
+/// and the server reports the meter feed as unavailable instead of empty.
+public let bridgeProtocolVersion = 5

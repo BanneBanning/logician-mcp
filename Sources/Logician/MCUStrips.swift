@@ -218,6 +218,27 @@ extension MCUController {
         (0..<8).filter { ledLit(0x08 + $0, in: status) }
     }
 
+    /// Logic's own per-strip meter feed for the bank currently showing, or nil
+    /// when the daemon does not publish it.
+    ///
+    /// nil and "all zero" are DIFFERENT answers and the difference is the
+    /// whole point: a daemon older than bridge protocol 5 discarded the meter
+    /// bytes, so absent keys mean "this daemon cannot tell you", while zeros
+    /// mean "Logic says silence". Reporting the first as the second would
+    /// invent a reading, which is the one thing a state read must never do.
+    static func meterReading(in status: [String: Any]) -> (levels: [Int], overloads: [Bool])? {
+        guard let levels = status["meter_levels"] as? [Int], !levels.isEmpty else { return nil }
+        let overloads = status["meter_overloads"] as? [Bool] ?? []
+        return (levels, overloads)
+    }
+
+    /// True when the daemon has decoded at least one meter message this
+    /// session. `false` after a stretch of playback is the honest answer to
+    /// "does Logic feed this surface meters at all?" — see FINDINGS G56.
+    static func meterFeedSeen(in status: [String: Any]) -> Bool {
+        (status["meter_events"] as? Int ?? 0) > 0
+    }
+
     /// How long one record-ready blink cycle lasts, plus margin.
     ///
     /// Logic does not light the rec LED of an armed strip steadily — it FLASHES
@@ -295,6 +316,8 @@ extension MCUController {
         var soloedByBank: [Int: [Int]] = [:]
         var selectedByBank: [Int: [Int]] = [:]
         var armedByBank: [Int: Set<Int>] = [:]
+        var metersByBank: [Int: (levels: [Int], overloads: [Bool])] = [:]
+        var meterFeedAvailable = false
         for bank in 0..<bankTops.count {
             _ = quiescentStatus()
             // The record-ready sampling window doubles as the settle the value
@@ -306,6 +329,15 @@ extension MCUController {
             mutedByBank[bank] = mutedStrips(in: status)
             soloedByBank[bank] = soloedStrips(in: status)
             selectedByBank[bank] = selectedStrips(in: status)
+            // Logic's own meter feed, if this daemon publishes it. Sampled at
+            // the same instant as the rest of this bank's row — which is a
+            // DIFFERENT instant from every other bank's, so these eight
+            // numbers are a snapshot, never a comparison across the mixer.
+            if let reading = meterReading(in: status) {
+                meterFeedAvailable = true
+                metersByBank[bank] = reading
+            }
+            if meterFeedSeen(in: status) { meterFeedAvailable = true }
             if bank < bankTops.count - 1 { try press("bank_right") }
         }
         let assignment = freshStatus()?["assignment"] as? String
@@ -354,6 +386,17 @@ extension MCUController {
             let rings = ringsByBank[entry.bank] ?? []
             row["pan_ring"] = rings.indices.contains(entry.channel)
                 ? rings[entry.channel] as Any : NSNull() as Any
+            // Meters are present only when the daemon publishes them, and a
+            // strip Logic has never metered stays absent rather than reading 0.
+            if let reading = metersByBank[entry.bank] {
+                if reading.levels.indices.contains(entry.channel),
+                   reading.levels[entry.channel] >= 0 {
+                    row["meter_level"] = reading.levels[entry.channel]
+                }
+                if reading.overloads.indices.contains(entry.channel) {
+                    row["meter_overload"] = reading.overloads[entry.channel]
+                }
+            }
             strips.append(row)
         }
         var result: [String: Any] = [
@@ -363,8 +406,25 @@ extension MCUController {
             "bank_count": bankTops.count,
             "assignment_after": assignment ?? NSNull(),
             "read_route": "mcu_lcd_and_led_mirror",
+            "meter_feed": meterFeedAvailable ? "available" : "unavailable",
             "note": "One read of the whole mixer off Logic's own control-surface feedback. volume_db is the dB string Logic prints in its channel-strip Volume view (the readout logic_set_track_volume converges against) — not a conversion of the fader position, which is reported separately and raw as fader_14bit. muted/soloed/selected come from the LED mirror. record_armed is sampled across a full blink cycle: Logic FLASHES an armed strip's record LED (~640 ms on / 640 ms off), so a single instant would read half of the armed strips as unarmed."
         ]
+        if meterFeedAvailable {
+            result["meter_note"] = "meter_level is Logic's OWN control-surface meter for that strip:"
+                + " the segment count it would light on a Mackie Control, 0 (silence) to 12 (top"
+                + " segment), with meter_overload as its clip indicator. It is a STATE READ of a"
+                + " value Logic published, exactly like the fader echo — it is NOT an audio"
+                + " measurement, it has no dB calibration, and it must never be reported as"
+                + " loudness. Two further limits: meters only move while the transport is ROLLING"
+                + " (everything reads 0 when stopped), and each bank was sampled at a different"
+                + " instant during the walk, so these numbers are eight-strip snapshots and not"
+                + " a like-for-like comparison across the mixer. To hear a level, bounce and listen."
+        } else {
+            result["meter_note"] = "This daemon does not publish Logic's meter feed"
+                + " (bridge protocol < 5, which received the meter bytes and discarded them)."
+                + " meter_level/meter_overload are therefore ABSENT rather than zero. Restart the"
+                + " bridge daemon on a current build to get them."
+        }
         if unreadableDb > 0 {
             appendWarning(
                 "\(unreadableDb) strip(s) had no parsable dB cell in the channel-strip Volume view;"

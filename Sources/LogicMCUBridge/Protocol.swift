@@ -180,13 +180,17 @@ public struct BridgeCommand: Codable, Sendable, Equatable {
     public var tolerance: Double?
     public var ratio: Double?
     public var events: [MIDIStreamEvent]?
+    /// `fader` only: wait for Logic's own echo and report what it settled on.
+    /// Off by default because the automation recorder fires faders on a
+    /// musical clock and cannot afford the wait.
+    public var verify: Bool?
 
     enum CodingKeys: String, CodingKey {
         case cmd, button, note, channel, index, delta, value, bytes, since
         case timeoutMs = "timeout_ms"
         case target, field
         case maxMs = "max_ms"
-        case tolerance, ratio, events
+        case tolerance, ratio, events, verify
     }
 
     public init(cmd: String?) { self.cmd = cmd }
@@ -211,6 +215,7 @@ public struct BridgeCommand: Codable, Sendable, Equatable {
         tolerance = container.lenient(Double.self, .tolerance)
         ratio = container.lenient(Double.self, .ratio)
         events = container.lenient([MIDIStreamEvent].self, .events)
+        verify = container.lenient(Bool.self, .verify)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -234,6 +239,7 @@ public struct BridgeCommand: Codable, Sendable, Equatable {
         try container.encodeIfPresent(tolerance, forKey: .tolerance)
         try container.encodeIfPresent(ratio, forKey: .ratio)
         try container.encodeIfPresent(events, forKey: .events)
+        try container.encodeIfPresent(verify, forKey: .verify)
     }
 }
 
@@ -268,10 +274,15 @@ public extension BridgeCommand {
         return command
     }
 
-    static func fader(channel: Int, value: Int) -> BridgeCommand {
+    /// `verify: true` costs up to ~400 ms waiting for Logic's echo and fills
+    /// in `finalValue`/`followed`. The automation recorder leaves it off: it
+    /// places faders against a musical clock, where the wait would be the
+    /// error. Everything that writes a fader OUTSIDE real time should set it.
+    static func fader(channel: Int, value: Int, verify: Bool = false) -> BridgeCommand {
         var command = BridgeCommand(cmd: BridgeCommandName.fader.rawValue)
         command.channel = channel
         command.value = value
+        if verify { command.verify = true }
         return command
     }
 
@@ -360,6 +371,16 @@ public struct SurfaceSnapshot: Codable, Sendable, Equatable {
     public var transportLEDs: [String: Bool]
     /// Every lit button LED by note number, sorted.
     public var ledsLit: [Int]
+    /// Logic's own per-strip meter segment (0...12), bank-relative, -1 where
+    /// Logic has never reported one. NOT an audio measurement — see MCUMeter.
+    /// Empty from a daemon older than protocol 5, which discarded the bytes.
+    public var meterLevels: [Int]
+    /// Logic's own per-strip overload flag, bank-relative. Empty from a
+    /// daemon older than protocol 5.
+    public var meterOverloads: [Bool]
+    /// How many meter messages the daemon has decoded. 0 across a stretch of
+    /// playback means Logic does not feed this surface meters at all.
+    public var meterEvents: Int
 
     enum CodingKeys: String, CodingKey {
         case updated
@@ -374,13 +395,17 @@ public struct SurfaceSnapshot: Codable, Sendable, Equatable {
         case vpotRings = "vpot_rings"
         case transportLEDs = "transport_leds"
         case ledsLit = "leds_lit"
+        case meterLevels = "meter_levels"
+        case meterOverloads = "meter_overloads"
+        case meterEvents = "meter_events"
     }
 
     public init(
         updated: Double, lastReceive: Double, receivedEvents: Int, online: Bool,
         lcdTop: String, lcdBottom: String, timecode: String, assignment: String,
         faders14bit: [Int], vpotRings: [Int],
-        transportLEDs: [String: Bool], ledsLit: [Int]
+        transportLEDs: [String: Bool], ledsLit: [Int],
+        meterLevels: [Int] = [], meterOverloads: [Bool] = [], meterEvents: Int = 0
     ) {
         self.updated = updated
         self.lastReceive = lastReceive
@@ -394,6 +419,38 @@ public struct SurfaceSnapshot: Codable, Sendable, Equatable {
         self.vpotRings = vpotRings
         self.transportLEDs = transportLEDs
         self.ledsLit = ledsLit
+        self.meterLevels = meterLevels
+        self.meterOverloads = meterOverloads
+        self.meterEvents = meterEvents
+    }
+
+    /// Hand-written so the three meter fields, added at protocol 5, DEFAULT
+    /// instead of throwing when the JSON comes from an older daemon.
+    ///
+    /// This matters more than it looks. `BridgeResponse` decodes the snapshot
+    /// as `try? SurfaceSnapshot(from: decoder)`, so a single missing key does
+    /// not degrade to "no meters" — it degrades to NO SNAPSHOT AT ALL, and
+    /// every LCD read, fader read and LED read in the server would come back
+    /// empty against a daemon one version behind. The synthesized decoder
+    /// would have done exactly that. Everything that existed before protocol 5
+    /// stays REQUIRED, so a genuinely malformed reply still fails loudly.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        updated = try container.decode(Double.self, forKey: .updated)
+        lastReceive = try container.decode(Double.self, forKey: .lastReceive)
+        receivedEvents = try container.decode(Int.self, forKey: .receivedEvents)
+        online = try container.decode(Bool.self, forKey: .online)
+        lcdTop = try container.decode(String.self, forKey: .lcdTop)
+        lcdBottom = try container.decode(String.self, forKey: .lcdBottom)
+        timecode = try container.decode(String.self, forKey: .timecode)
+        assignment = try container.decode(String.self, forKey: .assignment)
+        faders14bit = try container.decode([Int].self, forKey: .faders14bit)
+        vpotRings = try container.decode([Int].self, forKey: .vpotRings)
+        transportLEDs = try container.decode([String: Bool].self, forKey: .transportLEDs)
+        ledsLit = try container.decode([Int].self, forKey: .ledsLit)
+        meterLevels = container.lenient([Int].self, .meterLevels) ?? []
+        meterOverloads = container.lenient([Bool].self, .meterOverloads) ?? []
+        meterEvents = container.lenient(Int.self, .meterEvents) ?? 0
     }
 }
 
@@ -435,6 +492,13 @@ public struct BridgeResponse: Sendable, Equatable {
     public var iterations: Int?
     public var ratio: Double?
 
+    /// `fader` with `verify`: whether Logic's echo moved to meet the write.
+    /// `finalValue` then carries the value Logic SETTLED on, which is not
+    /// necessarily the value asked for — Logic snaps a fader write to its own
+    /// resolution (measured 2026-08-28: 5631…5635 all landed on 5628).
+    /// Absent from a daemon older than protocol 5, which never verified.
+    public var followed: Bool?
+
     /// `status`
     public var midiStreaming: Bool?
     /// `await`: true when the deadline passed with no new events.
@@ -454,7 +518,7 @@ public struct BridgeResponse: Sendable, Equatable {
         case durationMs = "duration_ms"
         case finalText = "final_text"
         case finalValue = "final_value"
-        case iterations, ratio
+        case iterations, ratio, followed
         case midiStreaming = "midi_streaming"
         case timedOut = "timed_out"
     }
@@ -490,6 +554,7 @@ extension BridgeResponse: Codable {
         finalValue = container.lenient(Double.self, .finalValue)
         iterations = container.lenient(Int.self, .iterations)
         ratio = container.lenient(Double.self, .ratio)
+        followed = container.lenient(Bool.self, .followed)
         midiStreaming = container.lenient(Bool.self, .midiStreaming)
         timedOut = container.lenient(Bool.self, .timedOut)
         // A reply without the snapshot keys (ping, press, …) simply has no
@@ -514,6 +579,7 @@ extension BridgeResponse: Codable {
         try container.encodeIfPresent(finalValue, forKey: .finalValue)
         try container.encodeIfPresent(iterations, forKey: .iterations)
         try container.encodeIfPresent(ratio, forKey: .ratio)
+        try container.encodeIfPresent(followed, forKey: .followed)
         try container.encodeIfPresent(midiStreaming, forKey: .midiStreaming)
         try container.encodeIfPresent(timedOut, forKey: .timedOut)
         // Flatten: same encoder, its own keyed container, merged output.
