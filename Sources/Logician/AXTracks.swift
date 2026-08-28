@@ -595,3 +595,97 @@ extension LogicAccessibility {
     }
 
 }
+
+// MARK: - The confirmation Logic raises when a track still holds regions
+
+/// `Delete Track` is not always silent. Measured 2026-08-28: deleting a track
+/// that still has REGIONS on it raises a critical alert —
+///
+/// ```
+/// AXWindow (AXDialog), no title
+///   AXImage      'Logic Pro critical alert'
+///   AXStaticText 'Delete Track and Regions?'
+///   AXStaticText 'Deleting this track also deletes the regions on the track.'
+///   AXButton     'Cancel' | 'Delete'   (Delete is the default)
+/// ```
+///
+/// — and it is MODAL: the key-command plane is swallowed while it stands, so
+/// the tool that fired the command reported "the track is still listed; a
+/// dialog may need attention" and everything after it stalled until a human
+/// pressed a button. Earlier sessions deleted only EMPTY tracks, which is why
+/// nobody had seen it.
+enum TrackDeletionAlert {
+    static let heading = "Delete Track and Regions?"
+
+    enum Answer: String {
+        case delete
+        case cancel
+    }
+
+    /// Which button to press. `Delete` requires BOTH that the alert is the one
+    /// we know AND that the selection still names the track the caller asked
+    /// for — an unrecognised alert, or a selection that moved, is cancelled.
+    /// Deleting the wrong track is unrecoverable in practice (Undo is a blind
+    /// instrument, see the guide's cautions), so the doubt goes to Cancel.
+    static func answer(texts: [String], selectionMatches: Bool) -> Answer {
+        let recognised = texts.contains {
+            $0.localizedCaseInsensitiveContains(heading)
+        }
+        return recognised && selectionMatches ? .delete : .cancel
+    }
+}
+
+extension LogicAccessibility {
+
+    /// The delete-track confirmation, if one is up.
+    func trackDeletionAlert(timeout: Double = 2.5) -> AXUIElement? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            for window in (try? logicWindows()) ?? []
+            where stringAttribute(window, kAXSubroleAttribute as String) == "AXDialog" {
+                if alertTexts(window).contains(where: {
+                    $0.localizedCaseInsensitiveContains(TrackDeletionAlert.heading)
+                }) {
+                    return window
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.15)
+        }
+        return nil
+    }
+
+    /// The static texts of an alert, in order — the evidence the answer is
+    /// decided on, and what the result reports.
+    func alertTexts(_ alert: AXUIElement) -> [String] {
+        children(of: alert)
+            .filter { stringAttribute($0, kAXRoleAttribute as String) == "AXStaticText" }
+            .map { stringAttribute($0, kAXValueAttribute as String) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// Presses one of the alert's buttons and waits for it to go away.
+    @discardableResult
+    func answerTrackDeletionAlert(_ alert: AXUIElement, _ answer: TrackDeletionAlert.Answer) -> Bool {
+        let title = answer == .delete ? "Delete" : "Cancel"
+        guard let button = children(of: alert).first(where: {
+            stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
+                && stringAttribute($0, kAXTitleAttribute as String) == title
+        }) else { return false }
+        _ = AXUIElementPerformAction(button, kAXPressAction as CFString)
+        for _ in 0..<20 {
+            Thread.sleep(forTimeInterval: 0.15)
+            if trackDeletionAlert(timeout: 0.1) == nil { return true }
+        }
+        return false
+    }
+
+    /// The selected track's name, or nil when the list cannot be read (a modal
+    /// can make that happen, and "cannot read" must never look like "matches").
+    func selectedTrackName() -> String? {
+        guard let listing = try? listTracks(),
+              let rows = listing["tracks"] as? [[String: Any]],
+              let selected = rows.first(where: { $0["selected"] as? Bool == true })
+        else { return nil }
+        return selected["track_name"] as? String
+    }
+}

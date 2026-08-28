@@ -81,6 +81,34 @@ extension MCPServer {
         }
         let delCommand = try MCUController.resolveKeyCommand(named: "Delete Track", logic: logic)
         _ = try MCUController.triggerKeyCommand(note: delCommand.note, channel: delCommand.channel)
+
+        // A track that still holds REGIONS raises a modal confirmation
+        // (measured 2026-08-28). It swallows the key-command plane while it
+        // stands, so it is answered here rather than left for a human: Delete
+        // only when the alert is the one we know AND the selection still names
+        // the requested track, Cancel otherwise.
+        var confirmation: [String: Any]?
+        if let alert = logic.trackDeletionAlert() {
+            let texts = logic.alertTexts(alert)
+            let selectionStillMatches = logic.selectedTrackName()
+                .map { $0.caseInsensitiveCompare(delTrack) == .orderedSame } ?? true
+            let answer = TrackDeletionAlert.answer(
+                texts: texts, selectionMatches: selectionStillMatches
+            )
+            let answered = logic.answerTrackDeletionAlert(alert, answer)
+            confirmation = [
+                "texts": texts, "answered": answer.rawValue, "dismissed": answered
+            ]
+            if answer == .cancel {
+                throw LogicianError.verificationFailed(
+                    requested: "deleting '\(delTrack)'",
+                    actual: "Logic asked '\(texts.first ?? "an unrecognised alert")' and the"
+                        + " selection could no longer be confirmed as '\(delTrack)', so the alert"
+                        + " was CANCELLED and nothing was deleted",
+                    restored: true
+                )
+            }
+        }
         var deleted = false
         var delAfter: [[String: Any]] = []
         let nameCountBefore = delList.filter {
@@ -97,13 +125,18 @@ extension MCPServer {
                 deleted = true; break
             }
         }
-        return [
+        var result: [String: Any] = [
             "success": deleted, "verified": deleted,
             "state": deleted ? "deleted" : "failed",
             "track": delTrack,
-            "note": deleted ? "Undo restores the track." : "The track is still listed; a dialog may need attention.",
+            "note": deleted
+                ? "Undo restores the track."
+                : "The track is still listed. Nothing here left a dialog up - a confirmation, if"
+                    + " one appeared, is reported in `confirmation`.",
             "tracks_after": delAfter.map { ["track_number": $0["track_number"] ?? 0, "track_name": $0["track_name"] ?? ""] }
         ]
+        if let confirmation { result["confirmation"] = confirmation }
+        return result
     }
 
     func handleSelectTrack(_ arguments: [String: Any]) throws -> Any {
