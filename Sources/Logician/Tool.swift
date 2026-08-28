@@ -136,7 +136,7 @@ struct Tool {
     /// only while an inspector is SHOWING it, which the control-surface tools
     /// do not require (verified 2026-08-27: 'Stereo Out' was visible as the
     /// selected track's output while 'Master' and 'Aux 1' were not).
-    static let stripAddressingAXNote = " Output/aux/bus strips ('Stereo Out') work too, but only while an inspector is SHOWING that strip (select a track routed to it, or open the Mixer) — Accessibility cannot reach a strip that is off screen. For any other strip use the control-surface tools (logic_mcu_plugin_inserts, logic_mcu_plugin_parameters), which address every strip in the project."
+    static let stripAddressingAXNote = " Output/aux/bus strips ('Stereo Out') work too, but only while an inspector is SHOWING that strip (select a track routed to it; opening the Mixer does NOT put a strip in reach of these tools, measured 2026-08-28) — Accessibility cannot reach a strip no inspector shows. For any other strip use the control-surface tools (logic_mcu_plugin_inserts, logic_mcu_plugin_parameters), which address every strip in the project."
 
     static let evaluateChangeListenNote = "Do not decide keep/rollback from the numbers alone: LISTEN to baseline_audio and after_audio (open the preview/clip files with your client's file viewer) before judging."
 }

@@ -98,7 +98,8 @@ extension LogicAccessibility {
                     requested: "'\(trackName)' as an output/aux/bus channel strip",
                     exposed: "it is not a track header, and no inspector strip with that name is on screen."
                         + " Accessibility can only reach a headerless strip that an inspector is showing"
-                        + " (select a track routed to it, or open the Mixer). Nothing was written."
+                        + " (select a track routed to it — opening the Mixer does NOT help, measured 2026-08-28)."
+                        + " Use the logic_mcu_* tools for a strip no inspector shows. Nothing was written."
                 )
             }
             return (strip, .surfaceChannel)

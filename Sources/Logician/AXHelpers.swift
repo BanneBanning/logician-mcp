@@ -156,16 +156,37 @@ extension LogicAccessibility {
         // Some plugin windows (e.g. Drum Machine Designer) are dialogs that
         // also carry the project document; the real project window is the
         // standard window.
-        if let standard = windows.first(where: {
-            documentPath(of: $0) != nil
-                && stringAttribute($0, kAXSubroleAttribute as String) == "AXStandardWindow"
+        //
+        // And Logic's MIXER window is a standard window that carries the same
+        // document (measured 2026-08-28: "<project> - Mixer: Tracks", subrole
+        // AXStandardWindow, same AXDocument as the Tracks window). Taking it
+        // for the project window pointed EVERY Accessibility-plane read at a
+        // window with no track headers, no inspector and no control bar — the
+        // whole plane failed with "Tracks header group" while Logic was
+        // perfectly healthy. It is excluded here, at the one place that
+        // decides what "the project window" means.
+        let carriers = windows.filter { documentPath(of: $0) != nil }
+        let candidates = carriers.filter { !isMixerWindow($0) }
+        if let standard = candidates.first(where: {
+            stringAttribute($0, kAXSubroleAttribute as String) == "AXStandardWindow"
         }) {
             return standard
         }
-        guard let fallback = windows.first(where: { documentPath(of: $0) != nil }) else {
-            throw LogicianError.windowNotFound("project window with AXDocument")
+        if let fallback = candidates.first {
+            return fallback
         }
-        return fallback
+        // Say WHY, when the reason is a Mixer that pushed the Tracks window
+        // out of reach: Logic publishes only its main/focused window while it
+        // is in the background, so an open Mixer can be the only document
+        // window Accessibility sees at all.
+        guard carriers.isEmpty else {
+            throw LogicianError.windowNotFound(
+                "the project (Tracks) window — the only document window Accessibility can see is"
+                    + " Logic's Mixer. Close it with logic_set_mixer {open: false}, or bring the"
+                    + " Tracks window to the front"
+            )
+        }
+        throw LogicianError.windowNotFound("project window with AXDocument")
     }
 
     func logicWindows() throws -> [AXUIElement] {
