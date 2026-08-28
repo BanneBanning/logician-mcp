@@ -15,6 +15,8 @@ Status legend: 🎯 planned · 🔬 needs a research session against Logic first
 | 5 | [Homebrew packaging](#5-homebrew-packaging) | small | ⏸ blocked on the repo going public |
 | — | [Deliberately parked](#parked) (localization, track-stack freeze) | — | ⏸ |
 
+**[docs/COVERAGE.md](COVERAGE.md)** (2026-08-28) is the black-box producer audit that feeds this roadmap's next items: 58 classified gaps — 24 buildable with existing mechanisms, 26 needing a research session, 6 likely impossible without UI scripting.
+
 ---
 
 ## 1. Tempo honesty guards
