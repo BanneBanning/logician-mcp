@@ -8,14 +8,14 @@
 
 [![macOS](https://img.shields.io/badge/macOS-13%2B-black?logo=apple)](#requirements)
 [![Swift](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](Package.swift)
-[![MCP](https://img.shields.io/badge/MCP-83_tools-4be37a)](docs/AGENT-GUIDE.md)
+[![MCP](https://img.shields.io/badge/MCP-84_tools-4be37a)](docs/AGENT-GUIDE.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
 [Install](#install) · [What it can do](#what-it-can-do-measured) · [Agent guide](docs/AGENT-GUIDE.md)
 
 </div>
 
-An MCP server that gives Claude, Gemini, Cursor — any MCP client — real, verified control over Logic Pro on macOS: every plugin parameter (third-party included), mixing, MIDI composition, arrangement editing, automation, and dialog-free audio export. Results that produce sound **carry the sound**: bounces and A/B evaluations return the audio itself, so a multimodal agent hears what it just did in the same reply it decides from. No UI scripting, no synthetic keypresses, no mouse takeover.
+An MCP server that gives Claude, Gemini, Cursor — any MCP client — real, verified control over Logic Pro on macOS: every plugin parameter (third-party included), mixing, MIDI composition, arrangement editing, automation, and dialog-free audio export. Results that produce sound **carry the sound**: bounces and A/B evaluations return the audio itself, so a multimodal agent hears what it just did in the same reply it decides from. No coordinate-driven UI scripting: writes go over Logic's own control-surface protocol, and the handful of places that fall back to a keystroke or a click name that route in the result.
 
 ## Install
 
@@ -99,13 +99,13 @@ Ask your agent one more time:
 
 ## Why this one is different
 
-Logic Pro has no automation API. Every other Logic MCP drives the UI: synthetic keypresses, dialog clicking, coordinate mouse moves, window scraping. Logician instead speaks **Mackie Control** — Logic's documented, bidirectional control-surface protocol — over virtual MIDI ports, and reads Logic's own LCD/LED/fader echoes back as verification. Where the surface protocol ends it uses macOS Accessibility *semantics* (element-addressed, never coordinates) and a dedicated MIDI port bound to Logic key commands.
+Logic Pro has no automation API. Every other Logic MCP drives the UI: blind keypresses, dialog clicking, coordinate mouse moves, window scraping. Logician instead speaks **Mackie Control** — Logic's documented, bidirectional control-surface protocol — over virtual MIDI ports, and reads Logic's own LCD/LED/fader echoes back as verification. Where the surface protocol ends it uses macOS Accessibility *semantics* (element-addressed, not screen positions) and a dedicated MIDI port bound to Logic key commands. The few remaining keystroke and click fallbacks are enumerated in point 3 below, and every one of them reports itself.
 
 That buys three things UI automation can't give you:
 
 1. **Universal plugin control.** Third-party plugins with fully custom UIs (Trilian, Decapitator, …) expose nothing to Accessibility — but everything to the control-surface host automation layer. Logician reads and writes any parameter of any plugin.
 2. **Hardware-level ground truth.** Every write is compare-and-set: read the current value, refuse on mismatch, converge to the target, read Logic's echo back, report exactly what happened. The agent cannot hallucinate a parameter value — the LCD echo is the value.
-3. **Your mouse stays yours.** Nothing moves the pointer, nothing types into your windows, no dialog-clicking races. You can keep working while the agent mixes.
+3. **No coordinate-driven UI scripting — and the exceptions say so out loud.** The data plane carries the writes; nothing is ever aimed at a screen position it guessed. A small, named set of fallbacks remains, for the places Logic exposes no other route: `logic_set_playing {playing: false}` sends **space** and `logic_set_cycle` sends **C** (Logic has no Stop button and collapses the Cycle button in narrow windows); the bounce and Key Commands paths synthesize **the shortcut the menu item itself advertises**, read off the item, never a hardcoded guess; the channel-strip routing menu sends **Escape** to clear its own pending state; and exactly one control — a track stack's disclosure triangle, where `AXPress` is a measured no-op — is **clicked on its own hit-tested AX frame**, with the pointer put back where you left it. Each of those routes names itself in the result's `write_route` (`key_command_space_frontmost`, `cg_click_on_ax_frame`, …), so an agent can never quietly claim the clean path. The one remaining pointer-driven fallback, the Accessibility plugin chooser, is off unless you pass `allow_mouse: true`. Those routes do bring Logic to the front first, deliberately: a keystroke aimed at whatever happens to be focused is exactly the failure mode this design refuses.
 
 ## Built for agents that lie (so they can't)
 
@@ -118,18 +118,22 @@ Logician assumes the model on the other end is fallible and designs for it:
 
 ## What it can do, measured
 
+Wall-clock timings from a live reference project (25 mixer strips, 19 track headers). Anything not actually stopwatched says **est.** — that distinction is the whole point of the table.
+
 | Capability | Measured |
 |---|---|
 | Bounce any bar range of the master, zero dialogs, audio attached | ~7 s |
-| Render one track to a file via Track Freeze, sliced to bars | ~8–15 s |
-| A/B a parameter change on one track, metrics + both audio versions, auto-rollback | ~15 s |
-| A/B on tracks freeze refuses (stack subtracks, shared channels) via `solo_bounce` | ~50 s |
-| Set any plugin parameter, verified via LCD echo, incl. third-party | ~1.5–2.5 s |
-| Compose MIDI (notes, CC, pitch bend) recorded through the track's instrument, render-verified | real time + ~8 s |
-| Automation curves (volume/pan/sends/plugin params, all modes), playhead-chase verified | ~10–30 s |
-| Read the whole mixer in one call — every strip's dB, mute/solo/arm, pan (25 strips) | ~23 s |
+| Render one track to a file via Track Freeze, sliced to bars | ~6–8 s |
+| A/B a parameter change on one track, metrics + both audio versions, auto-rollback — `method: "render"` | ~15 s |
+| The same A/B via `method: "bounce"` (master output rather than a track freeze) | ~20 s |
+| A/B on tracks freeze refuses (stack subtracks, shared channels) via `method: "solo_bounce"` | 157 s measured; **est.** ~50 s since the bounce-position fix |
+| Set any plugin parameter, verified via LCD echo, incl. third-party | ~1.5–1.9 s warm (~3.8 s first call) |
+| Compose MIDI (notes, CC, pitch bend) recorded through the track's instrument, render-verified | real time + ~10 s |
+| Automation curve (volume), recorded and playhead-chase verified | ~20 s |
+| Read the whole mixer in one call — every strip's dB, mute/solo/arm, pan (25 strips) | ~16–17 s |
+| The same read as part of a `mix`-scope project snapshot (adds the track/strip census) | ~23 s |
 | Structured snapshot of the whole project (transport, regions, markers, tempo/meter maps) | ~2 s |
-| Reset to a fixture project — close without saving, reopen, verify (built for eval loops) | ~4.5 s |
+| Reset to a fixture project — close without saving, reopen, verify (built for eval loops) | **est.** ~5 s |
 | Duplicate the project to a safe sandbox copy | ~2 s |
 
 ## Requirements
@@ -138,7 +142,7 @@ Logician assumes the model on the other end is fallible and designs for it:
 - Swift toolchain (to build from source)
 - One-time: Accessibility permission for your MCP client, and a Mackie Control device in Logic pointing at the `Logic MCP MCU` ports (Logic Pro → Control Surfaces → Setup → New → Mackie Control — `logic_health` walks you through it)
 
-## Tool overview (83 tools)
+## Tool overview (84 tools)
 
 - **See the project** — tracks, regions, markers, windows; the whole mixer in one call (every strip incl. auxes, buses and outputs); what each track is (type, instrument, routing, groups); a region's MIDI events; existing automation curves; or the entire project as one structured snapshot
 - **Diagnostics & lifecycle** — `logic_health` (a doctor that names the fix for anything broken); open/close/save/duplicate projects; verified reset to a fixture project
@@ -162,7 +166,8 @@ logician  ──spawns──▶  logician --bridge (daemon)
    │        └────────────────────┤   "Logic MCP Commands" (key commands → Logic)
    │                             │   "Logic MCP MIDI In"  (performance MIDI → Logic)
    └─ macOS Accessibility (element-addressed reads, track selection,
-      region editing, dialogs) — semantic, never coordinates
+      region editing, dialogs) — semantic; the named fallbacks above
+      are the only keystrokes, and one hit-tested click, in the system
 ```
 
 Safety model: read before write, abort on ambiguity, verify by readback, roll back on mismatch, never save without being asked, duplicate before destructive experiments.
@@ -173,6 +178,7 @@ Safety model: read before write, abort on ambiguity, verify by readback, roll ba
 - English Logic UI assumed (Accessibility string matching; locale tables are future work)
 - Tempo and meter maps are read from Logic's own lists and integrated into all bar math; tempo *curves* are approximated as steps (the Tempo List does not expose them) with the uncertainty quantified. MIDI recording takes real time.
 - Track stacks cannot be freeze-rendered (Logic limitation — `solo_bounce` covers their subtracks)
+- Recording automation needs a track header, so it cannot run on headerless strips — `Stereo Out`, auxes, buses. Setting the automation mode reads it off the track header's Accessibility label, and those strips have none. Their volume, pan, sends and plugin parameters are still writable; only recorded *curves* are out of reach.
 - Roadmap: Homebrew packaging (once the repo is public), tempo curves, note-level MIDI beyond the Event List, localization
 
 ---
