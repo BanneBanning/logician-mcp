@@ -18,8 +18,10 @@ extension LogicAccessibility {
         }
         guard let strip = match else {
             throw LogicianError.trackNotExposed(
-                requested: name,
-                exposed: "no inspector strip with that name is visible"
+                requested: "an inspector channel strip named '\(name)'",
+                exposed: "no strip with that name is visible. Accessibility only reaches"
+                    + " a strip an inspector is showing — select the track in Logic, or"
+                    + " for an output/aux/bus strip select a track routed to it."
             )
         }
         return strip
@@ -49,7 +51,10 @@ extension LogicAccessibility {
         if let other = strips.first(where: { $0.name == trackName }) {
             return other.element
         }
-        throw LogicianError.trackNotExposed(requested: trackName, exposed: left.name)
+        throw LogicianError.trackNotExposed(
+            requested: "the channel strip for track '\(trackName)'",
+            exposed: "the inspector currently shows '\(left.name)'. Select the track in Logic first."
+        )
     }
 
     func insertSlots(of strip: AXUIElement) -> [InsertSlot] {
