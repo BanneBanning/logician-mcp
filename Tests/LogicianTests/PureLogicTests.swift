@@ -908,4 +908,27 @@ final class PureLogicTests: XCTestCase {
         // It must NOT promise the two halves exist.
         XCTAssertFalse(note.contains("The two halves are new regions"))
     }
+
+    // MARK: - logic_health's two most basic remediations
+
+    func testHealthNamesTheFixWhenLogicIsNotRunning() {
+        let fixes = MCPServer.applicationRemediations(logicRunning: false, hasProjectDocument: false)
+        XCTAssertNotNil(fixes["logic_fix"])
+        XCTAssertTrue(fixes["logic_fix"]?.contains("not running") == true)
+        // With Logic closed the missing document is a consequence, not a
+        // second thing for the user to go and fix.
+        XCTAssertNil(fixes["project_fix"], "one cause, one fix")
+    }
+
+    func testHealthNamesTheFixWhenLogicRunsWithNoProjectOpen() {
+        let fixes = MCPServer.applicationRemediations(logicRunning: true, hasProjectDocument: false)
+        XCTAssertNil(fixes["logic_fix"])
+        XCTAssertTrue(fixes["project_fix"]?.contains("no project document is open") == true)
+    }
+
+    func testHealthOffersNoApplicationFixWhenBothAreFine() {
+        XCTAssertTrue(
+            MCPServer.applicationRemediations(logicRunning: true, hasProjectDocument: true).isEmpty
+        )
+    }
 }

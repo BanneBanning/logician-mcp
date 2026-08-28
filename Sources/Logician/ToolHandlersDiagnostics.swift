@@ -42,7 +42,34 @@ extension MCPServer {
         if health["accessibility_trusted"] as? Bool != true {
             health["accessibility_fix"] = "grant Accessibility in System Settings: x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
         }
+        // The two most basic preconditions had no fix line at all, so a report
+        // with Logic closed read as a list of subsystem failures instead of
+        // "open Logic". Both are pure functions of the facts above.
+        for (key, text) in MCPServer.applicationRemediations(
+            logicRunning: health["logic_running"] as? Bool == true,
+            hasProjectDocument: !(health["project_document"] is NSNull)
+        ) {
+            health[key] = text
+        }
         return health
+    }
+
+    /// `logic_fix` / `project_fix` for `logic_health`, as a pure function of
+    /// the two facts they describe — the rest of the doctor's fixes need live
+    /// MIDI or Accessibility state, these two do not.
+    static func applicationRemediations(
+        logicRunning: Bool,
+        hasProjectDocument: Bool
+    ) -> [String: String] {
+        var fixes: [String: String] = [:]
+        if !logicRunning {
+            fixes["logic_fix"] = "Logic Pro is not running. Open Logic Pro and open a project; every tool in this server reads or writes a live Logic, and the control surface only exists while Logic is up. Nothing below this line can be diagnosed until it is."
+        } else if !hasProjectDocument {
+            // Only worth saying once Logic IS up: with Logic closed the missing
+            // document is a consequence, not a second thing to fix.
+            fixes["project_fix"] = "Logic is running but no project document is open (an empty Logic window, or a project that has never been saved to disk). Open or save a project: tools that address tracks, regions and bars need one, and the tools that verify against a project path cannot check anything without it."
+        }
+        return fixes
     }
 
     func handleSetupKeyCommands(_ arguments: [String: Any]) throws -> Any {
