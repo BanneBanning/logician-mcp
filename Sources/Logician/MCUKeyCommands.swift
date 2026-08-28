@@ -95,17 +95,63 @@ extension MCUController {
         if waitFor(seconds: 2.0, { ledLit(0x18 + channel, in: $0) }) != nil {
             return "mcu_lcd_name_and_select_led"
         }
-        let lit = freshStatus().map { selectedStrips(in: $0) } ?? []
+        var lit = freshStatus().map { selectedStrips(in: $0) } ?? []
+        if !lit.isEmpty {
+            // The wrong strip is lit. Before refusing, try the one repair that
+            // is known to work — see `resyncSelection`.
+            debugLog("selectChannelVerified: strip(s) \(lit.map { $0 + 1 }) lit instead of"
+                + " \(channel + 1); attempting a neighbour resync")
+            if try resyncSelection(channel: channel, expectedName: expectedName) {
+                return "mcu_lcd_name_and_select_led_after_resync"
+            }
+            lit = freshStatus().map { selectedStrips(in: $0) } ?? []
+        }
         guard lit.isEmpty else {
             throw LogicianError.verificationFailed(
                 requested: "the SELECT LED of strip \(channel + 1) ('\(expectedName)')",
                 actual: "strip(s) \(lit.map { $0 + 1 }) are selected instead — the surface is pointed"
-                    + " at another channel; nothing was written",
+                    + " at another channel and a neighbour resync did not recover it;"
+                    + " nothing was written",
                 restored: false
             )
         }
         debugLog("selectChannelVerified: no SELECT LED echo for strip \(channel); LCD name evidence only")
         return "mcu_lcd_name_only"
+    }
+
+    /// Detect-and-resync: select a NEIGHBOUR strip, then come back.
+    ///
+    /// The failure this repairs is the one the project cares most about — the
+    /// surface lit on a strip the caller did not ask for — and it cannot heal
+    /// itself, because a SELECT press on a strip whose LED is ALREADY lit is a
+    /// no-op (observed 2026-08-28 with the LED on strip 8 while the PL view
+    /// showed a different strip's plugins). Pressing a neighbour first forces
+    /// a real state change, so the press that follows is no longer a no-op.
+    /// That neighbour bounce is the documented MANUAL fix; this is the same
+    /// two presses, taken automatically, behind the verification rather than
+    /// instead of it.
+    ///
+    /// It only ever runs AFTER the LCD-name evidence has already proven the
+    /// strip index is the right one, so the worst case is two extra selects on
+    /// a strip the caller was about to select anyway. Returns true only when
+    /// the target's own SELECT LED is lit at the end — a resync that does not
+    /// visibly land is reported as a failure, never assumed.
+    ///
+    /// The neighbour is chosen inside the bank (channel 0 borrows from the
+    /// right, everything else from the left) so the bank never moves: banking
+    /// would change what every strip index MEANS, which is a bigger hazard
+    /// than the one being repaired.
+    @discardableResult
+    static func resyncSelection(channel: Int, expectedName: String) throws -> Bool {
+        guard (0...7).contains(channel) else { return false }
+        let neighbour = channel == 0 ? 1 : channel - 1
+        guard try selectFoundChannel(neighbour) else { return false }
+        _ = waitFor(seconds: 1.0, { ledLit(0x18 + neighbour, in: $0) })
+        guard try selectFoundChannel(channel) else { return false }
+        let landed = waitFor(seconds: 2.0, { ledLit(0x18 + channel, in: $0) }) != nil
+        debugLog("resyncSelection: strip \(channel + 1) ('\(expectedName)') via neighbour"
+            + " \(neighbour + 1) -> \(landed ? "lit" : "still not lit")")
+        return landed
     }
 
 }
