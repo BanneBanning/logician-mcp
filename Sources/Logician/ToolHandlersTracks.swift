@@ -271,4 +271,24 @@ extension MCPServer {
             move: arguments["move"] as? Bool ?? false
         )
     }
+
+    func handleTrackInfo(_ arguments: [String: Any]) throws -> Any {
+        var names: [String]?
+        if let single = arguments["track_name"] as? String { names = [single] }
+        if let list = arguments["track_names"] as? [String] { names = list }
+        return try logic.trackInfo(
+            trackNames: names,
+            all: arguments["all"] as? Bool ?? false
+        )
+    }
+
+    func handleSetTrackRouting(_ arguments: [String: Any]) throws -> Any {
+        return try logic.setTrackRouting(
+            trackName: requiredString("track_name", in: arguments),
+            output: arguments["output"] as? String,
+            input: arguments["input"] as? String,
+            group: arguments["group"] as? String,
+            expected: (arguments["expected_current"] as? [String: Any]) ?? [:]
+        )
+    }
 }

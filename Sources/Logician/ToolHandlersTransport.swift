@@ -3,7 +3,56 @@ import Foundation
 // Transport, cycle, playhead, MIDI recording and automation recording.
 extension MCPServer {
     func handleGetTransport(_ arguments: [String: Any]) throws -> Any {
-        return try logic.getTransport()
+        return try logic.getTransport(
+            readSmartTempoMode: arguments["read_smart_tempo_mode"] as? Bool ?? false
+        )
+    }
+
+    func handleTempoEvents(_ arguments: [String: Any]) throws -> Any {
+        let action = (arguments["action"] as? String) ?? "list"
+        if action == "list" {
+            let resolved = resolveTempoMap()
+            guard let map = resolved.map else {
+                return [
+                    "success": false,
+                    "verified": false,
+                    "state": "unreadable",
+                    "reason": resolved.failure?.reason ?? "the Tempo List did not answer"
+                ] as [String: Any]
+            }
+            return [
+                "success": true,
+                "verified": true,
+                "state": "read",
+                "events": map.events.map { event in
+                    ["bar": event.bar, "beat": event.beatInBar, "bpm": event.bpm] as [String: Any]
+                },
+                "constant": map.events.count <= 1,
+                "sub_beat_positions": map.subBeatPositions,
+                "read_route": "tempo_list"
+            ] as [String: Any]
+        }
+        guard let bar = arguments["bar"] as? Int else {
+            throw LogicianError.invalidArguments("missing integer: bar")
+        }
+        // The caches go even when the write THROWS. A create that failed
+        // halfway still made a row (measured 2026-08-28: two of them), and the
+        // cached map then served the pre-write world to every later caller —
+        // including the `list` action right after the failure, which reported
+        // two events while the Tempo List held four.
+        defer {
+            invalidateTempoMapCache()
+            invalidateMeterMapCache()
+        }
+        let result = try logic.editTempoEvent(
+            action: action,
+            bar: bar,
+            beat: arguments["beat"] as? Int ?? 1,
+            bpm: (arguments["bpm"] as? Double) ?? (arguments["bpm"] as? Int).map(Double.init),
+            expectedCurrentBPM: (arguments["expected_current_bpm"] as? Double)
+                ?? (arguments["expected_current_bpm"] as? Int).map(Double.init)
+        )
+        return result
     }
 
     func handleSetPlaying(_ arguments: [String: Any]) throws -> Any {
@@ -67,7 +116,12 @@ extension MCPServer {
         // is armed, and treat "cannot read it" as its own answer: assuming
         // Keep is exactly the assumption that loses the tempo track.
         let tempoModeFix = "set the project tempo mode to KEEP: click the tempo display in the LCD (the small Project Tempo pop-up under the tempo, with the LCD in a display mode that shows it, e.g. 'Beats & Project'), or File → Project Settings → Smart Tempo, then retry."
-        let projectTempoMode = logic.projectTempoMode()
+        // `allowingSettingsWindow: true` — this is THE call site the fallback
+        // was built for. The control bar publishes no value, so without the
+        // Project Settings read this guard could only ever warn, and an
+        // Adapt-mode project would silently have its tempo map rewritten by
+        // the take. ~1.6 s against a destroyed tempo track is not a trade.
+        let (projectTempoMode, tempoModeVisit) = logic.projectTempoMode(allowingSettingsWindow: true)
         var smartTempoWarning: String?
         switch projectTempoMode {
         case .keep:
@@ -84,8 +138,13 @@ extension MCPServer {
             )
         case .unreadable, .absent:
             // Proceed, but never silently: the caller has to know that the one
-            // destructive side effect of this tool went unchecked.
-            smartTempoWarning = "SMART TEMPO NOT VERIFIED. \(projectTempoMode.explanation ?? "") If this project is in ADAPT — or in an AUTO that resolved to Adapt — this recording has REWRITTEN the project's tempo map: check the tempo track and Undo in Logic if it moved. To make later takes safe, \(tempoModeFix)"
+            // destructive side effect of this tool went unchecked. Since
+            // 2026-08-28 this branch means BOTH routes failed — the control
+            // bar's valueless pop-up AND the Project Settings pane — so the
+            // reason the window read gave is carried too.
+            smartTempoWarning = "SMART TEMPO NOT VERIFIED. \(projectTempoMode.explanation ?? "")"
+                + (tempoModeVisit?.note.map { " The Project Settings fallback also failed: \($0)." } ?? "")
+                + " If this project is in ADAPT — or in an AUTO that resolved to Adapt — this recording has REWRITTEN the project's tempo map: check the tempo track and Undo in Logic if it moved. To make later takes safe, \(tempoModeFix)"
         }
         // Note-name parsing: Logic convention, middle C (MIDI 60) = C3.
         func parsePitch(_ value: Any) throws -> Int {
@@ -346,6 +405,11 @@ extension MCPServer {
         result["tempo"] = range.tempo
         if let name = projectTempoMode.name {
             result["project_tempo_mode"] = name
+            result["project_tempo_mode_route"] = tempoModeVisit == nil
+                ? "control_bar" : "project_settings_window"
+        }
+        if let note = tempoModeVisit?.note, projectTempoMode.name != nil {
+            result["project_tempo_mode_note"] = note
         }
         if let block = knowledge.payload { result["tempo_map"] = block }
         result["meter_map"] = meterKnowledge.payload

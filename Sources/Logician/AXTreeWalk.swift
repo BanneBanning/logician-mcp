@@ -136,6 +136,14 @@ enum AXDepth {
     /// scroll area) and its "Number of Items" text (measured at 1).
     static let listEditorTable = 6
 
+    // MARK: Project Settings
+
+    /// The Project Settings window -> one of its controls. MEASURED live
+    /// 2026-08-28: the Smart Tempo pane's pop-ups and the toolbar's pane
+    /// buttons are direct children of the window (depth 1) and the toolbar's
+    /// buttons depth 2, so 6 is pure headroom.
+    static let projectSettingsControl = 6
+
     // MARK: Modal dialogs and alerts
 
     /// Any Logic window -> the static text and buttons of a modal alert
@@ -159,6 +167,17 @@ enum AXDepth {
     /// A popup menu -> an item in it or in one of its submenus. The plugin
     /// chooser nests manufacturer > format > plugin.
     static let popupMenuItem = 5
+    /// Application element -> a channel strip slot's pop-up menu. DEEPER than
+    /// `popupMenu` for the same reason `regionInspectorMenu` is: Logic parents
+    /// these under the project window's own tree, and a depth-7 walk finds
+    /// them only sometimes (measured 2026-08-28 as presses that "did not open
+    /// a menu" while the menu was in fact up).
+    static let stripSlotMenu = 14
+    /// A channel strip routing slot's menu -> a destination. MEASURED
+    /// 2026-08-28: the output menu nests root -> `Bus` -> the 32 bus items,
+    /// and the `33 - 64` … `225 - 256` ranges one level deeper again, so a
+    /// depth-5 walk reaches every named bus.
+    static let routingMenuItem = 6
 
     // MARK: Key Commands window
 

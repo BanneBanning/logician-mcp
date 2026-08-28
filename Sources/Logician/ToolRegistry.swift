@@ -37,6 +37,51 @@ extension MCPServer {
                 handler: MCPServer.handleListTracks
             ),
             Tool(
+                name: "logic_track_info",
+                description: "What each track IS, beyond its name: type, output routing, input, group, monitoring, automation mode, instrument, inserts and sends — everything Logic's track header and inspector channel strip publish. This is the orientation read logic_list_tracks cannot give you: it answers 'is this an audio track or a software instrument', 'where does it go', 'is anything already grouped', 'what is on it' before you plan a single write. COSTS A SELECTION, ~0.7 s per track: Logic's left inspector shows the SELECTED track's strip and nothing else, so each track is selected in turn and the original selection is put back (selection_restored says whether it worked). Pass track_name for one, track_names for several, or all: true for every rendered header (mind logic_list_tracks' partiality — a track Logic has not rendered cannot be read here either). THREE THINGS THE RESULT MEANS. A field that is ABSENT (null) means Logic published nothing for it — never that it is off; `input: null` on a software instrument is a strip with no input slot, not an unrouted track. `kind` is INFERRED from which slots the strip publishes and `kind_evidence` says which: 'audio' (an Input slot), 'software_instrument' (a MIDI Effect slot), 'reduced' (no Output slot at all — measured on folder-stack main tracks, which publish only name/mute/solo/volume/automation/group), 'unknown'. And on a software instrument the INSTRUMENT slot carries the same bypass/open controls as an insert, so it appears in `inserts` too, flagged `is_instrument_slot` and named separately as `instrument`. Output/aux/bus strips (Stereo Out, Master, Aux 1) have no track header and cannot be read here; use logic_mcu_plugin_inserts and logic_mixer_snapshot for those.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "track_name": ["type": "string", "description": "One track, by its exact header name. Omit everything to read whichever track is selected."],
+                        "track_names": [
+                            "type": "array",
+                            "items": ["type": "string"],
+                            "description": "Several tracks, read in the order given."
+                        ],
+                        "all": ["type": "boolean", "description": "Read every rendered track header. ~0.7 s each."]
+                    ],
+                    "additionalProperties": false
+                ],
+                // Selects each track it reads, and puts the selection back.
+                safety: .write,
+                idempotent: true,
+                handler: MCPServer.handleTrackInfo
+            ),
+            Tool(
+                name: "logic_set_track_routing",
+                description: "Route a track: its OUTPUT (where the strip's signal goes), its INPUT (what an audio track records from) and its GROUP. Each is one of Logic's own channel-strip slots, written by opening the slot's pop-up menu and pressing the destination, then verified by reading the slot's label back — the same compare-and-set contract as every other write here. This is how 'group the drums to a bus' is done: set each drum track's output to 'Bus 4' and Logic creates the aux; the send tools (logic_add_send) are the parallel path, not the same one. DESTINATION NAMES are Logic's own menu titles, and Logic decorates them with where they already lead — 'Bus 2 → Aux 2' on the output side, 'Bus 2 ← Lofi Pad' on the input side. Pass either form: the HEAD ('Bus 2') is the identity and the arrow half is Logic explaining itself. Other output values: 'Stereo Output', 'No Output', 'Surround', 'Mono'. Inputs: 'Input 1', 'No Input', a bus. Groups: 'No Group', 'Group 1', or the '(new)' item Logic offers to create one. A name that matches nothing is REFUSED with the slot's actual menu listed rather than guessed at. REFUSED, on purpose: a slot this strip does not publish (a software instrument has no input slot; a folder-stack main track publishes a reduced strip with no routing slots at all — logic_track_info's `kind` and `kind_evidence` say which you have), and any mismatch against expected_current, checked for EVERY named slot before the first one is written so a two-slot call cannot half-apply. Changing an output CHANGES WHAT YOU HEAR and can silence a track (route it to a bus with no aux behind it); the before value is always reported so it can be set straight back. Two live-measured caveats. Routing to a BUS makes Logic CREATE the aux behind it, and routing away again does not remove that aux — the result says so in side_effect_note. And the press that opens a slot's menu is INTERMITTENT: Logic sometimes answers it with 'success' and opens nothing, so this retries (five times, clearing Logic's pending UI state with an Escape between attempts) and, if the menu still refuses, fails with 'the routing slot's menu did not open' having written NOTHING. That failure is safe to retry. The output slot was the reliable one in testing; the input and group slots hit it more often.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "track_name": ["type": "string", "description": "Exact track name as shown in the track header."],
+                        "output": ["type": "string", "description": "Output destination, e.g. 'Stereo Output', 'Bus 4', 'Bus 2 → Aux 2', 'No Output'."],
+                        "input": ["type": "string", "description": "Input source, e.g. 'Input 1', 'No Input', 'Bus 5'. Audio strips only."],
+                        "group": ["type": "string", "description": "Group membership, e.g. 'No Group', 'Group 1'."],
+                        "expected_current": [
+                            "type": "object",
+                            "description": "Compare-and-set: 'output', 'input' and/or 'group' with the values you believe are current (as logic_track_info reports them). Any mismatch refuses and writes nothing.",
+                            "additionalProperties": true
+                        ]
+                    ],
+                    "required": ["track_name"],
+                    "additionalProperties": false
+                ],
+                safety: .write,
+                idempotent: true,
+                changesSound: true,
+                handler: MCPServer.handleSetTrackRouting
+            ),
+            Tool(
                 name: "logic_list_inserts",
                 description: "List audio-effect insert slots (index, plugin display name, bypass state) of the named track's channel strip, read-only. The `index` here is the ACCESSIBILITY ordinal (inspector strip order) - the numbering logic_open_plugin, logic_close_plugin, logic_remove_plugin and logic_set_insert_bypass take as insert_index, and NOT the Mackie insert_slot the logic_mcu_* tools take (on an output strip the two orders were observed reversed). The track must be selected so its strip is shown in the left inspector; otherwise the error not_exposed reports which track is currently shown."
                     + Tool.stripAddressingAXNote,
@@ -1106,11 +1151,46 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_get_transport",
-                description: "Read the transport state from the control bar: playing, recording, cycle, playhead bar/beat, tempo, time signature, key signature, metronome, count-in. Read-only. Fields whose control bar element is missing are null.",
-                inputSchema: ["type": "object", "properties": [:], "additionalProperties": false],
+                description: "Read the transport state from the control bar: playing, recording, cycle, playhead bar/beat, tempo, time signature, key signature, metronome, count-in. Read-only. Fields whose control bar element is missing are null. The Smart Tempo project tempo mode (Keep/Adapt/Auto) is NOT in the cheap read — Logic publishes no value on the control bar's Project Tempo pop-up — so it comes back as project_tempo_mode_note saying why. Pass read_smart_tempo_mode: true to get the real value: that opens File > Project Settings on the Smart Tempo pane, reads the mode off its pop-up and closes the window again (~1.6 s, nothing written), and the result then carries project_tempo_mode plus project_tempo_mode_route. Worth knowing before recording: an ADAPT-mode project rewrites its own tempo map to follow a recording, and logic_record_midi runs this same read and refuses on Adapt/Auto.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "read_smart_tempo_mode": [
+                            "type": "boolean",
+                            "description": "Also read the Smart Tempo project tempo mode from File > Project Settings (opens and closes that window; default false, which keeps this call a pure control-bar read with no side effect)."
+                        ]
+                    ],
+                    "additionalProperties": false
+                ],
                 safety: .readOnly,
                 idempotent: true,
                 handler: MCPServer.handleGetTransport
+            ),
+            Tool(
+                name: "logic_tempo_events",
+                description: "Read and WRITE the project's tempo map — the tempo track, as rows in Logic's Tempo List. This is what makes a tempo map buildable: 'land a downbeat on the hit at 1:12' is create-an-event, and until now the map could only be read. action 'list' returns every event (bar, beat, BPM) and writes nothing. 'create' makes a new event at bar/beat with bpm; 'set' retunes the event already there; 'delete' removes it. HOW THE WRITE WORKS, because two parts of it are surprising. Logic's own 'Create new Tempo Event' button places the event AT THE PLAYHEAD, not on a bar line, and parking the playhead only sets its bar and beat — the division and tick it already carried come along — so this tool creates the event and then steps the new row's own position fields back to the exact bar/beat you asked for. And the BPM is written through the CONTROL BAR's tempo slider, which edits the tempo event in force at the playhead: with the playhead parked on the event, that is this event. Neither half is trusted: the whole map is re-read afterwards and the result reports it, so a create that produced two events, or moved a neighbour, comes back as a failure (or a warning naming which other events moved) rather than as a success. Compare-and-set with expected_current_bpm on 'set' and 'delete'. REFUSED: 'create' where an event already sits (use 'set'), 'set'/'delete' where none does, deleting bar 1 (the project's base tempo — retune it instead), and any write at all while the Tempo List cannot be read, because a tempo write is not made blind. COST: a few seconds, dominated by the playhead travel to the bar (~0.13 s per bar) and by the tempo slider's one-BPM-per-step convergence. AFTER A WRITE the server's cached tempo and meter maps are dropped, so every later bar->seconds conversion re-reads the new map.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "action": [
+                            "type": "string",
+                            "enum": ["list", "create", "set", "delete"],
+                            "description": "'list' (default) reads the map and writes nothing."
+                        ],
+                        "bar": ["type": "integer", "minimum": 1, "description": "Which bar the event sits on. Required for create/set/delete."],
+                        "beat": ["type": "integer", "minimum": 1, "description": "Which beat within the bar (default 1)."],
+                        "bpm": ["type": "number", "minimum": 5, "maximum": 990, "description": "The tempo. Required for create and set. Logic's slider holds whole BPM."],
+                        "expected_current_bpm": ["type": "number", "description": "Compare-and-set for 'set' and 'delete': the BPM you believe the event carries. A mismatch refuses and writes nothing."]
+                    ],
+                    "additionalProperties": false
+                ],
+                // Writes the project's tempo track, which every bar->seconds
+                // conversion depends on. Idempotent by construction: the
+                // arguments name an absolute position and an absolute tempo.
+                safety: .write,
+                idempotent: true,
+                changesSound: true,
+                handler: MCPServer.handleTempoEvents
             ),
             Tool(
                 name: "logic_set_cycle",
