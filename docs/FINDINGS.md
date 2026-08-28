@@ -2735,3 +2735,131 @@ Plus: `expected_current: {quantize: "Off"}` mot en region som redan stod på `1/
 `RegionInspector.swift` (ny, ren: panelklassificering, etikettnormalisering, parameterkatalogen med intervall och regionstyper, de två indexvokabulärerna, argumentkonvertering) · `AXRegionInspector.swift` (ny: panelsökning, de två hopfällningarna med återställning, radläsning, de tre skrivsätten, den djupa menyhanteringen) · `AXTreeWalk.swift` (`inspectorPanel`, `regionInspectorOutline`, `regionInspectorMenu = 14`) · `Support.swift` (`LogicianError.preconditionUnmet` — ett `precondition_failed` vars meddelande ÄR hela förklaringen, för de vägringar där de befintliga mismatch-fallen ljuger om vad som hände) · `ToolHandlersTracks.swift` + `ToolRegistry.swift` (de två verktygen) · AGENT-GUIDE (två verktygsavsnitt, arbetsflödet "tighten a sloppy take" och flervalsnoten).
 
 `swift test`: 407 tester gröna (20 nya: panelklassificering, etiketter, skrivordningen, de två vokabulärerna, intervallvakterna, blandade kryssrutor), 1,4 s, ingen Logic behövs. `swift build -c release` grön. `serverVersion` är medvetet **inte** bumpad — inget cache-relevant beteende ändrades.
+
+### Mätarna, faderfällan som inte fanns, och banken som flyttar sig själv (2026-08-28, v0.54.2)
+
+Tre öppna punkter från MCU-planet i en session: G56 (kanalmätarna som togs emot och kastades), `fader`-kommandots påstådda fälla, och reproduktionsförsöket av fel-stripp-hazarden. Två av tre slutade i motsatsen till vad roadmapen förutsade.
+
+**Miljö:** Logic Pro 12.3.1 (`Testlåt Copy.logicx` — sandlådekopian; fönstertiteln kontrollerad innehålla "Copy" före första skrivningen), användarens bryggdaemon **aldrig omstartad** och hela sessionen på **bryggprotokoll 3**, alltså en byggnation äldre än både v0.53.0:s LCD-fix och det som skrivs här. Ingen `logician --bridge` startad, inga nya virtuella portar. Rådgivande lås taget och släppt i två omgångar (PRIORITET 1-agenten höll det däremellan). Tillfällig XCTest-harness (`LiveProbe.swift`, `LOGICIAN_LIVE=1`), borttagen efteråt. Projektet **sparades aldrig**. Ingen blind Ångra.
+
+#### Fynd 1 — mätargrammatiken är implementerad, men avkodningen mot Logic är INTE körd
+
+`Bridge.swift` hade `case 0xD0: index += 1` — ett byte konsumerat, ingenting sparat — och grannfallet `case 0xA0` bar kommentaren "channel pressure pairs used for meters", som är fel i båda leden (0xA0 är polyfonisk aftertouch, och det är inte den som bär mätare). Mackie-konventionen lägger mätarna på kanaltryck:
+
+```
+D0 <vv>     ETT statusbyte, ETT databyte
+vv = (kanal << 4) | kod
+kanal 0-7   strippen i den AKTUELLA BANKEN, inte i projektet
+kod   0x0-0xC  tänd segmentnivå, 0 = tystnad, 0xC = översta segmentet
+      0x0E     tänd overload ("clip")
+      0x0F     släck overload
+```
+
+Det som ligger i `MCUMeter.swift` är den grammatiken, enhetstestad mot syntetiska bytes — **inte mot Logic**. Och det är den ärliga delen av det här fyndet: **den levande avkodningen gick inte att köra**, och orsaken är strukturell snarare än tidsbrist. Den körande daemonen äger sina virtuella CoreMIDI-endpoints, och en virtuell *destination* går inte att lyssna av från en annan process — bara att skicka till. Att tappa av råtrafiken skulle alltså kräva antingen en andra brygga (förbjudet, och de fasta unique-ID:na skulle vägra ändå) eller en omkonfigurering av Logics kontrollytuppsättning (som skulle koppla bort användarens brygga). Bryggans socket exponerar bara avkodat tillstånd, och `raw` går bara utåt. Slutsatsen: **det finns ingen väg till råbytesen utan att starta om daemonen**, och den startades inte om.
+
+Vad som DÄREMOT mättes live, som underlag: under 10 s uppspelning tickade `received_events` med **~93 händelser/s** (timecode-siffrorna), alltså är ytan redan högljudd medan transporten rullar. Det avgjorde en designfråga. Mätaruppdateringar går genom en **egen** mutator som medvetet *inte* rör `receivedCount` eller `lastReceive`: båda är bärande för tystnadsdetektionen (`awaitEvents`, `ensurePanNames`, `settledTop`), och att räkna mätare som vanliga händelser skulle göra "tyst" ouppnåeligt under uppspelning — exakt den låsning den blinkande rec-dioden orsakade en gång (v0.54.0, fynd 2), där varje MCU-verktyg slutade lösa namn. `dirty` sätts dessutom bara när det avkodade tillståndet faktiskt ÄNDRAS, så en ström av identiska mätarramar skriver inte om state.json sju gånger i sekunden.
+
+**Så här körs den återstående verifieringen** när daemonen har startats om på en aktuell byggnation (servern gör det själv: `ensureRunning()` ersätter en daemon under `bridgeProtocolVersion`, nu 5): starta uppspelning i ett projekt med ljud på de banade stripparna och läs `logic_mcu_status`. Tre utfall, alla informativa. `meter_events > 0` med nivåer som rör sig = grammatiken stämmer. `meter_events > 0` men nivåerna orimliga = Logic har en egen dialekt, och räknaren visar att bytesen ändå kommer. `meter_events == 0` efter en stunds uppspelning = **Logic matar inte den här ytan med mätare alls**, och då är G56 stängd som "inte tillgängligt" i stället för som "inte byggt" — nästa sak att titta på vore i så fall 0xA0 och Logics egna kontrollytinställningar. Räknaren finns på tråden just för att skilja de tre åt; utan den går "alla strippar tysta" inte att skilja från "ingen matning".
+
+Verktygssidan säger samma sak: `logic_mixer_snapshot` bär `meter_level`/`meter_overload` per stripp **bara** när daemonen publicerar dem, plus `meter_feed: available|unavailable`. Frånvarande fält är ett annat svar än nollor, och det är hela poängen — en nolla som egentligen betyder "den här daemonen kan inte svara" vore en påhittad avläsning. Live-verifierat mot den gamla daemonen: 25 strippar lästes normalt, `meter_feed: unavailable`, noll strippar med `meter_level`, och noten talar om att en omstart ger dem.
+
+Och doktrinen, som står i koden, i verktygsbeskrivningen och i guiden: mätaren är **Logics egen publicerade siffra**, samma sorts bevis som ett faderrekyl — den är INTE ljudanalys, den har ingen dB-kalibrering och den får aldrig rapporteras som loudness. Att bedöma en nivå görs genom att bounca och lyssna.
+
+#### Fynd 2 — "en fader kan inte skrivas absolut" var fel i varje led
+
+Roadmapens punkt sa tre saker: att bryggan skickar pitch bend *utan* faderns touch-not, att Logic därför *ignorerar* positionen, och att spegeln kortvarigt rapporterar *vårt eget* skrivna värde. Alla tre är motbevisade.
+
+**Bryggan har alltid skickat touch-noten.** `setFader` gör touch on → pitch bend → touch off sedan v0.26.0; `git log -L` på funktionen visar en enda commit. Påståendet kan aldrig ha stämt mot koden.
+
+**Logic följer, och följer även utan touch.** Experiment på masterfadern (spegelindex 8) och på en vanlig stripp (`Crash`, index 7), var och en med rå pitch bend respektive bryggans `fader`-kommando:
+
+| skrivning | bett | eko |
+|---|---|---|
+| rå pitch bend, ingen touch (index 8) | 11043 | **11009** |
+| rå återställning (index 8) | 12443 | **12443** exakt |
+| `fader`-kommandot (index 8) | 11043 | **11009** |
+| `fader`-kommandot, återställning | 12443 | **12443** exakt |
+| rå pitch bend (index 7) | 4135 / 8135 | 4130 / 8122 |
+| `fader`-kommandot (index 7) | 7035 | 7035 exakt |
+
+**Spegeln ekade aldrig vårt eget värde.** Spåren visar bara det gamla värdet följt av Logics eko — 11043 syns aldrig. Det är också vad arkitekturen förutsäger: daemonen sänder på sin virtuella *source* och parsar sin virtuella *destination*, två skilda endpoints, så ett eget meddelande kan inte komma tillbaka.
+
+**Det verkliga beteendet är kvantisering.** Fem intilliggande värden skrevs i följd och landade alla på samma:
+
+```
+bett 5635 → eko 5628      bett 5632 → eko 5628
+bett 5634 → eko 5628      bett 5631 → eko 5628
+bett 5633 → eko 5628
+```
+
+Logic snappar positionen till sin egen faderupplösning. Det förklarar hela den ursprungliga observationen: en likhetskontroll mot det man bad om läser en **fungerande** skrivning som ett misslyckande, och de tre stripparna som "inte gick att återställa" i v0.54.1 landade på ett rutnätsvärde bredvid, inte på sitt gamla. Den praktiska regeln som faller ut är fin: **skriv tillbaka ett värde Logic själv har rapporterat** — det ligger på rutnätet per konstruktion och går bit-exakt hem, vilket varje återställning ovan bekräftade.
+
+Åtgärden är inte en vägran utan ett kvitto. `fader` tar nu `verify: true` och svarar med `final_value` (där Logic landade) och `followed`; utan flaggan är vägen byte-identisk med förut, eftersom automationsinspelaren placerar fadrar mot en musikalisk klocka och inte har råd med väntan. En äldre daemon utelämnar båda fälten, vilket läses som *overifierat* — aldrig som *följde inte*.
+
+#### Fynd 3 — hazarden reproducerades inte, men banken visade sig flytta sig själv
+
+Sex riktade försök, alla live, inget som provocerade fram LED-mot-PL-divergensen:
+
+| hypotes | utfall |
+|---|---|
+| SELECT-dioden är bankrelativ och spegeln nollställs aldrig → stale bit efter bankbyte | **nej** — Logic släcker dioden när strippen bankas ur sikte och tänder den igen när den kommer tillbaka, i båda riktningarna |
+| MCU-val av en stripp, sedan bankning bort | **nej** — dioden släcks korrekt, valet består |
+| MCU-val av en HUVUDLÖS stripp (`St Out`) → visar PL fel kedja? | **nej** — PL visade `Cha EQ / Limitr / Sensor`, alltså St Outs egen kedja |
+| blandad ordning: ytval av `St Out`, sedan AX-val av ett spår | **nej** — koherent hela vägen |
+| AX-val av ett spår i en ANNAN bank medan ytan pekar på `St Out` | **nej** — men se nedan |
+| granne-och-tillbaka som reparation | **fungerar** (fynd 4) |
+
+Två saker föll ändå ut, och båda är värda mer än ännu ett misslyckat framkallande.
+
+**Logic bankar om ytan helt av sig själv när det valda spåret ändras.** Ett AX-val av `Crash` (tre banker bort) fick ytan att tyst rulla dit; ett AX-val av `808` rullade den till bank 0. Konsekvensen är den viktiga: ett stripp-INDEX betyder ingenting utan bankraden det lästes ur. "Stripp 8" var `St Out` i ena ögonblicket och `Crash` i nästa, utan att någon rörde en bankknapp — och **det är den rimligaste läsningen av den ursprungliga observationen**: en diod på stripp 8 tolkad mot en bankrad som inte längre gällde. Det förklarar också varför "bekräftat på två banker" inte hjälpte.
+
+**Ytans valda KANAL och Logics valda SPÅR är genuint oberoende på en huvudlös stripp.** Med ytan på `St Out` rapporterade AX fortfarande `Bas` som valt spår, och på vänstraste banken lyste **ingen** SELECT-diod alls fast `Bas` stod i cell 2. `selectChannelVerified`:s regel att "ingen diod tänd bevisar ingenting" är alltså inte defensiv paranoia — det är ett tillstånd som uppstår i normal drift.
+
+Sidoobservation: `pluginListAgreesWithAX` returnerar `nil` ("går inte att kontrollera") även när AX **kan** läsa strippen och kedjan genuint är tom, eftersom vakten är `guard !axNames.isEmpty`. Tredje beviset fyrar alltså aldrig på en tom stripp. Inte ändrat — att ändra det skulle få kontrollen att fälla varje stripp som ingen inspektor visar, vilket är den dyrare felriktningen — men det är en känd blind fläck.
+
+#### Fynd 4 — reparationen finns nu bakom verifieringen, och den är live-bevisad
+
+Den dokumenterade manuella fixen — välj en granne, gå tillbaka — är nu `resyncSelection`, och den körs **inne i** `selectChannelVerified` när fel stripp är tänd, innan vägran. Ordningen är hela poängen: den kör först efter att LCD-namnbeviset redan visat att strippindexet är rätt, så värsta fallet är två extra val på en stripp anroparen ändå skulle valt. Grannen tas inom banken (kanal 0 lånar från höger, resten från vänster) så att banken aldrig rör sig — att banka skulle ändra vad varje index BETYDER, vilket är en större fara än den som repareras. Den returnerar `true` bara om målets egen diod lyser till slut; en resync som inte syns landa rapporteras som misslyckad, aldrig som antagen.
+
+Live, mot den gamla daemonen (serverkod, så det är den skarpa vägen):
+
+```
+mål redan tänt (no-op-fallet som inte kan självläka):  resync(stripp 2, 'Bas')    -> true, dioder [2]
+annan stripp tänd (5):                                 resync(stripp 1, 'LofPad') -> true, dioder [1]
+```
+
+Bevisvärdet rapporteras: en selektion som behövde reparationen svarar `mcu_lcd_name_and_select_led_after_resync` i stället för att tiga om det.
+
+#### Fynd 5 — "replacing outdated bridge daemon" dödade aldrig någon daemon
+
+Rapporterat av regioninspektor-agenten samma dag och åtgärdat här, eftersom bryggkoden var min den här rundan. `ensureRunning()` upptäcker en föråldrad daemon korrekt, loggar `replacing outdated bridge daemon` — och missar sedan målet, varje gång. Mönstret var `pkill -f "<serverns ABSOLUTA sökväg> --bridge"`, medan användarens daemon kördes som den **relativa** `./.build/release/logician --bridge`. Ingen träff. Och det värsta: servern startade ändå en ersättare, som inte fick de fasta unique-ID:na och dog. Alltså **både en tyst misslyckad uppgraderingsväg och två bryggor igång en kort stund** — precis den hazard enkelinstanslåset finns för.
+
+Den täta matchningen var i sig en gammal säkerhetsfix (v0.49: en bred `pkill -f` kunde träffa orelaterade processer), så rättningen måste vara *både* träffsäker och korrekt — inte lösare.
+
+**Primärvägen är nu ett pid-nummer i stället för en sträng.** Daemonen skriver sin egen pid i låsfilen den redan håller exklusivt (`bridge.lock`), och ersättaren signalerar det numret. Ingen mönstermatchning alls.
+
+**Fallbacken — för en daemon som är äldre än pid-filen, vilket är exakt den daemon en uppgradering möter — är ett `ps`-svep** med två villkor som måste gälla samtidigt: argumentvektorn innehåller `--bridge` som **helt argument**, och den anropar en av *våra* binärer med namnet som **sökvägens sista led**. Antingen ensam vore osäker: namnet ensamt träffar servern (samma binär, inget `--bridge`), argumentet ensamt träffar en `vim`, en `tail` eller ett `grep` — den ursprungliga säkerhetsbuggen.
+
+Två fällor hittades genom att titta på verkligheten i stället för att anta:
+
+1. **`ps -o comm=` trunkerar till 16 tecken på macOS.** Den riktiga daemonen rapporterade `./.build/release` — själva binärnamnet, det enda som identifierar den, avklippt. En matchning på `comm` hade alltså reproducerat exakt den bugg som skulle fixas. Därför läses namnet ur argumentvektorn (`-axww`, otrunkerad).
+2. **Projektets egen sökväg innehåller mellanslag** (`…/Random Projekt/Logic MCP/…`). Att ta argv[0] som "allt fram till första blanksteget" ger `/Users/b/Desktop/Progg/Random` och missar. Testet görs därför på binärnamnet som sökvägens sista led, vilket överlever både relativ anropsform och mellanslag.
+
+Verifierat mot maskinens riktiga `ps -axww -o pid=,args=`, som är fixturen i testet ordagrant:
+
+```
+24761 ./.build/release/logician --bridge                                                  -> mål
+ 7662 /Users/dev/Desktop/…/Logic MCP/.build/release/logician                     -> skonad (inget --bridge)
+```
+
+**Och ersättningen bekräftar numera att den gamla daemonen faktiskt dog** innan en ny startas: SIGTERM, sedan polling på både `kill(pid, 0)` och att pingen tystnar, sedan en eskalering till SIGKILL, och om den ändå lever — **ingen ny brygga startas**. Servern behåller den fungerande gamla och säger vad som är fel i stället för att köra två. Att starta en andra brygga är alltid sämre än att köra vidare på en föråldrad.
+
+Ingen daemon dödades under arbetet: matchningen verifierades mot verklig `ps`-utdata och i enhetstest, inte genom att skjuta på användarens process.
+
+#### Vad som ändrades i koden
+
+`MCUMeter.swift` (ny, ren: nibbelgrammatiken, tillståndsövergången, total avkodning för alla 256 bytes) · `BridgeProcess.swift` (ny, ren: daemonidentifiering — helordsmatchning av `--bridge`, binärnamn som sökvägens sista led, `ps`-parsning, pid-filen) · `MCUBridgeClient.swift` (`replaceRunningDaemon` med pid-fil först, `ps`-svep som fallback, bekräftad död och vägran att dubbelstarta) · `Bridge.swift` (0xD0 avkodas, `updateMeters` med sin egen räknare, `awaitFaderEcho`, `fader`-kommandots `verify`-gren, korrigerad 0xA0-kommentar, `setFader`-dokumentationen som säger vad som faktiskt mättes, pid skrivs i låsfilen) · `Protocol.swift` (`meter_levels`/`meter_overloads`/`meter_events` på ögonblicksbilden med **handskriven** `init(from:)` så att en äldre daemons JSON defaultar i stället för att kasta — en kastning där hade inte gett "inga mätare" utan `snapshot == nil`, alltså tom LCD, tomma fadrar och tomma dioder i hela servern; `verify` på kommandot, `followed` på svaret) · `Framing.swift` (`bridgeProtocolVersion` 4 → 5, additivt) · `MCUStrips.swift` (`meterReading`/`meterFeedSeen`, mätarna per stripp i ögonblicksbilden, `meter_feed` och `meter_note`) · `MCUKeyCommands.swift` (`resyncSelection` och dess plats i `selectChannelVerified`) · `ToolRegistry.swift` (två verktygsbeskrivningar) · AGENT-GUIDE (två verktygsavsnitt plus tre nya punkter i fällistan) · ROADMAP (faderpåståendet struket som motbevisat, fel-stripp-noten uppdaterad).
+
+`swift test`: **453 tester gröna** (46 nya: mätargrammatiken och dess parserväg, protokollskevheten i båda riktningarna, `fader verify`-ramen, serverns mätaravläsning, och daemonidentifieringens båda felriktningar), ingen Logic behövs. `swift build -c release` grön. `serverVersion` är medvetet **inte** bumpad; `bridgeProtocolVersion` är det (4 → 5), och den är en annan sak.
+
+Tre saker lämnas öppna och namnges hellre än att döljas: **den levande mätaravkodningen** (kräver daemonomstart — receptet står i fynd 1), **`pluginListAgreesWithAX`:s blinda fläck på tomma strippar** (fynd 3), och **själva fel-stripp-mekanismen**, som fortfarande inte är framkallad — men som nu har en trolig förklaring i Logics självbankning och en automatisk reparation bakom verifieringen.
