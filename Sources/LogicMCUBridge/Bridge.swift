@@ -305,16 +305,7 @@ func setUpMIDI() -> Bool {
         }
     }
     let status = MIDIDestinationCreateWithBlock(client, portName as CFString, &destination) { packetList, _ in
-        let packets = packetList.pointee
-        var packet = packets.packet
-        for _ in 0..<packets.numPackets {
-            let length = Int(packet.length)
-            let bytes = withUnsafeBytes(of: packet.data) { raw in
-                Array(raw.prefix(length))
-            }
-            parser.feed(bytes)
-            packet = MIDIPacketNext(&packet).pointee
-        }
+        for bytes in midiPacketBytes(in: packetList) { parser.feed(bytes) }
     }
     guard status == noErr else { return false }
     let destinationID = MIDIObjectSetIntegerProperty(
