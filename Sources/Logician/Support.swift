@@ -453,13 +453,18 @@ enum LogicianError: LocalizedError {
     /// Two categories of the same plugin hold a setting with this name; the
     /// qualified `Category/Name` paths say which.
     case presetAmbiguous(requested: String, paths: [String])
+    /// No row in Logic's Key Commands window carries this name. Carries the
+    /// search term that was used and the rows the panel WAS showing, because
+    /// command names drift between Logic versions and a bare `not_found`
+    /// leaves the caller guessing at spellings (COVERAGE open question 7).
+    case keyCommandNotFound(requested: String, searched: String, candidates: [String])
 
     var code: String {
         switch self {
         case .accessibilityNotTrusted: return "not_trusted"
         case .logicNotRunning: return "not_running"
         case .windowNotFound, .parameterNotFound, .insertNotFound, .trackNotFound,
-             .stripNotFound, .presetNotFound: return "not_found"
+             .stripNotFound, .presetNotFound, .keyCommandNotFound: return "not_found"
         case .parameterAmbiguous, .insertAmbiguous, .windowAmbiguous, .trackAmbiguous,
              .stripAmbiguous, .presetAmbiguous: return "ambiguous"
         case .valueNotWritable, .trackNotExposed, .windowNotClosable, .trackNotStack: return "not_exposed"
@@ -546,6 +551,13 @@ enum LogicianError: LocalizedError {
             return "'\(requested)' names \(paths.count) settings of this plugin "
                 + "(\(paths.joined(separator: ", "))). Nothing was loaded. "
                 + "Pass the qualified 'Category/Name' instead."
+        case .keyCommandNotFound(let requested, let searched, let candidates):
+            return "Logic's Key Commands window has no command named '\(requested)' "
+                + "(searched for '\(searched)'). NOTHING was bound. "
+                + (candidates.isEmpty
+                    ? "The search matched no rows at all - try a shorter 'search' term."
+                    : "Rows the panel showed: \(candidates.joined(separator: ", ")). "
+                        + "Command names differ between Logic versions; call again with one of these, exactly.")
         }
     }
 }

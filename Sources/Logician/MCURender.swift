@@ -10,7 +10,9 @@ extension MCUController {
     /// command is one of the standard set, learns it automatically on the
     /// spot (lazy onboarding — the registry records what was added).
     static func resolveKeyCommand(
-        named name: String, logic: LogicAccessibility?
+        named name: String, logic: LogicAccessibility?,
+        learnIfMissing: Bool = false,
+        source: String = "logic_setup_key_commands"
     ) throws -> (note: Int, channel: Int) {
         lastResolveLearned = false
         if let found = KeyCommandRegistry.note(named: name) { return found }
@@ -18,6 +20,25 @@ extension MCUController {
             $0.name.caseInsensitiveCompare(name) == .orderedSame
         }) {
             _ = try? logic.setupKeyCommands([standard])
+            if let found = KeyCommandRegistry.note(named: name) {
+                lastResolveLearned = true
+                return found
+            }
+        }
+        // G00 made lazy onboarding possible for commands that are NOT in the
+        // standard set: a tool whose whole job is one Logic command may learn
+        // it on the spot, from the free note range, with the registry
+        // recording which tool did it. Opt-in per caller (`learnIfMissing`) —
+        // never on the generic path, because learning writes into the user's
+        // own key command set and that must stay a decision, not a side
+        // effect of some unrelated call.
+        if learnIfMissing, let logic,
+           let note = KeyCommandRegistry.freeNote(taken: KeyCommandRegistry.takenNotes()) {
+            _ = try? logic.setupKeyCommands(
+                [(search: KeyCommandRegistry.defaultSearchTerm(for: name),
+                  name: name, preferredNote: note)],
+                source: source
+            )
             if let found = KeyCommandRegistry.note(named: name) {
                 lastResolveLearned = true
                 return found
