@@ -42,6 +42,12 @@ extension MCPServer {
         if health["accessibility_trusted"] as? Bool != true {
             health["accessibility_fix"] = "grant Accessibility in System Settings: x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
         }
+        // `success` says the CHECK ran, never that everything it checked is
+        // healthy — the individual booleans and the `*_fix` strings say that,
+        // and a doctor that reported success: false on a missing key command
+        // would be indistinguishable from one that could not look.
+        health["success"] = true
+        health["state"] = "checked"
         return health
     }
 

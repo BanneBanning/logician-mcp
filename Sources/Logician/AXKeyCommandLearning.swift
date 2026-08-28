@@ -376,7 +376,20 @@ extension LogicAccessibility {
         }
         _ = AXUIElementSetAttributeValue(search, kAXValueAttribute as CFString, "" as CFString)
         _ = AXUIElementPerformAction(search, kAXConfirmAction as CFString)
-        return results
+        // Every other outcome token in this server is called `state`; these
+        // per-command entries have always called it `status`, which made the
+        // key-command results the one place an agent had to branch on a
+        // different key name — `already_learned` in particular, the only
+        // member of the `already_*` no-op family living outside `state`.
+        // BOTH keys are emitted for one release: `state` is the one to read,
+        // and `status` stays so nothing already reading it breaks (the
+        // promotion in `handleLearnKeyCommand` does).
+        return results.map { entry in
+            guard entry["state"] == nil, let status = entry["status"] else { return entry }
+            var mirrored = entry
+            mirrored["state"] = status
+            return mirrored
+        }
     }
 
 }

@@ -1,5 +1,75 @@
 import Foundation
 
+/// What one `logic_set_track_volume` call asks for, resolved against the value
+/// the fader is actually sitting at.
+///
+/// The whole point is that BOTH routes (control surface and inspector strip)
+/// already read the current dB before they move anything, so "2 dB louder" and
+/// "only if it is still at -6" can be answered from a value the write path has
+/// in hand — no extra read, no read-then-guess round trip for the agent.
+///
+/// Pure and unit-tested: this is arithmetic and a comparison, and getting
+/// either wrong writes a wrong fader value that reports itself as verified.
+struct VolumeWrite {
+    /// `db`, when the caller named an absolute target.
+    let absoluteDb: Double?
+    /// `relative_db`, when the caller named an offset instead.
+    let relativeDb: Double?
+    /// `expected_current_db`, the compare-and-set precondition.
+    let expectedCurrentDb: Double?
+
+    /// How far a reading may sit from `expected_current_db` and still count as
+    /// a match. Results round dB to one decimal and Logic's own steps are
+    /// 0.1-0.3 dB apart, so a tighter window would refuse an agent that passed
+    /// back exactly the number the previous call reported.
+    static let preconditionToleranceDb = 0.5
+
+    init(absoluteDb: Double?, relativeDb: Double?, expectedCurrentDb: Double?) throws {
+        guard absoluteDb == nil || relativeDb == nil else {
+            throw LogicianError.invalidArguments(
+                "db and relative_db are mutually exclusive: db is an ABSOLUTE target,"
+                    + " relative_db an offset from the value read immediately before the write."
+                    + " Pass one of them. NOTHING was written."
+            )
+        }
+        guard absoluteDb != nil || relativeDb != nil else {
+            throw LogicianError.invalidArguments(
+                "missing number: db (the absolute target in dB) or relative_db (an offset in dB"
+                    + " from the current value, e.g. 2 for '2 dB louder')"
+            )
+        }
+        self.absoluteDb = absoluteDb
+        self.relativeDb = relativeDb
+        self.expectedCurrentDb = expectedCurrentDb
+    }
+
+    private init(absoluteDb: Double) {
+        self.absoluteDb = absoluteDb
+        self.relativeDb = nil
+        self.expectedCurrentDb = nil
+    }
+
+    /// For the INTERNAL callers that already hold the exact dB they want
+    /// (automation calibration, restores) — no argument parsing, no
+    /// precondition, and no way to be mis-constructed.
+    static func absolute(_ db: Double) -> VolumeWrite { VolumeWrite(absoluteDb: db) }
+
+    /// The dB to converge on, given what the fader reads right now.
+    /// Throws `precondition_failed` when `expected_current_db` disagrees with
+    /// that reading — before a single tick is sent.
+    func target(currentDb: Double) throws -> Double {
+        if let expected = expectedCurrentDb,
+           abs(currentDb - expected) > VolumeWrite.preconditionToleranceDb {
+            throw LogicianError.currentValueMismatch(
+                expected: String(format: "%.1f dB", expected),
+                actual: String(format: "%.1f dB", currentDb)
+            )
+        }
+        if let absoluteDb { return absoluteDb }
+        return currentDb + (relativeDb ?? 0)
+    }
+}
+
 // Mixing: volume, pan, mute, solo, sends and tempo.
 extension MCPServer {
     func handleSetTrackMute(_ arguments: [String: Any]) throws -> Any {
@@ -17,28 +87,35 @@ extension MCPServer {
             throw LogicianError.invalidArguments("missing boolean: enabled")
         }
         let toggleTrack = try requiredString("track_name", in: arguments)
+        // Both routes already read the control's current state before deciding
+        // whether to press it, so compare-and-set costs nothing extra here.
+        let expected = arguments["expected_current"] as? Bool
         return try MCUController.setToggle(
-            trackName: toggleTrack, control: control, enabled: enabled
+            trackName: toggleTrack, control: control, enabled: enabled,
+            expectedCurrent: expected
         ) ?? logic.setStripToggle(
             trackName: toggleTrack,
             trackNumber: arguments["track_number"] as? Int,
             control: control,
-            enabled: enabled
+            enabled: enabled,
+            expectedCurrent: expected
         )
     }
 
     func handleSetTrackVolume(_ arguments: [String: Any]) throws -> Any {
-        guard let db = (arguments["db"] as? Double) ?? (arguments["db"] as? Int).map(Double.init) else {
-            throw LogicianError.invalidArguments("missing number: db")
-        }
+        let request = try VolumeWrite(
+            absoluteDb: doubleArgument("db", in: arguments),
+            relativeDb: doubleArgument("relative_db", in: arguments),
+            expectedCurrentDb: doubleArgument("expected_current_db", in: arguments)
+        )
         let volumeTrack = try requiredString("track_name", in: arguments)
         let tolerance = (arguments["tolerance_db"] as? Double) ?? 0.15
         return try MCUController.setVolume(
-            trackName: volumeTrack, targetDb: db, toleranceDb: tolerance
+            trackName: volumeTrack, request: request, toleranceDb: tolerance
         ) ?? logic.setTrackVolume(
             trackName: volumeTrack,
             trackNumber: arguments["track_number"] as? Int,
-            targetDb: db,
+            request: request,
             toleranceDb: tolerance
         )
     }
@@ -50,7 +127,8 @@ extension MCPServer {
         return try logic.setTrackPan(
             trackName: requiredString("track_name", in: arguments),
             trackNumber: arguments["track_number"] as? Int,
-            position: position
+            position: position,
+            expectedCurrentPosition: arguments["expected_current_position"] as? Int
         )
     }
 

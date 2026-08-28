@@ -3,7 +3,15 @@ import Foundation
 // Tracks, track stacks, selection and regions.
 extension MCPServer {
     func handleListTracks(_ arguments: [String: Any]) throws -> Any {
-        return try logic.listTracks()
+        // `success` and `state` are added HERE rather than in `listTracks()`:
+        // the reader is called internally (track counts before and after a
+        // create, verification passes) and those callers want the rows, not a
+        // result envelope. What reaches an agent carries the envelope every
+        // other tool has, so "did this call work" is one key everywhere.
+        var payload = try logic.listTracks()
+        payload["success"] = true
+        payload["state"] = "listed"
+        return payload
     }
 
     func handleCreateTrack(_ arguments: [String: Any]) throws -> Any {
