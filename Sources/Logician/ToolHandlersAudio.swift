@@ -61,8 +61,11 @@ extension MCPServer {
         // is the same failure logic_bounce_range warns about after the fact -
         // here it is a refusal before the first render, because the whole
         // point of a stem set is that each file holds ONE track.
-        let preSoloed = (try? logic.soloedTrackNames()) ?? []
-        if !preSoloed.isEmpty {
+        // `nil` is NOT `[]` here: an unreadable Tracks area used to answer
+        // "is anything soloed?" with "no" and walk straight past this
+        // refusal — the one check that makes a stem set stems.
+        let preSoloed = logic.soloedTrackNamesIfReadable()
+        if let preSoloed, !preSoloed.isEmpty {
             throw LogicianError.currentValueMismatch(
                 expected: "no track soloed before the stem run",
                 actual: "\(preSoloed.joined(separator: ", ")) already soloed. Nothing was bounced - "
@@ -129,13 +132,19 @@ extension MCPServer {
 
         // The stems are only stems if they line up.
         let alignment = StemExport.frameAlignment(frames)
-        let leftSoloed = (try? logic.soloedTrackNames()) ?? []
-        if !leftSoloed.isEmpty {
+        let leftSoloed = logic.soloedTrackNamesIfReadable()
+        if let leftSoloed, !leftSoloed.isEmpty {
             warnings.append("Tracks still SOLOED after the run: \(leftSoloed.joined(separator: ", ")). Fix before any further bounce.")
+        } else if leftSoloed == nil {
+            warnings.append("Logic's track headers could not be read after the run, so whether a solo was left up is UNKNOWN - check the mixer before any further bounce.")
         }
+        // Only a track list that was actually READ and came back empty clears
+        // this; an unreadable one leaves `verified` false rather than claiming
+        // a solo-clean project nobody looked at.
+        let soloClear = leftSoloed?.isEmpty ?? false
         var result: [String: Any] = [
             "success": true,
-            "verified": alignment.aligned && leftSoloed.isEmpty,
+            "verified": alignment.aligned && soloClear,
             "state": "exported",
             "range": ["start_bar": startBar, "end_bar": endBar],
             "count": stems.count,

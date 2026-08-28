@@ -845,4 +845,67 @@ final class PureLogicTests: XCTestCase {
         )
         XCTAssertEqual(found, "val3")
     }
+
+    // MARK: - Audio frame indexing (the slicer's clamp)
+
+    func testAudioFrameIndexClampsToBothEndsOfTheFile() {
+        // 100 frames at 100 Hz = one second of file.
+        XCTAssertEqual(LogicAccessibility.audioFrameIndex(0, rate: 100, cap: 100), 0)
+        XCTAssertEqual(LogicAccessibility.audioFrameIndex(0.5, rate: 100, cap: 100), 50)
+        // Past the end clamps to the end, not past it.
+        XCTAssertEqual(LogicAccessibility.audioFrameIndex(9, rate: 100, cap: 100), 100)
+        // BEFORE the start clamps to zero. This is the one that mattered: a
+        // negative index fed an unsafe pointer walk and read outside the
+        // buffer entirely (SIGBUS), taking the whole server down.
+        XCTAssertEqual(LogicAccessibility.audioFrameIndex(-0.5, rate: 100, cap: 100), 0)
+        XCTAssertEqual(LogicAccessibility.audioFrameIndex(-1e9, rate: 100, cap: 100), 0)
+    }
+
+    func testAudioFrameIndexRefusesWhatItCannotMeasureAgainst() {
+        XCTAssertNil(LogicAccessibility.audioFrameIndex(1, rate: 0, cap: 100))
+        XCTAssertNil(LogicAccessibility.audioFrameIndex(.nan, rate: 100, cap: 100))
+        XCTAssertNil(LogicAccessibility.audioFrameIndex(.infinity, rate: 100, cap: 100))
+        XCTAssertNil(LogicAccessibility.audioFrameIndex(1, rate: .infinity, cap: 100))
+    }
+
+    func testAudioFrameIndexSurvivesSecondsNoIntCanHold() {
+        // `Int(1e300 * 44100)` is a Swift runtime trap; clamping to the cap is
+        // the only answer that is neither a trap nor a wrong number.
+        XCTAssertEqual(LogicAccessibility.audioFrameIndex(1e300, rate: 44100, cap: 512), 512)
+        XCTAssertEqual(LogicAccessibility.audioFrameIndex(-1e300, rate: 44100, cap: 512), 0)
+    }
+
+    // MARK: - What the notes-crossing modal is reported to have done
+
+    func testNotesCrossingNoteSaysNothingWasAskedWhenNoDialogAppeared() {
+        let note = LogicAccessibility.notesCrossingNote(nil, requested: "split")
+        XCTAssertTrue(note.contains("No 'Notes Crossing Split Point' dialog appeared"))
+    }
+
+    func testNotesCrossingNoteReportsTheChoiceItActuallyPressed() {
+        let note = LogicAccessibility.notesCrossingNote("split", requested: "split")
+        XCTAssertTrue(note.contains("this answered 'split'"))
+    }
+
+    func testNotesCrossingNoteRefusesToClaimAChoiceLogicMade() {
+        // The bug: the answer was reported as the REQUESTED choice even when
+        // no radio button carrying it existed, so Logic's own default decided
+        // how the crossing notes were cut and the result said otherwise.
+        let note = LogicAccessibility.notesCrossingNote(
+            LogicAccessibility.notesCrossingLogicDefault, requested: "split"
+        )
+        XCTAssertFalse(note.contains("this answered 'split'"))
+        XCTAssertTrue(note.contains("published no 'split' option"))
+        XCTAssertTrue(note.contains("unknown"))
+    }
+
+    func testNotesCrossingNoteSaysTheSplitWasAbandonedWhenItCouldNotConfirm() {
+        let note = LogicAccessibility.notesCrossingNote(
+            LogicAccessibility.notesCrossingUnanswered, requested: "split"
+        )
+        XCTAssertTrue(note.contains("cancelled"))
+        XCTAssertTrue(note.contains("abandoned"))
+        // It must NOT promise the two halves exist.
+        XCTAssertFalse(note.contains("The two halves are new regions"))
+    }
 }

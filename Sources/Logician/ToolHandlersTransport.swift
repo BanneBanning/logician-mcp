@@ -186,7 +186,14 @@ extension MCPServer {
         // of the wall time. Default 1 = real time (audible playback).
         let requestedSpeed = (arguments["speed"] as? Double)
             ?? (arguments["speed"] as? Int).map(Double.init) ?? 1.0
-        let effectiveSpeed = min(max(requestedSpeed, 1.0), 8.0, 960.0 / range.tempo)
+        // The 960 BPM ceiling is a cap on the RECORDING tempo, so it must not
+        // be allowed to pull the speed below real time: on a project already
+        // faster than 960 BPM `960.0 / range.tempo` is less than 1, and the
+        // events would then be scheduled against a `recordingTempo` slower
+        // than the one Logic is actually running at — while the `> 1.001`
+        // branches below skip the tempo write that would have made it true.
+        // Clamping to 1 last keeps speed mode off and the timing honest.
+        let effectiveSpeed = max(min(max(requestedSpeed, 1.0), 8.0, 960.0 / range.tempo), 1.0)
         let recordingTempo = range.tempo * effectiveSpeed
         // Speed mode is a TEMPO WRITE: it converges the control bar's tempo
         // slider up for the take and writes one BPM back afterwards. On a
@@ -353,7 +360,18 @@ extension MCPServer {
         // cached map is no longer a description of this project. Forget it: the
         // next caller re-reads the Tempo List, which is cheap, while a stale map
         // would integrate confidently wrong boundaries.
-        if projectTempoMode != .keep { invalidateTempoMapCache() }
+        // The METER cache goes with it. `invalidateMeterMapCache` was written
+        // for exactly this moment and documented as being called here, but had
+        // no call site outside its own staleness check — and the meter cache
+        // is the one with NO cheap live cross-check to catch a stale entry
+        // (the control bar publishes the signature at the playhead, which can
+        // contradict the map but never confirm it, see `resolveMeterMap`). So
+        // a grid rewritten behind us would have survived in the cache for the
+        // rest of the session and placed every later bar boundary.
+        if projectTempoMode != .keep {
+            invalidateTempoMapCache()
+            invalidateMeterMapCache()
+        }
         appendWarning(smartTempoWarning, to: &result)
         // Both honest complaints can be true at once (an unreadable Smart Tempo
         // mode AND a tempo map), so they are appended, never assigned.

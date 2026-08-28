@@ -381,6 +381,44 @@ extension LogicAccessibility {
         "split": "the note is cut in two, one half in each region (Logic's own default)"
     ]
 
+    /// What answering the "Notes Crossing Split Point" modal actually did.
+    /// Reported rather than assumed: the caller prints this into its result,
+    /// and the previous version returned the REQUESTED choice unconditionally
+    /// — including when the radio button carrying that choice was never found
+    /// (Logic then applies its OWN default and the notes are cut the other
+    /// way) or when OK was never pressed at all.
+    static let notesCrossingLogicDefault = "logic_default"
+    static let notesCrossingUnanswered = "unanswered_cancelled"
+
+    /// The sentence `logic_split_region` carries about the notes modal. Pure,
+    /// so the four outcomes — never asked, answered as requested, answered by
+    /// Logic's own default, not answered at all — can be pinned by tests
+    /// instead of being re-derived at a call site that only ever saw one.
+    static func notesCrossingNote(_ answer: String?, requested: String) -> String {
+        let tail = "Undo restores the single region. The two halves are new regions:"
+            + " their names and start bars are what logic_list_regions reports now, so re-read"
+            + " the map before addressing either of them."
+        switch answer {
+        case nil:
+            return "No 'Notes Crossing Split Point' dialog appeared - either no note straddles"
+                + " the cut, or this is an audio region. " + tail
+        case notesCrossingLogicDefault:
+            return "Logic asked what to do with the notes crossing the cut, but the dialog"
+                + " published no '\(requested)' option — so it was confirmed with whatever"
+                + " Logic had already selected, and WHICH treatment the crossing notes got is"
+                + " unknown. Check the two halves (logic_list_events) before relying on them. "
+                + tail
+        case notesCrossingUnanswered:
+            return "Logic asked what to do with the notes crossing the cut and the dialog could"
+                + " not be confirmed (no OK button); it was cancelled instead, so the split was"
+                + " abandoned. Nothing about the notes was changed."
+        default:
+            let meaning = notesCrossingChoices[answer ?? ""] ?? ""
+            return "Logic asked what to do with the notes crossing the cut and this answered"
+                + " '\(answer ?? "?")': \(meaning). " + tail
+        }
+    }
+
     /// Answers the modal. `choice` nil presses Cancel, which abandons the
     /// split — the safe answer when a caller cannot say what it wants.
     /// Returns what it pressed, or nil when no dialog was up.
@@ -402,15 +440,27 @@ extension LogicAccessibility {
             }
             return "cancel"
         }
+        var radioPressed = false
         if let radio = button("AXRadioButton", choice) {
-            _ = AXUIElementPerformAction(radio, kAXPressAction as CFString)
+            radioPressed = AXUIElementPerformAction(radio, kAXPressAction as CFString) == .success
             Thread.sleep(forTimeInterval: 0.25)
         }
-        if let ok = button("AXButton", "OK") {
-            _ = AXUIElementPerformAction(ok, kAXPressAction as CFString)
-            Thread.sleep(forTimeInterval: 0.4)
+        guard let ok = button("AXButton", "OK") else {
+            // No OK to press: the modal is still up and would block every
+            // later tool. Cancel it (abandoning the split, which the region
+            // count below then reports as a failure) rather than walking away
+            // from an open dialog and calling it an answer.
+            if let cancel = button("AXButton", "Cancel") {
+                _ = AXUIElementPerformAction(cancel, kAXPressAction as CFString)
+                Thread.sleep(forTimeInterval: 0.4)
+            }
+            return LogicAccessibility.notesCrossingUnanswered
         }
-        return choice.lowercased()
+        _ = AXUIElementPerformAction(ok, kAXPressAction as CFString)
+        Thread.sleep(forTimeInterval: 0.4)
+        // Only a radio this code actually pressed may be reported as the
+        // answer; otherwise Logic decided, and the result has to say so.
+        return radioPressed ? choice.lowercased() : LogicAccessibility.notesCrossingLogicDefault
     }
 
     /// G24 / U3: the documented three-call split recipe as ONE verified call.
@@ -556,9 +606,7 @@ extension LogicAccessibility {
             "left": leftHalf ?? NSNull(),
             "right": rightHalf ?? NSNull(),
             "playhead_left_at": ["bar": atBar, "beat": atBeat],
-            "note": (dialogAnswer == nil
-                ? "No 'Notes Crossing Split Point' dialog appeared - either no note straddles the cut, or this is an audio region. "
-                : "Logic asked what to do with the notes crossing the cut and this answered '\(dialogAnswer ?? "?")': \(LogicAccessibility.notesCrossingChoices[dialogAnswer ?? ""] ?? ""). ")
+            "note": Self.notesCrossingNote(dialogAnswer, requested: notesCrossing.lowercased())
                 + "Undo restores the single region. The two halves are new regions: their names and start bars are what logic_list_regions reports now, so re-read the map before addressing either of them."
         ]
         result["playhead"] = parked
@@ -584,6 +632,15 @@ extension LogicAccessibility {
                 + "A region count of \(after.count) proves the split happened, but no region starts "
                 + "at bar \(atBar) in the map — Logic reports whole bars and beats only, so a split "
                 + "inside a bar shows up on the bar it falls in. Read logic_list_regions for the truth."
+        }
+        if dialogAnswer == LogicAccessibility.notesCrossingLogicDefault {
+            appendWarning(
+                "NOTES_CROSSING NOT APPLIED: the split happened, but the dialog published no"
+                    + " '\(notesCrossing.lowercased())' option, so it was confirmed with Logic's"
+                    + " own selection and the crossing notes may have been treated differently"
+                    + " from what you asked. Read the two halves back with logic_list_events.",
+                to: &result
+            )
         }
         return result
     }
@@ -811,20 +868,39 @@ extension LogicAccessibility {
         // beat 1 explicitly: the bar converge alone leaves the beat wherever
         // the playhead last stood, and Paste lands at the playhead exactly.
         _ = try setPlayhead(barNumber: toBar, beat: 1)
+        // The destination as it stands the instant BEFORE Paste — taken after
+        // the Cut, so a same-track move already shows the source gone.
+        //
+        // "A region starts at toBar" is NOT evidence that this call put it
+        // there: pasting onto a bar that was already occupied matched the very
+        // first look and reported verified: true even if Paste never fired.
+        // That is the exact shape of the failure the guide warns about — a
+        // modal swallows the key command and nothing happens — so the proof
+        // has to be that the destination gained a region, not that one is
+        // present.
+        let destinationBefore = (try? regionSnapshot(trackName: destinationTrack)) ?? []
+        let atBarBefore = destinationBefore.filter { $0["start_bar"] as? Int == toBar }
         try fireKeyCommand("Paste")
         var pasted: [String: Any]?
         for _ in 0..<10 {
             Thread.sleep(forTimeInterval: 0.4)
             let after = try regionSnapshot(trackName: destinationTrack)
-            if let hit = after.first(where: { $0["start_bar"] as? Int == toBar }) {
-                pasted = hit
-                break
-            }
+            let atBar = after.filter { $0["start_bar"] as? Int == toBar }
+            guard after.count > destinationBefore.count || atBar.count > atBarBefore.count
+            else { continue }
+            // Prefer a region at toBar that was not there before; fall back to
+            // any region at toBar once the count has proven something landed.
+            pasted = atBar.first { hit in !atBarBefore.contains { isSame($0, hit) } } ?? atBar.first
+            break
         }
         guard let landed = pasted else {
             throw LogicianError.verificationFailed(
-                requested: "a region at bar \(toBar) on '\(destinationTrack)'",
-                actual: "nothing appeared there after Paste (clipboard state uncertain)",
+                requested: "a NEW region at bar \(toBar) on '\(destinationTrack)'",
+                actual: destinationBefore.count == atBarBefore.count && !atBarBefore.isEmpty
+                    ? "bar \(toBar) already held a region before this call and the track gained"
+                        + " none, so Paste did nothing (a modal dialog swallows key commands —"
+                        + " check Logic for one). Clipboard state uncertain"
+                    : "the track gained no region after Paste (clipboard state uncertain)",
                 restored: false
             )
         }
