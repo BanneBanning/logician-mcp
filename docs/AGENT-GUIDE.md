@@ -188,7 +188,7 @@ Every successful result carries the same four fields, and they mean different th
 
 ## Tool reference
 
-All 78 tools, generated from the live server schemas (v0.49.0), with the strip-addressing notes added by hand in v0.51.0, the `logic_plugin_preset` section rewritten by hand in v0.52.0, and the v0.54.0 additions added by hand — including the three Region-inspector tools — the five List-Editors/bypass/window tools, the key-command / region / delivery tools, the six control-surface tools, and the composability corrections — where an entry and the live schema differ in wording, the schema is authoritative. Every write is compare-and-set with readback; every failure names what was observed.
+All 81 tools, generated from the live server schemas (v0.49.0), with the strip-addressing notes added by hand in v0.51.0, the `logic_plugin_preset` section rewritten by hand in v0.52.0, and the v0.54.0 additions added by hand — including the three Region-inspector tools — the five List-Editors/bypass/window tools, the key-command / region / delivery tools, the six control-surface tools, the composability corrections, and the class-B research batch (`logic_track_info`, `logic_set_track_routing`, `logic_tempo_events`, and the Smart Tempo read on `logic_get_transport`) — where an entry and the live schema differ in wording, the schema is authoritative. Every write is compare-and-set with readback; every failure names what was observed.
 
 #### `logic_health`
 
@@ -213,6 +213,28 @@ List the track headers currently rendered in the Tracks area (track number, name
 Parameters:
 
   - (no parameters)
+
+#### `logic_track_info`
+
+**What each track IS**, beyond its name: type, output routing, input, group, monitoring, automation mode, instrument, inserts and sends — everything the track header and the inspector channel strip publish. This is the orientation read `logic_list_tracks` cannot give. **It costs a selection**, ~0.7 s per track: Logic's left inspector shows only the SELECTED track's strip, so each track is selected in turn and the original selection is put back (`selection_restored`). Reading three things right matters. A field that is `null` means **Logic published nothing** — never that it is off. `kind` is inferred from which SLOTS the strip publishes and `kind_evidence` says which: `audio` (an Input slot), `software_instrument` (a MIDI Effect slot), `reduced` (no Output slot at all — measured on folder-stack main tracks, which publish seven children and nothing else), `unknown`. And on a software instrument the **instrument slot carries the same bypass/open controls as an insert**, so it also appears in `inserts`, flagged `is_instrument_slot` and named separately as `instrument`. Output/aux/bus strips have no track header and cannot be read here.
+
+Parameters:
+
+  - `all` (boolean): Read every rendered track header. ~0.7 s each.
+  - `track_name` (string): One track. Omit everything to read whichever track is selected.
+  - `track_names` (array of string): Several tracks, in the order given.
+
+#### `logic_set_track_routing`
+
+Route a track: its **output** (where the strip's signal goes), its **input** (what an audio track records from) and its **group**. Each is one of Logic's channel-strip slots, written by opening the slot's pop-up and pressing the destination, verified by reading the slot's label back. This is how "group the drums to a bus" is done — set each track's output to `Bus 4` and Logic makes the aux; `logic_add_send` is the parallel path, not the same one. **Destination names are Logic's own menu titles**, and Logic decorates them with where they lead: `Bus 2 → Aux 2` on the output side, `Bus 2 ← Lofi Pad` on the input side. Pass either form — the head (`Bus 2`) is the identity. A name matching nothing is refused with the slot's actual menu listed. Refused too: a slot this strip does not publish (a software instrument has no input slot; a `reduced` strip has no routing slots at all — `logic_track_info` says which you have), and any `expected_current` mismatch, checked for every named slot **before the first write** so a two-slot call cannot half-apply. Changing an output changes what you hear and can silence a track; the `before` value is always reported so it can be put straight back.
+
+Parameters:
+
+  - `expected_current` (object): Compare-and-set: `output` / `input` / `group` as `logic_track_info` reports them.
+  - `group` (string): e.g. `No Group`, `Group 1`.
+  - `input` (string): e.g. `Input 1`, `No Input`, `Bus 5`. Audio strips only.
+  - `output` (string): e.g. `Stereo Output`, `Bus 4`, `Bus 2 → Aux 2`, `No Output`.
+  - `track_name` (string) **(required)**
 
 #### `logic_list_inserts`
 
@@ -651,12 +673,28 @@ Set the project tempo in BPM via the control bar's tempo display (rapid-fire ste
 
 When the Tempo List cannot be read, the fallback is the two-point sample: the tempo at the playhead and at **bar 1** (the project's first tempo node, the one point every project has), refusing the same way when they differ. `tempo_sampled_at_bars` in the result then says which two bars were compared, and when even that check cannot run the write proceeds with a `warning` telling you to check the tempo track. The sample costs roughly 0.13 s per bar of playhead travel, both ways, so a playhead far from bar 1 makes that path take several seconds.
 
-There is deliberately **no override argument**, and "park the playhead somewhere deliberate and pass `expected_current_bpm`" is *not* offered as a workaround: which node Logic edits — or whether it creates a new one — has not been verified from here, so it would be a guess dressed as consent. Edit a tempo map where it lives: Logic's tempo track, or the Tempo List (`View > List Editors > Tempo`), where every tempo event is an editable row.
+There is deliberately **no override argument**, and "park the playhead somewhere deliberate and pass `expected_current_bpm`" is *not* offered as a workaround: which node Logic edits — or whether it creates a new one — has not been verified from here, so it would be a guess dressed as consent. **On a project with a tempo map, use `logic_tempo_events`**, which addresses one event by bar and verifies the whole map afterwards.
 
 Parameters:
 
   - `bpm` (number) **(required)**: Target tempo, 5-990.
   - `expected_current_bpm` (number): Abort unless the current tempo matches. Compared against the tempo at the playhead — which is the only tempo the control bar has.
+
+#### `logic_tempo_events`
+
+Read and **write** the tempo map — the tempo track, as rows in Logic's Tempo List. This is what makes a map buildable: "land a downbeat on the hit" is create-an-event, and until now the map could only be read. `list` returns every event and writes nothing; `create` / `set` / `delete` act on the event at one bar/beat.
+
+**Two things about the write are surprising and both are handled here.** Logic's own `Create new Tempo Event` places the event **at the playhead**, not on a bar line — and parking the playhead sets only its bar and beat, so whatever division and tick it already carried come along. The tool therefore creates the event and then steps the new row's own position fields back to the exact bar/beat you asked for. And the BPM is written through the **control bar's tempo slider**, which edits the tempo event in force at the playhead: with the playhead parked on the event, that is this event. Neither half is trusted — the whole map is re-read and reported, so a create that produced two events comes back as a failure, and a write that moved a neighbour comes back with a `warning` naming which.
+
+Refused: `create` where an event already sits (use `set`), `set`/`delete` where none does, deleting **bar 1** (the base tempo — retune it instead), and any write while the Tempo List cannot be read, because a tempo write is not made blind. After a write the server's cached tempo **and meter** maps are dropped.
+
+Parameters:
+
+  - `action` (string: list | create | set | delete): `list` is the default and writes nothing.
+  - `bar` (integer ≥ 1): Required for create/set/delete.
+  - `beat` (integer ≥ 1): Default 1.
+  - `bpm` (number 5–990): Required for create and set.
+  - `expected_current_bpm` (number): Compare-and-set for `set` and `delete`.
 
 #### `logic_save_project`
 
@@ -830,9 +868,11 @@ Read the transport state from the control bar: playing, recording, cycle, playhe
 
 Smart Tempo: `project_tempo_mode` ("keep"/"adapt"/"auto") is present only when the mode is actually readable. When it is not, the key is absent and `project_tempo_mode_note` says why and where to look instead — an unreadable mode is never reported as a value, because a missing value would read as "keep" and Adapt is the mode that rewrites the tempo track. See the Smart Tempo guard under `logic_record_midi`.
 
+**The cheap read never knows the mode** — Logic publishes no value on the control bar's Project Tempo pop-up (probed twice). Pass `read_smart_tempo_mode: true` and the tool opens `File > Project Settings` on the Smart Tempo pane, reads the mode off its labelled pop-up and closes the window again (~1.6 s, nothing written); `project_tempo_mode_route` then says `project_settings_window`. If a Project Settings window was already open on another pane, it is switched to Smart Tempo and **left open**, because Logic does not publish which pane was showing — the result says so in `project_tempo_mode_note`.
+
 Parameters:
 
-  - (no parameters)
+  - `read_smart_tempo_mode` (boolean): Also read the Smart Tempo mode from File > Project Settings (opens and closes that window). Default false, which keeps this a pure control-bar read with no side effect.
 
 #### `logic_set_cycle`
 

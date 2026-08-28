@@ -81,6 +81,11 @@ extension LogicAccessibility {
     /// recording, where a stray open menu can swallow the transport. Making the
     /// mode readable that way — and then settable, which would upgrade the
     /// refusal to a guarded set-and-restore — is the next experiment.
+    ///
+    /// SUPERSEDED as the only route (2026-08-28): the mode IS readable, from
+    /// `File > Project Settings > Smart Tempo…`. See
+    /// `projectTempoMode(allowingSettingsWindow:)`, which keeps this cheap
+    /// no-side-effect read as the first attempt and falls back to the window.
     func projectTempoMode() -> ProjectTempoMode {
         guard let bar = try? controlBarGroup(),
               let inner = children(of: bar).first(where: {
@@ -111,6 +116,35 @@ extension LogicAccessibility {
             }
         }
         return .unreadable
+    }
+
+    /// The project tempo mode, with the Project Settings window as a fallback
+    /// when the control bar withholds the value — which, on Logic Pro 12.3.1,
+    /// it always does.
+    ///
+    /// The cheap read runs first and costs one control-bar walk with no side
+    /// effect whatsoever; only when it comes back `.unreadable`/`.absent` is a
+    /// window involved, and that window is opened on the Smart Tempo pane,
+    /// read, and closed again (see `projectTempoModeViaSettings`).
+    ///
+    /// `allowingSettingsWindow` is opt-in per call site rather than always-on
+    /// for one reason: raising and closing a window is a visible thing to do,
+    /// and a status poll should not do it. The paths that pass `true` are the
+    /// ones where the answer is worth a window — `logic_record_midi`, whose
+    /// Adapt-mode refusal exists to protect the user's tempo track, and
+    /// `logic_get_transport` when the caller explicitly asks.
+    func projectTempoMode(
+        allowingSettingsWindow: Bool
+    ) -> (mode: ProjectTempoMode, visit: ProjectSettingsVisit?) {
+        let cheap = projectTempoMode()
+        switch cheap {
+        case .keep, .adapt, .auto:
+            return (cheap, nil)
+        case .unreadable, .absent:
+            guard allowingSettingsWindow else { return (cheap, nil) }
+            let deep = projectTempoModeViaSettings()
+            return (deep.mode, deep.visit)
+        }
     }
 
     // MARK: - Two-point tempo sampling (is the tempo constant across a range?)
@@ -237,7 +271,7 @@ extension LogicAccessibility {
 
     // MARK: - Transport
 
-    func getTransport() throws -> [String: Any] {
+    func getTransport(readSmartTempoMode: Bool = false) throws -> [String: Any] {
         let bar = try controlBarGroup()
         var result: [String: Any] = [
             "project_document": (try? projectDocumentPath()) ?? NSNull()
@@ -276,11 +310,26 @@ extension LogicAccessibility {
             // tempo map. The key is present only when the mode is actually
             // known — an unreadable mode reported as a value would read as
             // "keep", and Adapt is the one that rewrites the tempo track.
-            let tempoMode = projectTempoMode(inControlBar: inner)
+            var tempoMode = projectTempoMode(inControlBar: inner)
+            var route = "control_bar"
+            var visitNote: String?
+            // Opt-in, because this one raises and closes a window: the control
+            // bar publishes no value (Logic Pro 12.3.1), so the mode is only
+            // knowable from File > Project Settings > Smart Tempo.
+            if readSmartTempoMode, tempoMode.name == nil {
+                let deep = projectTempoModeViaSettings()
+                tempoMode = deep.mode
+                route = "project_settings_window"
+                visitNote = deep.visit.note
+            }
             if let name = tempoMode.name {
                 result["project_tempo_mode"] = name
+                result["project_tempo_mode_route"] = route
+                if let visitNote { result["project_tempo_mode_note"] = visitNote }
             } else if let explanation = tempoMode.explanation {
-                result["project_tempo_mode_note"] = explanation
+                result["project_tempo_mode_note"] = visitNote.map {
+                    "\(explanation) The Project Settings fallback also failed: \($0)."
+                } ?? explanation
             }
         }
         return result
