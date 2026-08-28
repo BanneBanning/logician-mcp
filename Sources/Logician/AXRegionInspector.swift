@@ -380,10 +380,24 @@ extension LogicAccessibility {
         try withInspectorMenu(popup) { menu in
             let items = children(of: menu)
                 .filter { stringAttribute($0, kAXRoleAttribute as String) == "AXMenuItem" }
-            guard let item = items.first(where: {
-                stringAttribute($0, kAXTitleAttribute as String)
-                    .compare(title, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
-            }) else {
+            func titleOf(_ item: AXUIElement) -> String {
+                stringAttribute(item, kAXTitleAttribute as String)
+            }
+            var chosen = items.first {
+                titleOf($0).compare(title, options: [.caseInsensitive, .diacriticInsensitive])
+                    == .orderedSame
+            }
+            if chosen == nil {
+                // The fade Type pop-up DISPLAYS "X" for the item spelled
+                // "X (Crossfade)", so the value read off Logic is not a legal
+                // argument unless the short form is accepted too. Ambiguity is
+                // still refused: two items with the same head is no answer.
+                let heads = items.filter {
+                    RegionInspector.popupValuesMatch(titleOf($0), title)
+                }
+                if heads.count == 1 { chosen = heads[0] }
+            }
+            guard let item = chosen else {
                 throw LogicianError.presetNotFound(
                     plugin: "the Region inspector's \(parameter) pop-up",
                     requested: title,
@@ -460,18 +474,41 @@ extension LogicAccessibility {
         }
     }
 
+    /// Resolves every shipped parameter to the ROW it is, by position in
+    /// Logic's own order — never by label alone, because the audio panel
+    /// publishes two rows called `Curve`.
+    func regionParameterRows(
+        _ rows: [RegionInspectorRow]
+    ) -> [String: RegionInspectorRow] {
+        let indexes = RegionInspector.rowIndexes(labels: rows.map(\.label))
+        var resolved: [String: RegionInspectorRow] = [:]
+        for (key, index) in indexes where rows.indices.contains(index) {
+            resolved[key] = rows[index]
+        }
+        return resolved
+    }
+
     private func namedParameters(_ rows: [RegionInspectorRow]) -> [String: Any] {
         var named: [String: Any] = [:]
-        for row in rows {
-            guard let parameter = RegionInspector.parameter(forLabel: row.label) else { continue }
+        for (key, row) in regionParameterRows(rows) {
+            guard let parameter = RegionInspector.parameter(key: key) else { continue }
             // `writable` is what an agent needs, and it is NOT the AXValue
             // settable flag: a checkbox and a pop-up publish an unsettable
             // AXValue and are written by pressing them. Only a slider is
             // written through AXValue, and only while its row is enabled.
             var entry: [String: Any] = [
                 "enabled": row.enabled,
-                "writable": row.enabled && (row.control == .slider ? row.settable : true)
+                "writable": row.enabled && (row.control == .slider ? row.settable : true),
+                // Which ROW this is, in Logic's own order. It is the address
+                // the write path uses, and the only thing that tells the two
+                // `Curve` rows apart.
+                "row": row.index
             ]
+            // A row whose LABEL is a pop-up can be in another mode, and then
+            // the value is another quantity: `Speed Up` rather than `Fade-In`.
+            if row.label.caseInsensitiveCompare(parameter.labels[0]) != .orderedSame {
+                entry["row_label"] = row.label
+            }
             switch row.control {
             case .checkbox:
                 if let state = RegionInspector.checkboxState(row.raw) {
@@ -482,9 +519,9 @@ extension LogicAccessibility {
                 }
             case .slider:
                 guard let raw = Int(row.raw) else { continue }
-                for (key, value) in RegionInspector.report(
+                for (field, value) in RegionInspector.report(
                     key: parameter.key, raw: raw, published: row.display ?? ""
-                ) { entry[key] = value }
+                ) { entry[field] = value }
             case .popup:
                 entry["value"] = row.raw
                 if row.raw == RegionInspector.mixedPopupValue { entry["mixed"] = true }
@@ -579,9 +616,13 @@ extension LogicAccessibility {
                         + "multi-selection Logic turns every numeric region control into a RELATIVE "
                         + "one — it shows the parameter's default, applies the difference to each "
                         + "region, and springs back, so the value cannot be set or verified "
-                        + "(measured 2026-08-28). Nothing was written. quantize, loop and mute ARE "
-                        + "absolute over a selection; for the numeric ones address the regions one "
-                        + "at a time with scope 'region'."
+                        + "(measured 2026-08-28). Nothing was written. The pop-up and checkbox "
+                        + "parameters ARE absolute over a selection ("
+                        + RegionInspector.writable
+                            .filter { $0.control == .popup || $0.control == .checkbox }
+                            .map(\.key).sorted().joined(separator: ", ")
+                        + "); for the numeric ones address the regions one at a time with "
+                        + "scope 'region'."
                 )
             }
         }
@@ -627,9 +668,15 @@ extension LogicAccessibility {
         case .outOfRange(let key, let given, let range, let unit):
             return "\(key) = \(given) is outside Logic's own range "
                 + "\(range.lowerBound)…\(range.upperBound)\(unit.isEmpty ? "" : " \(unit)")"
+        case .outOfDecibelRange(let key, let given, let limit):
+            return "\(key) = \(given) dB is outside Logic's own region-gain range "
+                + "-\(limit)…+\(limit) dB"
         case .unknownName(let key, let given, let available):
             return "\(key) does not take '\(given)'; Logic's values are "
                 + available.joined(separator: ", ")
+        case .outOfRangeForRegionType(let key, let given, let range, let unit, let regionType):
+            return "\(key) = \(given) is outside the range Logic gives \(regionType) regions, "
+                + "\(range.lowerBound)…\(range.upperBound)\(unit.isEmpty ? "" : " \(unit)")"
         }
     }
 
@@ -665,25 +712,79 @@ extension LogicAccessibility {
         }
 
         let regionType = inferredRegionType(rows)
-        var changed: [[String: Any]] = []
-        var unchanged: [[String: Any]] = []
-        var currentRows = rows
 
+        // EVERY argument is checked against the region type BEFORE the first
+        // write, not as its turn comes: a call that names one audio parameter
+        // and one MIDI one must write neither, rather than write the first and
+        // then refuse. Same for the ranges that depend on the type — audio
+        // Transpose caps at ±36 where MIDI runs to ±96.
+        var addressedRows = regionParameterRows(rows)
         for write in planned {
             let parameter = write.parameter
             if let regionType, !parameter.regionTypes.contains(regionType) {
                 throw LogicianError.valueNotWritable(
                     "\(parameter.key) is a \(parameter.regionTypes.sorted().joined(separator: "/"))"
                         + "-region parameter and this is \(regionType == RegionInspector.midi ? "a MIDI" : "an audio")"
-                        + " region — the inspector does not show it"
+                        + " region — the inspector does not show it. Nothing was written."
                 )
             }
-            guard let row = currentRows.first(where: {
-                RegionInspector.parameter(forLabel: $0.label)?.key == parameter.key
-            }), let control = row.value else {
+            if let value = write.sliderValue {
+                do {
+                    try RegionInspector.checkRange(
+                        key: parameter.key, value: value, regionType: regionType
+                    )
+                } catch let error as RegionInspector.ValueError {
+                    throw LogicianError.invalidArguments(Self.describe(error) + "; nothing was written")
+                }
+            }
+            // Compare-and-set is checked here too, for the same reason: "any
+            // mismatch writes nothing" has to mean nothing, including the
+            // parameters that come before the one that mismatched.
+            if write.expected != nil, let row = addressedRows[parameter.key] {
+                try enforceExpectation(write, row: row)
+            }
+        }
+
+        var changed: [[String: Any]] = []
+        var unchanged: [[String: Any]] = []
+        var currentRows = rows
+
+        for write in planned {
+            let parameter = write.parameter
+            guard let row = addressedRows[parameter.key], let control = row.value else {
+                // Reverse is the row that actually goes missing in practice:
+                // Logic replaces it with a placeholder while FLEX is on, and
+                // transposing or fine-tuning an audio region switches Flex on
+                // by itself (measured 2026-08-28 — transpose 12 made row 18
+                // read "-", transpose 0 brought Reverse back, still ticked).
+                let flexIsOn = currentRows.first { $0.label == "Flex" }?.raw == "1"
                 throw LogicianError.parameterNotFound(
                     "the Region inspector published no '\(parameter.labels[0])' row"
                         + (parameter.underMore ? " (it lives under 'More')" : "")
+                        + (parameter.after.isEmpty
+                            ? ""
+                            : " that follows the '\(parameter.after[0])' row — the panel has two rows "
+                                + "called '\(parameter.labels[0])' and this one is addressed by position")
+                        + (parameter.key == "reverse" && flexIsOn
+                            ? ". Flex is ON for this region, and Logic hides Reverse entirely while "
+                                + "it is: transposing or fine-tuning an audio region switches Flex on "
+                                + "by itself, so set transpose and fine_tune back to 0 to get Reverse "
+                                + "back (the setting survives — it is the row that disappears)"
+                            : "")
+                )
+            }
+            // The two fade rows carry a MODE pop-up as their label: the same
+            // control is a fade length or a `Speed Up`/`Slow Down` ramp length,
+            // and writing 400 ms of "fade" into a speed-up ramp would be a
+            // silent wrong answer rather than an error.
+            if parameter.refuseAlternateMode,
+               row.label.caseInsensitiveCompare(parameter.labels[0]) != .orderedSame {
+                throw LogicianError.preconditionUnmet(
+                    "the row \(parameter.key) writes is switched to '\(row.label)' mode in Logic "
+                        + "(its label is a pop-up: '\(parameter.labels.joined(separator: "' / '"))'), "
+                        + "so its value is a \(row.label.lowercased()) length and not a fade length. "
+                        + "Nothing was written. Switch the row back to '\(parameter.labels[0])' in "
+                        + "Logic's Region inspector first."
                 )
             }
             guard row.enabled else {
@@ -696,8 +797,6 @@ extension LogicAccessibility {
             }
 
             let before = describeRow(row, parameter: parameter)
-            try enforceExpectation(write, row: row)
-
             var route = ""
             switch parameter.control {
             case .checkbox:
@@ -723,7 +822,7 @@ extension LogicAccessibility {
                 route = state == nil ? "ax_checkbox_press_from_mixed" : "ax_checkbox_press"
             case .popup:
                 guard let target = write.popupValue else { continue }
-                if row.raw.compare(target, options: .caseInsensitive) == .orderedSame {
+                if RegionInspector.popupValuesMatch(row.raw, target) {
                     unchanged.append(["parameter": parameter.key, "value": row.raw])
                     continue
                 }
@@ -766,9 +865,8 @@ extension LogicAccessibility {
                 )
             }
             currentRows = regionInspectorRows(outline)
-            guard let after = currentRows.first(where: {
-                RegionInspector.parameter(forLabel: $0.label)?.key == parameter.key
-            }) else {
+            addressedRows = regionParameterRows(currentRows)
+            guard let after = addressedRows[parameter.key] else {
                 throw LogicianError.verificationFailed(
                     requested: "a read-back of '\(row.label)'",
                     actual: "the row vanished after the write", restored: false
@@ -777,6 +875,7 @@ extension LogicAccessibility {
             try verify(write, row: after, parameter: parameter)
             changed.append([
                 "parameter": parameter.key,
+                "row": after.index,
                 "before": before,
                 "after": describeRow(after, parameter: parameter),
                 "write_route": route
@@ -809,8 +908,9 @@ extension LogicAccessibility {
                 + "so the write can have reached more regions than the number shown."
         }
         result["note"] = "Region parameters are Logic's own non-destructive playback settings: the "
-            + "notes on disk are untouched, so quantize and transpose are reversible by setting them "
-            + "back. They do change how the region SOUNDS."
+            + "recorded notes and the audio file on disk are untouched, so quantize, transpose, "
+            + "gain, the fades and reverse are all reversible by setting them back. They do change "
+            + "how the region SOUNDS."
         return result
     }
 
@@ -856,7 +956,7 @@ extension LogicAccessibility {
             guard let wanted = expected as? String else {
                 throw LogicianError.invalidArguments("expected_current.\(key) takes a string")
             }
-            guard row.raw.compare(wanted, options: .caseInsensitive) == .orderedSame else {
+            guard RegionInspector.popupValuesMatch(row.raw, wanted) else {
                 throw LogicianError.currentValueMismatch(
                     expected: "\(key) = '\(wanted)'", actual: "\(key) = '\(row.raw)'"
                 )
@@ -876,6 +976,170 @@ extension LogicAccessibility {
         }
     }
 
+    // MARK: - Rename
+
+    /// Renames one region by writing the Region inspector's own name field.
+    ///
+    /// There is no rename DIALOG and no key command in this path: the panel's
+    /// title is an `AXTextField` whose `AXValue` is settable (measured
+    /// 2026-08-28), so the rename is one write and one confirm. The field is a
+    /// direct child of the panel group and is published whether the panel's
+    /// disclosure triangle is open or shut, so nothing is unfolded here and
+    /// the inspector is left exactly as it was found.
+    ///
+    /// Verified twice over: the panel reads the new name back, AND the
+    /// arrangement map shows it on the region at that position — the panel
+    /// alone would only prove that a text field accepted text.
+    func renameRegion(
+        trackName: String, regionName: String?, startBar: Int?,
+        newName: String, expectedCurrentName: String?
+    ) throws -> [String: Any] {
+        let wanted = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !wanted.isEmpty else {
+            throw LogicianError.invalidArguments("new_name must be non-empty")
+        }
+        guard !newName.contains(where: \.isNewline) else {
+            throw LogicianError.invalidArguments("new_name must be a single line")
+        }
+
+        let before = try regionSnapshot(trackName: trackName)
+        let addressed = try selectRegion(
+            trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true
+        )
+        guard try selectedRegionCount() == 1 else {
+            throw LogicianError.verificationFailed(
+                requested: "exactly one selected region before renaming",
+                actual: "the selection drifted; refusing", restored: true
+            )
+        }
+
+        let panel = try regionInspectorPanel()
+        switch panel.subject {
+        case .defaults(let kind):
+            throw LogicianError.preconditionUnmet(
+                "the Region inspector is showing the track's \(kind) region DEFAULTS rather than a "
+                    + "region — nothing was renamed. The selection did not take."
+            )
+        case .multiple(let count):
+            throw LogicianError.preconditionUnmet(
+                "\(count) regions are selected, and the Region inspector's name field then reads "
+                    + "'\(count) selected' rather than a region name — nothing was renamed."
+            )
+        case .region:
+            break
+        }
+        guard let field = panel.nameField else {
+            throw LogicianError.valueNotWritable(
+                "the Region inspector published its title as static text, not as a name field"
+            )
+        }
+        let currentName = PrintedRegion.canonicalName(panel.panelName)
+        if let expectedCurrentName,
+           currentName.compare(expectedCurrentName, options: .caseInsensitive) != .orderedSame {
+            throw LogicianError.currentValueMismatch(
+                expected: "the region is named '\(expectedCurrentName)'",
+                actual: "the Region inspector shows '\(currentName)'"
+            )
+        }
+        if currentName == wanted {
+            return [
+                "success": true, "verified": true, "state": "already_set",
+                "from": currentName, "to": wanted,
+                "region": Self.addressedRegion(addressed),
+                "note": "the region already carries that name; nothing was written"
+            ]
+        }
+        guard isSettable(field, kAXValueAttribute as String) else {
+            throw LogicianError.valueNotWritable(
+                "the Region inspector's name field is not settable right now"
+            )
+        }
+        let status = AXUIElementSetAttributeValue(
+            field, kAXValueAttribute as CFString, wanted as CFString
+        )
+        guard status == .success else {
+            throw LogicianError.writeFailed(
+                "the name write returned AXError \(status.rawValue)"
+            )
+        }
+        _ = AXUIElementPerformAction(field, kAXConfirmAction as CFString)
+        Thread.sleep(forTimeInterval: 0.5)
+
+        let panelAfter = try regionInspectorPanel()
+        let panelName = PrintedRegion.canonicalName(panelAfter.panelName)
+        let after = try regionSnapshot(trackName: trackName)
+        let position = addressed["start_bar"] as? Int
+        let beat = addressed["start_beat"] as? Int
+        let renamed = after.first {
+            ($0["start_bar"] as? Int) == position && ($0["start_beat"] as? Int) == beat
+        }
+        let mapName = (renamed?["name"] as? String).map(PrintedRegion.canonicalName)
+        guard mapName?.compare(wanted, options: .caseInsensitive) == .orderedSame else {
+            throw LogicianError.verificationFailed(
+                requested: "the region at bar \(position.map(String.init) ?? "?") renamed to '\(wanted)'",
+                actual: "the arrangement map shows '\(mapName ?? "no region there")'"
+                    + " (the inspector reads '\(panelName)')",
+                restored: false
+            )
+        }
+
+        // Logic RENUMBERS default marker names by position when a marker is
+        // added; regions are the neighbouring question, so the other regions
+        // on the track are compared before and after and any that moved are
+        // reported rather than assumed absent.
+        var result: [String: Any] = [
+            "success": true, "verified": true, "state": "renamed",
+            "from": currentName, "to": wanted,
+            "panel_name": panelName,
+            "region": Self.addressedRegion(addressed),
+            "write_route": "ax_value_on_the_inspector_name_field"
+        ]
+        let sideEffects = Self.otherRegionsThatChangedName(
+            before: before, after: after, atStartBar: position, startBeat: beat
+        )
+        if !sideEffects.isEmpty {
+            result["also_renamed"] = sideEffects
+            result["also_renamed_note"] = "Logic renamed OTHER regions on this track as a side "
+                + "effect of this rename — the same positional renumbering markers do. Nothing "
+                + "else was written by this server."
+        }
+        result["note"] = "The region's name in the arrangement, not the audio file's name and not "
+            + "the track's: renaming a region never touches the file on disk. Undo restores the "
+            + "old name."
+        return result
+    }
+
+    private static func addressedRegion(_ addressed: [String: Any]) -> [String: Any] {
+        [
+            "track_name": addressed["track_name"] ?? "",
+            "start_bar": addressed["start_bar"] ?? NSNull(),
+            "end_bar": addressed["end_bar"] ?? NSNull(),
+            "type": addressed["type"] ?? NSNull()
+        ]
+    }
+
+    /// Regions on the same track, other than the renamed one, whose name is
+    /// not what it was before the write.
+    static func otherRegionsThatChangedName(
+        before: [[String: Any]], after: [[String: Any]], atStartBar: Int?, startBeat: Int?
+    ) -> [[String: Any]] {
+        var moved: [[String: Any]] = []
+        for old in before {
+            let bar = old["start_bar"] as? Int
+            let beat = old["start_beat"] as? Int
+            if bar == atStartBar, beat == startBeat { continue }
+            guard let fresh = after.first(where: {
+                ($0["start_bar"] as? Int) == bar && ($0["start_beat"] as? Int) == beat
+            }) else { continue }
+            let was = PrintedRegion.canonicalName(old["name"] as? String ?? "")
+            let now = PrintedRegion.canonicalName(fresh["name"] as? String ?? "")
+            if was != now {
+                moved.append(["start_bar": bar ?? NSNull(), "from": was, "to": now])
+            }
+        }
+        return moved
+    }
+
     private func verify(
         _ write: PlannedWrite, row: RegionInspectorRow, parameter: RegionInspector.Parameter
     ) throws {
@@ -889,10 +1153,20 @@ extension LogicAccessibility {
             }
         case .popup:
             guard let target = write.popupValue,
-                  row.raw.compare(target, options: .caseInsensitive) == .orderedSame else {
+                  RegionInspector.popupValuesMatch(row.raw, target) else {
+                // Logic ACCEPTS the menu press and then springs the control
+                // back where the value does not apply: a crossfade type on a
+                // region with no neighbour to cross into reverted to 'Out'
+                // every time, and took as 'X' the moment an adjacent region
+                // existed (measured 2026-08-28).
                 throw LogicianError.verificationFailed(
                     requested: "\(parameter.key) = '\(write.popupValue ?? "")'",
-                    actual: "the pop-up reads '\(row.raw)'", restored: false
+                    actual: "the pop-up reads '\(row.raw)'"
+                        + (parameter.key == "fade_type"
+                            ? " — Logic keeps a crossfade type only where there is an adjacent "
+                                + "region to cross into; with none it springs back to 'Out'"
+                            : ""),
+                    restored: false
                 )
             }
         default:
