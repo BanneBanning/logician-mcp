@@ -17,7 +17,7 @@ You need:
 
 - **macOS 13 or newer** (Apple menu → About This Mac).
 - **Logic Pro**, with a project open.
-- **An MCP client** — the app your AI runs in. This guide covers [Antigravity CLI](#option-a-antigravity-cli--gemini-recommended) (recommended, because the agent can *hear* your mix), [Claude Code](#option-b-claude-code), [Gemini CLI](#option-c-gemini-cli), and [Cursor / VS Code / LM Studio](#option-d--cursor-vs-code-lm-studio-one-click). Anything that speaks MCP over stdio works — see [Any other client](#option-e--any-other-mcp-client).
+- **An MCP client** — the app your AI runs in. This guide covers [Antigravity CLI](#option-a--antigravity-cli--gemini-recommended) (recommended, because the agent can *hear* your mix), [Claude Code](#option-b--claude-code), [Gemini CLI](#option-c--gemini-cli), and [Cursor / VS Code / LM Studio](#option-d--cursor-vs-code-lm-studio-one-click). Anything that speaks MCP over stdio works — see [Any other client](#option-e--any-other-mcp-client).
 
 One prerequisite most Macs already have — the Swift build tools. Check by pasting this into Terminal (⌘-Space, type "Terminal", Enter):
 
@@ -81,6 +81,14 @@ agy mcp list
 claude mcp add logician -- PASTE_PATH_HERE
 ```
 
+Then **fully quit and reopen** Claude Code (it only loads MCP servers when it starts). Confirm it registered:
+
+```bash
+claude mcp list
+```
+
+**You should see:** a `logician` row, marked connected.
+
 ### Option C — Gemini CLI
 
 Two ways. As an **extension** (the repo ships a `gemini-extension.json`, so Gemini clones it for you — but the build in step 1 still has to happen, inside the extension folder):
@@ -127,7 +135,13 @@ This is the one manual part, and you only ever do it once. It tells Logic to tre
 
 > Run logic_health
 
-This starts Logician's background helper the first time, which creates three MIDI ports Logic needs to see. The health check will report two things still missing — Accessibility and the Mackie Control — which is exactly what the next two steps fix. (If it already says everything is fine, you are done — skip to [step 4](#4-check-it-works).)
+This starts Logician's background helper the first time, which creates three MIDI ports Logic needs to see. On a fresh install the health check reports **three** things still missing:
+
+- `accessibility_trusted: false` — fixed just below.
+- `mcu_connected: false` — fixed by adding the Mackie Control, just below that.
+- `key_commands_fix: …` — **expected, and not something you have to do.** The Logic key commands are learned lazily, the first time a tool actually needs one. You can do them all up front with `logic_setup_key_commands` if you prefer, but leaving them is fine.
+
+(If it already says everything is fine, you are done — skip to [step 4](#4-check-it-works).)
 
 **Grant Accessibility.** The first time Logician reads Logic, macOS asks permission — this is macOS letting an app observe another app, and it is required. If a popup appears, click **Open System Settings** and turn the switch **on** for your client (or Terminal). If no popup appeared and health said accessibility is not trusted, open it yourself:
 
@@ -154,7 +168,17 @@ Ask your agent one more time:
 
 > Run logic_health
 
-**You should see** something like: `bridge_running: true`, `mcu_connected: true`, `accessibility_trusted: true`, and no `*_fix` messages. That means hands and ears are both connected.
+**You should see** these three booleans, all true:
+
+```
+bridge_running: true
+mcu_connected: true
+accessibility_trusted: true
+```
+
+That means hands and ears are both connected. A `key_commands_fix` line may still be there — ignore it; those are learned on demand (see the note at the bottom of this step).
+
+> **`mcu_connected: false` right after adding the surface?** Logic opens the port when it next has focus. Click into Logic once, then run `logic_health` again.
 
 Try it for real — with a track in your project selected:
 
@@ -191,5 +215,7 @@ Nothing was installed system-wide. To remove Logician completely:
 
 1. Remove it from your client: `agy mcp remove logician` (or `claude mcp remove logician`, or delete the entry from `~/.gemini/settings.json`).
 2. In Logic → Control Surfaces → Setup, select the Mackie Control device and delete it.
-3. Delete the repo folder and `~/Library/Application Support/LogicMCPMCU` (its cache and key-command registry).
+3. Delete the repo folder and these two folders:
+   - `~/Library/Application Support/LogicMCPMCU` — the bridge's state, caches and key-command registry.
+   - `~/Library/Application Support/Logician/captures` — **every bounce and render Logician has ever made lands here, and nothing prunes it.** It grows without limit: 738 MB on the machine this was developed on. Worth emptying now and then even if you are keeping Logician.
 4. The key commands it learned are removable in Logic's Key Commands window if you want them gone.
