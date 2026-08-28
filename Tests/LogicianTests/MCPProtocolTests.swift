@@ -578,7 +578,7 @@ final class MCPProtocolTests: XCTestCase {
     func testToolsListIsWellFormedAndComplete() throws {
         let response = try XCTUnwrap(server.handle(request("tools/list", id: 1)))
         let tools = try XCTUnwrap((response["result"] as? [String: Any])?["tools"] as? [[String: Any]])
-        XCTAssertEqual(tools.count, 84)
+        XCTAssertEqual(tools.count, 81)
         let names = tools.compactMap { $0["name"] as? String }
         XCTAssertEqual(Set(names).count, tools.count, "duplicate tool name")
         XCTAssertTrue(names.allSatisfy { $0.hasPrefix("logic_") })
@@ -588,6 +588,31 @@ final class MCPProtocolTests: XCTestCase {
             XCTAssertNotNil(tool["annotations"] as? [String: Any])
         }
         XCTAssertTrue(JSONSerialization.isValidJSONObject(response))
+    }
+
+    /// Every tool carries a short human name, and every one is distinct.
+    ///
+    /// The point is the approval prompt: a client that renders
+    /// `logic_set_track_volume` is showing a person a snake_case identifier at
+    /// the moment they have to decide whether to allow it. Distinct because a
+    /// picker that lists "Set a plugin parameter" twice cannot be read, and
+    /// terse because a label that wraps is a description in the wrong field —
+    /// the whole set costs 2,373 bytes of `tools/list`, and it stays that cheap
+    /// only if nobody writes a sentence here.
+    func testEveryToolHasAShortDistinctTitle() throws {
+        var titles: Set<String> = []
+        for tool in server.toolRegistry() {
+            XCTAssertFalse(tool.title.isEmpty, tool.name)
+            XCTAssertLessThanOrEqual(tool.title.count, 32, "\(tool.name): '\(tool.title)' is a sentence")
+            XCTAssertFalse(tool.title.hasSuffix("."), "\(tool.name): a label is not a sentence")
+            XCTAssertFalse(tool.title.contains("logic_"), "\(tool.name): the title is the HUMAN name")
+            XCTAssertTrue(titles.insert(tool.title).inserted, "duplicate title '\(tool.title)'")
+        }
+        // And it reaches the wire where a client looks for it.
+        for definition in server.toolDefinitions() {
+            let annotations = try XCTUnwrap(definition["annotations"] as? [String: Any])
+            XCTAssertNotNil(annotations["title"] as? String, "\(definition["name"] ?? "?")")
+        }
     }
 
     // MARK: - The result contract, as the surface advertises it

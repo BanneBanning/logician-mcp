@@ -30,15 +30,26 @@ extension MCPServer {
     /// names every tool that does exist, because the usual cause is a client
     /// or agent working from a stale list.
     func unknownToolMessage(name: String) -> String? {
-        let names = toolRegistry().map(\.name)
-        guard !names.contains(name) else { return nil }
-        return "Unknown tool: '\(name)'. Nothing was executed. Available tools: "
-            + names.sorted().joined(separator: ", ")
+        let offered = activeTools().map(\.name)
+        guard !offered.contains(name) else { return nil }
+        var message = "Unknown tool: '\(name)'. Nothing was executed."
+        // A tool that EXISTS but is not offered is a configuration answer, not
+        // a spelling one. Saying "unknown tool" and stopping would send an
+        // agent hunting for a name it already had right.
+        if let sets = Toolset.membership[name], toolRegistry().contains(where: { $0.name == name }) {
+            message += " That tool exists but is not in this session's active toolsets"
+                + " (\(MCPServer.activeToolsets.map(\.rawValue).sorted().joined(separator: ", ")))."
+                + " It is in \(sets.map(\.rawValue).sorted().joined(separator: ", ")):"
+                + " relaunch the server with \(MCPServer.toolsetsFlag)=<comma list>"
+                + " (or the \(MCPServer.toolsetsEnvironmentVariable) environment variable,"
+                + " or \(MCPServer.toolsetsFlag)=\(Toolset.everything)) to offer it."
+        }
+        return message + " Available tools: " + offered.sorted().joined(separator: ", ")
     }
 
     func callTool(name: String, arguments: [String: Any]) -> [String: Any] {
         do {
-            guard let tool = toolRegistry().first(where: { $0.name == name }) else {
+            guard let tool = activeTools().first(where: { $0.name == name }) else {
                 // Unreachable from `tools/call` (see unknownToolMessage), kept
                 // so a direct caller cannot dispatch a name that does not exist.
                 throw LogicianError.invalidArguments(unknownToolMessage(name: name) ?? "unknown tool: \(name)")

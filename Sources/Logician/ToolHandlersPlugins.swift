@@ -2,8 +2,76 @@ import Foundation
 
 // Plugins and instruments: inserts, windows, parameters, presets.
 extension MCPServer {
+    /// The route a merged AX/MCU tool took, resolved once so the three of them
+    /// cannot drift apart.
+    ///
+    /// The split used to be in the NAMES — `logic_list_inserts` next to
+    /// `logic_mcu_plugin_inserts` — which put this server's internal
+    /// architecture on the model's decision surface and made every caller
+    /// learn which plane a plugin lives on before it could read a slot. The
+    /// tool picks now, and says which it picked.
+    enum PluginRoute: String {
+        case auto, ax, mcu
+
+        static func parse(_ arguments: [String: Any]) throws -> PluginRoute {
+            guard let raw = arguments["route"] as? String else { return .auto }
+            guard let route = PluginRoute(rawValue: raw) else {
+                throw LogicianError.invalidArguments("route must be 'auto', 'ax' or 'mcu'")
+            }
+            return route
+        }
+    }
+
+    /// Both numberings in one sentence, attached to every result that carries
+    /// one of them. The two orders were observed REVERSED on an output strip,
+    /// so a result that did not name its own numbering was an invitation to
+    /// convert between them.
+    static let insertNumberingNote =
+        "The Accessibility `index` (occupied-slot ordinal) and the Mackie `slot` (physical 1-8)"
+        + " are DIFFERENT numberings — observed in REVERSE order on Stereo Out, 2026-08-27."
+        + " Use the one this result carries with the tools that take it, and never convert."
+
     func handleListInserts(_ arguments: [String: Any]) throws -> Any {
-        return try logic.listInserts(trackName: requiredString("track_name", in: arguments))
+        let name = try requiredString("track_name", in: arguments)
+        let route = try MCPServer.PluginRoute.parse(arguments)
+        if route != .mcu {
+            do {
+                var payload = try logic.listInserts(trackName: name)
+                payload["route_used"] = "ax"
+                payload["numbering"] = "insert_index"
+                payload["note"] = MCPServer.insertNumberingNote
+                return payload
+            } catch {
+                // `route: "ax"` is a caller who wants the Accessibility
+                // ordinals or nothing: silently answering with the OTHER
+                // numbering would be the worst possible help.
+                if route == .ax { throw error }
+            }
+        }
+        return try mcuInsertList(arguments)
+    }
+
+    private func mcuInsertList(_ arguments: [String: Any]) throws -> [String: Any] {
+        let target = try selectStripTarget(arguments)
+        guard let inserts = try MCUController.pluginInsertNames() else {
+            throw LogicianError.trackNotExposed(
+                requested: "MCU plugin insert list",
+                exposed: "the MCU bridge is unavailable or the insert list did not appear"
+            )
+        }
+        MCUController.exitToPan()
+        var insertsPayload: [String: Any] = [
+            "track": target.name,
+            "track_name": target.name,
+            "route_used": "mcu",
+            "numbering": "insert_slot",
+            "inserts": inserts.enumerated().map { index, name in
+                ["slot": index + 1, "plugin": name.isEmpty ? "--" : name]
+            },
+            "note": MCPServer.insertNumberingNote
+        ]
+        insertsPayload.merge(target.resultFields) { current, _ in current }
+        return insertsPayload
     }
 
     func handleSurveyPlugins(_ arguments: [String: Any]) throws -> Any {
@@ -94,20 +162,95 @@ extension MCPServer {
     }
 
     func handleListPluginParameters(_ arguments: [String: Any]) throws -> Any {
-        let windowTitle = try requiredString("window_title", in: arguments)
-        return [
+        let route = try MCPServer.PluginRoute.parse(arguments)
+        let windowTitle = arguments["window_title"] as? String
+        let canMCU = (arguments["track_name"] as? String) != nil
+            && (arguments["insert_slot"] as? Int) != nil
+        switch route {
+        case .ax:
+            return try axPluginParameters(windowTitle: try requiredString("window_title", in: arguments))
+        case .mcu:
+            return try mcuPluginParameters(arguments)
+        case .auto:
+            guard let windowTitle else {
+                guard canMCU else {
+                    throw LogicianError.invalidArguments(
+                        "give window_title (Accessibility route) or track_name + insert_slot"
+                            + " (control-surface route)"
+                    )
+                }
+                return try mcuPluginParameters(arguments)
+            }
+            do {
+                return try axPluginParameters(windowTitle: windowTitle)
+            } catch {
+                guard canMCU else { throw error }
+                var payload = try mcuPluginParameters(arguments)
+                payload["fallback_from"] = "ax"
+                payload["fallback_reason"] = error.localizedDescription
+                return payload
+            }
+        }
+    }
+
+    private func axPluginParameters(windowTitle: String) throws -> [String: Any] {
+        [
             "window": windowTitle,
+            "route_used": "ax",
             "parameters": try logic.listParameters(windowTitle: windowTitle)
         ]
     }
 
     func handleSetPluginParameter(_ arguments: [String: Any]) throws -> Any {
-        return try logic.setParameter(
+        let route = try MCPServer.PluginRoute.parse(arguments)
+        let windowTitle = arguments["window_title"] as? String
+        let canMCU = (arguments["track_name"] as? String) != nil
+            && (arguments["insert_slot"] as? Int) != nil
+        switch route {
+        case .ax:
+            return try axSetPluginParameter(arguments)
+        case .mcu:
+            return try mcuSetPluginParameter(arguments)
+        case .auto:
+            guard windowTitle != nil else {
+                guard canMCU else {
+                    throw LogicianError.invalidArguments(
+                        "give window_title + expected_current_value (Accessibility route) or"
+                            + " track_name + insert_slot (control-surface route)"
+                    )
+                }
+                return try mcuSetPluginParameter(arguments)
+            }
+            do {
+                return try axSetPluginParameter(arguments)
+            } catch {
+                // The knob-only dead end this merge exists to remove: the AX
+                // route refuses a parameter that publishes no editable field,
+                // and the surface reaches it. Only fall back when the caller
+                // gave an address on the other plane — inventing one would be
+                // guessing which insert they meant.
+                guard canMCU else { throw error }
+                var payload = try mcuSetPluginParameter(arguments)
+                payload["fallback_from"] = "ax"
+                payload["fallback_reason"] = error.localizedDescription
+                return payload
+            }
+        }
+    }
+
+    private func axSetPluginParameter(_ arguments: [String: Any]) throws -> [String: Any] {
+        var payload = try logic.setParameter(
             windowTitle: requiredString("window_title", in: arguments),
             parameterName: requiredString("parameter", in: arguments),
+            // Required on this route and this route only. It is the whole
+            // compare-and-set contract of a text-field write, so it is
+            // enforced here rather than in a JSON Schema `required` that the
+            // control-surface route would then have to satisfy for nothing.
             expectedCurrentValue: requiredString("expected_current_value", in: arguments),
             targetValue: requiredString("target_value", in: arguments)
         )
+        payload["route_used"] = "ax"
+        return payload
     }
 
     /// Which of the three things `logic_plugin_preset` can do this call means.
@@ -329,7 +472,7 @@ extension MCPServer {
     /// verdict: an Undo between two unnamed states leaves the label identical
     /// while the parameters move, so claiming `verified` off the label would
     /// be claiming more than was seen. Read the parameters back
-    /// (logic_mcu_plugin_parameters) when the state matters.
+    /// (logic_list_plugin_parameters) when the state matters.
     private func presetUndoPayload(track: String) throws -> [String: Any] {
         guard logic.presetPopUpButton(windowTitle: track) != nil else {
             throw LogicianError.trackNotExposed(
@@ -350,7 +493,7 @@ extension MCPServer {
             "note": "Pressed the plugin window's own Setting ▸ Undo — Logic's per-plugin history,"
                 + " which restores the parameter STATE, not a setting name. The label is reported"
                 + " but proves nothing on its own: an undo between two unnamed states leaves it"
-                + " unchanged. Read the parameters back with logic_mcu_plugin_parameters when the"
+                + " unchanged. Read the parameters back with logic_list_plugin_parameters when the"
                 + " state matters. Repeat the call to step further back."
         ]
     }
@@ -403,28 +546,7 @@ extension MCPServer {
         return payload
     }
 
-    func handleMcuPluginInserts(_ arguments: [String: Any]) throws -> Any {
-        let target = try selectStripTarget(arguments)
-        guard let inserts = try MCUController.pluginInsertNames() else {
-            throw LogicianError.trackNotExposed(
-                requested: "MCU plugin insert list",
-                exposed: "the MCU bridge is unavailable or the insert list did not appear"
-            )
-        }
-        MCUController.exitToPan()
-        var insertsPayload: [String: Any] = [
-            "track": target.name,
-            "track_name": target.name,
-            "mcu_slots": inserts.enumerated().map { index, name in
-                ["slot": index + 1, "plugin": name.isEmpty ? "--" : name]
-            },
-            "note": "MCU slot numbers are physical insert positions and can differ from AX occupied-slot ordinals — on an output strip they were observed in the REVERSE order (Stereo Out, 2026-08-27). Never translate an AX insert_index into an insert_slot."
-        ]
-        insertsPayload.merge(target.resultFields) { current, _ in current }
-        return insertsPayload
-    }
-
-    func handleMcuPluginParameters(_ arguments: [String: Any]) throws -> Any {
+    private func mcuPluginParameters(_ arguments: [String: Any]) throws -> [String: Any] {
         guard let slot = arguments["insert_slot"] as? Int else {
             throw LogicianError.invalidArguments("missing integer: insert_slot (1-8, MCU physical slot)")
         }
@@ -450,6 +572,7 @@ extension MCPServer {
         var pluginPayload: [String: Any] = [
             "track": target.name,
             "track_name": target.name,
+            "route_used": "mcu",
             "insert_slot": slot,
             "pages": capped.pages.count,
             "pages_total": capped.total,
@@ -465,7 +588,7 @@ extension MCPServer {
         return pluginPayload
     }
 
-    func handleMcuSetPluginParameter(_ arguments: [String: Any]) throws -> Any {
+    private func mcuSetPluginParameter(_ arguments: [String: Any]) throws -> [String: Any] {
         guard let slot = arguments["insert_slot"] as? Int else {
             throw LogicianError.invalidArguments("missing integer: insert_slot (1-8, MCU physical slot)")
         }
@@ -483,6 +606,7 @@ extension MCPServer {
                 exposed: "the MCU bridge is unavailable or the plugin edit mode could not be entered"
             )
         }
+        result["route_used"] = "mcu"
         result.merge(target.resultFields) { current, _ in current }
         return result
     }

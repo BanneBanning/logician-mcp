@@ -123,7 +123,23 @@ Two honest caveats:
 
 ### Option E — any other MCP client
 
-Logician is a plain stdio MCP server with no arguments and no environment variables. Wherever your client takes an MCP server config, give it the path from step 1 as the `command` — the JSON shape above works nearly everywhere (see `mcp-config.example.json` in the repo).
+Logician is a plain stdio MCP server that needs no arguments. Wherever your client takes an MCP server config, give it the path from step 1 as the `command` — the JSON shape above works nearly everywhere (see `mcp-config.example.json` in the repo).
+
+### Optional: offer fewer tools
+
+All 81 tools are offered by default, and their descriptions cost your agent about 40,000 tokens before its first call. If you know what a session is for, hand the server a comma-separated list of toolsets as `--toolsets=…` in `args` (or set `LOGICIAN_TOOLSETS` in `env`) and it advertises only those:
+
+| toolset | tools | what it covers |
+| --- | --- | --- |
+| `core` | 40 | readiness, orientation reads, transport, the strips, the plugins, and the bounces and renders that let you hear a decision |
+| `regions` | 17 | the arrangement: regions, markers, and creating/renaming/deleting tracks |
+| `composition` | 13 | MIDI recording, automation, tempo and meter, the Event List, instruments |
+| `delivery` | 6 | stems, bounce-in-place, removing silence |
+| `project` | 7 | open/new/save/duplicate/close, reset, snapshot |
+| `keycommands` | 5 | Logic's key commands and the raw control-surface command |
+| `all` | 81 | everything — the default |
+
+`--toolsets=core` is a mixing session at roughly half the token cost. Nothing is lost permanently: a tool that is not offered tells the agent which toolset holds it, and you change the flag and restart.
 
 ---
 

@@ -14,4 +14,5 @@ if CommandLine.arguments.contains("--bridge") {
 // needs it (`MCUBridge.transact` retries through `ensureRunning`), and
 // `logic_health` starts it explicitly during onboarding, so nothing that used
 // to work needs the eager call.
+MCPServer.configureToolsets() // --toolsets=<comma list> / LOGICIAN_TOOLSETS
 MCPServer().run()

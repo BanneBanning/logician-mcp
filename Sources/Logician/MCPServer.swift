@@ -519,7 +519,7 @@ final class MCPServer: @unchecked Sendable {
         [
             "supportedVersions": supportedProtocolVersions,
             "capabilities": ["tools": ["listChanged": false]],
-            "instructions": serverInstructions,
+            "instructions": MCPServer.instructions,
             "ttlMs": toolListCacheTTLMs,
             "cacheScope": "public"
         ]
@@ -545,23 +545,10 @@ final class MCPServer: @unchecked Sendable {
             "protocolVersion": negotiated,
             "capabilities": ["tools": ["listChanged": false]],
             "serverInfo": ["name": serverName, "version": serverVersion],
-            "instructions": serverInstructions
+            "instructions": MCPServer.instructions
         ]
     }
 
-    /// What a COLD-START model needs before its first call, and
-    /// nothing it can look up per tool: how to read a result, which
-    /// of the two planes a tool name puts it on, and the four things
-    /// v1 cannot do at all. No file pointer — a bare client cannot
-    /// fetch docs/AGENT-GUIDE.md, so anything essential lives here.
-    var serverInstructions: String {
-        "Controls Logic Pro on this Mac over its control-surface protocol and macOS Accessibility (no coordinate-driven UI scripting). Needs Logic running with a project open, Accessibility granted, and a Mackie Control on the 'Logic MCP MCU' ports; English Logic UI assumed (v1). Run logic_health FIRST - it starts the bridge daemon, checks every setup step and names the fix for whatever is missing - and logic_setup_key_commands once during onboarding, or Logic's Key Commands window flashes unannounced later.\n\n"
-            + "RESULT CONTRACT (JSON in the text block). `success`: the intent landed - it can be FALSE while isError is false (a no-op refusal, a command that moved nothing), so read it: an error-free result is not automatically a successful one. `verified`: a readback or proof confirmed it - CAN be false while success is true; a few tools give it a tool-specific meaning, stated in their own description. `state`: a short token to branch on; the `already_*` family is a VERIFIED NO-OP - the target was already there and nothing was pressed, so it is no reason to retry, and if you expected a change your model of the project is stale. `warning`: ONE string, several joined by ' ALSO: ' - act on it before proceeding. A thrown failure carries isError true plus `error` and `error_code`: not_found, not_exposed, ambiguous, precondition_failed, verification_failed, write_failed, invalid_arguments, not_trusted, not_running, failed. Only SOME writes take a compare-and-set argument (expected_current_value, expected_current_db, expected_current_bpm, ... as each schema lists it), refusing with precondition_failed on a mismatch; the rest verify by readback only. Read before you write.\n\n"
-            + "TWO PLANES. Tools WITHOUT `mcu` in the name drive Logic's Accessibility tree: they need the strip visible in an inspector and reach only plugins that publish editable fields. Tools WITH `mcu` drive the control surface: they reach EVERY strip (Stereo Out, Master, auxes, buses) and EVERY plugin, custom-UI third-party included. When in doubt, prefer the mcu route for plugin and send work.\n\n"
-            + "CANNOT DO (v1): no note-level MIDI editing beyond logic_edit_event on the Event List; no plugin or instrument catalogue, so names must be exact as Logic spells them; no relative value changes (read, then write the absolute target; logic_set_track_volume's relative_db is the one exception); recording over occupied bars creates an OVERLAPPING region, it does not replace.\n\n"
-            + "LONG TOOLS: the renders, bounces, snapshots and recordings emit MCP `notifications/progress` when you pass `_meta.progressToken`, and honour `notifications/cancelled` at their poll boundaries - a cancelled call unwinds through its own restore path and is never answered. Everything else stays responsive while one runs.\n\n"
-            + "LISTENING: open a result's preview_path/clip_path with your client's FILE VIEWER (real multimodal audio in most clients), or call logic_get_audio_clip if your client forwards MCP audio blocks - a result arriving without its block means it does not. NEVER read audio files as text/bash, and never claim to have heard what you did not receive. Trust a result's metrics and warnings over your expectations, and report blocked steps instead of improvising. MIX BY EAR: fader and parameter VALUES are not loudness or quality - judge by listening, and use numbers only to confirm."
-    }
 
     // MARK: Result shapes
 
