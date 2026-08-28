@@ -121,6 +121,16 @@ All three methods return the **same keys**, so you can read a result without kno
 **Stems for a mixer or a picture editor:**
 `logic_export_stems {tracks: [...], start_bar, end_bar}` — one offline bounce per track over the SAME range, each with only that track soloed, and the frame counts compared afterwards so `aligned` is an observation. Read the contents note before you promise anything about them: a stem here is the full master output heard one track at a time (post-fader, post-pan, with that track's send returns and the master chain), so summing them reproduces the mix only while the master chain is linear.
 
+**Episode reset and snapshot diff (running the same task twice, or evaluating an agent):**
+This is the loop an eval harness runs, and it is the same loop you want whenever an attempt went sideways and you would rather start over than unpick it.
+
+1. `logic_project_snapshot {scope: "structure"}` — the BEFORE document (~2 s on the reference project).
+2. …do the work…
+3. `logic_project_snapshot {scope: "structure"}` again — the AFTER document. Diff the two: keys are serialized sorted and arrays are in a fixed order, so a plain text diff is meaningful. **Drop `timing_ms` first** — it is the only block that changes when nothing else did.
+4. `logic_reset_to {path: "<the same .logicx>", confirm_discard: true}` — back to the file on disk, ~4–5 s. Everything the episode did is gone.
+
+Three things to hold on to. **`complete` is the field that matters on a snapshot**, not `success`: a section that could not be read is present as `{"unavailable": "<reason>"}`, so a diff can never mistake a failed reader for an empty project — check `complete` and `unavailable_sections` before you conclude anything from a difference. **`logic_reset_to` discards unsaved work by design** — that is the whole tool; `confirm_discard: true` is required and there is no default, so save first if the work matters. **Pay for `scope` deliberately**: `structure` is ~2 s and Accessibility-only, `mix` adds two bank walks (~23 s on 25 strips), `full` adds ~10 s per track for inserts and sends. Diff at `structure` between episodes and take one `mix` snapshot when the mix itself is the thing under test.
+
 ## Listening to audio (IMPORTANT)
 
 **The sound comes to you.** Every `logic_bounce_range` and `logic_render_track` result CARRIES its audio as an MCP audio content block — and `logic_evaluate_change` carries BOTH versions (first block = baseline A, second = after B), so you hear the A/B in the same result you decide from. First-run handshake: after your first bounce, check whether an audio block reached you. If yes — listen, always. If the result arrived as text only, your client drops audio blocks: from then on open the returned `preview_path`/`clip_path` files with your client's FILE VIEWER (read-file capability), which most clients pass to the model as real multimodal audio (verified in Antigravity CLI). Never claim to have heard something you did not receive.
@@ -693,6 +703,45 @@ Parameters:
 
   - `expected_project_path` (string)
   - `saving` (string) **(required)**: 'yes' saves before closing; 'no' discards unsaved changes.
+
+#### `logic_reset_to`
+
+**THIS TOOL DISCARDS THE OPEN PROJECT'S UNSAVED CHANGES. THAT IS ITS CONTRACT, NOT A SIDE EFFECT.** The episode-reset primitive: close whatever is open WITHOUT saving, open the `.logicx` at `path`, and prove the world is in a known state. Reset to the file that is already open and the last episode's experiments are gone. `confirm_discard: true` is REQUIRED and has no default — call `logic_save_project` first if the changes matter. A missing target file is refused BEFORE Logic is touched, so a typo never costs you the open project.
+
+It owns the whole chain. The close runs off-thread (Logic's AppleScript blocks while a modal is up) while an Accessibility loop walks whatever appears: the "Do you want to save the changes…?" prompt is answered **Don't Save**, the auto-save recovery prompt **Saved**, and every dialog seen is reported in `dialogs`. A dialog whose grammar it does not recognise is reported and **never pressed** — the reset then fails on the timeout with the alert's own text and buttons in the log. Measured live: the AppleScript close with `saving no` puts up **no dialog at all**, even on a dirty project, so an empty `dialogs` list is the normal case and not a sign that nothing was discarded.
+
+All four per-project caches (bank map, tempo map, meter map, plugin parameter names) are cleared explicitly, between the close and the open. They are scoped by project path, which already covers switching to a *different* project — but reopening the SAME path keeps the scope stamp valid, so a bank map measured against tracks that only existed unsaved would otherwise survive and be trusted. `caches_cleared` names the files that were there.
+
+`verified` is the AND of five checks, each reported individually: the frontmost document window matches the target path (polled — the AX document takes a moment to appear after the open), exactly one document is open, Accessibility is trusted, Logic is running, and no dialog is left on screen. The two `modified_flag_*` fields are Logic's own dirty bit and are **observations, not evidence**: Logic marks a project modified the moment it opens (view state counts), so neither proves real unsaved work existed, and neither is part of `verified`. If the OPEN fails after the close, the error says so explicitly — the previous project is already gone at that point and Logic has nothing open.
+
+Typical cost on the reference project: ~4.5 s (close ~0.6 s, open ~3.3–3.7 s).
+
+Parameters:
+
+  - `confirm_discard` (boolean) **(required)**: Must be exactly true. Acknowledges that the open project's unsaved changes are thrown away. There is no default.
+  - `path` (string) **(required)**: Absolute path to the `.logicx` to reset to. Must already exist; pass the SAME path the project is currently at to reset an episode in place.
+  - `timeout_seconds` (number): How long to wait for the close (5–300, default 30). The open has its own 30 s budget.
+
+#### `logic_project_snapshot`
+
+The TRUTH DOCUMENT: one call that aggregates the existing readers into a structured, diffable picture of the project. Pair it with `logic_reset_to` to diff an episode's start and end state, or call it once to understand a project you did not build instead of making twenty reads.
+
+`scope` decides the cost, not the capability — each level is a superset of the one before, in a fixed order:
+
+  - **`structure`** (default, Accessibility-only, never touches the control surface, ~2 s): `transport`, `tempo_map`, `meter_map`, `markers`, `tracks`, `regions`.
+  - **`mix`** (+ two bank walks, ~23 s on 25 strips): adds `strips` (the census) and `mixer` (the full mixer snapshot).
+  - **`full`** (+ ~10 s per track): adds `inserts` and `sends`, one strip selection each, capped by `max_tracks`.
+
+**Completeness is the contract.** Every section named in `sections` is present in the result; one that could not be read comes back as `{"unavailable": "<reason>"}`, never as a missing key, because a diff would otherwise read a missing section as an empty project rather than a failed reader. `complete` is false whenever any section is unavailable and `unavailable_sections` names them — verified live with the bridge daemon down: `strips` and `mixer` came back unavailable with the bridge's own reason while the six Accessibility sections read normally.
+
+Deterministic by design: fixed section and array ordering, keys serialized sorted. `timing_ms` carries the per-section cost and is the ONE nondeterministic block — drop it before diffing.
+
+It composes the individual tools' own functions (`logic_get_transport`, the meter map behind `logic_list_signatures`, `logic_markers`, `logic_list_tracks`, `logic_list_regions`, `logic_list_strips`, `logic_mixer_snapshot`, `logic_mcu_plugin_inserts`, `logic_mcu_sends`), so their caveats apply unchanged — in particular `tracks` is only the RENDERED rows (check its `partial`), and the MCU sections degrade honestly against an old or absent bridge daemon. Two things it is not neutral about: `scope: "full"` SELECTS every track it reads (the track that was selected before is re-selected afterwards and the result says whether that worked, but region selection and the surface's bank are not restored), and every scope opens and restores a List Editors pane. That is why it is not flagged read-only.
+
+Parameters:
+
+  - `max_tracks` (integer 1–64): Cap on tracks walked by scope 'full', default 8. Exceeding it truncates the `inserts`/`sends` sections, which say so.
+  - `scope` (string): 'structure' (default, AX-only), 'mix' (+ census and mixer), 'full' (+ per-track inserts and sends).
 
 #### `logic_setup_key_commands`
 

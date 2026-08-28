@@ -2973,3 +2973,125 @@ Ingen daemon dödades under arbetet: matchningen verifierades mot verklig `ps`-u
 `swift test`: **453 tester gröna** (46 nya: mätargrammatiken och dess parserväg, protokollskevheten i båda riktningarna, `fader verify`-ramen, serverns mätaravläsning, och daemonidentifieringens båda felriktningar), ingen Logic behövs. `swift build -c release` grön. `serverVersion` är medvetet **inte** bumpad; `bridgeProtocolVersion` är det (4 → 5), och den är en annan sak.
 
 Tre saker lämnas öppna och namnges hellre än att döljas: **den levande mätaravkodningen** (kräver daemonomstart — receptet står i fynd 1), **`pluginListAgreesWithAX`:s blinda fläck på tomma strippar** (fynd 3), och **själva fel-stripp-mekanismen**, som fortfarande inte är framkallad — men som nu har en trolig förklaring i Logics självbankning och en automatisk reparation bakom verifieringen.
+
+### Episodåterställning och sanningsdokumentet: två verktyg för utvärderingsriggen — och en bryggkrasch som legat och väntat sedan 25 augusti (2026-08-28, v0.54.3)
+
+Två verktyg byggda för utvärderingsslingan: `logic_reset_to` (stäng utan att spara, öppna filen igen, bevisa läget) och `logic_project_snapshot` (ett anrop som samlar de befintliga läsarna till ett diffbart dokument). 78 → 80 verktyg. Det som gör den här omgången värd att läsa är dock inte verktygen utan tre saker som mättes på vägen: dialoggrammatiken vid stängning visade sig **inte finnas**, Logics `modified`-flagga duger inte som verifiering, och det upprepade projektcyklandet **kraschade användarens bryggdaemon** — en buggen packetlist-iteration som legat i koden sedan v0.26 och bara syns under skur.
+
+**Miljö:** Logic Pro 12.3.1, `Testlåt Copy.logicx` (sandlådekopian; fönstertiteln kontrollerad före första skrivningen). Användarens bryggdaemon (pid 24761, startad 27 aug 01:00, **bryggprotokoll äldre än 5**) användes som den var — ingen `logician --bridge` startades av mig, inga nya virtuella portar. Rådgivande lås taget och släppt. Tillfällig XCTest-harness (`LiveProbe.swift`, `LOGICIAN_LIVE=1`), borttagen efteråt. Projektet **sparades aldrig**. Ingen blind Ångra.
+
+#### Fynd 1 — "Vill du spara ändringarna?" visas ALDRIG på AppleScript-vägen
+
+Verktygets kontrakt är att kasta osparat arbete, så hela designen kretsade kring att svara *Don't Save* medvetet. Mätningen säger något annat: `tell application "Logic Pro" to close document N saving no` på ett **smutsigt** projekt lade upp **noll dialoger**. Fyra kompletta cykler, `dialog_count: 0` i alla fyra, i båda grenarna (smutsigt och nyss öppnat).
+
+Grammatiken finns ändå kvar i koden, och det är ett medvetet val: `openProject`-vägen (som `logic_open_project` och `logic_duplicate_project` går) kan mycket väl få frågan, återställningsprompten ("auto-saved" → `Saved`) är verklig sedan tidigare, och en dialog som dyker upp får inte hänga stängningen. Svarstabellen är därför en **säkerhetsnät**, inte huvudvägen — och den är enhetstestad på båda apostroferna (Logic stavar `Don’t Save` med U+2019).
+
+Det som däremot var nödvändigt är att stängningen kör **på egen tråd**. Logics AppleScript-svit *blockerar* medan en modal är uppe, så en synkron `close` med en okänd dialog framför sig hade hängt utan att kunna se vad som stod på skärmen. `closeOpenDocumentDiscarding` startar skriptet på en global kö och pollar under tiden med **Accessibility** (som fungerar under modal), svarar det den känner igen, och **trycker aldrig** på en knapp vars konsekvens inte är uppmätt — en okänd dialog loggas ordagrant med sina texter och knappar och stängningen faller på timeouten i stället.
+
+```
+close_state:   closed_discarding_changes
+dialog_count:  0        (smutsigt projekt)
+dialog_count:  0        (samma projekt direkt efter en reset)
+```
+
+#### Fynd 2 — Logic markerar ett NYSS ÖPPNAT projekt som ändrat, omedelbart
+
+Första versionen av verifieringen hade `document_is_unmodified` som ett av villkoren. Den föll på **varje** reset som i övrigt fungerade perfekt: direkt efter att `openProject` returnerat rapporterar AppleScript-sviten `modified: true` på ett projekt som ingen rört. Två raka resetar av samma orörda fil gav samma svar båda gångerna.
+
+Det är samma sanning som `saveProject` dokumenterat från andra hållet sedan v0.29 ("Logic sometimes keeps the dirty flag for view-only state that Cmd-S does not touch") — flaggan täcker vylägen, inte bara innehåll. Konsekvensen för det här verktyget är hård: **flaggan duger varken som verifiering eller som bevis på att osparat arbete fanns**. Den rapporteras nu som två rena observationer (`modified_flag_before_close`, `modified_flag_after_open`) med skälet skrivet i noten, och den ingår **inte** i `verified`. Att låta den göra det hade betytt att varje lyckad reset rapporterade sig som misslyckad, vilket är precis lika oärligt som motsatsen.
+
+#### Fynd 3 — AX-dokumentsökvägen SÄTTER SIG; en enda läsning är en kapplöpning
+
+`openProject` avgör att projektet är öppet genom Logics AppleScript-dokumentlista. Verifieringen läser i stället fönstrets `AXDocument`, och de två är inte samtidiga: på den **första** av två identiska resetar stod projektet redan i dokumentlistan medan fönstret ännu inte publicerat någon `AXDocument` alls. En enda läsning underkände alltså en reset som hade fungerat.
+
+```
+reset 1 (en läsning):   frontmost_document_is_target FALSE — "no AXDocument"
+reset 2 (en läsning):   frontmost_document_is_target TRUE
+reset 1 och 2 (pollad): TRUE, "settled in 0 ms"
+```
+
+Verifieringen pollar nu upp till 15 s och rapporterar hur länge den fick vänta. Detsamma gäller `openProject`s egen timeout, som förut sa "a dialog may need attention" som en **gissning**: den läser numera av skärmen och namnger vad Logic faktiskt visar, eller säger att ingen dialog finns — två olika diagnoser som förtjänar två olika meningar.
+
+#### Fynd 4 — cachescope-token kan inte se en reset till SAMMA sökväg
+
+Alla fyra projektcachar (bankkarta, tempokarta, taktkarta, pluginparameternamn) är stämplade med `cacheScopeToken(projectPath:)`, vilket redan hanterar ett byte till ett **annat** projekt: stämpeln matchar inte och filen behandlas som frånvarande. Men utvärderingsfallet öppnar **samma** fil igen, och då är stämpeln identisk — medan bankkartan mycket väl kan ha mätts mot spår som bara fanns osparade. En cache som inte är *inaktuell* utan *fel*, alltså precis det felläge den här servern finns för att förhindra.
+
+`logic_reset_to` raderar därför alla fyra explicit, **mellan** stängningen och öppningen (en cacheläsning som råkade kapplöpa öppningen skulle annars fylla på från det gamla scopet igen), och rapporterar vilka filer som faktiskt fanns. Live-bevisat i tre steg:
+
+```
+cachar VARMA (efter structure-snapshot + list_strips):  meter-map, tempo-map
+logic_reset_to  ->  caches_cleared: [bank_map, meter_map, param_names, tempo_map]
+cachar EFTER:                                            (inga)
+cachar efter en enda ny läsning:                         meter-map, tempo-map
+```
+
+#### Fynd 5 — snapshotens hela poäng är att en misslyckad läsare INTE försvinner
+
+Tio läsare i följd mot ett levande UI kommer inte att lyckas varje gång. En ögonblicksbild som tyst utelämnar sektionen som föll är sämre än ingen: en utvärdering som diffar två dokument läser den saknade nyckeln som "projektet har inga markörer" i stället för "Marker List öppnade inte". Kontraktet är därför att **varje** sektion som står i `sections` finns i svaret, en trasig som `{"unavailable": "<skäl>"}`, och att `complete` är falskt så fort någon är det.
+
+Det testades inte bara i enhetstest utan **skarpt, med bryggan nere** (se fynd 6 — den hade just kraschat, vilket blev ett gratis experiment):
+
+```
+scope mix, död brygga:
+  complete: false
+  unavailable_sections: ["mixer", "strips"]
+  transport / tempo_map / meter_map / markers / tracks / regions: lästes normalt
+  warning: "This snapshot is INCOMPLETE: mixer, strips could not be read.
+            Do not treat an unavailable section as an empty one …"
+```
+
+Mätta kostnader på referensprojektet (25 strippar, 19 renderade spårrader, 16 adresserbara spår):
+
+| scope | total | vad som dominerar |
+|---|---|---|
+| `structure` | **2,0 s** | markörlistan 1,8 s (List Editors-panelen); transport 75 ms, regioner 86 ms, spår 55 ms, tempo-/taktkarta 4–8 ms ur cache |
+| `mix` | **23,1 s** | mixerögonblicksbilden 17,0 s + census 4,0 s (två bankvandringar) |
+| `full`, `max_tracks: 2` | **43,4 s** | inserts 8,1 s + sends 11,9 s för TVÅ spår — alltså ~10 s per spår |
+
+Determinismen ligger i tre val: fast sektions- och arrayordning, `.sortedKeys` i serialiseringen (som servern redan hade), och att **all tidmätning ligger i ett eget `timing_ms`-block** som en diff kan slänga i ett stycke. Utan det sista hade varje dokument skilt sig från sig självt.
+
+En sak till föll ut av korskontrollen mot de enskilda verktygen (transport, markörer, taktkarta och regioner jämfördes fält för fält och stämde): regionerna skilde sig på **ett** fält, `selected`, mellan två läsningar. Orsaken var inte läsaren utan `scope: "full"`, som **markerar varje spår den läser** — strippen måste vara vald för att kunna läsas. Ögonblicksbilden lägger nu tillbaka det spår som var valt innan och rapporterar om det lyckades (`selected_before` / `selection_restored`); regionval och ytans bank återställs inte, och noten säger det.
+
+#### Fynd 6 — bryggdaemonen kraschade, och buggen är en klassisk CoreMIDI-fälla från v0.26
+
+Mitt under det upprepade projektcyklandet slutade MCU-planet svara. Diagnosen tog en omväg — LCD:n var blank, vilket såg ut som att *Logic* släppt kontrollytan — men `ps` gav svaret: daemonen fanns inte längre. Kraschrapporten:
+
+```
+logician-2026-08-28-213814.ips
+EXC_BAD_ACCESS (SIGBUS)  "Bad access in stack guard region"
+  logician   closure #1 in setUpMIDI()
+  CoreMIDI   MIDIProcess::MIDIInPortThread::Run()
+procLaunch: 2026-08-27 01:00:37   (alltså inte dödad av min ombyggnad)
+```
+
+Koden i callbacken, oförändrad sedan `bee2a4f` (25 aug):
+
+```swift
+var packet = packets.packet                   // en KOPIA, på stacken
+for _ in 0..<packets.numPackets {
+    …
+    packet = MIDIPacketNext(&packet).pointee  // nästa adress räknas FRÅN STACKEN
+}
+```
+
+`MIDIPacketNext` räknar ut nästa pakets adress genom att stega förbi det paket den får. Får den en stackkopia stegar den förbi **stackkopian**, och paket två och framåt läses ur vad som råkar ligga ovanför den lokala variabeln — vilket är exakt vad `Bad access in stack guard region` betyder. En lista med **ett** paket, som nästan all MCU-trafik är, fungerar perfekt. Buggen gömde sig därför i tre dagars daglig användning och slog till först när något skickade en **skur**: ett projekt som stängs och öppnas, när Logic dumpar hela ytans tillstånd.
+
+Det är alltså `logic_reset_to`s normaldrift. En utvärderingsrigg som resettar mellan episoder hade dödat bryggan var femte episod.
+
+Rättningen är CoreMIDI:s egen iterator, som vandrar listans **riktiga** minne, utbruten till en ren funktion (`midiPacketBytes(in:)`) just för att den gick att enhetstesta — vilket den gamla loopen aldrig var. Testet bygger en riktig `MIDIPacketList` med `MIDIPacketListAdd` (så att paketsteget är CoreMIDI:s, inte vårt) med **åtta** paket och kräver att alla åtta kommer ut i ordning; ett niande test klampar en SysEx längre än `data`-tupelns 256 byte i stället för att läsa förbi den.
+
+Ärligt om vad som INTE är gjort: **kraschen är inte reproducerad mot den rättade byggnationen.** Den daemon som dog var användarens, och att starta en ny är förbjudet i den här sessionens regler — servern gör det själv vid nästa `logic_health` (`ensureRunning`, och `startSocketServer` gör `unlink` på socketen, så övertagandet är rent). Diagnosen vilar på kraschrapportens stackram plus koden, inte på ett återupprepat fall.
+
+#### Vad som blev kvar i användarens projekt (osparat, inget har nått disken)
+
+`Testlåt Copy.logicx` är öppet och friskt, och innehållet är **filens** — fyra resetar innebär att allt osparat som fanns när sessionen började är borta, vilket är hela verktygets semantik och var uttryckligen godkänt. Playheaden står där den stod. Inga spår, regioner, plugins eller mixervärden skrevs av det här arbetet; det enda som rörde projektet utöver resetarna var `scope: "full"`, som valde två spår (`Lofi Pad`, `Bas`) och lade tillbaka det som var valt.
+
+**Bryggdaemonen är nere** efter kraschen i fynd 6 och startades medvetet inte om. Nästa verktygsanrop genom serverbinären startar en ny (`main.swift` kör `ensureRunning()` direkt), och den nya bär rättningen. En äldre föräldralös process (`logic-mcp-demo --bridge`, pid 24812, från 25 aug) sitter kvar på socketfilen men svarar inte; den håller inte de fasta unique-ID:na (annars hade daemonen från 27 aug aldrig kunnat starta), så en ny brygga kan ta över.
+
+#### Vad som ändrades i koden
+
+`ProjectReset.swift` (ny: svarstabellen för dialoggrammatiken, sökvägsnormaliseringen, verifieringsdomen — alla rena och enhetstestade — plus `visibleDialogs`/`describeVisibleDialogs`/`pressDialogButton`, den trådade stängningen och verktygets orkestrering) · `ProjectSnapshot.swift` (ny: `SnapshotScope`, `SnapshotSection`, `SnapshotBuilder` med fullständighetsregeln, och sektionerna som komponerar de befintliga läsarna) · `AXProjects.swift` (`runAppleScript` finns nu även statiskt så den trådade stängningen slipper fånga en icke-Sendable klass; `openProject` rapporterar `dialogs_answered` i stället för att svara blint och tyst, och dess timeout namnger vad som står på skärmen) · `MIDIPacketWalk.swift` (ny, ren: `midiPacketBytes(in:)`) · `Bridge.swift` (callbacken använder den) · `ToolRegistry.swift` (två verktyg) · AGENT-GUIDE (två verktygsavsnitt plus arbetsflödet "Episode reset and snapshot diff").
+
+`swift test`: **516 tester gröna** (37 nya: dialoggrammatiken i båda riktningarna inklusive den kända dialogen vars knapp saknas, sökvägshanteringen, verifieringsdomens AND, scope-modellen och prefix-supersetegenskapen, fullständighetsregeln för både `capture` och `record`, verktygens annoteringar och vägransvägar, samt packetlist-vandringen mot en riktig flerpaketslista). `swift build -c release` grön. `serverVersion` är medvetet **inte** bumpad.
+
+Tre saker lämnas öppna och namnges hellre än att döljas: **kraschen mot den rättade bryggan är inte återupprepad** (fynd 6), **om Logic självt släpper kontrollytan vid en projektcykel är fortfarande obesvarat** — den blanka LCD:n som såg ut så var daemonens död, och frågan går inte att ställa igen förrän en brygga körs — och **`logic_project_snapshot` scope `full` är bara körd med `max_tracks: 2`**, alltså är beteendet på en hel 16-spårsvandring (~2,5 minuter) uppskattat och inte mätt.
