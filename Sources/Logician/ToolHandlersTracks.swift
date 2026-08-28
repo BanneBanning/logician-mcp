@@ -224,6 +224,30 @@ extension MCPServer {
         )
     }
 
+    func handleGetRegionParams(_ arguments: [String: Any]) throws -> Any {
+        return try logic.readRegionParameters(
+            trackName: arguments["track_name"] as? String,
+            regionName: arguments["region_name"] as? String,
+            startBar: arguments["start_bar"] as? Int,
+            includeQuantizeValues: arguments["include_quantize_values"] as? Bool ?? false
+        )
+    }
+
+    func handleSetRegionParams(_ arguments: [String: Any]) throws -> Any {
+        let scope = (arguments["scope"] as? String) ?? "region"
+        guard scope == "region" || scope == "selection" else {
+            throw LogicianError.invalidArguments("scope must be 'region' or 'selection'")
+        }
+        return try logic.setRegionParameters(
+            trackName: arguments["track_name"] as? String,
+            regionName: arguments["region_name"] as? String,
+            startBar: arguments["start_bar"] as? Int,
+            scope: scope,
+            arguments: arguments,
+            expected: (arguments["expected_current"] as? [String: Any]) ?? [:]
+        )
+    }
+
     func handleCopyRegion(_ arguments: [String: Any]) throws -> Any {
         guard let toBar = arguments["to_bar"] as? Int else {
             throw LogicianError.invalidArguments("missing integer: to_bar")

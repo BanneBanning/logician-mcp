@@ -732,6 +732,69 @@ extension MCPServer {
                 handler: MCPServer.handleCopyRegion
             ),
             Tool(
+                name: "logic_get_region_params",
+                description: "Read a region's own parameters out of Logic's Region inspector — the panel at the top of the left inspector that says 'Region: <name>'. This is the read side of logic_set_region_params and the only way to see a region's quantize, transpose, velocity, loop, mute, gain, fades or delay. Pass track_name (plus region_name and/or start_bar) and the region is selected first; call it with no arguments to read whatever is selected. THREE THINGS THE RESULT TELLS YOU BEFORE THE VALUES. `subject` says whose parameters these are: a region, 'multiple' when several are selected (values that differ read as mixed), or 'defaults' — with NOTHING selected the panel shows the TRACK's region defaults ('MIDI Defaults' / 'Audio Defaults'), which is a different thing entirely and is never written by this server. `region_type` is read off the rows Logic published, independently of the arrangement map: a MIDI region has Velocity Offset, Dynamics, Gate Time and the Q-rows, an audio region has Gain, Fine Tune, Fade-In/Out, Reverse and Smart Tempo. And `enabled` per row is load-bearing: Logic greys out every Q-row while Quantize is Off, and a disabled control cannot be written. `display` is Logic's own text for the value and is ABSENT at a parameter's default, because Logic prints the default blank. The panel is opened (and its 'More' section with it) and put back exactly as it was found.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "track_name": ["type": "string", "description": "Select this track's region first. Omit to read whatever is selected."],
+                        "region_name": ["type": "string", "description": "With track_name: which region."],
+                        "start_bar": ["type": "integer", "description": "With track_name: the region's current start bar."],
+                        "include_quantize_values": [
+                            "type": "boolean",
+                            "description": "Also open the Quantize pop-up and return every value Logic offers (note values, triplets, swing A-F, tuplets). Costs a menu open; the menu is always dismissed."
+                        ]
+                    ],
+                    "additionalProperties": false
+                ],
+                // Selects a region when addressed by name, and toggles the
+                // panel's disclosure triangles, which it restores.
+                safety: .write,
+                idempotent: true,
+                handler: MCPServer.handleGetRegionParams
+            ),
+            Tool(
+                name: "logic_set_region_params",
+                description: "Set a region's own parameters through Logic's Region inspector: quantize (and its swing and strength), transpose, velocity offset, dynamics, gate time, delay, loop and mute. These are Logic's NON-DESTRUCTIVE playback parameters — the notes are not rewritten, so every one of them is reversible by setting it back, and logic_list_events keeps showing the recorded positions rather than the quantized ones. Pass as many as you like in one call; they are applied in a fixed order with QUANTIZE FIRST, because Logic disables every Q-row while Quantize is Off (so 'quantize to 1/16 with 75% swing' is one call, not two). Each write is read back off Logic's own control and reported as before/after; a parameter already at the requested value is a verified no-op in `unchanged` and nothing is pressed. Compare-and-set with `expected_current` per parameter. VALUES: quantize takes Logic's own menu spelling ('Off', '1/16 Note', '1/8 Swing B', '1/16 Triplet (1/24)' — read the whole list with logic_get_region_params include_quantize_values, and a near miss is refused with the list rather than guessed at); q_swing 1-99 %, q_strength 0-100 %, transpose -96..96 semitones, velocity_offset -99..99, delay_ticks -999..9999 (240 ticks = a 1/16); dynamics and gate_time are Logic's SCALINGS, given by name ('Fixed', '50%', '100%', '125%', '400%', and 'Legato' for gate_time only). SCOPE: the default 'region' selects the named region exclusively and writes to it alone. scope 'selection' writes to every region currently selected (set that up with logic_select_regions) — measured, not assumed: two selected regions both took the write — and it leaves the selection alone. A parameter whose value DIFFERS between the selected regions reads as mixed and cannot be compare-and-set. REFUSED, on purpose: with nothing selected the panel shows the track's region defaults and a write there would change what every future region inherits; audio-only parameters (gain, fades, reverse, fine tune) are not implemented here even though the same panel publishes them.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "track_name": ["type": "string", "description": "Which track the region is on. Required for scope 'region'."],
+                        "region_name": ["type": "string", "description": "Which region, with start_bar to disambiguate."],
+                        "start_bar": ["type": "integer", "description": "The region's CURRENT start bar."],
+                        "scope": [
+                            "type": "string",
+                            "enum": ["region", "selection"],
+                            "description": "'region' (default) selects the named region and writes only to it; 'selection' writes to every currently selected region and changes no selection."
+                        ],
+                        "quantize": ["type": "string", "description": "Logic's own menu spelling, e.g. 'Off', '1/16 Note', '1/8 Swing C'."],
+                        "q_swing": ["type": "integer", "minimum": 1, "maximum": 99, "description": "Swing percentage; 50 is straight. Needs quantize to be on."],
+                        "q_strength": ["type": "integer", "minimum": 0, "maximum": 100, "description": "How far notes are pulled to the grid, 0-100 %. 100 is Logic's default; lower it to quantize and still leave feel. Needs quantize to be on."],
+                        "transpose": ["type": "integer", "minimum": -96, "maximum": 96, "description": "Semitones. Audio regions cap at ±36."],
+                        "velocity_offset": ["type": "integer", "minimum": -99, "maximum": 99, "description": "Added to every note's velocity. MIDI regions only."],
+                        "dynamics": ["type": "string", "description": "Velocity scaling by name: Fixed, 25%, 50%, 75%, 88%, 94%, 100%, 106%, 112%, 125%, 150%, 175%, 200%, 300%, 400%. MIDI regions only."],
+                        "gate_time": ["type": "string", "description": "Note-length scaling by name: the Dynamics list plus 'Legato'. MIDI regions only."],
+                        "delay_ticks": ["type": "integer", "minimum": -999, "maximum": 9999, "description": "Playback offset in ticks; 240 ticks = a 1/16 note. Logic shows it as a musical value ('-1/32')."],
+                        "loop": ["type": "boolean", "description": "Loop the region to the next region or the project end."],
+                        "mute": ["type": "boolean", "description": "Mute this region (not the track)."],
+                        "expected_current": [
+                            "type": "object",
+                            "description": "Compare-and-set: the same parameter names with the values you believe are current. Any mismatch refuses with precondition_failed and writes nothing.",
+                            "additionalProperties": true
+                        ]
+                    ],
+                    "additionalProperties": false
+                ],
+                // Changes how the region plays back but removes no work: every
+                // parameter is a value that can be set straight back, and the
+                // recorded notes are untouched. Idempotent by construction —
+                // the arguments name absolute target values.
+                safety: .write,
+                idempotent: true,
+                changesSound: true,
+                handler: MCPServer.handleSetRegionParams
+            ),
+            Tool(
                 name: "logic_set_tempo",
                 description: "Set the project tempo in BPM via the control bar's tempo display (rapid-fire stepwise converge, ~1.3 s per 120 BPM of distance). Whole-BPM resolution. Compare-and-set with expected_current_bpm. TEMPO MAP GUARD: the tempo display shows and sets the tempo AT THE PLAYHEAD, so on a project with a tempo track this write would edit one tempo node rather than the project tempo. It therefore reads the project's tempo map out of Logic's Tempo List (View > List Editors > Tempo; ~2 s, no playhead movement) and REFUSES with precondition_failed when the map holds more than one tempo: a tempo map is edited in Logic's tempo track / Tempo List, not through this slider. When the Tempo List cannot be read it falls back to sampling the tempo at the playhead and at bar 1 (parking the playhead and restoring it — roughly 0.13 s per bar of travel) and refuses the same way; two agreeing samples are evidence, not proof, so the result then reports which bars were compared in tempo_sampled_at_bars. There is no override argument.",
                 inputSchema: [
