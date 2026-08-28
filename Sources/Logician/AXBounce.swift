@@ -8,7 +8,19 @@ extension LogicAccessibility {
 
     /// Presses a menu bar item found by title path fragment, e.g. Bounce >
     /// "Project or Section…".
-    func pressMenuItem(containing fragment: String, underMenu parent: String) throws {
+    ///
+    /// `settled` makes the press VERIFIED instead of merely performed: when it
+    /// is given, the press is followed by polling it, and a press that
+    /// returned `.success` while nothing happened falls back to the keystroke
+    /// the menu item advertises for itself (see `MenuShortcut`). Callers that
+    /// pass nothing get exactly the behaviour this had before — press, trust
+    /// the status code, return — which is what the bounce path has always
+    /// done and what it is live-verified with.
+    func pressMenuItem(
+        containing fragment: String,
+        underMenu parent: String,
+        settled: (() -> Bool)? = nil
+    ) throws {
         guard let application = NSRunningApplication
             .runningApplications(withBundleIdentifier: bundleIdentifier)
             .first else { throw LogicianError.logicNotRunning }
@@ -33,6 +45,33 @@ extension LogicAccessibility {
             }
         }
         walk(menuBar, depth: 0, path: [])
+        if target == nil {
+            // A submenu Logic has never opened publishes ONE untitled child
+            // instead of its items — measured 2026-08-28 on `Logic Pro > Key
+            // Commands`, whose only child had no title at all while `Settings`
+            // and `Control Surfaces` right above it were fully populated. So
+            // "not found" can mean "not built yet": press the parent, which
+            // makes AppKit build the menu, and walk again. The menu is
+            // cancelled unless the second walk finds the item, because an open
+            // menu swallows Logic's keyboard and the next key command with it.
+            var parentItem: AXUIElement?
+            walk2: for candidate in descendants(of: menuBar, maximumDepth: AXDepth.menuBarItem) {
+                if stringAttribute(candidate, kAXTitleAttribute as String) == parent,
+                   ["AXMenuItem", "AXMenuBarItem"]
+                    .contains(stringAttribute(candidate, kAXRoleAttribute as String)) {
+                    parentItem = candidate
+                    break walk2
+                }
+            }
+            if let parentItem {
+                _ = AXUIElementPerformAction(parentItem, kAXPressAction as CFString)
+                Thread.sleep(forTimeInterval: 0.5)
+                walk(menuBar, depth: 0, path: [])
+                if target == nil {
+                    _ = AXUIElementPerformAction(parentItem, kAXCancelAction as CFString)
+                }
+            }
+        }
         guard let item = target else {
             throw LogicianError.windowNotFound("menu item '\(fragment)' under '\(parent)'")
         }
@@ -40,6 +79,46 @@ extension LogicAccessibility {
         guard status == .success else {
             throw LogicianError.writeFailed("menu press returned AXError \(status.rawValue)")
         }
+        guard let settled else { return }
+        for _ in 0..<12 {
+            if settled() { return }
+            Thread.sleep(forTimeInterval: 0.15)
+        }
+        // The press said `.success` and nothing happened. Measured 2026-08-28:
+        // `Logic Pro > Key Commands > Edit Assignments…` answers `.success` to
+        // both AXPress and AXPick and never opens its window, while the same
+        // code opens the bounce dialog every time. The item publishes its own
+        // shortcut, so press THAT — never a hardcoded key, which could be
+        // bound to anything in the user's set.
+        let character = stringAttribute(item, "AXMenuItemCmdChar")
+        let modifiers = Int(stringAttribute(item, "AXMenuItemCmdModifiers")) ?? 0
+        guard !character.isEmpty,
+              let shortcut = MenuShortcut.decode(character: character, modifiers: modifiers) else {
+            throw LogicianError.openVerificationFailed(
+                "the menu item '\(fragment)' under '\(parent)' was pressed successfully and nothing "
+                    + "happened, and it advertises no keyboard shortcut this server can synthesise"
+                    + (character.isEmpty ? "" : " (it shows '\(character)')")
+            )
+        }
+        try ensureLogicFrontmost(for: "the \(fragment) keyboard shortcut")
+        let source = CGEventSource(stateID: .hidSystemState)
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: shortcut.key, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: shortcut.key, keyDown: false) else {
+            throw LogicianError.writeFailed("could not create the keyboard events for \(fragment)")
+        }
+        down.flags = shortcut.flags
+        up.flags = shortcut.flags
+        down.post(tap: .cghidEventTap)
+        Thread.sleep(forTimeInterval: 0.05)
+        up.post(tap: .cghidEventTap)
+        for _ in 0..<40 {
+            Thread.sleep(forTimeInterval: 0.25)
+            if settled() { return }
+        }
+        throw LogicianError.openVerificationFailed(
+            "'\(fragment)' under '\(parent)' did not take effect - neither the menu press nor its own "
+                + "shortcut \(MenuShortcut.describe(character: character, modifiers: modifiers))"
+        )
     }
 
     func bounceDialog(timeout: Double = 4.0) -> AXUIElement? {
@@ -160,6 +239,197 @@ extension LogicAccessibility {
         return rows
     }
 
+    // MARK: - Bounce dialog options (G53)
+
+    /// The element's top-left corner in screen points, nil when it publishes
+    /// no position.
+    func origin(of element: AXUIElement) -> CGPoint? {
+        guard let value = attribute(element, kAXPositionAttribute as String),
+              CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        var point = CGPoint.zero
+        guard AXValueGetValue((value as! AXValue), .cgPoint, &point) else { return nil }
+        return point
+    }
+
+    /// The pop-up that belongs to a label, paired by GEOMETRY.
+    ///
+    /// Logic's bounce dialog publishes its labels as `AXStaticText` and its
+    /// controls as `AXPopUpButton` **siblings**, and neither carries a
+    /// description or a title that connects them — the only thing that says
+    /// `Bit Depth:` goes with the `24-bit` pop-up is that they sit on the same
+    /// row. Measured 2026-08-28: every label sat at x=715 and its pop-up at
+    /// x=819 with the pop-up's y exactly ONE point above the label's
+    /// (187/186, 217/216, 247/246, 277/276, 307/306), so "same row, to the
+    /// right, nearest" is the rule, with a few points of tolerance.
+    func labelledPopUp(
+        in root: AXUIElement, label: String, maximumDepth: Int = 3
+    ) -> AXUIElement? {
+        var labels: [AXUIElement] = []
+        var popups: [AXUIElement] = []
+        walk(from: root, maximumDepth: maximumDepth) { element in
+            switch stringAttribute(element, kAXRoleAttribute as String) {
+            case "AXStaticText":
+                let value = stringAttribute(element, kAXValueAttribute as String)
+                if value == label || value == label + ":" { labels.append(element) }
+            case "AXPopUpButton":
+                popups.append(element)
+            default:
+                break
+            }
+            return .descend
+        }
+        for text in labels {
+            guard let anchor = origin(of: text) else { continue }
+            let row = popups.compactMap { popup -> (AXUIElement, CGFloat)? in
+                guard let point = origin(of: popup),
+                      abs(point.y - anchor.y) <= 3, point.x > anchor.x else { return nil }
+                return (popup, point.x - anchor.x)
+            }.sorted { $0.1 < $1.1 }
+            if let nearest = row.first?.0 { return nearest }
+        }
+        return nil
+    }
+
+    /// Chooses one item in a pop-up by title and reads the pop-up back.
+    ///
+    /// The readback is the verification: pressing a menu item reports success
+    /// whether or not the menu was even open (v0.31.0's lesson), so the value
+    /// the pop-up shows afterwards is the only evidence that counts.
+    @discardableResult
+    func selectPopUpItem(_ popup: AXUIElement, title: String) throws -> String {
+        let before = stringAttribute(popup, kAXValueAttribute as String)
+        if before.caseInsensitiveCompare(title) == .orderedSame { return before }
+        dismissPopupMenus()
+        var menu: AXUIElement?
+        pressing: for attempt in 0..<3 {
+            _ = AXUIElementPerformAction(popup, kAXPressAction as CFString)
+            for _ in 0..<10 {
+                Thread.sleep(forTimeInterval: 0.15)
+                if let open = popupMenus().first { menu = open; break pressing }
+            }
+            if attempt < 2 { dismissPopupMenus() }
+        }
+        guard let menu else {
+            throw LogicianError.openVerificationFailed(
+                "the '\(before)' pop-up did not open, so '\(title)' could not be chosen"
+            )
+        }
+        guard let item = findMenuItem(in: menu, titled: title) else {
+            dismissPopupMenus()
+            throw LogicianError.parameterNotFound(
+                "'\(title)' in the pop-up currently showing '\(before)'"
+            )
+        }
+        _ = AXUIElementPerformAction(item, kAXPressAction as CFString)
+        Thread.sleep(forTimeInterval: 0.3)
+        dismissPopupMenus()
+        let after = stringAttribute(popup, kAXValueAttribute as String)
+        guard after.caseInsensitiveCompare(title) == .orderedSame else {
+            throw LogicianError.verificationFailed(
+                requested: "the pop-up on '\(title)'",
+                actual: "it still shows '\(after)'",
+                restored: false
+            )
+        }
+        return before
+    }
+
+    /// A titled checkbox anywhere under `root`.
+    func checkBox(in root: AXUIElement, titled title: String, maximumDepth: Int = 3) -> AXUIElement? {
+        firstDescendant(of: root, maximumDepth: maximumDepth) {
+            stringAttribute($0, kAXRoleAttribute as String) == "AXCheckBox"
+                && stringAttribute($0, kAXTitleAttribute as String) == title
+        }
+    }
+
+    /// Sets a checkbox and reads it back. Returns what it was before.
+    @discardableResult
+    func setCheckBox(_ box: AXUIElement, to wanted: Bool) throws -> Bool {
+        let before = stringAttribute(box, kAXValueAttribute as String) == "1"
+        guard before != wanted else { return before }
+        _ = AXUIElementPerformAction(box, kAXPressAction as CFString)
+        Thread.sleep(forTimeInterval: 0.2)
+        let after = stringAttribute(box, kAXValueAttribute as String) == "1"
+        guard after == wanted else {
+            throw LogicianError.verificationFailed(
+                requested: "the checkbox \(wanted ? "on" : "off")",
+                actual: "it is \(after ? "on" : "off")",
+                restored: false
+            )
+        }
+        return before
+    }
+
+    /// Applies the caller's delivery options to an OPEN bounce dialog and
+    /// reports what each control read before and after. Every value is
+    /// canonicalised first (so an unknown one is refused before any press),
+    /// and every write is verified by reading the control back.
+    ///
+    /// These settings PERSIST in Logic between bounces — the dialog is the
+    /// user's own preference sheet — so nothing is restored afterwards and the
+    /// result says so instead of pretending it was temporary.
+    func applyBounceOptions(
+        dialog: AXUIElement, options: [String: String], includeAudioTail: Bool?
+    ) throws -> [String: Any] {
+        var applied: [String: Any] = [:]
+        let popupSpec: [(argument: String, label: String, values: [String])] = [
+            ("file_type", "File Type", BounceFormat.fileTypes),
+            ("bit_depth", "Bit Depth", BounceFormat.bitDepths),
+            ("sample_rate", "Sample Rate", BounceFormat.sampleRates),
+            ("dithering", "Dithering", BounceFormat.ditherings),
+            ("normalize", "Normalize", BounceFormat.normalizeModes)
+        ]
+        for spec in popupSpec {
+            guard let raw = options[spec.argument] else { continue }
+            guard let title = BounceFormat.canonical(raw, in: spec.values) else {
+                throw LogicianError.invalidArguments(
+                    BounceFormat.rejection(raw, label: spec.label, options: spec.values)
+                )
+            }
+            guard let popup = labelledPopUp(in: dialog, label: spec.label) else {
+                throw LogicianError.windowNotFound(
+                    "the '\(spec.label):' pop-up in the bounce dialog (it only exists while the "
+                        + "Uncompressed destination is selected)"
+                )
+            }
+            let before = try selectPopUpItem(popup, title: title)
+            applied[spec.argument] = ["from": before, "to": title]
+        }
+        if let includeAudioTail {
+            guard let box = checkBox(in: dialog, titled: "Include Audio Tail") else {
+                throw LogicianError.windowNotFound("the 'Include Audio Tail' checkbox")
+            }
+            let before = try setCheckBox(box, to: includeAudioTail)
+            applied["include_audio_tail"] = ["from": before, "to": includeAudioTail]
+        }
+        return applied
+    }
+
+    /// Every delivery control the dialog is currently showing, read-only —
+    /// what the produced file will be if nothing is changed.
+    func readBounceOptions(dialog: AXUIElement) -> [String: Any] {
+        var state: [String: Any] = [:]
+        for (argument, label) in [
+            ("file_type", "File Type"), ("bit_depth", "Bit Depth"),
+            ("sample_rate", "Sample Rate"), ("dithering", "Dithering"),
+            ("normalize", "Normalize")
+        ] {
+            if let popup = labelledPopUp(in: dialog, label: label) {
+                state[argument] = stringAttribute(popup, kAXValueAttribute as String)
+            }
+        }
+        for (argument, title) in [
+            ("include_audio_tail", "Include Audio Tail"),
+            ("include_tempo_information", "Include Tempo Information"),
+            ("bounce_2nd_cycle_pass", "Bounce 2nd Cycle Pass")
+        ] {
+            if let box = checkBox(in: dialog, titled: title) {
+                state[argument] = stringAttribute(box, kAXValueAttribute as String) == "1"
+            }
+        }
+        return state
+    }
+
     func savePanelApplication() -> AXUIElement? {
         for process in NSWorkspace.shared.runningApplications
         where (process.bundleIdentifier ?? "").contains("openAndSavePanelService") {
@@ -179,7 +449,9 @@ extension LogicAccessibility {
         startBar: Int,
         endBar: Int,
         label: String,
-        expectedProjectPath: String?
+        expectedProjectPath: String?,
+        options: [String: String] = [:],
+        includeAudioTail: Bool? = nil
     ) throws -> [String: Any] {
         try verifyProjectPath(expectedProjectPath)
         guard endBar > startBar else {
@@ -202,6 +474,21 @@ extension LogicAccessibility {
                 Thread.sleep(forTimeInterval: 0.12)
             }
         }
+
+        // Delivery options (G53). Applied BEFORE the positions so a refusal on
+        // an unknown value costs nothing but the dialog, and read back
+        // afterwards so the result can state what the file actually is.
+        var appliedOptions: [String: Any] = [:]
+        do {
+            appliedOptions = try applyBounceOptions(
+                dialog: dialog, options: options, includeAudioTail: includeAudioTail
+            )
+        } catch {
+            dismissPopupMenus()
+            cancelBounceDialog()
+            throw error
+        }
+        let deliveredAs = readBounceOptions(dialog: dialog)
 
         // Positions: start and end groups (tab-separated bar values).
         let groups = children(of: dialog).filter {
@@ -367,12 +654,21 @@ extension LogicAccessibility {
             "end_bar": endBar,
             "bytes": Int(lastSize),
             "write_route": "bounce_dialog_offline",
+            // What the file IS, read off the dialog's own controls just
+            // before OK was pressed - not what was asked for.
+            "delivered_as": deliveredAs,
             "note": earCopy != nil
                 ? "This result CARRIES the bounce as an MCP audio content block - listen to it now. If no audio block reached you, your client drops them: open preview_path with your client's FILE VIEWER instead (passes as real audio in most clients). NEVER read audio files as text/bash."
                 : "Offline render of the master output. To LISTEN: open preview_path with your client's FILE VIEWER (real audio in most clients), or logic_get_audio_clip for a windowed clip. NEVER read audio files as text/bash."
         ]
         if let earCopy {
             result["_audio"] = ["data": earCopy.base64EncodedString(), "mimeType": "audio/mp4"]
+        }
+        if !appliedOptions.isEmpty {
+            result["options_changed"] = appliedOptions
+            result["options_note"] = "These are the USER'S OWN bounce settings and Logic keeps them "
+                + "for the next bounce - they were changed, not borrowed, and nothing here puts them "
+                + "back. Pass the same arguments explicitly next time rather than assuming a default."
         }
         // Two honesty guards, born from a session where an agent "listened"
         // to silent bounces for an hour: name any soloed tracks (a leftover

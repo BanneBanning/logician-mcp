@@ -8,12 +8,25 @@ extension MCPServer {
               let endBar = arguments["end_bar"] as? Int else {
             throw LogicianError.invalidArguments("missing integers: start_bar, end_bar")
         }
+        var options: [String: String] = [:]
+        for key in ["file_type", "bit_depth", "sample_rate", "dithering", "normalize"] {
+            if let value = arguments[key] as? String { options[key] = value }
+            // A sample rate passed as a NUMBER (48000) is the obvious mistake
+            // and is cheaper to accept than to refuse.
+            if let number = arguments[key] as? Int { options[key] = String(number) }
+            if let number = arguments[key] as? Double {
+                options[key] = number == number.rounded()
+                    ? String(Int(number)) : String(number)
+            }
+        }
         do {
             payload = try logic.bounceRange(
                 startBar: startBar,
                 endBar: endBar,
                 label: (arguments["label"] as? String) ?? "bounce",
-                expectedProjectPath: arguments["expected_project_path"] as? String
+                expectedProjectPath: arguments["expected_project_path"] as? String,
+                options: options,
+                includeAudioTail: arguments["include_audio_tail"] as? Bool
             )
         } catch {
             // A modal Bounce dialog left open freezes EVERYTHING —
@@ -22,6 +35,157 @@ extension MCPServer {
             throw error
         }
         return payload
+    }
+
+    /// G54: aligned stems, composed out of machinery that already exists —
+    /// the solo toggle, the offline bounce, and the frame count the metrics
+    /// reader already computes. What makes them STEMS rather than a loop over
+    /// renders is the shared bar contract: every file covers exactly the same
+    /// range, and the tool says so only after comparing their frame counts.
+    func handleExportStems(_ arguments: [String: Any]) throws -> Any {
+        guard let startBar = arguments["start_bar"] as? Int,
+              let endBar = arguments["end_bar"] as? Int else {
+            throw LogicianError.invalidArguments("missing integers: start_bar, end_bar")
+        }
+        guard endBar > startBar else {
+            throw LogicianError.invalidArguments("end_bar must be greater than start_bar")
+        }
+        guard let requested = arguments["tracks"] as? [String] else {
+            throw LogicianError.invalidArguments("missing array of strings: tracks")
+        }
+        let tracks = try StemExport.normalizedTracks(requested)
+        try logic.verifyProjectPath(arguments["expected_project_path"] as? String)
+
+        // A solo that is already on poisons every stem: each bounce would
+        // carry that track as well, and nothing downstream could tell. This
+        // is the same failure logic_bounce_range warns about after the fact -
+        // here it is a refusal before the first render, because the whole
+        // point of a stem set is that each file holds ONE track.
+        let preSoloed = (try? logic.soloedTrackNames()) ?? []
+        if !preSoloed.isEmpty {
+            throw LogicianError.currentValueMismatch(
+                expected: "no track soloed before the stem run",
+                actual: "\(preSoloed.joined(separator: ", ")) already soloed. Nothing was bounced - "
+                    + "every stem would have contained those tracks too. Unsolo and call again."
+            )
+        }
+
+        let prefix = sanitizedFilenameComponent(
+            (arguments["label"] as? String) ?? "stem", fallback: "stem"
+        )
+        var stems: [[String: Any]] = []
+        var frames: [Int?] = []
+        var warnings: [String] = []
+
+        for track in tracks {
+            func setSolo(_ enabled: Bool) throws {
+                _ = try MCUController.setToggle(trackName: track, control: "solo", enabled: enabled)
+                    ?? logic.setStripToggle(
+                        trackName: track, trackNumber: nil, control: "solo", enabled: enabled
+                    )
+            }
+            try setSolo(true)
+            var bounce: [String: Any]
+            do {
+                bounce = try logic.bounceRange(
+                    startBar: startBar, endBar: endBar,
+                    label: "\(prefix)-\(sanitizedFilenameComponent(track, fallback: "track"))",
+                    expectedProjectPath: nil
+                )
+            } catch {
+                // Never leave a solo up: the next tool call - or the user's
+                // own next bounce - would be silently wrong.
+                logic.cancelBounceDialog()
+                try? setSolo(false)
+                throw error
+            }
+            // Unsolo BEFORE reading the file: the render is already on disk,
+            // and holding the solo one call longer is the risk this whole
+            // handler is built to avoid.
+            var soloRestored = true
+            do { try setSolo(false) } catch { soloRestored = false }
+
+            let path = bounce["path"] as? String ?? ""
+            let metrics = LogicAccessibility.audioFileMetrics(path: path)
+            frames.append(metrics?["frames"] as? Int)
+            var stem: [String: Any] = [
+                "track": track, "track_name": track,
+                "path": path,
+                "preview_path": bounce["preview_path"] ?? NSNull(),
+                "bytes": bounce["bytes"] ?? NSNull(),
+                "metrics": metrics ?? NSNull(),
+                "solo_restored": soloRestored
+            ]
+            if !soloRestored {
+                stem["warning"] = "the solo on '\(track)' could NOT be switched off again"
+                warnings.append("'\(track)' is still soloed - every later bounce contains only it until that is fixed.")
+            }
+            if let rms = metrics?["rms_db"] as? [Double], rms.allSatisfy({ $0 <= -65 }) {
+                stem["warning"] = "this stem is SILENT (rms \(rms) dB)"
+                warnings.append("'\(track)' bounced silent - it is muted, empty across bars \(startBar)-\(endBar), or not the track you meant.")
+            }
+            stems.append(stem)
+        }
+
+        // The stems are only stems if they line up.
+        let alignment = StemExport.frameAlignment(frames)
+        let leftSoloed = (try? logic.soloedTrackNames()) ?? []
+        if !leftSoloed.isEmpty {
+            warnings.append("Tracks still SOLOED after the run: \(leftSoloed.joined(separator: ", ")). Fix before any further bounce.")
+        }
+        var result: [String: Any] = [
+            "success": true,
+            "verified": alignment.aligned && leftSoloed.isEmpty,
+            "state": "exported",
+            "range": ["start_bar": startBar, "end_bar": endBar],
+            "count": stems.count,
+            "stems": stems,
+            "aligned": alignment.aligned,
+            "alignment_note": alignment.note,
+            "note": StemExport.contentsNote
+                + " Verification: " + alignment.note
+                + " No audio is attached - a stem set is far too much base64 for one result; open the paths with your client's file viewer, or logic_get_audio_clip one at a time."
+        ]
+        if !warnings.isEmpty { result["warning"] = warnings.joined(separator: " ALSO: ") }
+        return result
+    }
+
+    /// G33 / U7: "print that" — the verb `logic_render_track` is not.
+    func handleBounceInPlace(_ arguments: [String: Any]) throws -> Any {
+        let scope = (arguments["scope"] as? String) ?? "region"
+        guard ["region", "track"].contains(scope) else {
+            throw LogicianError.invalidArguments("scope must be 'region' or 'track'")
+        }
+        // The sheet's checkbox titles are its own; the arguments are the
+        // snake_case of the same names, mapped in one place.
+        let checkboxNames = [
+            "include_volume_pan_automation": "Include Volume/Pan Automation",
+            "include_audio_tail_in_region": "Include Audio Tail in Region",
+            "include_audio_tail_in_file": "Include Audio Tail in File",
+            "bypass_effect_plugins": "Bypass Effect Plug-ins",
+            "bounce_second_loop_pass": "Bounce Second Loop Pass",
+            "include_instrument_multi_outputs": "Include Instrument Multi-Outputs"
+        ]
+        var checkboxes: [String: Bool] = [:]
+        for (argument, title) in checkboxNames {
+            if let value = arguments[argument] as? Bool { checkboxes[title] = value }
+        }
+        do {
+            return try logic.bounceInPlace(
+                scope: scope,
+                trackName: arguments["track_name"] as? String,
+                regionName: arguments["region_name"] as? String,
+                startBar: arguments["start_bar"] as? Int,
+                name: arguments["name"] as? String,
+                normalize: arguments["normalize"] as? String,
+                destination: arguments["destination"] as? String,
+                source: arguments["source"] as? String,
+                checkboxes: checkboxes
+            )
+        } catch {
+            logic.cancelBounceInPlaceSheet()
+            throw error
+        }
     }
 
     func handleEvaluateChange(_ arguments: [String: Any]) throws -> Any {
