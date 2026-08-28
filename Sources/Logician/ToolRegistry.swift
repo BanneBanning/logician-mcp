@@ -54,13 +54,22 @@ extension MCPServer {
             ),
             Tool(
                 name: "logic_bounce_range",
-                description: "Offline-bounce a bar range of the master output to an audio file, many times faster than realtime playback. Drives Logic's bounce dialog and its XPC save panel entirely through verified accessibility (no playback). Temporarily switches the bounce destination to Uncompressed and restores the user's selection afterwards. Returns the file path.",
+                description: "Offline-bounce a bar range of the master output to an audio file, many times faster than realtime playback. Drives Logic's bounce dialog and its XPC save panel entirely through verified accessibility (no playback). Switches the bounce destination to Uncompressed. DELIVERY OPTIONS: file_type, bit_depth, sample_rate, dithering and normalize drive the dialog's own pop-ups (values are matched leniently - '48k', '48000' and '48 kHz' all reach '48 kHz' - and an unknown one is refused with the real list BEFORE anything is bounced), and include_audio_tail drives its checkbox. Whatever is not passed is left exactly as the user set it, and the result reports the full delivery state in `delivered_as`, read off the dialog just before OK. These are the USER'S OWN settings and Logic keeps them for the next bounce: they are changed, not borrowed, and nothing puts them back — `options_changed` says what moved. MP3 and M4A destinations exist in the dialog with their own option set and are NOT implemented here. Returns the file path.",
                 inputSchema: [
                     "type": "object",
                     "properties": [
                         "start_bar": ["type": "integer"],
                         "end_bar": ["type": "integer"],
                         "label": ["type": "string", "description": "Filename label, e.g. 'A' or 'baseline'."],
+                        "file_type": ["type": "string", "description": "AIFF, WAVE or CAF. Default: whatever the dialog is set to."],
+                        "bit_depth": ["type": "string", "description": "8-bit, 16-bit, 24-bit or 32-bit float."],
+                        "sample_rate": [
+                            "type": ["string", "number"],
+                            "description": "44.1 kHz, 48 kHz, 88.2 kHz, 96 kHz, 176.4 kHz, 192 kHz, or the lower rates (11.025/12/22.05/24/32 kHz). A number in Hz (48000) works too."
+                        ],
+                        "dithering": ["type": "string", "description": "None, POW-r #1 (Dithering), POW-r #2 (Noise Shaping), POW-r #3 (Noise Shaping) or UV22HR. Only meaningful when reducing bit depth."],
+                        "normalize": ["type": "string", "description": "Off, Overload Protection Only, or On. 'On' changes the level of the delivered file - say so when you report the result."],
+                        "include_audio_tail": ["type": "boolean", "description": "Let reverb/delay tails ring past the end bar into the file."],
                         "expected_project_path": ["type": "string"],
                         "include_audio": MCPServer.includeAudioProperty
                     ],
@@ -71,6 +80,61 @@ extension MCPServer {
                 // destination setting.
                 safety: .write,
                 handler: MCPServer.handleBounceRange
+            ),
+            Tool(
+                name: "logic_bounce_in_place",
+                description: "PRINT a region (or a whole track) back INTO the project as audio — the resampling verb. This is the one logic_render_track is not: render_track writes a file to DISK, this creates a new audio REGION in the arrangement that you can then chop, reverse, load into a sampler or bounce again. Drives 'File > Bounce > Regions in Place…' (scope 'region', the default) or 'Tracks in Place…' (scope 'track') and answers the sheet. Every sheet control is left exactly as the user set it unless you pass the matching argument, and the result reports the whole sheet state it used. ONE THING TO WATCH: 'Bypass Effect Plug-ins' is a real Logic setting that may be ON, which makes the print DRY — the result warns when it was, and bypass_effect_plugins: false is how you print the sound as you hear it. Verified against the arrangement map: a region that was not there before, with its track and bars reported. Undo removes it. The sheet is modal and is always cancelled on any failure path.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "scope": ["type": "string", "enum": ["region", "track"], "description": "'region' (default) prints the named region; 'track' prints the whole selected track."],
+                        "track_name": ["type": "string", "description": "The region's track (required for scope 'region'); the track to print for scope 'track'."],
+                        "region_name": ["type": "string"],
+                        "start_bar": ["type": "integer", "description": "The region's current start bar."],
+                        "name": ["type": "string", "description": "Name for the printed region/file. Logic's default is '<region>_bip'."],
+                        "destination": ["type": "string", "enum": ["new_track", "selected_track"], "description": "Where the printed audio lands."],
+                        "source": ["type": "string", "enum": ["mute", "leave", "delete"], "description": "What happens to the source region: muted (Logic's default), left playing, or deleted."],
+                        "normalize": ["type": "string", "description": "Off, Overload Protection Only, or On."],
+                        "bypass_effect_plugins": ["type": "boolean", "description": "true prints DRY (inserts not rendered). Pass false to print with the track's plugins."],
+                        "include_volume_pan_automation": ["type": "boolean"],
+                        "include_audio_tail_in_region": ["type": "boolean", "description": "Let the tail extend the printed REGION."],
+                        "include_audio_tail_in_file": ["type": "boolean", "description": "Let the tail into the FILE even when the region stops earlier."],
+                        "bounce_second_loop_pass": ["type": "boolean"],
+                        "include_instrument_multi_outputs": ["type": "boolean"]
+                    ],
+                    "additionalProperties": false
+                ],
+                // Destructive: with source 'delete' the original region goes,
+                // and even 'mute' changes what the project sounds like. Not
+                // idempotent - a repeat prints another copy.
+                safety: .destructive,
+                changesArrangement: true,
+                handler: MCPServer.handleBounceInPlace
+            ),
+            Tool(
+                name: "logic_export_stems",
+                description: "Export ALIGNED STEMS: one offline bounce per named track over the SAME bar range, each with only that track soloed, solo restored after every one. The shared range contract is what makes these stems rather than a loop of renders, and the tool verifies it - the frame counts of the files are compared and 'aligned' says whether they really line up. WHAT A STEM CONTAINS: the full master output heard one track at a time - post-fader, post-pan, post-insert, WITH the return of anything that track sends to a bus, and with the master chain applied. Two consequences it will report but you must plan around: summing the stems reproduces the mix only while the master chain is linear (a master limiter reacts to the whole mix and cannot react to one stem), and a bus fed by several of these tracks is counted once per stem. logic_render_track is the OTHER kind of file - a pre-fader freeze of the track alone, no sends, no master chain - and it is not a stem. Refuses before the first render when any track is already soloed (every stem would contain it). Costs one full offline bounce per track; the limit is 16 per call. No audio is attached - the result carries paths.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "tracks": [
+                            "type": "array",
+                            "items": ["type": "string"],
+                            "description": "Track names, exactly as logic_list_tracks reports them. Duplicates are refused."
+                        ],
+                        "start_bar": ["type": "integer", "minimum": 1],
+                        "end_bar": ["type": "integer", "description": "Exclusive: the range ends where this bar begins."],
+                        "label": ["type": "string", "description": "Filename prefix for the set, e.g. 'cue7'. The track name is appended per stem."],
+                        "expected_project_path": ["type": "string", "description": "Refuse unless this is the open project."]
+                    ],
+                    "required": ["tracks", "start_bar", "end_bar"],
+                    "additionalProperties": false
+                ],
+                // Writes files and toggles solo on every named track (restored
+                // after each). Idempotent in effect: a repeat produces another
+                // timestamped set and leaves the project as it found it.
+                safety: .write,
+                handler: MCPServer.handleExportStems
             ),
             Tool(
                 name: "logic_evaluate_change",
@@ -551,6 +615,79 @@ extension MCPServer {
                 handler: MCPServer.handleDeleteRegion
             ),
             Tool(
+                name: "logic_remove_silence",
+                description: "Cut the silence out of ONE audio region — the first move of every audio-post session, and what other DAWs call strip silence. Logic Pro 12.3.1 has no command by that name: the real one is 'Remove Silence from Audio Region…' and it opens a floating window with a LIVE PREVIEW of how many regions the current settings would leave. That preview is why apply defaults to FALSE: the first call opens the window, reads Logic's own count and the current threshold/time settings, closes it again and changes nothing, so an agent can ask 'what would this do?' before doing it. apply: true presses OK and verifies against the arrangement map (one region becomes N; Undo restores it, and the audio FILE is never touched). Refuses on a MIDI region. NOT IMPLEMENTED: the window's four numeric fields (threshold in dB, minimum silence, pre-attack, post-release) are per-digit steppers and this server does not write them — the result reports their current values, and changing them means touching Logic's window.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "track_name": ["type": "string"],
+                        "region_name": ["type": "string"],
+                        "start_bar": ["type": "integer", "description": "The region's current start bar."],
+                        "apply": ["type": "boolean", "description": "false (default) previews and changes nothing; true commits."]
+                    ],
+                    "required": ["track_name"],
+                    "additionalProperties": false
+                ],
+                // Destructive with apply: true (one region becomes many and the
+                // gaps go); a pure read otherwise, but the flag describes the
+                // tool and the safe answer for a tool that can write is write.
+                safety: .destructive,
+                changesArrangement: true,
+                handler: MCPServer.handleRemoveSilence
+            ),
+            Tool(
+                name: "logic_select_regions",
+                description: "Select MANY regions at once — the thing logic_select_region deliberately cannot do (it is exclusive and single). Modes, each one a real Logic command: 'track' (every region on the anchor's track), 'following' (the anchor and everything after it, on EVERY track), 'following_same_track' (the anchor and everything after it on that track only), 'all' (every region in the project), 'none' (clear the selection). The relative modes need an anchor: track_name, plus region_name and/or start_bar when the track holds more than one region — the anchor is selected exclusively first, then the command extends from it. VERIFICATION: the number of selected regions is counted before and after off the arrangement map, and a mode that moved nothing comes back success: false rather than pretending. The count sees VISIBLE track rows only, while the selection itself is project-wide — a following edit acts on every selected region, counted or not. Uses learned key commands (Logic 12.3.1 names: 'Select All Regions/Cells of Same Track', 'Select All Following', 'Select All Following of Same Track/Pitch', 'Select All', 'Deselect All'); one that is missing from the registry is LEARNED into the user's own Logic key command set on the spot and the result says so.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "mode": [
+                            "type": "string",
+                            "enum": ["track", "following", "following_same_track", "all", "none"],
+                            "description": "Which selection command to fire."
+                        ],
+                        "track_name": ["type": "string", "description": "The anchor's track; required for every mode except 'all' and 'none'."],
+                        "region_name": ["type": "string", "description": "Which region is the anchor (with start_bar to disambiguate)."],
+                        "start_bar": ["type": "integer", "description": "The anchor region's current start bar."]
+                    ],
+                    "required": ["mode"],
+                    "additionalProperties": false
+                ],
+                // Changes the project-wide region selection, nothing else. The
+                // absolute modes are idempotent; the relative ones are too,
+                // since they re-anchor every call.
+                safety: .write,
+                idempotent: true,
+                handler: MCPServer.handleSelectRegions
+            ),
+            Tool(
+                name: "logic_split_region",
+                description: "Split ONE region at a bar (and optional beat) - the three-call recipe (select, park the playhead, fire 'Split Regions/Events at Playhead Position') as a single call with one verdict. Three failure modes are named and checked in order, and the first two refuse BEFORE anything is written: (1) the split point is not inside the named region - refused with the region's own bar span, nothing moved; (2) the playhead did not land where it was asked to - this parks the sub-beat fields of the control bar's position display as well, which logic_set_playhead does not, because a 'verified' bar/beat can still sit almost a whole beat late and for a split that is a wrong cut rather than a rounding error; (3) the command fired and the arrangement map still shows one region - reported as verification_failed with nothing undone. Success is proven by the map: two regions where one was, both reported. A MIDI SPLIT IS NOT SILENT: when a note crosses the cut, Logic raises a modal ('Notes Crossing Split Point') and freezes until it is answered - this answers it with notes_crossing (default 'split', Logic's own pre-selection) and reports which branch it took, and it cancels any dialog left over on a failure path, because an unanswered modal makes every later tool report 'the command fired and nothing happened'. Undo restores the single region. The halves are NEW regions - re-read logic_list_regions before addressing either of them.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "track_name": ["type": "string"],
+                        "region_name": ["type": "string", "description": "Which region; with start_bar, to disambiguate."],
+                        "start_bar": ["type": "integer", "description": "The region's CURRENT start bar."],
+                        "at_bar": ["type": "integer", "minimum": 1, "description": "Bar to cut at; must be inside the region."],
+                        "at_beat": ["type": "integer", "minimum": 1, "description": "Beat within that bar, 1-based. Default 1 (the bar line)."],
+                        "notes_crossing": [
+                            "type": "string",
+                            "enum": ["keep", "shorten", "split"],
+                            "description": "What happens to a MIDI note that straddles the cut, when Logic asks: 'keep' (the note stays whole in the first region), 'shorten' (truncated at the cut), 'split' (cut in two - Logic's own pre-selection and the default here). Audio regions and cuts no note crosses raise no dialog at all, and the result then says notes_crossing: 'not_asked'."
+                        ]
+                    ],
+                    "required": ["track_name", "at_bar"],
+                    "additionalProperties": false
+                ],
+                // Destructive in the same sense as the other region edits: one
+                // region becomes two and only Undo puts it back. Not
+                // idempotent - a second call splits a half again.
+                safety: .destructive,
+                changesArrangement: true,
+                handler: MCPServer.handleSplitRegion
+            ),
+            Tool(
                 name: "logic_move_region",
                 description: "Move one region by whole bars and/or beats via Logic's nudge key commands (no dragging, no mouse). Whole-bar moves are verified exactly against the arrangement map.",
                 inputSchema: [
@@ -739,6 +876,36 @@ extension MCPServer {
                 safety: .write,
                 idempotent: true,
                 handler: MCPServer.handleSetupKeyCommands
+            ),
+            Tool(
+                name: "logic_learn_key_command",
+                description: "Learn ANY command in Logic's Key Commands window - not just the standard set - onto a MIDI note, so logic_trigger_key_command can fire it. Give the command's name EXACTLY as the Key Commands window spells it (e.g. 'Strip Silence…', 'Bounce Regions in Place', 'Select All Following of Same Track'); the search field is driven with the first words of that name unless you pass 'search' yourself. THIS WRITES INTO THE USER'S OWN LOGIC KEY COMMAND SET: the command gains an additional assignment on the dedicated 'Logic MCP Commands' MIDI port. It is additive - the user's existing keyboard shortcut is untouched - and removable in the same window (select the command, Delete Assignment). The MIDI note is chosen automatically from a range reserved for learned commands (60-99, then 122-127, then 21-59), so it can never take a note the product's own standard commands want; pass 'note' only to force one. The registry file is the consent record and records the name, note, timestamp, search term and that THIS tool bound it - read it back with logic_list_key_commands. Already-registered commands answer immediately without opening the window (pass relearn: true to bind again, the repair after MIDI ports were recreated). When no row matches, the failure is not_found and it LISTS the rows the panel was showing: command names drift between Logic versions, so a near miss is answered with the real spellings rather than a guess.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "name": ["type": "string", "description": "The command name exactly as Logic's Key Commands window shows it. Case-insensitive; Logic's own spelling is what gets registered."],
+                        "search": ["type": "string", "description": "Optional search term for the window's filter field (default: the first words of 'name'). Use a shorter term when the exact name is uncertain - the not_found answer then lists more near misses."],
+                        "note": ["type": "integer", "minimum": 0, "maximum": 127, "description": "Force a specific MIDI note instead of the next free one. Refused when another registered command already holds it."],
+                        "relearn": ["type": "boolean", "description": "Bind again even when the registry already lists this command, wiping its existing controller assignments first. Default false."],
+                        "dry_run": ["type": "boolean", "description": "Look, do not bind: open the window, filter on 'search', return every command name it shows with the assignment it already carries, and close again. Use this FIRST when unsure of a name — nothing is written to the user's key command set."]
+                    ],
+                    "required": ["name"],
+                    "additionalProperties": false
+                ],
+                // Additive to the user's key command set, like
+                // logic_setup_key_commands, and idempotent: a second call with
+                // the same name answers already_registered.
+                safety: .write,
+                idempotent: true,
+                handler: MCPServer.handleLearnKeyCommand
+            ),
+            Tool(
+                name: "logic_list_key_commands",
+                description: "List what the key command registry holds: every command name that has been learned onto the 'Logic MCP Commands' MIDI port, its note and channel, when it was learned, and which tool bound it. Read-only and Logic-free - this reads the registry FILE, so an entry it lists can still have been orphaned inside Logic (recreated MIDI ports do that silently; logic_setup_key_commands with relearn: true repairs it). The registry is what logic_trigger_key_command checks before firing anything, so this is also the list of commands an agent may fire. Also reports which standard commands are not learned yet.",
+                inputSchema: ["type": "object", "properties": [:], "additionalProperties": false],
+                safety: .readOnly,
+                idempotent: true,
+                handler: MCPServer.handleListKeyCommands
             ),
             Tool(
                 name: "logic_trigger_key_command",
