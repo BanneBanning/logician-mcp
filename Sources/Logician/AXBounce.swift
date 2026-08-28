@@ -134,77 +134,111 @@ extension LogicAccessibility {
         return nil
     }
 
-    /// The bounce dialog's Start/End position fields step one unit toward a
-    /// written value per write, and clamp EXACTLY to the field minimum -
-    /// which erases any sub-bar remainder (beats/divisions/fractional ticks,
-    /// verified 2026-08-26). A value with a remainder can never reach a
-    /// bar-aligned target by bar-stepping (it oscillates around it forever),
-    /// so: bar-aligned values step straight to the target; anything else is
-    /// first clamped down to the minimum (1 1 1 1), then stepped up exactly.
-    func setBouncePosition(group: AXUIElement, bar: Int) throws {
+    /// Drives one of the bounce dialog's Start/End position fields to the START
+    /// OF A BAR, and verifies it against the field's own bar/beat display.
+    ///
+    /// THE FIELD. Four `AXSlider` digits that all mirror one absolute tick
+    /// count. Writing a value inside the range steps it by exactly ONE of
+    /// Logic's bars toward that value; writing the field minimum clamps it to
+    /// `1 1 1 1` and erases any sub-bar remainder with it.
+    ///
+    /// WHY THE DISPLAY IS THE TRUTH (measured 2026-08-28, and the bug this
+    /// replaces). The old converger computed a target tick count as
+    /// `minimum + (bar - 1) x oneFourFourBar` and compared the raw value
+    /// against it. Logic's own bar step is METER-AWARE — inside the sandbox
+    /// project's 5/4 stretch each press moved 5 beats' worth of ticks, outside
+    /// it 4 — so on a project with a meter change the raw value can never equal
+    /// that arithmetic, AND a position that displays as `63 3 1 1` divides
+    /// evenly by the 4/4 bar, which made the sub-bar clamp think there was
+    /// nothing to clear. The field walked from bar 63 down to `3 2 1 1` and
+    /// stalled there, one beat off the line and one bar short, while the caller
+    /// asked for bar 4. Comparing Logic's own bar/beat text instead is both
+    /// meter-proof and readable in the error.
+    ///
+    /// GUARDS. Every path is bounded: a total write budget, a stall counter,
+    /// and an overshoot check. Nothing here can spin against a clamp — the
+    /// failure is an error naming what BOTH fields read, not a loop.
+    func setBouncePosition(
+        group: AXUIElement,
+        bar: Int,
+        field: String = "position",
+        sibling: (() -> String)? = nil
+    ) throws {
         guard let segment = children(of: group).first,
               let minimum = Int64(stringAttribute(segment, kAXMinValueAttribute as String)) else {
             throw LogicianError.valueNotWritable("bounce position group has no readable segments")
         }
         let ticksPerBar: Int64 = 16_492_674_416_640
-        let target = minimum + Int64(bar - 1) * ticksPerBar
+        var budget = 400
 
-        func read() -> Int64? { Int64(stringAttribute(segment, kAXValueAttribute as String)) }
+        func display() -> BouncePosition? {
+            BouncePosition.parse(stringAttribute(group, kAXValueAttribute as String))
+        }
+        func raw() -> Int64? { Int64(stringAttribute(segment, kAXValueAttribute as String)) }
+        func write(_ value: Int64) {
+            AXUIElementSetAttributeValue(
+                segment, kAXValueAttribute as CFString, NSNumber(value: value)
+            )
+            Thread.sleep(forTimeInterval: 0.04)
+        }
+        func failure(_ reason: String) -> LogicianError {
+            let others = sibling.map { ", the other field reads '\($0())'" } ?? ""
+            return LogicianError.verificationFailed(
+                requested: "the bounce \(field) position at bar \(bar)",
+                actual: reason + others + ". Nothing was bounced",
+                restored: false
+            )
+        }
 
-        /// Repeatedly write `value` until the field settles on it (or stops
-        /// moving). Returns the settled value.
-        func stepTo(_ value: Int64, maxWrites: Int) -> Int64? {
-            var last: Int64 = -1
-            var previous: Int64 = -2
+        guard let start = display() else {
+            throw LogicianError.valueNotWritable("bounce position value unreadable")
+        }
+        if start.bar == bar, start.isBarStart { return }
+
+        // 1. Anything not exactly on a bar line, or already past the target,
+        //    goes back to the field minimum first: it is the one absolute move
+        //    the field offers, and it erases sub-bar remainders.
+        if !start.isBarStart || start.bar > bar {
             var stall = 0
-            for _ in 0..<maxWrites {
-                guard let current = read() else { return nil }
-                if current == value { return current }
-                if current == previous {
-                    return current // oscillating around the target: bail out
-                }
-                _ = AXUIElementSetAttributeValue(segment, kAXValueAttribute as CFString, NSNumber(value: value))
-                Thread.sleep(forTimeInterval: 0.03)
-                guard let now = read() else { return nil }
-                if now == current {
+            while true {
+                guard let current = display() else { throw failure("the field stopped publishing a position") }
+                if current.bar == 1, current.isBarStart { break }
+                guard budget > 0 else { throw failure("it stalled at '\(current.text)' on the way to bar 1") }
+                let before = raw()
+                write(minimum)
+                budget -= 1
+                if raw() == before {
                     stall += 1
-                    if stall >= 3 { return now }
-                    Thread.sleep(forTimeInterval: 0.12)
+                    if stall >= 3 { throw failure("it will not move below '\(current.text)'") }
                 } else {
                     stall = 0
                 }
-                previous = last
-                last = now
             }
-            return read()
         }
 
-        guard var current = read() else {
-            throw LogicianError.valueNotWritable("bounce position value unreadable")
-        }
-        if current == target { return }
-        if (current - minimum) % ticksPerBar != 0 {
-            // Sub-bar remainder: clamp to the minimum first to erase it.
-            guard stepTo(minimum, maxWrites: 200) == minimum else {
-                throw LogicianError.verificationFailed(
-                    requested: "bounce position bar \(bar)",
-                    actual: "could not clear the sub-bar offset (stuck at '"
-                        + stringAttribute(group, kAXValueAttribute as String)
-                            .replacingOccurrences(of: "\t", with: " ")
-                            .trimmingCharacters(in: .whitespaces) + "')",
-                    restored: false
-                )
+        // 2. Step up, one of Logic's bars per write. The written value is only
+        //    a DIRECTION: under a meter change it underestimates where the
+        //    target bar sits, so a stall below the target bumps it one bar
+        //    further rather than giving up on arithmetic that was never exact.
+        var hint = minimum + Int64(bar - 1) * ticksPerBar
+        var stall = 0
+        while true {
+            guard let current = display() else { throw failure("the field stopped publishing a position") }
+            if current.bar == bar, current.isBarStart { return }
+            if current.bar > bar {
+                throw failure("it stepped past the target to '\(current.text)'")
             }
-            current = minimum
-        }
-        if stepTo(target, maxWrites: 200) != target {
-            throw LogicianError.verificationFailed(
-                requested: "bounce position bar \(bar)",
-                actual: stringAttribute(group, kAXValueAttribute as String)
-                    .replacingOccurrences(of: "\t", with: " ")
-                    .trimmingCharacters(in: .whitespaces),
-                restored: false
-            )
+            guard budget > 0 else { throw failure("it stalled at '\(current.text)'") }
+            let before = raw()
+            write(hint)
+            budget -= 1
+            if raw() == before {
+                stall += 1
+                hint += ticksPerBar
+                if stall >= 6 { throw failure("it will not move past '\(current.text)'") }
+            } else {
+                stall = 0
+            }
         }
     }
 
@@ -500,8 +534,42 @@ extension LogicAccessibility {
                 .map { AXUIElementPerformAction($0, kAXPressAction as CFString) }
             throw LogicianError.windowNotFound("start/end position fields in the bounce dialog")
         }
-        try setBouncePosition(group: groups[1], bar: endBar) // end first avoids clamping
-        try setBouncePosition(group: groups[0], bar: startBar)
+        // ORDER MATTERS, and which order depends on where the range is going.
+        // The two fields describe ONE range and Logic can clamp a write that
+        // would invert it, so the field that cannot invert anything goes
+        // first: moving the range entirely later writes the END first, every
+        // other move writes the START first. (Measured 2026-08-28 with a
+        // start left at bar 9 and an end at bar 63 while bars 2-4 were asked
+        // for: writing the end first walked it down PAST the start, which is
+        // the inversion this decides away.)
+        func positionText(_ group: AXUIElement) -> String {
+            stringAttribute(group, kAXValueAttribute as String)
+                .replacingOccurrences(of: "\t", with: " ")
+                .trimmingCharacters(in: .whitespaces)
+        }
+        let currentEnd = BouncePosition.parse(
+            stringAttribute(groups[1], kAXValueAttribute as String)
+        )?.bar ?? endBar
+        switch BounceWriteOrder.choose(currentEnd: currentEnd, targetStart: startBar) {
+        case .endFirst:
+            try setBouncePosition(
+                group: groups[1], bar: endBar, field: "end",
+                sibling: { positionText(groups[0]) }
+            )
+            try setBouncePosition(
+                group: groups[0], bar: startBar, field: "start",
+                sibling: { positionText(groups[1]) }
+            )
+        case .startFirst:
+            try setBouncePosition(
+                group: groups[0], bar: startBar, field: "start",
+                sibling: { positionText(groups[1]) }
+            )
+            try setBouncePosition(
+                group: groups[1], bar: endBar, field: "end",
+                sibling: { positionText(groups[0]) }
+            )
+        }
 
         guard let okButton = children(of: dialog).first(where: {
             stringAttribute($0, kAXTitleAttribute as String) == "OK"

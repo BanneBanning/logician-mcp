@@ -68,3 +68,127 @@ enum BounceFormat {
             + "Nothing was bounced. Available: \(options.joined(separator: ", "))."
     }
 }
+
+/// The bounce dialog's Start/End position fields, as the DISPLAY publishes
+/// them — `"63\t3\t1\t1"` is bar 63, beat 3, division 1, tick 1.
+///
+/// Why the display and not the raw tick value (measured 2026-08-28): the field
+/// is one `AXSlider` per digit and every one of them mirrors the same absolute
+/// tick count, and that count is meter-blind. Stepping it DOWN one press at a
+/// time moves one of LOGIC's bars, which is 5 beats' worth of ticks inside a
+/// 5/4 stretch and 4 beats' worth outside it — so a target computed as
+/// `minimum + (bar - 1) x oneFourFourBar` is simply a different number from
+/// where the field lands, and a converger comparing the two steps past its
+/// target forever. The bar/beat text is Logic's own answer to "where is this
+/// field", and it is the only honest convergence test.
+struct BouncePosition: Equatable {
+    let bar: Int
+    let beat: Int
+    let division: Int
+    let tick: Int
+
+    /// True when the position sits exactly on the bar line.
+    var isBarStart: Bool { beat == 1 && division == 1 && tick == 1 }
+
+    var text: String { "\(bar) \(beat) \(division) \(tick)" }
+
+    /// Parses Logic's tab-separated position text. Anything that is not four
+    /// numbers is nil — never a guess, because a misread position bounces the
+    /// wrong music.
+    static func parse(_ raw: String) -> BouncePosition? {
+        let parts = raw
+            .components(separatedBy: CharacterSet(charactersIn: "\t "))
+            .filter { !$0.isEmpty }
+            .compactMap { Int($0) }
+        guard parts.count == 4 else { return nil }
+        return BouncePosition(bar: parts[0], beat: parts[1], division: parts[2], tick: parts[3])
+    }
+}
+
+/// Which of the two position fields to write first.
+///
+/// The two fields describe one range, and a write that would momentarily
+/// INVERT it (end before start) is the one Logic can clamp. Moving the range
+/// later in time therefore writes the END first (it opens the range to the
+/// right before the start follows), and every other case writes the START
+/// first. The rule is stated on the target/current pair rather than on
+/// "later/earlier" so that overlapping moves — the common case — take the
+/// branch that cannot invert either.
+enum BounceWriteOrder: String, Equatable {
+    case endFirst
+    case startFirst
+
+    static func choose(currentEnd: Int, targetStart: Int) -> BounceWriteOrder {
+        targetStart >= currentEnd ? .endFirst : .startFirst
+    }
+}
+
+/// One region as the arrangement map sees it — the unit `logic_bounce_in_place`
+/// compares before and after to prove that something was printed.
+struct ArrangementRegion: Equatable {
+    let track: String
+    let name: String
+    let start: Int
+    let end: Int
+
+    init(track: String, name: String, start: Int, end: Int) {
+        self.track = track
+        self.name = name
+        self.start = start
+        self.end = end
+    }
+
+    /// From the tuple `flatRegionMap()` produces.
+    init(_ row: (track: String, name: String, start: Int, end: Int)) {
+        self.init(track: row.track, name: row.name, start: row.start, end: row.end)
+    }
+}
+
+/// Which region a bounce-in-place actually printed.
+///
+/// THE TRAP (measured 2026-08-28). Logic's default `Source: Mute` renames the
+/// SOURCE region in the Accessibility tree — `Crash` becomes `Crash, muted` —
+/// so a naive before/after diff finds two "new" regions and the source is the
+/// first of them. The first live run reported `verified: true` with the muted
+/// SOURCE as the printed region while the real print sat on a brand-new track
+/// one row below. A wrong region reported as a verified success is the failure
+/// mode this repo cares most about, so the comparison ignores the mute suffix
+/// and the choice prefers the name the caller asked for.
+enum PrintedRegion {
+
+    /// Logic's Accessibility suffix for a muted region.
+    static let mutedSuffix = ", muted"
+
+    static func canonicalName(_ name: String) -> String {
+        name.hasSuffix(mutedSuffix) ? String(name.dropLast(mutedSuffix.count)) : name
+    }
+
+    private static func key(_ region: ArrangementRegion) -> String {
+        "\(region.track)\u{1}\(canonicalName(region.name))\u{1}\(region.start)\u{1}\(region.end)"
+    }
+
+    /// The region the print added, or nil when nothing new appeared.
+    static func find(
+        before: [ArrangementRegion], after: [ArrangementRegion], requestedName: String?
+    ) -> ArrangementRegion? {
+        let known = Set(before.map(key))
+        let candidates = after.filter { !known.contains(key($0)) }
+        guard !candidates.isEmpty else { return nil }
+        if let requestedName, !requestedName.isEmpty {
+            if let exact = candidates.first(where: {
+                canonicalName($0.name).caseInsensitiveCompare(requestedName) == .orderedSame
+            }) { return exact }
+            if let prefixed = candidates.first(where: {
+                canonicalName($0.name).lowercased().hasPrefix(requestedName.lowercased())
+            }) { return prefixed }
+        }
+        // Logic's own default names the print "<region>_bip".
+        if let bip = candidates.first(where: { canonicalName($0.name).hasSuffix("_bip") }) {
+            return bip
+        }
+        // Otherwise the print is the one on a track that had no regions before
+        // (destination "New Track"), and only then "the first new thing".
+        let knownTracks = Set(before.map(\.track))
+        return candidates.first { !knownTracks.contains($0.track) } ?? candidates.first
+    }
+}

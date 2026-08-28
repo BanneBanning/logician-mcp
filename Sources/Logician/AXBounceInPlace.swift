@@ -227,17 +227,19 @@ extension LogicAccessibility {
         // The render is offline but not instant, and the arrangement map is
         // the proof: a region that was not there before.
         var after = before
-        var arrived: (track: String, name: String, start: Int, end: Int)?
+        var arrived: ArrangementRegion?
         let deadline = Date().addingTimeInterval(90)
         while Date() < deadline {
             Thread.sleep(forTimeInterval: 0.5)
             after = (try? flatRegionMap()) ?? after
-            arrived = after.first { candidate in
-                !before.contains {
-                    $0.track == candidate.track && $0.name == candidate.name
-                        && $0.start == candidate.start && $0.end == candidate.end
-                }
-            }
+            // `PrintedRegion.find` and not "the first region that is not in
+            // the before-map": muting the source RENAMES it (`Crash` ->
+            // `Crash, muted`), which the naive diff reported as the print.
+            arrived = PrintedRegion.find(
+                before: before.map(ArrangementRegion.init),
+                after: after.map(ArrangementRegion.init),
+                requestedName: name
+            )
             if arrived != nil { break }
         }
         guard let arrived else {
