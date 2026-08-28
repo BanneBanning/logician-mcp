@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The one mechanical guard against a test that drives the user's real
+      # Logic Pro. The suite must stay hermetic: no live probes, no reaching
+      # for the running application, no environment-gated escape hatch.
+      - name: No live probes in the test suite
+        run: |
+          if grep -rnE "LOGICIAN_LIVE|LiveProbe|NSWorkspace|ProcessInfo\.processInfo\.environment" Tests/; then
+            echo "::error::A test reaches for live state. Tests must not touch a running Logic Pro."
+            exit 1
+          fi
+
+      - name: Build (release, warnings are errors)
+        run: swift build -c release -Xswiftc -warnings-as-errors
+
+      - name: Test
+        run: swift test

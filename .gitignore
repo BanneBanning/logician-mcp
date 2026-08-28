@@ -7,3 +7,6 @@ xcuserdata/
 
 # agent worktrees (transient)
 .claude/worktrees/
+
+# stray directory the dev machine keeps recreating
+Sensor/
