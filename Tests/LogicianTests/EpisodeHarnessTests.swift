@@ -295,7 +295,7 @@ final class EpisodeHarnessTests: XCTestCase {
         )
         XCTAssertEqual(result["isError"] as? Bool, true)
         let text = ((result["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
-        XCTAssertTrue(text.contains("no such file"), text)
+        XCTAssertTrue(text.localizedCaseInsensitiveContains("no such file"), text)
         XCTAssertTrue(text.contains("NOTHING was closed"), text)
     }
 

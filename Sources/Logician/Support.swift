@@ -473,6 +473,14 @@ func normalizedProjectTempoMode(_ raw: String) -> ProjectTempoMode? {
     return nil
 }
 
+/// Uppercases the leading letter so a call-site phrase ("the Mackie Control
+/// bridge") can open a sentence. A phrase that starts with a quote or a
+/// capital passes through unchanged.
+private func sentenceCased(_ text: String) -> String {
+    guard let first = text.first, first.isLowercase else { return text }
+    return first.uppercased() + text.dropFirst()
+}
+
 /// The product's error taxonomy. Every tool failure is one of these, and the
 /// `code` values (not_found, precondition_failed, ambiguous,
 /// verification_failed, …) are the vocabulary agents branch on — they are
@@ -490,6 +498,12 @@ enum LogicianError: LocalizedError {
     case verificationFailed(requested: String, actual: String, restored: Bool)
     case invalidArguments(String)
     case projectMismatch(expected: String, actual: String)
+    /// Something the operation needed could not be reached. `requested` names
+    /// what was needed (a noun phrase: "the Mackie Control bridge", "the
+    /// channel strip for track 'Drums'"); `exposed` says what was found
+    /// instead. Both render verbatim into the message, so any remedy — "select
+    /// the track first", "see logic_health" — belongs in the call site's
+    /// `exposed`, where it can be true, not in the template.
     case trackNotExposed(requested: String, exposed: String)
     case insertNotFound(track: String, plugin: String, available: [String])
     case insertAmbiguous(track: String, plugin: String, slots: [Int])
@@ -578,7 +592,8 @@ enum LogicianError: LocalizedError {
         case .projectMismatch(let expected, let actual):
             return "Open project mismatch. Expected \(expected), found \(actual). No action was taken."
         case .trackNotExposed(let requested, let exposed):
-            return "Channel strip for track '\(requested)' is not exposed. The inspector currently shows '\(exposed)'. Select the track in Logic first."
+            return sentenceCased(requested) + " is not available. "
+                + sentenceCased(exposed) + (exposed.hasSuffix(".") ? "" : ".")
         case .insertNotFound(let track, let plugin, let available):
             return "No insert matching '\(plugin)' on track '\(track)'. Available inserts: \(available.joined(separator: ", "))."
         case .insertAmbiguous(let track, let plugin, let slots):
