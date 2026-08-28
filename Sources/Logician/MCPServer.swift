@@ -3,11 +3,188 @@ import ApplicationServices
 import Foundation
 import LogicMCUBridge
 
-final class MCPServer {
+// MARK: - Supported protocol range
+
+/// The MODERN revisions: no handshake at all. Every request carries its own
+/// protocol version and the client's capabilities in `params._meta`, every
+/// result carries `resultType` and the server's identity, and `server/discover`
+/// replaces `initialize` as the way a client learns what this server is.
+let modernProtocolVersions = ["2026-07-28"]
+
+/// The LEGACY revisions: the version is fixed once, by an `initialize`
+/// handshake, and holds for the process.
+///
+/// `2024-11-05` is deliberately ABSENT, and its removal is a bug fix rather
+/// than a policy change. This server unconditionally emits `audio` content
+/// blocks and tool `annotations`, and neither existed before `2025-03-26`; a
+/// client that asked for `2024-11-05` was told "yes" and then handed messages
+/// its schema cannot describe. Refusing the version is honest, and it costs
+/// nothing real: every client that offers `2024-11-05` also offers something
+/// newer, and one that truly cannot will now get a version it can parse
+/// instead of a promise this server was never able to keep.
+///
+/// `2025-03-26` is the floor for the same reason it is the floor: audio blocks,
+/// tool annotations and JSON-RPC batching all arrive in that revision, so it is
+/// the oldest one whose schema covers everything this server puts on the wire.
+let legacyProtocolVersions = ["2025-11-25", "2025-06-18", "2025-03-26"]
+
+/// Everything this server will speak, newest first — the list `server/discover`
+/// advertises and the one an `UnsupportedProtocolVersionError` offers back.
+let supportedProtocolVersions = modernProtocolVersions + legacyProtocolVersions
+
+/// How long a client may cache `tools/list` and `server/discover`. The tool
+/// surface is baked into the binary and cannot change while the process lives,
+/// so the only thing that can invalidate it is a new build — an hour is
+/// conservative for something that is, in practice, immutable.
+let toolListCacheTTLMs = 3_600_000
+
+/// `UnsupportedProtocolVersionError`, from the range the 2026-07-28 spec
+/// reserves for itself (`-32020`…`-32099`).
+let unsupportedProtocolVersionCode = -32022
+
+/// Which wire dialect one request is served in.
+///
+/// The era is a property of the REQUEST, not of the connection: a dual-era
+/// server picks it from how the client opens, and on stdio both kinds of client
+/// can, in principle, arrive at the same process. `_meta` says modern;
+/// `initialize` says legacy; nothing at all means legacy, because a client that
+/// sends neither is a pre-2026 client that skipped its handshake.
+enum MCPEra {
+    case modern(String)
+    case legacy(String)
+
+    var version: String {
+        switch self {
+        case .modern(let version), .legacy(let version): return version
+        }
+    }
+
+    var isModern: Bool {
+        if case .modern = self { return true }
+        return false
+    }
+}
+
+/// A JSON-RPC error worked out before the method ever runs: a bad id, a bad
+/// envelope, an unsupported protocol version.
+/// `@unchecked Sendable` for the same reason every JSON payload in this server
+/// is: `data` is a decoded JSON value, which has no Swift type better than
+/// `Any`, and it is built once and never mutated.
+struct JSONRPCFault: Error, @unchecked Sendable {
+    let code: Int
+    let message: String
+    var data: [String: Any]?
+}
+
+/// The three things the `id` member can be.
+enum RequestID {
+    /// No `id` member: a notification, which must never be answered.
+    case absent
+    /// A string or an integer — the only two forms MCP allows.
+    case valid(Any)
+    /// Present but illegal. This is NOT a notification: JSON-RPC wants an
+    /// `Invalid Request` back, with a null id because no usable one was read.
+    case invalid(String)
+
+    /// The distinction that used to be missed: a JSON `null` decodes to
+    /// `NSNull`, which is not Swift `nil`, so `request["id"] == nil` was false
+    /// for `{"id": null}` and the server dutifully ANSWERED it — with
+    /// `"id": null`, the exact reply the notification guard exists to prevent.
+    static func classify(_ raw: Any?) -> RequestID {
+        guard let raw else { return .absent }
+        if raw is NSNull {
+            return .invalid(
+                "`id` must not be null. MCP narrows JSON-RPC here: a null id is neither a "
+                    + "request (which needs a string or integer id) nor a notification (which "
+                    + "must omit the member entirely). Nothing was executed."
+            )
+        }
+        if let string = raw as? String { return .valid(string) }
+        if let number = raw as? NSNumber {
+            // JSON `true`/`false` also decode to NSNumber. A boolean is not an
+            // integer, and echoing one back as an id would be a third thing
+            // again.
+            if CFGetTypeID(number as CFTypeRef) == CFBooleanGetTypeID() {
+                return .invalid("`id` must be a string or an integer, not a boolean. Nothing was executed.")
+            }
+            let value = number.doubleValue
+            guard value.rounded() == value, value.magnitude <= 9_007_199_254_740_992 else {
+                return .invalid(
+                    "`id` must be a string or an INTEGER; \(number) is not one. A fractional id "
+                        + "cannot be echoed back unchanged — it would come back through a binary "
+                        + "double as a different number, and the client would never match the "
+                        + "response to its request. Nothing was executed."
+                )
+            }
+            return .valid(number)
+        }
+        return .invalid(
+            "`id` must be a string or an integer, not a \(type(of: raw)). Nothing was executed."
+        )
+    }
+}
+
+// MARK: - The server
+
+/// `@unchecked Sendable` because two threads touch it by design: a reader
+/// thread owns stdin and answers the cheap protocol methods, while tool calls
+/// run on the main thread (see `run()`). The only mutable state is the
+/// negotiated legacy version and the output handle, and both are behind locks.
+final class MCPServer: @unchecked Sendable {
     let logic = LogicAccessibility()
 
+    private let stateLock = NSLock()
+    private let outputLock = NSLock()
+    private let jobs = JobQueue()
+
+    private var storedLegacyVersion: String?
+
+    /// The legacy revision an `initialize` settled on, once — and it IS stored
+    /// now. It used to be a local that the response echoed and then dropped, so
+    /// the server had no idea afterwards which revision it had promised, and
+    /// nothing downstream could vary by it.
+    var negotiatedLegacyVersion: String? {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return storedLegacyVersion }
+        set { stateLock.lock(); defer { stateLock.unlock() }; storedLegacyVersion = newValue }
+    }
+
+    // MARK: Lifecycle
+
+    /// Reading and executing are split across two threads, and which one gets
+    /// which is deliberate.
+    ///
+    /// The MAIN thread runs tool calls, because that is the thread every tool
+    /// has always run on: they drive the Accessibility API and AppKit, and
+    /// moving 84 handlers to a worker to satisfy a protocol requirement would
+    /// be trading a real risk for a cosmetic one. A background thread owns
+    /// stdin instead, and answers everything that touches no Logic state —
+    /// `ping`, `tools/list`, `initialize`, `server/discover`,
+    /// `notifications/cancelled` — inline, while a four-minute bounce is still
+    /// rendering on the main thread. That is the whole point: before this, a
+    /// long tool blocked the read loop, so a client could neither ping nor
+    /// cancel until the tool it wanted to cancel had finished.
+    ///
+    /// One tool at a time, by construction: there is one executor, and it is a
+    /// FIFO. That is not a limitation to fix later — Logic has one transport,
+    /// one selected track and one control surface, and two tools driving them
+    /// at once would produce results neither one could honestly report.
     func run() {
-        log("starting \(serverName) \(serverVersion)")
+        log("starting \(serverName) \(serverVersion); MCP \(supportedProtocolVersions.joined(separator: ", "))")
+        callSession.setEmitter { [weak self] notification in self?.write(notification) }
+
+        let reader = Thread { [self] in
+            readLoop()
+            jobs.close()
+        }
+        reader.name = "logician.stdin"
+        reader.stackSize = 4 << 20
+        reader.start()
+
+        while let job = jobs.next() { job() }
+        shutdown()
+    }
+
+    private func readLoop() {
         while let line = readLine(strippingNewline: true) {
             guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
             let message: Any
@@ -17,40 +194,169 @@ final class MCPServer {
                 write(jsonRPCError(id: NSNull(), code: -32700, message: error.localizedDescription))
                 continue
             }
-            do {
-                if let request = message as? [String: Any] {
-                    if let response = try handle(request) {
-                        write(response)
-                    }
-                } else if let batch = message as? [Any] {
-                    // A JSON-RPC batch. Legal in the versions this server
-                    // negotiates down to (2024-11-05 and 2025-03-26 inherit
-                    // batching from JSON-RPC 2.0; only 2025-06-18 removes
-                    // it), and it used to fail the object cast and come back
-                    // as a parse error with a null id.
-                    if let responses = handleBatch(batch) {
-                        writeJSON(responses)
-                    }
-                } else {
-                    write(jsonRPCError(
-                        id: NSNull(), code: -32600,
-                        message: "Invalid Request: a JSON-RPC message must be an object, or an array of them"
-                    ))
-                }
-            } catch {
-                write(jsonRPCError(id: NSNull(), code: -32603, message: error.localizedDescription))
-            }
+            dispatch(message)
         }
+    }
+
+    private func shutdown() {
         // stdin closed: the client is gone. Leave the control surface in the
         // neutral Pan view — a leaked hot plugin/instrument view otherwise
         // makes Logic auto-open plugin windows on every later track selection.
+        //
+        // Guarded, because it used to run unconditionally: a session that only
+        // listed tools, or that never got past `initialize`, still reached in
+        // and moved the user's real control surface on the way out. A process
+        // that never touched the surface has nothing to restore and now says
+        // so instead.
+        guard MCUBridge.didTouchSurface else {
+            log("stdin closed; the control surface was never touched, so nothing was restored")
+            return
+        }
         MCUController.exitToPan()
         log("stdin closed; surface returned to Pan view")
     }
 
+    // MARK: Dispatch
+
+    /// A `tools/call` that will actually execute — the only message that has to
+    /// leave the reader thread.
+    private func isExecutableToolCall(_ request: [String: Any]) -> Bool {
+        guard request["method"] as? String == "tools/call" else { return false }
+        if case .valid = RequestID.classify(request["id"]) { return true }
+        return false
+    }
+
+    private func dispatch(_ message: Any) {
+        if let request = message as? [String: Any] {
+            if isExecutableToolCall(request) {
+                submitToolCall(request)
+            } else {
+                respond { try self.handle(request) }
+            }
+        } else if let batch = message as? [Any] {
+            // A JSON-RPC batch. Batching is NOT something every revision has:
+            // `2024-11-05` had no batch type at all, `2025-03-26` added one,
+            // `2025-06-18` removed it again, and nothing since has brought it
+            // back. So an array on the wire means exactly one thing — a
+            // `2025-03-26` client — and it is still accepted, because rejecting
+            // it would strand the one revision that is allowed to send it.
+            // (The comment that used to sit here had this backwards, crediting
+            // `2024-11-05` with batching it never had.)
+            if batch.contains(where: { ($0 as? [String: Any]).map(isExecutableToolCall) ?? false }) {
+                // Keep the whole batch on the executor rather than splitting
+                // it: the response has to go out as one array, and any member
+                // of it may touch Logic.
+                jobs.submit { [self] in runBatch(batch) }
+            } else {
+                runBatch(batch)
+            }
+        } else {
+            write(jsonRPCError(
+                id: NSNull(), code: -32600,
+                message: "Invalid Request: a JSON-RPC message must be an object, or an array of them"
+            ))
+        }
+    }
+
+    private func runBatch(_ batch: [Any]) {
+        if let output = handleBatch(batch) { writeJSON(output) }
+    }
+
+    private func respond(_ produce: () throws -> [String: Any]?) {
+        do {
+            if let response = try produce() { write(response) }
+        } catch {
+            write(jsonRPCError(id: NSNull(), code: -32603, message: error.localizedDescription))
+        }
+    }
+
+    /// Hands one `tools/call` to the main thread, and decides afterwards
+    /// whether it may be answered at all.
+    private func submitToolCall(_ request: [String: Any]) {
+        guard case .valid(let id) = RequestID.classify(request["id"]) else { return }
+        let key = CallSession.key(for: id)
+        let token = ((request["params"] as? [String: Any])?["_meta"] as? [String: Any])?["progressToken"]
+
+        jobs.submit { [self] in
+            // A cancellation can win the race to the queue. Then the tool never
+            // runs, and — like a tool cancelled halfway — it is never answered.
+            if callSession.isCancelled(key: key) {
+                callSession.finish(key: key)
+                log("request \(key) was cancelled before it started; not executed, not answered")
+                return
+            }
+            callSession.begin(key: key, progressToken: token)
+            var response: [String: Any]?
+            do {
+                response = try handle(request)
+            } catch is RequestCancelled {
+                response = nil
+            } catch {
+                response = jsonRPCError(id: id, code: -32603, message: error.localizedDescription)
+            }
+            // Asked AFTER the call, not before: a cancellation that lands while
+            // the tool is unwinding still suppresses the response. "Not send a
+            // response for the cancelled request" is the spec's wording, and a
+            // client that has moved on must not be handed a stale result for
+            // work it withdrew.
+            guard !callSession.finish(key: key) else {
+                log("request \(key) was cancelled; abandoned without a response, per the spec")
+                return
+            }
+            if let response { write(response) }
+        }
+    }
+
+    // MARK: Era resolution
+
+    /// Reads the era out of one request, or the error that must be returned
+    /// instead of serving it.
+    func era(for request: [String: Any], method: String) -> Result<MCPEra, JSONRPCFault> {
+        let meta = (request["params"] as? [String: Any])?["_meta"] as? [String: Any]
+        guard let declared = meta?["io.modelcontextprotocol/protocolVersion"] as? String else {
+            // No per-request version: a legacy client, whether it handshook or
+            // not. Note that `_meta` alone does NOT mean modern — the
+            // `progressToken` key has lived there since 2025-03-26.
+            return .success(.legacy(negotiatedLegacyVersion ?? protocolVersion))
+        }
+        guard supportedProtocolVersions.contains(declared) else {
+            return .failure(JSONRPCFault(
+                code: unsupportedProtocolVersionCode,
+                message: "Unsupported protocol version: \(declared)",
+                data: ["supported": supportedProtocolVersions, "requested": declared]
+            ))
+        }
+        guard modernProtocolVersions.contains(declared) else {
+            // A legacy revision announced through the modern slot. Serve it in
+            // the dialect it named, not the one it used to ask.
+            return .success(.legacy(declared))
+        }
+        // `clientCapabilities` is required on every modern request, and a
+        // request missing a required `_meta` field is malformed (-32602).
+        //
+        // Enforced everywhere EXCEPT the two methods a client uses to work out
+        // what it is talking to. Failing `server/discover` over a missing
+        // capabilities map would be self-defeating: the spec's own stdio
+        // fallback rule reads any non-modern error from the probe as "this is a
+        // legacy server", so being strict there would talk a modern client OUT
+        // of the modern path over a field discovery does not need.
+        if method != "server/discover" && method != "initialize",
+           meta?["io.modelcontextprotocol/clientCapabilities"] == nil {
+            return .failure(JSONRPCFault(
+                code: -32602,
+                message: "Missing required _meta field 'io.modelcontextprotocol/clientCapabilities'. "
+                    + "Protocol \(declared) requires it on every request, because there is no "
+                    + "handshake left to carry it. Nothing was executed."
+            ))
+        }
+        return .success(.modern(declared))
+    }
+
+    // MARK: The method table
+
     func handle(_ request: [String: Any]) throws -> [String: Any]? {
         let method = request["method"] as? String ?? ""
-        let id = request["id"] ?? NSNull()
+
         // A notification (no id) must NEVER get a response - answering one,
         // even with an error, is invalid JSON-RPC and strict clients
         // (Antigravity's Go MCP layer) close the connection over it.
@@ -59,51 +365,105 @@ final class MCPServer {
         // live: an id-less `tools/call`, `tools/list` or `ping` matched a
         // case, never reached the guard, and was answered with `"id": null` -
         // exactly the reply the guard exists to prevent.
-        //
-        // A REQUEST method arriving without an id is a client bug, and it is
-        // deliberately NOT dispatched: performing a Logic write whose result
-        // could never be reported back is worse than dropping the message.
-        // The drop is logged so it is diagnosable rather than silent.
-        if request["id"] == nil {
-            if !method.hasPrefix("notifications/") && method != "initialized" {
-                log("dropped '\(method)' sent without an id: a notification gets no response, so its result could never reach the caller")
-            }
+        let id: Any
+        switch RequestID.classify(request["id"]) {
+        case .absent:
+            handleNotification(method: method, request: request)
             return nil
+        case .invalid(let reason):
+            // Null and fractional ids land here. There is no id to echo, so the
+            // response carries the JSON-RPC null.
+            return jsonRPCError(id: NSNull(), code: -32600, message: "Invalid Request: \(reason)")
+        case .valid(let value):
+            id = value
+        }
+
+        // The envelope itself. A member that is missing or is not exactly
+        // "2.0" is not a JSON-RPC 2.0 message, and guessing at what a sender
+        // who cannot spell the version meant is how a wrong reply gets built
+        // on a wrong assumption.
+        guard let version = request["jsonrpc"] as? String, version == "2.0" else {
+            let found = request["jsonrpc"].map { "\($0)" } ?? "no `jsonrpc` member at all"
+            return jsonRPCError(
+                id: id, code: -32600,
+                message: "Invalid Request: every message must carry `\"jsonrpc\": \"2.0\"`; found \(found). "
+                    + "Nothing was executed."
+            )
+        }
+
+        let era: MCPEra
+        switch self.era(for: request, method: method) {
+        case .failure(let fault):
+            return jsonRPCError(id: id, code: fault.code, message: fault.message, data: fault.data)
+        case .success(let resolved):
+            era = resolved
         }
 
         switch method {
+        case "server/discover":
+            // Mandatory in 2026-07-28, and the whole handshake for a modern
+            // client: supported versions, capabilities, identity and
+            // instructions in one call, with no state left behind on either
+            // side. Always answered in the modern dialect — the method does not
+            // exist in any other one.
+            return response(id: id, result: discoverResult(), era: .modern(modernProtocolVersions[0]))
+
         case "initialize":
-            // Echo the client's protocol version when we know it - strict
-            // clients disconnect on a version they did not offer.
-            let requested = (request["params"] as? [String: Any])?["protocolVersion"] as? String
-            let known = ["2024-11-05", "2025-03-26", protocolVersion]
-            let negotiated = (requested.flatMap { known.contains($0) ? $0 : nil }) ?? protocolVersion
-            return response(id: id, result: [
-                "protocolVersion": negotiated,
-                "capabilities": ["tools": ["listChanged": false]],
-                "serverInfo": ["name": serverName, "version": serverVersion],
-                // What a COLD-START model needs before its first call, and
-                // nothing it can look up per tool: how to read a result, which
-                // of the two planes a tool name puts it on, and the four things
-                // v1 cannot do at all. No file pointer — a bare client cannot
-                // fetch docs/AGENT-GUIDE.md, so anything essential lives here.
-                "instructions": "Controls Logic Pro on this Mac over its control-surface protocol and macOS Accessibility (no coordinate-driven UI scripting). Needs Logic running with a project open, Accessibility granted, and a Mackie Control on the 'Logic MCP MCU' ports; English Logic UI assumed (v1). Run logic_health FIRST - it starts the bridge daemon, checks every setup step and names the fix for whatever is missing - and logic_setup_key_commands once during onboarding, or Logic's Key Commands window flashes unannounced later.\n\n"
-                    + "RESULT CONTRACT (JSON in the text block). `success`: the intent landed - it can be FALSE while isError is false (a no-op refusal, a command that moved nothing), so read it: an error-free result is not automatically a successful one. `verified`: a readback or proof confirmed it - CAN be false while success is true; a few tools give it a tool-specific meaning, stated in their own description. `state`: a short token to branch on; the `already_*` family is a VERIFIED NO-OP - the target was already there and nothing was pressed, so it is no reason to retry, and if you expected a change your model of the project is stale. `warning`: ONE string, several joined by ' ALSO: ' - act on it before proceeding. A thrown failure carries isError true plus `error` and `error_code`: not_found, not_exposed, ambiguous, precondition_failed, verification_failed, write_failed, invalid_arguments, not_trusted, not_running, failed. Only SOME writes take a compare-and-set argument (expected_current_value, expected_current_db, expected_current_bpm, ... as each schema lists it), refusing with precondition_failed on a mismatch; the rest verify by readback only. Read before you write.\n\n"
-                    + "TWO PLANES. Tools WITHOUT `mcu` in the name drive Logic's Accessibility tree: they need the strip visible in an inspector and reach only plugins that publish editable fields. Tools WITH `mcu` drive the control surface: they reach EVERY strip (Stereo Out, Master, auxes, buses) and EVERY plugin, custom-UI third-party included. When in doubt, prefer the mcu route for plugin and send work.\n\n"
-                    + "CANNOT DO (v1): no note-level MIDI editing beyond logic_edit_event on the Event List; no plugin or instrument catalogue, so names must be exact as Logic spells them; no relative value changes (read, then write the absolute target; logic_set_track_volume's relative_db is the one exception); recording over occupied bars creates an OVERLAPPING region, it does not replace.\n\n"
-                    + "LISTENING: open a result's preview_path/clip_path with your client's FILE VIEWER (real multimodal audio in most clients), or call logic_get_audio_clip if your client forwards MCP audio blocks - a result arriving without its block means it does not. NEVER read audio files as text/bash, and never claim to have heard what you did not receive. Trust a result's metrics and warnings over your expectations, and report blocked steps instead of improvising. MIX BY EAR: fader and parameter VALUES are not loudness or quality - judge by listening, and use numbers only to confirm."
-            ])
+            return response(id: id, result: initializeResult(request), era: era)
 
         case "notifications/initialized", "initialized":
             return nil
 
         case "ping":
-            return response(id: id, result: [:])
+            // Removed in 2026-07-28 along with the rest of the session
+            // machinery, and still answered here in both eras. It is a
+            // stateless no-op that costs one line; refusing a client's
+            // keepalive to make a point about a revision it may not have read
+            // would break sessions and prove nothing.
+            return response(id: id, result: [:], era: era)
 
         case "tools/list":
-            return response(id: id, result: ["tools": toolDefinitions()])
+            let params = request["params"] as? [String: Any] ?? [:]
+            // This server does not paginate: `tools/list` returns all 84 tools
+            // and no `nextCursor`, so there is no cursor it could have issued
+            // and every cursor is by definition unrecognized. The spec's answer
+            // for an unrecognized cursor is -32602, and saying so is far better
+            // than silently returning page one again to a client that believes
+            // it is paging forward.
+            if let cursor = params["cursor"], !(cursor is NSNull) {
+                return jsonRPCError(
+                    id: id, code: -32602,
+                    message: "Unknown cursor: \(cursor). This server does not paginate tools/list — "
+                        + "it returns every tool in one page and never issues a nextCursor, so no "
+                        + "cursor value is valid. Call tools/list with no cursor."
+                )
+            }
+            var result: [String: Any] = ["tools": toolDefinitions()]
+            if era.isModern {
+                // CacheableResult. The list is compiled into the binary, so
+                // "public" is honest: it is identical for every client and
+                // holds nothing about this user or project.
+                result["ttlMs"] = toolListCacheTTLMs
+                result["cacheScope"] = "public"
+            }
+            return response(id: id, result: result, era: era)
 
         case "tools/call":
+            // Deliberately served whether or not `initialize` came first. The
+            // legacy lifecycle asks the CLIENT not to send requests before the
+            // handshake, but it puts no matching duty on the server, and real
+            // clients skip it — so does every `echo ... | logician` smoke test
+            // in this repo. The 2026-07-28 spec bakes that reality in: it
+            // warns clients that some servers "do not validate that a request
+            // arrives after initialize" and tells them to probe with
+            // `server/discover` if they need a deterministic answer, which
+            // this server gives them. Refusing here would break working
+            // clients to enforce a rule aimed at someone else. (In particular
+            // NOT -32002: 2026-07-28 retired that code, and implementations of
+            // this revision must not emit it.)
+            if !era.isModern && negotiatedLegacyVersion == nil {
+                log("tools/call before initialize; serving it anyway under \(era.version)")
+            }
             let params = request["params"] as? [String: Any] ?? [:]
             let toolName = params["name"] as? String ?? ""
             let arguments = params["arguments"] as? [String: Any] ?? [:]
@@ -114,7 +474,7 @@ final class MCPServer {
             if let unknown = unknownToolMessage(name: toolName) {
                 return jsonRPCError(id: id, code: -32602, message: unknown)
             }
-            return response(id: id, result: callTool(name: toolName, arguments: arguments))
+            return response(id: id, result: callTool(name: toolName, arguments: arguments), era: era)
 
         default:
             // Real notifications already returned above. An unknown
@@ -124,6 +484,86 @@ final class MCPServer {
             return jsonRPCError(id: id, code: -32601, message: "Method not found: \(method)")
         }
     }
+
+    /// Everything that arrives without an id. Nothing here may produce output.
+    private func handleNotification(method: String, request: [String: Any]) {
+        switch method {
+        case "notifications/cancelled":
+            guard let raw = (request["params"] as? [String: Any])?["requestId"], !(raw is NSNull) else {
+                log("notifications/cancelled carried no requestId; ignored")
+                return
+            }
+            let key = CallSession.key(for: raw)
+            callSession.cancel(key: key)
+            let reason = (request["params"] as? [String: Any])?["reason"] as? String
+            log("cancelling request \(key)" + (reason.map { ": \($0)" } ?? ""))
+
+        case "notifications/initialized", "initialized":
+            break
+
+        default:
+            // A REQUEST method arriving without an id is a client bug, and it is
+            // deliberately NOT dispatched: performing a Logic write whose result
+            // could never be reported back is worse than dropping the message.
+            // The drop is logged so it is diagnosable rather than silent.
+            if !method.hasPrefix("notifications/") {
+                log("dropped '\(method)' sent without an id: a notification gets no response, so its result could never reach the caller")
+            }
+        }
+    }
+
+    // MARK: Handshake payloads
+
+    /// The 2026-07-28 `DiscoverResult`.
+    func discoverResult() -> [String: Any] {
+        [
+            "supportedVersions": supportedProtocolVersions,
+            "capabilities": ["tools": ["listChanged": false]],
+            "instructions": serverInstructions,
+            "ttlMs": toolListCacheTTLMs,
+            "cacheScope": "public"
+        ]
+    }
+
+    /// The legacy `InitializeResult`, and the place the negotiated revision is
+    /// recorded for the rest of the process.
+    func initializeResult(_ request: [String: Any]) -> [String: Any] {
+        // Echo the client's protocol version when we know it - strict
+        // clients disconnect on a version they did not offer.
+        let requested = (request["params"] as? [String: Any])?["protocolVersion"] as? String
+        let negotiated = requested.flatMap { supportedProtocolVersions.contains($0) ? $0 : nil }
+            ?? protocolVersion
+        if let previous = negotiatedLegacyVersion {
+            // A second `initialize` is a client bug, not a protocol violation
+            // worth hanging up over. Re-negotiating is idempotent here (the
+            // result depends on nothing but the request), so it is answered
+            // again and simply noted.
+            log("initialize called again (was \(previous), now \(negotiated))")
+        }
+        negotiatedLegacyVersion = negotiated
+        return [
+            "protocolVersion": negotiated,
+            "capabilities": ["tools": ["listChanged": false]],
+            "serverInfo": ["name": serverName, "version": serverVersion],
+            "instructions": serverInstructions
+        ]
+    }
+
+    /// What a COLD-START model needs before its first call, and
+    /// nothing it can look up per tool: how to read a result, which
+    /// of the two planes a tool name puts it on, and the four things
+    /// v1 cannot do at all. No file pointer — a bare client cannot
+    /// fetch docs/AGENT-GUIDE.md, so anything essential lives here.
+    var serverInstructions: String {
+        "Controls Logic Pro on this Mac over its control-surface protocol and macOS Accessibility (no coordinate-driven UI scripting). Needs Logic running with a project open, Accessibility granted, and a Mackie Control on the 'Logic MCP MCU' ports; English Logic UI assumed (v1). Run logic_health FIRST - it starts the bridge daemon, checks every setup step and names the fix for whatever is missing - and logic_setup_key_commands once during onboarding, or Logic's Key Commands window flashes unannounced later.\n\n"
+            + "RESULT CONTRACT (JSON in the text block). `success`: the intent landed - it can be FALSE while isError is false (a no-op refusal, a command that moved nothing), so read it: an error-free result is not automatically a successful one. `verified`: a readback or proof confirmed it - CAN be false while success is true; a few tools give it a tool-specific meaning, stated in their own description. `state`: a short token to branch on; the `already_*` family is a VERIFIED NO-OP - the target was already there and nothing was pressed, so it is no reason to retry, and if you expected a change your model of the project is stale. `warning`: ONE string, several joined by ' ALSO: ' - act on it before proceeding. A thrown failure carries isError true plus `error` and `error_code`: not_found, not_exposed, ambiguous, precondition_failed, verification_failed, write_failed, invalid_arguments, not_trusted, not_running, failed. Only SOME writes take a compare-and-set argument (expected_current_value, expected_current_db, expected_current_bpm, ... as each schema lists it), refusing with precondition_failed on a mismatch; the rest verify by readback only. Read before you write.\n\n"
+            + "TWO PLANES. Tools WITHOUT `mcu` in the name drive Logic's Accessibility tree: they need the strip visible in an inspector and reach only plugins that publish editable fields. Tools WITH `mcu` drive the control surface: they reach EVERY strip (Stereo Out, Master, auxes, buses) and EVERY plugin, custom-UI third-party included. When in doubt, prefer the mcu route for plugin and send work.\n\n"
+            + "CANNOT DO (v1): no note-level MIDI editing beyond logic_edit_event on the Event List; no plugin or instrument catalogue, so names must be exact as Logic spells them; no relative value changes (read, then write the absolute target; logic_set_track_volume's relative_db is the one exception); recording over occupied bars creates an OVERLAPPING region, it does not replace.\n\n"
+            + "LONG TOOLS: the renders, bounces, snapshots and recordings emit MCP `notifications/progress` when you pass `_meta.progressToken`, and honour `notifications/cancelled` at their poll boundaries - a cancelled call unwinds through its own restore path and is never answered. Everything else stays responsive while one runs.\n\n"
+            + "LISTENING: open a result's preview_path/clip_path with your client's FILE VIEWER (real multimodal audio in most clients), or call logic_get_audio_clip if your client forwards MCP audio blocks - a result arriving without its block means it does not. NEVER read audio files as text/bash, and never claim to have heard what you did not receive. Trust a result's metrics and warnings over your expectations, and report blocked steps instead of improvising. MIX BY EAR: fader and parameter VALUES are not loudness or quality - judge by listening, and use numbers only to confirm."
+    }
+
+    // MARK: Result shapes
 
     /// The `CallToolResult` wire shape.
     ///
@@ -188,36 +628,55 @@ final class MCPServer {
         // eventually reject a truthful result, which is the worst outcome this
         // server can produce. The serialized-JSON text block is what the spec
         // prescribes without an output schema, and it is also the ONLY form
-        // the 2024-11-05 and 2025-03-26 clients this server negotiates down to
-        // understand - structured content did not exist before 2025-06-18.
+        // the 2025-03-26 clients this server negotiates down to understand -
+        // structured content did not exist before 2025-06-18.
         return [
             "content": content,
             "isError": isError
         ]
     }
 
-    func response(id: Any, result: Any) -> [String: Any] {
-        ["jsonrpc": "2.0", "id": id, "result": result]
+    /// Wraps a result in whatever the negotiated era requires of it.
+    ///
+    /// 2026-07-28 makes two additions mandatory on every result: `resultType`,
+    /// which tells the client whether this is the final answer or a
+    /// round-trip request for more input (always the former here — this server
+    /// asks the client for nothing), and the server's identity in `_meta`,
+    /// which replaces the `serverInfo` a handshake used to carry. Neither is
+    /// emitted to a legacy client, which has no schema for them.
+    func response(id: Any, result: [String: Any], era: MCPEra = .legacy(protocolVersion)) -> [String: Any] {
+        var result = result
+        if era.isModern {
+            result["resultType"] = "complete"
+            var meta = result["_meta"] as? [String: Any] ?? [:]
+            meta["io.modelcontextprotocol/serverInfo"] = ["name": serverName, "version": serverVersion]
+            result["_meta"] = meta
+        }
+        return ["jsonrpc": "2.0", "id": id, "result": result]
     }
 
-    func jsonRPCError(id: Any, code: Int, message: String) -> [String: Any] {
-        [
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": ["code": code, "message": message]
-        ]
+    func jsonRPCError(id: Any, code: Int, message: String, data: Any? = nil) -> [String: Any] {
+        var error: [String: Any] = ["code": code, "message": message]
+        if let data { error["data"] = data }
+        return ["jsonrpc": "2.0", "id": id, "error": error]
     }
 
-    /// One JSON-RPC batch: every member is processed in order, and only the
-    /// members that carry an id produce a response. nil means "write NOTHING"
-    /// - the required answer when every member was a notification, and the
-    /// same rule that keeps a strict client from closing the connection over
-    /// a reply it never asked for.
-    func handleBatch(_ members: [Any]) -> [[String: Any]]? {
+    /// One JSON-RPC batch. Every member is processed in order, and only the
+    /// members that carry an id produce a response.
+    ///
+    /// Returns the object or array to write, or nil for "write NOTHING" - the
+    /// required answer when every member was a notification, and the same rule
+    /// that keeps a strict client from closing the connection over a reply it
+    /// never asked for.
+    func handleBatch(_ members: [Any]) -> Any? {
         guard !members.isEmpty else {
-            return [jsonRPCError(
+            // A single error OBJECT, not an array holding one. JSON-RPC is
+            // explicit: an empty batch is not a batch, it is one Invalid
+            // Request, and the reply is the bare error. An array here made
+            // clients look for a member to correlate and find none.
+            return jsonRPCError(
                 id: NSNull(), code: -32600, message: "Invalid Request: the batch is empty"
-            )]
+            )
         }
         var responses: [[String: Any]] = []
         for member in members {
@@ -234,14 +693,17 @@ final class MCPServer {
                 }
             } catch {
                 // One bad member must not lose the rest of the batch.
+                let id: Any
+                if case .valid(let value) = RequestID.classify(request["id"]) { id = value } else { id = NSNull() }
                 responses.append(jsonRPCError(
-                    id: request["id"] ?? NSNull(), code: -32603,
-                    message: error.localizedDescription
+                    id: id, code: -32603, message: error.localizedDescription
                 ))
             }
         }
         return responses.isEmpty ? nil : responses
     }
+
+    // MARK: Output
 
     func write(_ object: [String: Any]) {
         writeJSON(object)
@@ -249,6 +711,11 @@ final class MCPServer {
 
     /// Writes one newline-delimited JSON message: an object for a single
     /// response, an array for a batch.
+    ///
+    /// Locked, because two threads write here now: the reader thread answers
+    /// `ping` and `tools/list` while the main thread is emitting progress
+    /// notifications out of a running tool. Interleaved bytes would be a
+    /// corrupt stream, and stdout is the only channel there is.
     func writeJSON(_ message: Any) {
         guard JSONSerialization.isValidJSONObject(message),
               let data = try? JSONSerialization.data(withJSONObject: message, options: [.sortedKeys]),
@@ -257,11 +724,47 @@ final class MCPServer {
             return
         }
         line.append("\n")
+        outputLock.lock()
+        defer { outputLock.unlock() }
         FileHandle.standardOutput.write(Data(line.utf8))
     }
 
     func log(_ message: String) {
         let line = "[\(serverName)] \(message)\n"
         FileHandle.standardError.write(Data(line.utf8))
+    }
+}
+
+/// The reader thread's hand-off to the executor.
+///
+/// A FIFO with a condition variable and nothing else. `next()` blocks until
+/// there is work or stdin has closed, which is what lets the main thread be the
+/// executor without spinning.
+final class JobQueue: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var jobs: [() -> Void] = []
+    private var closed = false
+
+    func submit(_ job: @escaping () -> Void) {
+        condition.lock()
+        defer { condition.unlock() }
+        jobs.append(job)
+        condition.signal()
+    }
+
+    /// nil once stdin has closed AND everything queued before it closed has
+    /// been handed out — a tool call that arrived on the last line still runs.
+    func next() -> (() -> Void)? {
+        condition.lock()
+        defer { condition.unlock() }
+        while jobs.isEmpty && !closed { condition.wait() }
+        return jobs.isEmpty ? nil : jobs.removeFirst()
+    }
+
+    func close() {
+        condition.lock()
+        defer { condition.unlock() }
+        closed = true
+        condition.broadcast()
     }
 }

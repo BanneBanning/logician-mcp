@@ -177,7 +177,18 @@ enum MCUBridge {
         return object
     }
 
+    /// Whether this process has ever sent the control surface a command that
+    /// could have moved it.
+    ///
+    /// Set at the one boundary every command passes through, and read exactly
+    /// once, on shutdown: a session that only listed tools must not reach into
+    /// Logic and reset the user's surface view on the way out. Pings are
+    /// excluded deliberately — a liveness probe reads state and changes none,
+    /// so it is not a touch.
+    nonisolated(unsafe) private(set) static var didTouchSurface = false // single writer, monotonic
+
     private static func transact(_ payload: Data, isPing: Bool) throws -> Data {
+        if !isPing { didTouchSurface = true }
         do {
             return try sendOnce(payload)
         } catch LogicianError.writeFailed(let detail) where detail.hasPrefix("could not reach") {
