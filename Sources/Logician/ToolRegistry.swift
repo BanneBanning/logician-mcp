@@ -1828,8 +1828,9 @@ extension MCPServer {
     ] }
 
     /// What `tools/list` puts on the wire, derived from the registry —
-    /// never a second list that could drift from it.
+    /// never a second list that could drift from it. Filtered to the active
+    /// toolsets (`--toolsets`), which by default is all of them.
     func toolDefinitions() -> [[String: Any]] {
-        toolRegistry().map(\.definition)
+        activeTools().map(\.definition)
     }
 }
