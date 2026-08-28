@@ -2735,3 +2735,114 @@ Plus: `expected_current: {quantize: "Off"}` mot en region som redan stod på `1/
 `RegionInspector.swift` (ny, ren: panelklassificering, etikettnormalisering, parameterkatalogen med intervall och regionstyper, de två indexvokabulärerna, argumentkonvertering) · `AXRegionInspector.swift` (ny: panelsökning, de två hopfällningarna med återställning, radläsning, de tre skrivsätten, den djupa menyhanteringen) · `AXTreeWalk.swift` (`inspectorPanel`, `regionInspectorOutline`, `regionInspectorMenu = 14`) · `Support.swift` (`LogicianError.preconditionUnmet` — ett `precondition_failed` vars meddelande ÄR hela förklaringen, för de vägringar där de befintliga mismatch-fallen ljuger om vad som hände) · `ToolHandlersTracks.swift` + `ToolRegistry.swift` (de två verktygen) · AGENT-GUIDE (två verktygsavsnitt, arbetsflödet "tighten a sloppy take" och flervalsnoten).
 
 `swift test`: 407 tester gröna (20 nya: panelklassificering, etiketter, skrivordningen, de två vokabulärerna, intervallvakterna, blandade kryssrutor), 1,4 s, ingen Logic behövs. `swift build -c release` grön. `serverVersion` är medvetet **inte** bumpad — inget cache-relevant beteende ändrades.
+
+### Ljudregionens skrivsida: decibel in, tiondelar ut — och tre saker panelen gör bakom ryggen (2026-08-28, v0.54.0)
+
+Förra sessionens entry lämnade ljudregionen **läst men oskriven**: grammatiken var uppmätt (fynd 2–3 där), maskineriet regionstypsmedvetet, och `logic_set_region_params` vägrade `gain`, fades, `reverse` och `fine_tune` vid namn. Den här sessionen skrev dem — alla, på kladdkopior av `Fills` — och shippade dessutom G25, regionsomdöpningen, som förra sessionen bevisade men inte byggde. Den uppmätta grammatiken höll i allt utom **tre punkter**, och alla tre hade tyst producerat fel svar om de inte hittats.
+
+**Miljö:** samma körande Logic Pro 12.3.1 (`Testlåt Copy.logicx`, pid 75391 — sandlådekopian), användarens bryggdaemon pid 24761, **aldrig omstartad**, ingen `logician --bridge` startad. Projektet **sparades aldrig**. Dokumentsökvägen kontrollerades innehålla "Copy" före första skrivningen (`/Users/dev/Music/Logic/Testlåt Copy.logicx`). Tre agenter arbetade parallellt mot samma Logic, så det rådgivande låset (`~/Library/Application Support/LogicMCPMCU/agent-live.lock`) var i kraft: hela livedelen kördes i ETT sammanhållet pass med låset taget, och släpptes med Logic i konsekvent läge. **Ingen blind Ångra fyrades** — varje kladdregion togs bort med `logic_delete_region` och verifierades borta.
+
+#### Fynd 0 — verktygen kördes IN-PROCESS, och varför det spelade roll
+
+Att köra den byggda binären (`.build/*/logician`) för ett par livekommandon visade sig kosta mer än det smakade: `main.swift` anropar `MCUBridge.ensureRunning()`, och användarens daemon svarar på ping med ett ÄLDRE `bridgeProtocol` än det nuvarande (4). Servern skriver då `replacing outdated bridge daemon`, kör `pkill -f "<absolut sökväg> --bridge"` — som **inte matchar** användarens process, vars kommandorad är den relativa `./.build/release/logician --bridge` — och startar en egen brygga som inte får socketen och dör. Användarens daemon överlevde varje gång (kontrollerat med `ps` efteråt), men två processer föddes i onödan och MCU-ytan ställdes tillbaka till Pan-vy när binären stängde stdin.
+
+Därför drevs hela sessionen genom en tillfällig XCTest-sele (`LiveProbe.swift`, borttagen före commit) som bygger `MCPServer()` i processen och anropar `server.handle(...)` direkt: ingen `main.swift`, inget `ensureRunning`, ingen extra brygga. **Nästa agent som ska köra liveverktyg bör göra likadant.** Att `pkill`-mönstret missar en daemon som startats via relativ sökväg är i sig värt att veta: "replacing outdated bridge daemon" i loggen betyder inte att någon brygga faktiskt byttes.
+
+#### Fynd 1 — gain: argumentet är DECIBEL, kontrollen är tiondelar, och renderingen visar exakt 20,0 dB
+
+Logics reglage håller `-300…300` och 30 ritas `+3,0 ㏈`. Ett verktygsargument i tiondelar hade varit samma fälla som `dynamics` redan kostat en session (`125` → `400 %`), så `gain_db` tar **decibel som decimaltal** och konverterar: `-6.5` → `-65`, avrundat till den tiondel Logic kan hålla. Resultatet rapporterar båda, plus Logics egen text, så en avläsning kan matas rakt tillbaka in som argument:
+
+```json
+"gain_db": { "value": -35, "db": -3.5, "gain": "-3.5 dB", "display": "-3,5 ㏈", "row": 10 }
+```
+
+**Guldbeviset** (samma bar-slice, samma kladdregion, `logic_render_track {track_name: "Fill", start_bar: 55, end_bar: 57}`):
+
+| | topp V/H | RMS V/H |
+|---|---|---|
+| före (`gain_db` 0) | +7,42 / +7,99 dB | −9,07 / −8,96 dB |
+| efter (`gain_db` −20) | −12,58 / −12,01 dB | −29,07 / −28,96 dB |
+| skillnad | **−20,00 / −20,00 dB** | **−20,00 / −20,00 dB** |
+
+Exakt det som begärdes, på tiondelen, i både topp och RMS. Ett reglage i en panel, och ljudet som kommer ut är 20 dB tystare.
+
+#### Fynd 2 — de två `Curve`-raderna adresseras med POSITION, inte etikett
+
+Förra sessionens varning stod sig: rad 14 och rad 17 heter båda `Curve`. Lösningen som shippas är en ren funktion, `RegionInspector.rowIndex(for:labels:)`, som tar panelens etikettlista i Logics ordning och svarar med ett radindex:
+
+- en unik etikett matchar direkt,
+- en DUBBLERAD etikett löses av **ankaret** (`Parameter.after`): `fade_in_curve` är den `Curve` som kommer efter `Fade-In`/`Speed Up`, `fade_out_curve` den som kommer efter `Fade-Out`/`Slow Down`,
+- en dubblerad etikett **utan** ankare som löser den ger `nil`, och skrivningen vägras — att gissa "första träffen" är ett tyst fel svar.
+
+Både läsningen och skrivningen (och återläsningen efter varje skrivning) går genom samma karta, och varje resultatrad bär `row` med sig, så vad servern skrev är kontrollerbart utifrån. Uppmätt levande: `fade_in_ms` 13, `fade_in_curve` **14**, `fade_out_ms` 15, `fade_type` 16, `fade_out_curve` **17**, `reverse` 18, `gain_db` 10, `fine_tune` 5.
+
+#### Fynd 3 — att transponera en ljudregion tänder FLEX, och då FÖRSVINNER Reverse-raden
+
+Det här är sessionens dyraste fynd, och det upptäcktes av att `reverse` plötsligt saknades i en läsning som tio minuter tidigare hade den.
+
+```
+transpose 0  ->  7:Flex=False   18:Reverse=False      (raden finns)
+transpose 12 ->  7:Flex=True    18:-  (platshållare)  (raden är BORTA)
+transpose 0  ->  7:Flex=False   18:Reverse=True       (raden är tillbaka, och värdet överlevde)
+```
+
+Logic tänder alltså Flex av sig själv när en ljudregion transponeras eller finstäms — det är så pitch-skiftet utförs — och medan Flex är på **publicerar panelen ingen Reverse-rad alls**, den ersätts av en `-`-platshållare. Reverse-INSTÄLLNINGEN överlever (den stod kvar `true` när raden kom tillbaka); det är raden som försvinner. Konsekvensen för ett verktyg: `transpose` och `reverse` i SAMMA anrop kan inte fungera, eftersom transponeringen tar bort raden innan reverse hinner skrivas. Vägran säger numera exakt det, med vägen ut:
+
+> the Region inspector published no 'Reverse' row (it lives under 'More'). Flex is ON for this region, and Logic hides Reverse entirely while it is: transposing or fine-tuning an audio region switches Flex on by itself, so set transpose and fine_tune back to 0 to get Reverse back (the setting survives — it is the row that disappears)
+
+#### Fynd 4 — Type-menyn heter en sak och VISAR en annan, och crossfade fastnar bara med en granne
+
+Två separata saker på samma rad, och båda gav först ett falskt "misslyckat":
+
+1. Menyposten heter `X (Crossfade)`; efter valet **läser pop-upen `X`**. Likaså `EqP (Equal Power Crossfade)` → `EqP`. En återläsning som jämför strängar bokstavligt kallar en lyckad skrivning för `verification_failed`. Fixen är `RegionInspector.popupShortForm` — huvudet före `" ("` är identiteten, parentesen är Logic som förklarar sig — och den används nu för återläsning, för `already_set`-jämförelsen och för `expected_current`. Argumentet får ges i båda stavningarna (`fade_type: "EqP"` fungerade, uppmätt), men en kortform som passar på FLERA menyposter vägras med listan i stället för att gissa.
+2. **Med tom yta efter regionen fastnar ingen crossfade-typ.** `X (Crossfade)` och `EqP (…)` gick båda tillbaka till `Out` direkt, tre försök. Så snart en granneregion låg vid takt 56 tog exakt samma skrivning, och pop-upen läste `X`. Verktyget vägrar därför med `verification_failed` och säger varför — det rapporterar inte en typ som Logic inte behöll.
+
+Menyn ordagrant, läst utan att trycka något: `Out` · `X (Crossfade)` · `EqP (Equal Power Crossfade)` · `X S (S-Curved Crossfade)`.
+
+#### Fynd 5 — förvalspanelen har inte ens samma rader
+
+En detalj som stärker förvalsvägran: när ingenting är valt (`Audio Defaults`) publicerar panelen en ANNAN raduppsättning — rad 9 är en platshållare i stället för `File Tempo`, och rad 19 heter `Speed` i stället för att vara tom. Det är alltså inte "samma panel med samma rader fast för förvalen"; en skrivning där hade träffat delvis andra parametrar.
+
+#### Fynd 6 — omdöpningen: ett fält, en bekräftelse, och ingen omnumrering
+
+`logic_rename_region` shippas som eget verktyg (samma hus-stil som `logic_rename_track`). Regionen väljs exklusivt, panelens namnfält skrivs med `AXValue` + `AXConfirm`, och resultatet verifieras **två gånger**: panelen läser tillbaka namnet OCH arrangemangskartan visar det på regionen vid den positionen. Ingen dialog, inget nyckelkommando, och panelens hopfällningar rörs inte alls — namnfältet är barn till panelgruppen och publiceras även när triangeln är stängd.
+
+Den öppna frågan från markörarbetet — Logic numrerar om FÖRVALSNAMN efter position, gör regioner detsamma? — testades billigt och svaret är **nej**: `Fills.3` → `LogicianScratchAudio` och `Fills.4` → `Fills.9` lämnade alla andra regioner på spåret orörda i arrangemangskartan. Verktyget jämför ändå före/efter och rapporterar det i `also_renamed` om det någon gång skulle hända. En sak som däremot gäller: Logics egen kopieringsnumrering räknar bara uppåt — kladdkopiorna hette `Fills.3`, `.4` och `.10` fastän `.1` och `.2` sedan länge var raderade.
+
+#### Fynd 7 — vägran före första skrivningen, inte mitt i
+
+Wave 1:s skrivloop kontrollerade regionstyp och `expected_current` **per parameter i tur och ordning**, vilket betyder att ett anrop med en giltig och en ogiltig parameter hann skriva den giltiga innan det vägrade. Nu görs hela genomgången först — regionstyp, det typberoende intervallet, och alla `expected_current` — mot samma radläsning, innan en enda kontroll rörs. Uppmätt: `{gain_db: -9, velocity_offset: 5}` på en ljudregion vägrades och gain stod kvar på −35, och `{gain_db: -9, fade_in_ms: 10, expected_current: {gain_db: 0}}` vägrades utan att fade-in rörde sig från 500.
+
+#### Live-bevis per parameter (allt på kladdkopior av `Fills`, alla borttagna efteråt)
+
+```
+gain_db        0      -> -20   ('-20,0 ㏈')  ax_value_absolute   verifierad + RENDERAD (−20,00 dB)
+gain_db        -20    -> -3,5  ('-3,5 ㏈')   ax_value_absolute   verifierad
+fine_tune      0      -> 25    ('+25')       ax_value_absolute   verifierad
+transpose      0      -> 12 -> 7 -> 0        ax_value_absolute   verifierad (±36 på ljud)
+fade_in_ms     0      -> 500 -> 8            ax_value_absolute   verifierad
+fade_in_curve  0      -> -40   ('-40')       ax_value_absolute   verifierad (rad 14)
+fade_out_ms    0      -> 400 -> 8            ax_value_absolute   verifierad
+fade_out_curve 0      -> 30    ('30')        ax_value_absolute   verifierad (rad 17)
+fade_type      Out    -> X -> EqP            ax_popup_menu_press verifierad (BARA med granne)
+reverse        false  -> true -> (dold)      ax_checkbox_press   verifierad
+rename         Fills.3 -> LogicianScratchAudio               ax_value_on_the_inspector_name_field
+rename         Fills.4 -> Fills.9                            verifierad i arrangemangskartan
+```
+
+Plus, alla körda och alla vägrade med rätt skäl: `transpose: 50` på en LJUDregion (`invalid_arguments`, "outside the range Logic gives audio regions, -36…36 semitones") · `{gain_db, velocity_offset}` på ljud (`not_exposed`, inget skrivet) · `expected_current: {gain_db: 0}` mot −35 (`precondition_failed`, inget skrivet) · `scope: "selection"` med `gain_db` över tre valda regioner (`precondition_failed`, den relativa förklaringen) · `reverse` medan Flex är på (`not_found` med Flex-förklaringen) · `fade_type` utan granne (`verification_failed`) · omdöpning med fel `expected_current_name` (`precondition_failed`) · ett andra identiskt anrop med fyra parametrar → `state: "already_set"`, alla fyra i `unchanged`, ingenting tryckt.
+
+#### Vad som lämnades i användarens projekt (osparat, ingenting har nått disken)
+
+1. **Alla fem kladdregioner är borta och verifierade borta** (`Fills.3`/`LogicianScratchAudio` och `Fills.4`/`Fills.9` vid takt 55 och 56, samt `Fills.10`). `logic_list_regions {track_name: "Fill"}` visar åter exakt en region: `Fills` vid takt 39 slag 4. Inga kladdSPÅR skapades.
+2. **Originalregionen `Fills` är orörd** — läst efteråt: gain 0, fades 0, kurvor 0, Type `Out`, transpose 0, fine tune 0, Flex av, Reverse av.
+3. **Regionsinspektorns trianglar står som vid start** (verktygen återställer båda; sista läsningen rapporterade `region_panel: opened and restored`).
+4. **Ingen dialog stod uppe vid överlämningen**: `logic_list_windows` visar ett enda fönster, projektfönstret.
+5. **Nya filer på disk** i `~/Library/Application Support/Logician/captures/`: två renderingar (`wave2-gain-before`, `wave2-gain-after`) med slices och m4a-förhandsvisningar. Projektet självt har inte rörts på disken.
+6. Låset togs och släpptes en gång; ingen annan agents arbete avbröts.
+
+#### Vad som ändrades i koden
+
+`RegionInspector.swift` (åtta nya parametrar i katalogen; `Parameter.after`/`refuseAlternateMode`/`rangeByRegionType`; `rowIndex(for:labels:)` + `rowIndexes(labels:)`; `gainTenths(fromDecibels:)`, `decibels(tenths:)`, `gainDisplay(tenths:)`; `checkRange(key:value:regionType:)`; `popupShortForm`/`popupValuesMatch`; två nya `ValueError`-fall) · `AXRegionInspector.swift` (`regionParameterRows` som adresserar rader per position i både läs- och skrivvägen, förhandsgranskningen som vägrar före första skrivningen, kortformsjämförelsen på tre ställen, Flex/Reverse-förklaringen, `renameRegion` + `otherRegionsThatChangedName`) · `ToolHandlersTracks.swift`/`ToolRegistry.swift` (`logic_rename_region`, 77 → **78 verktyg**, och `logic_set_region_params` med nio nya argument) · AGENT-GUIDE (ljudavsnittet i båda verktygsposterna, `logic_rename_region`, arbetsflödet "fade a clicking edit, gain-stage a hot region", och de två fällorna).
+
+`swift test`: **424 tester gröna** (17 nya: dB↔tiondelar åt båda hållen, gain-formatering, fade-intervallen, kurvradsadresseringen med och utan ankare och i fel läge, MIDI-panelen som inte har någon av ljudraderna, de typberoende intervallen, kortformsjämförelsen, omnumreringsrapporten), 1,4 s, ingen Logic behövs. `swift build -c release` grön. `serverVersion` är medvetet **inte** bumpad — inget cache-relevant beteende ändrades.
