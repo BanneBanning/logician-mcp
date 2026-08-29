@@ -82,7 +82,20 @@ final class MCPProtocolTests: XCTestCase {
     }
 
     func testAnUnknownMethodWithAnIdIsMethodNotFound() throws {
-        let response = try XCTUnwrap(server.handle(request("resources/list", id: 3)))
+        // (It used to be `resources/list` that stood in for "a method this
+        // server does not have". That one is implemented now, so the example
+        // has to be a method MCP itself does not define.)
+        let response = try XCTUnwrap(server.handle(request("resources/frobnicate", id: 3)))
+        XCTAssertEqual((response["error"] as? [String: Any])?["code"] as? Int, -32601)
+    }
+
+    /// `resources/subscribe` is deliberately absent: the capability declares
+    /// neither `subscribe` nor `listChanged`, and answering a subscription this
+    /// server will never honour would be a promise, not a courtesy.
+    func testSubscribeIsNotOfferedBecauseTheCapabilityDoesNotClaimIt() throws {
+        let response = try XCTUnwrap(server.handle(
+            request("resources/subscribe", id: 4, params: ["uri": guideResourceURI])
+        ))
         XCTAssertEqual((response["error"] as? [String: Any])?["code"] as? Int, -32601)
     }
 

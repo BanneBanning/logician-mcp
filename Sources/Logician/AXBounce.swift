@@ -747,10 +747,7 @@ extension LogicAccessibility {
         }
         reportProgress("render finished (\(lastSize) bytes)", percent: 91)
         // Move the render into the captures directory under the label name.
-        let capturesDirectory = home.appendingPathComponent(
-            "Library/Application Support/Logician/captures"
-        )
-        try? FileManager.default.createDirectory(at: capturesDirectory, withIntermediateDirectories: true)
+        let capturesDirectory = Captures.ensureRoot()
         let destination = capturesDirectory.appendingPathComponent(
             "\(filename).\(URL(fileURLWithPath: renderedPath).pathExtension)"
         )

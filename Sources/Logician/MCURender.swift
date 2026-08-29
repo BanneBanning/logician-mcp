@@ -278,10 +278,7 @@ extension MCUController {
         }
 
         // Copy out before unfreezing (unfreeze deletes the file).
-        let captures = manager.homeDirectoryForCurrentUser.appendingPathComponent(
-            "Library/Application Support/Logician/captures"
-        )
-        try? manager.createDirectory(at: captures, withIntermediateDirectories: true)
+        let captures = Captures.ensureRoot()
         let stamp = Int(Date().timeIntervalSince1970)
         let safeLabel = sanitizedFilenameComponent(label, fallback: "render")
         // The name is only second-resolution, so two renders of the same label

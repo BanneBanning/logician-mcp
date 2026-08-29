@@ -1905,7 +1905,9 @@ extension MCPServer {
         // The reasoning — what passing false actually costs you, and how to
         // listen without the blocks — is the instructions' AUDIO RESULTS
         // paragraph, sent once per session instead of four times per list.
-        "description": "Attach the rendered audio as MCP audio content blocks, default true — see AUDIO RESULTS in the server instructions before passing false."
+        // Said here rather than in four descriptions: the link is the reason
+        // false is no longer a dead end.
+        "description": "Attach the rendered audio as MCP audio content blocks, default true — see AUDIO RESULTS in the server instructions before passing false. Either way the result carries a resource_link to logician://captures/<filename>, so false still leaves you able to fetch the audio with resources/read."
     ] }
 
     /// What `tools/list` puts on the wire, derived from the registry —

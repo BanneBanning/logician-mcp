@@ -148,7 +148,7 @@ I stopwatch everything against a live reference project (25 mixer strips, 19 tra
 - **Regions** — select (multi too), move, copy, split (dialog-aware), nudge, rename, remove silence; region parameters: quantize, swing, transpose, velocity, loop, mute, gain, fades
 - **Composition & tempo** — MIDI (notes/CC/pitch bend) recorded through the track's real instrument, render-verified; tempo and meter maps are read, integrated into all bar math, and editable; the Smart Tempo mode is checked before recording so an Adapt-mode project is refused, never rewritten
 - **Automation** — read existing curves; record new ones in any mode, playhead-chase verified
-- **Audio out** — bounce (with format/depth/dither options), bounce-in-place, stem export, freeze renders sliced to bars, A/B evaluation carrying both audio versions
+- **Audio out** — bounce (with format/depth/dither options), bounce-in-place, stem export, freeze renders sliced to bars, A/B evaluation carrying both audio versions; audio comes back inline **and** as fetchable MCP resource links, so a client that can't take it inline can still pull it on demand
 - **Key commands** — trigger any learned command; learn any of Logic's ~1400 by name, consent-recorded
 
 ## Under the hood

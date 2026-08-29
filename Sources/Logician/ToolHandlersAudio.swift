@@ -437,9 +437,7 @@ extension MCPServer {
         let trimmed = scratchBase.appendingPathExtension("wav")
         // The encoded clip is kept on disk: clients that drop MCP
         // audio blocks need a FILE their viewer can hand to the model.
-        let clipsDirectory = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/Logician/captures")
-        try? FileManager.default.createDirectory(at: clipsDirectory, withIntermediateDirectories: true)
+        let clipsDirectory = Captures.ensureRoot()
         let scratch = clipsDirectory.appendingPathComponent(
             "clip-\(Int(Date().timeIntervalSince1970))-\(URL(fileURLWithPath: clipPath).deletingPathExtension().lastPathComponent.suffix(24)).m4a"
         )

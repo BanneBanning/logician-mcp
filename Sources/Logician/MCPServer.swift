@@ -63,6 +63,24 @@ enum MCPEra {
         if case .modern = self { return true }
         return false
     }
+
+    /// Revision ids are ISO dates, so lexical order IS chronological order and
+    /// a feature that "arrived in X" is a string comparison against X. This is
+    /// only sound because every id in `supportedProtocolVersions` has the same
+    /// `YYYY-MM-DD` shape; nothing in MCP has ever had another.
+    func isAtLeast(_ revision: String) -> Bool { version >= revision }
+
+    /// `resource_link` content blocks. 2025-03-26 has exactly four content
+    /// types in a tool result — text, image, audio and the embedded `resource`
+    /// — and no link among them, so a link sent to one is a block its schema
+    /// cannot describe. Added in 2025-06-18.
+    var supportsResourceLinks: Bool { isAtLeast("2025-06-18") }
+
+    /// `title` and `annotations` on a `Resource`. Both arrive in 2025-06-18;
+    /// the 2025-03-26 `Resource` is uri/name/description/mimeType/size and
+    /// nothing else. The `resources` capability itself is older than either and
+    /// is declared on every revision this server speaks.
+    var supportsResourceTitles: Bool { isAtLeast("2025-06-18") }
 }
 
 /// A JSON-RPC error worked out before the method ever runs: a bad id, a bad
@@ -448,6 +466,64 @@ final class MCPServer: @unchecked Sendable {
             }
             return response(id: id, result: result, era: era)
 
+        case "resources/list":
+            // Same no-pagination stance as `tools/list`, for a different
+            // reason: this list is CAPPED rather than complete. It names the
+            // guide plus the `capturesListLimit` most recent captures and never
+            // issues a `nextCursor`, so no cursor can be one it handed out, and
+            // an older capture is reached by naming it — `resources/read` takes
+            // any filename in the directory, listed or not.
+            if let cursor = (request["params"] as? [String: Any])?["cursor"], !(cursor is NSNull) {
+                return jsonRPCError(
+                    id: id, code: -32602,
+                    message: "Unknown cursor: \(cursor). This server does not paginate "
+                        + "resources/list — it returns the agent guide plus the \(capturesListLimit) "
+                        + "most recent captures in one page and never issues a nextCursor. Call "
+                        + "resources/list with no cursor; an older capture can still be read "
+                        + "directly at \(capturesURIPrefix)<filename>."
+                )
+            }
+            var result: [String: Any] = ["resources": resourceList(era: era)]
+            if era.isModern {
+                // Short, and deliberately not the hour `tools/list` gets: the
+                // captures family gains a file every time this session renders
+                // one. "private" because it is a listing of THIS user's audio.
+                result["ttlMs"] = resourceListCacheTTLMs
+                result["cacheScope"] = "private"
+            }
+            return response(id: id, result: result, era: era)
+
+        case "resources/templates/list":
+            // Answered with an empty list rather than -32601. A server that
+            // declares `resources` and then reports "method not found" for the
+            // sibling discovery call reads as broken to a client walking the
+            // capability; "there are no templates" is both true and quiet.
+            return response(id: id, result: ["resourceTemplates": []], era: era)
+
+        case "resources/read":
+            let params = request["params"] as? [String: Any] ?? [:]
+            guard let uri = params["uri"] as? String, !uri.isEmpty else {
+                return jsonRPCError(
+                    id: id, code: -32602,
+                    message: "resources/read requires a non-empty string `uri`. Nothing was read."
+                )
+            }
+            switch resourceContents(uri: uri, era: era) {
+            case .failure(let fault):
+                return jsonRPCError(id: id, code: fault.code, message: fault.message, data: fault.data)
+            case .success(let contents):
+                var result: [String: Any] = ["contents": contents]
+                if era.isModern {
+                    // The guide is immutable for the life of the binary; a
+                    // capture is a file on the user's disk that a re-render can
+                    // replace under the same name.
+                    let isGuide = uri == guideResourceURI
+                    result["ttlMs"] = isGuide ? toolListCacheTTLMs : resourceListCacheTTLMs
+                    result["cacheScope"] = isGuide ? "public" : "private"
+                }
+                return response(id: id, result: result, era: era)
+            }
+
         case "tools/call":
             // Deliberately served whether or not `initialize` came first. The
             // legacy lifecycle asks the CLIENT not to send requests before the
@@ -474,7 +550,11 @@ final class MCPServer: @unchecked Sendable {
             if let unknown = unknownToolMessage(name: toolName) {
                 return jsonRPCError(id: id, code: -32602, message: unknown)
             }
-            return response(id: id, result: callTool(name: toolName, arguments: arguments), era: era)
+            return response(
+                id: id,
+                result: callTool(name: toolName, arguments: arguments, era: era),
+                era: era
+            )
 
         default:
             // Real notifications already returned above. An unknown
@@ -514,11 +594,33 @@ final class MCPServer: @unchecked Sendable {
 
     // MARK: Handshake payloads
 
+    /// What this server can do, in the one shape every supported revision
+    /// spells the same way.
+    ///
+    /// `resources` is declared to BOTH eras because resources are older than
+    /// both: `resources/list` and `resources/read` have been in the spec since
+    /// 2025-03-26, unchanged in shape, and only the caching hints on the result
+    /// and the `title`/`annotations` on a `Resource` are newer. Neither
+    /// `listChanged` nor `subscribe` is claimed: the captures directory does
+    /// gain files while a session renders, but this server has no watcher and
+    /// promising notifications it will never send is worse than a client
+    /// re-listing.
+    ///
+    /// (Computed rather than stored: a `[String: Any]` is not `Sendable`, and a
+    /// static one is a shared mutable global as far as Swift 6 is concerned.
+    /// It is three literals — rebuilding it per handshake costs nothing.)
+    static var serverCapabilities: [String: Any] {
+        [
+            "tools": ["listChanged": false],
+            "resources": ["listChanged": false]
+        ]
+    }
+
     /// The 2026-07-28 `DiscoverResult`.
     func discoverResult() -> [String: Any] {
         [
             "supportedVersions": supportedProtocolVersions,
-            "capabilities": ["tools": ["listChanged": false]],
+            "capabilities": MCPServer.serverCapabilities,
             "instructions": MCPServer.instructions,
             "ttlMs": toolListCacheTTLMs,
             "cacheScope": "public"
@@ -543,7 +645,7 @@ final class MCPServer: @unchecked Sendable {
         negotiatedLegacyVersion = negotiated
         return [
             "protocolVersion": negotiated,
-            "capabilities": ["tools": ["listChanged": false]],
+            "capabilities": MCPServer.serverCapabilities,
             "serverInfo": ["name": serverName, "version": serverVersion],
             "instructions": MCPServer.instructions
         ]
@@ -559,7 +661,17 @@ final class MCPServer: @unchecked Sendable {
     /// content), but no audio block is attached and the note that promised
     /// one is rewritten - a result that says "this CARRIES the audio" while
     /// carrying nothing is exactly the dishonesty this server refuses.
-    func toolResult(payload: Any, isError: Bool, includeAudio: Bool = true) -> [String: Any] {
+    ///
+    /// The `resource_link` blocks are NOT part of that opt-out, and that is the
+    /// point of them. Inline audio is unchanged: a multimodal client hears
+    /// exactly what it heard before. A client that cannot take a few hundred KB
+    /// of base64 turns it off and STILL gets the link, so it can fetch the
+    /// render through `resources/read` when it decides it wants to. Era-gated,
+    /// because `resource_link` does not exist before 2025-06-18.
+    func toolResult(
+        payload: Any, isError: Bool, includeAudio: Bool = true,
+        era: MCPEra = .legacy(protocolVersion)
+    ) -> [String: Any] {
         // A payload carrying "_audio" {data, mimeType} becomes an MCP audio
         // content block so multimodal clients can LISTEN instead of being
         // tempted to read raw audio files into their context.
@@ -603,6 +715,10 @@ final class MCPServer: @unchecked Sendable {
 
         var content: [[String: Any]] = [["type": "text", "text": text]]
         content.append(contentsOf: audioBlocks)
+        // Built from the TEXT payload, which is the one that still holds the
+        // paths: `_audio` was already lifted out of it above, and the paths are
+        // what a link points at.
+        content.append(contentsOf: resourceLinks(for: textPayload, era: era))
         // NO `structuredContent`. It used to carry a second copy of the same
         // dictionary the text block already holds, which doubled the tokens of
         // every call in any client that renders both - and it was unvalidated:

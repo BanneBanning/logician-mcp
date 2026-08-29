@@ -47,7 +47,12 @@ extension MCPServer {
         return message + " Available tools: " + offered.sorted().joined(separator: ", ")
     }
 
-    func callTool(name: String, arguments: [String: Any]) -> [String: Any] {
+    /// `era` is carried all the way down to `toolResult` for one reason: the
+    /// `resource_link` blocks it attaches to an audio result do not exist
+    /// before 2025-06-18, and a 2025-03-26 client must never see one.
+    func callTool(
+        name: String, arguments: [String: Any], era: MCPEra = .legacy(protocolVersion)
+    ) -> [String: Any] {
         do {
             guard let tool = activeTools().first(where: { $0.name == name }) else {
                 // Unreachable from `tools/call` (see unknownToolMessage), kept
@@ -73,9 +78,11 @@ extension MCPServer {
                successPayload["success"] as? Bool == true,
                successPayload["listen_note"] == nil {
                 successPayload["listen_note"] = note
-                return toolResult(payload: successPayload, isError: false, includeAudio: includeAudio)
+                return toolResult(
+                    payload: successPayload, isError: false, includeAudio: includeAudio, era: era
+                )
             }
-            return toolResult(payload: payload, isError: false, includeAudio: includeAudio)
+            return toolResult(payload: payload, isError: false, includeAudio: includeAudio, era: era)
         } catch {
             return toolResult(
                 payload: [
