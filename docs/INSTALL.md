@@ -127,17 +127,17 @@ Logician is a plain stdio MCP server that needs no arguments. Wherever your clie
 
 ### Optional: offer fewer tools
 
-All 82 tools are offered by default, and their descriptions cost your agent about 40,000 tokens before its first call. If you know what a session is for, hand the server a comma-separated list of toolsets as `--toolsets=…` in `args` (or set `LOGICIAN_TOOLSETS` in `env`) and it advertises only those:
+All 83 tools are offered by default, and their descriptions cost your agent about 40,000 tokens before its first call. If you know what a session is for, hand the server a comma-separated list of toolsets as `--toolsets=…` in `args` (or set `LOGICIAN_TOOLSETS` in `env`) and it advertises only those:
 
 | toolset | tools | what it covers |
 | --- | --- | --- |
 | `core` | 41 | readiness, orientation reads, transport, the strips, the plugins, and the bounces and renders that let you hear a decision |
 | `regions` | 18 | the arrangement: regions, markers, and creating/renaming/deleting tracks |
-| `composition` | 14 | MIDI recording, automation, tempo and meter, the Event List, instruments |
+| `composition` | 15 | MIDI recording, automation, tempo and meter, the Event List, instruments |
 | `delivery` | 7 | stems, bounce-in-place, removing silence |
 | `project` | 8 | open/new/save/duplicate/close, reset, snapshot |
 | `keycommands` | 6 | Logic's key commands and the raw control-surface command |
-| `all` | 82 | everything — the default |
+| `all` | 83 | everything — the default |
 
 `--toolsets=core` is a mixing session at roughly half the token cost. Nothing is lost permanently: a tool that is not offered tells the agent which toolset holds it, and you change the flag and restart.
 

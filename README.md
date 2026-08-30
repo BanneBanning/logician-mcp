@@ -9,7 +9,7 @@
 [![macOS](https://img.shields.io/badge/macOS-13%2B-black?logo=apple)](#requirements)
 [![CI](https://github.com/BanneBanning/logician-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/BanneBanning/logician-mcp/actions/workflows/ci.yml)
 [![Swift](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](Package.swift)
-[![MCP](https://img.shields.io/badge/MCP-82_tools-4be37a)](docs/AGENT-GUIDE.md)
+[![MCP](https://img.shields.io/badge/MCP-83_tools-4be37a)](docs/AGENT-GUIDE.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
 [What you can say](#what-you-can-say) · [Install](#install) · [Agent guide](docs/AGENT-GUIDE.md)
@@ -139,7 +139,7 @@ I stopwatch everything against a live reference project (25 mixer strips, 19 tra
 - Swift toolchain (to build from source)
 - One-time: Accessibility permission for your MCP client, and a Mackie Control device in Logic pointing at the `Logic MCP MCU` ports (Logic Pro → Control Surfaces → Setup → New → Mackie Control — `logic_health` walks you through it)
 
-## Tool overview (82 tools)
+## Tool overview (83 tools)
 
 - **See the project** — tracks, regions, markers, windows; the whole mixer in one call (every strip incl. auxes, buses and outputs); what each track is (type, instrument, routing, groups); a region's MIDI events; existing automation curves; or the entire project as one structured snapshot
 - **Diagnostics & lifecycle** — `logic_health` (a doctor that names the fix for anything broken); open/close/save/duplicate projects; verified reset to a fixture project
