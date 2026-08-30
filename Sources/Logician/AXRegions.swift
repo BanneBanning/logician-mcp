@@ -200,7 +200,9 @@ extension LogicAccessibility {
         // The header/strip name fields ignore direct AXValue writes; the
         // Rename Track key command opens an inline editor whose focused
         // element IS settable.
-        let command = try MCUController.resolveKeyCommand(named: "Rename Track", logic: self)
+        let command = try MCUController.resolveKeyCommand(
+            named: KeyCommandRegistry.Name.renameTrack, logic: self
+        )
         _ = try MCUController.triggerKeyCommand(note: command.note, channel: command.channel)
         var editor: AXUIElement?
         guard let application = NSRunningApplication
@@ -334,7 +336,7 @@ extension LogicAccessibility {
                 restored: true
             )
         }
-        try fireKeyCommand("Delete")
+        try fireKeyCommand(KeyCommandRegistry.Name.delete)
         var gone = false
         for _ in 0..<10 {
             Thread.sleep(forTimeInterval: 0.4)
@@ -563,7 +565,7 @@ extension LogicAccessibility {
                 restored: false
             )
         }
-        try fireKeyCommand("Split Regions/Events at Playhead Position")
+        try fireKeyCommand(KeyCommandRegistry.Name.splitRegionsAtPlayhead)
 
         // A MIDI region whose notes cross the cut raises a modal before
         // anything is split. Answer it deterministically with the caller's
@@ -659,23 +661,23 @@ extension LogicAccessibility {
     /// the real rows.
     static let regionSelectionCommands: [String: (command: String, meaning: String)] = [
         "track": (
-            "Select All Regions/Cells of Same Track",
+            KeyCommandRegistry.Name.selectAllRegionsOfSameTrack,
             "every region on the same track as the anchor region"
         ),
         "following": (
-            "Select All Following",
+            KeyCommandRegistry.Name.selectAllFollowing,
             "the anchor region and everything that starts after it, on EVERY track"
         ),
         "following_same_track": (
-            "Select All Following of Same Track/Pitch",
+            KeyCommandRegistry.Name.selectAllFollowingOfSameTrack,
             "the anchor region and everything after it on that track only"
         ),
         "all": (
-            "Select All",
+            KeyCommandRegistry.Name.selectAll,
             "every region in the project"
         ),
         "none": (
-            "Deselect All",
+            KeyCommandRegistry.Name.deselectAll,
             "nothing - clears the selection"
         )
     ]
@@ -800,14 +802,14 @@ extension LogicAccessibility {
         let oldStart = selection["start_bar"] as? Int ?? 0
         for _ in 0..<abs(byBars) {
             try fireKeyCommand(byBars > 0
-                ? "Nudge Region/Event Position Right by Bar"
-                : "Nudge Region/Event Position Left by Bar")
+                ? KeyCommandRegistry.Name.nudgeRightByBar
+                : KeyCommandRegistry.Name.nudgeLeftByBar)
             Thread.sleep(forTimeInterval: 0.15)
         }
         for _ in 0..<abs(byBeats) {
             try fireKeyCommand(byBeats > 0
-                ? "Nudge Region/Event Position Right by Beat"
-                : "Nudge Region/Event Position Left by Beat")
+                ? KeyCommandRegistry.Name.nudgeRightByBeat
+                : KeyCommandRegistry.Name.nudgeLeftByBeat)
             Thread.sleep(forTimeInterval: 0.15)
         }
         Thread.sleep(forTimeInterval: 0.4)
@@ -855,7 +857,7 @@ extension LogicAccessibility {
                 actual: "selection drifted; refusing", restored: true
             )
         }
-        try fireKeyCommand(move ? "Cut" : "Copy")
+        try fireKeyCommand(move ? KeyCommandRegistry.Name.cut : KeyCommandRegistry.Name.copy)
         Thread.sleep(forTimeInterval: 0.4)
         let destinationTrack = toTrack ?? trackName
         // ALWAYS select the destination — including the same-track case.
@@ -884,7 +886,7 @@ extension LogicAccessibility {
         // present.
         let destinationBefore = (try? regionSnapshot(trackName: destinationTrack)) ?? []
         let atBarBefore = destinationBefore.filter { $0["start_bar"] as? Int == toBar }
-        try fireKeyCommand("Paste")
+        try fireKeyCommand(KeyCommandRegistry.Name.paste)
         var pasted: [String: Any]?
         for _ in 0..<10 {
             Thread.sleep(forTimeInterval: 0.4)

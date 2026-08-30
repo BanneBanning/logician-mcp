@@ -110,32 +110,110 @@ enum KeyCommandRegistry {
         return taken.joined(separator: " ").lowercased()
     }
 
+    // MARK: - Names
+
+    /// Every Logic key-command name this product spells, as a constant.
+    ///
+    /// These are rows in the user's Key Commands window, and Logic translates
+    /// that window — so each one is a localization surface, and a caller that
+    /// re-spelled a name inline was a leak that a Swedish pass would have had
+    /// to find by grep. `resolveKeyCommand(named:)` matches the registry
+    /// case-insensitively on exactly this string; `standardCommands` carries
+    /// the matching search term, which the suite proves is a substring of the
+    /// name, so a translated name and a stale search term cannot ship
+    /// together silently.
+    ///
+    /// Per locale, re-measure: open Logic's Key Commands window and read the
+    /// row. The English name is not always the menu item's text (`New Track
+    /// with Duplicate Settings and Content` has no menu twin), so each one has
+    /// to be read out of that window, not translated from the menu bar.
+    enum Name {
+        static let save = "Save"
+        static let newSoftwareInstrumentTrack = "New Software Instrument Track"
+        static let newAudioTrack = "New Audio Track"
+        static let toggleTrackFreeze = "Toggle Track Freeze"
+        static let undo = "Undo"
+        static let redo = "Redo"
+        static let flashbackCaptureAsRecording = "Flashback Capture as Recording"
+        static let splitRegionsAtPlayhead = "Split Regions/Events at Playhead Position"
+        static let cut = "Cut"
+        static let copy = "Copy"
+        static let paste = "Paste"
+        static let delete = "Delete"
+        static let nudgeRightByBar = "Nudge Region/Event Position Right by Bar"
+        static let nudgeLeftByBar = "Nudge Region/Event Position Left by Bar"
+        static let nudgeRightByBeat = "Nudge Region/Event Position Right by Beat"
+        static let nudgeLeftByBeat = "Nudge Region/Event Position Left by Beat"
+        static let duplicateTrack = "New Track with Duplicate Settings and Content"
+        static let deleteTrack = "Delete Track"
+        static let renameTrack = "Rename Track"
+        static let nextPluginSetting = "Next Plug-in Setting for topmost Plug-in Window"
+        static let previousPluginSetting = "Previous Plug-in Setting for topmost Plug-in Window"
+        static let createMarker = "Create Marker"
+
+        // MARK: Learned on demand (not in `standardCommands`)
+        //
+        // G00's opt-in path learns these on the spot rather than claiming a
+        // reserved note for a command most sessions never fire. They are Key
+        // Commands rows all the same, so they belong on the same translation
+        // list.
+
+        /// Note the trailing ellipsis — Logic's own character, not three dots.
+        static let removeSilenceFromAudioRegion = "Remove Silence from Audio Region…"
+
+        /// The five region-selection commands, spelled as Logic 12.3.1's Key
+        /// Commands window shows them (read 2026-08-28). Two of them are not
+        /// what anyone would guess from the menus, which is the whole reason
+        /// they are written down rather than derived.
+        static let selectAllRegionsOfSameTrack = "Select All Regions/Cells of Same Track"
+        static let selectAllFollowing = "Select All Following"
+        static let selectAllFollowingOfSameTrack = "Select All Following of Same Track/Pitch"
+        static let selectAll = "Select All"
+        static let deselectAll = "Deselect All"
+
+        /// The translation list: every name above, in one array, so a
+        /// localization pass has something to enumerate and the suite has
+        /// something to check call sites against. Kept in the same order as
+        /// the constants.
+        static let all: [String] = [
+            save, newSoftwareInstrumentTrack, newAudioTrack, toggleTrackFreeze,
+            undo, redo, flashbackCaptureAsRecording, splitRegionsAtPlayhead,
+            cut, copy, paste, delete,
+            nudgeRightByBar, nudgeLeftByBar, nudgeRightByBeat, nudgeLeftByBeat,
+            duplicateTrack, deleteTrack, renameTrack,
+            nextPluginSetting, previousPluginSetting, createMarker,
+            removeSilenceFromAudioRegion,
+            selectAllRegionsOfSameTrack, selectAllFollowing,
+            selectAllFollowingOfSameTrack, selectAll, deselectAll
+        ]
+    }
+
     /// The commands the product's tools rely on, with search terms for the
     /// Key Commands window and preferred (not guaranteed) note numbers —
     /// collisions on a user's machine get an alternate note automatically.
     static let standardCommands: [(search: String, name: String, preferredNote: Int)] = [
-        ("save", "Save", 105),
-        ("new software instrument", "New Software Instrument Track", 106),
-        ("new audio track", "New Audio Track", 107),
-        ("toggle track freeze", "Toggle Track Freeze", 117),
-        ("undo", "Undo", 100),
-        ("redo", "Redo", 101),
-        ("flashback", "Flashback Capture as Recording", 102),
-        ("split regions/events", "Split Regions/Events at Playhead Position", 103),
-        ("cut", "Cut", 108),
-        ("copy", "Copy", 109),
-        ("paste", "Paste", 110),
-        ("delete", "Delete", 111),
-        ("nudge region", "Nudge Region/Event Position Right by Bar", 112),
-        ("nudge region", "Nudge Region/Event Position Left by Bar", 113),
-        ("nudge region", "Nudge Region/Event Position Right by Beat", 114),
-        ("nudge region", "Nudge Region/Event Position Left by Beat", 115),
-        ("duplicate", "New Track with Duplicate Settings and Content", 116),
-        ("delete track", "Delete Track", 118),
-        ("rename track", "Rename Track", 119),
-        ("next plug-in", "Next Plug-in Setting for topmost Plug-in Window", 120),
-        ("previous plug-in", "Previous Plug-in Setting for topmost Plug-in Window", 121),
-        ("create marker", "Create Marker", 104)
+        ("save", Name.save, 105),
+        ("new software instrument", Name.newSoftwareInstrumentTrack, 106),
+        ("new audio track", Name.newAudioTrack, 107),
+        ("toggle track freeze", Name.toggleTrackFreeze, 117),
+        ("undo", Name.undo, 100),
+        ("redo", Name.redo, 101),
+        ("flashback", Name.flashbackCaptureAsRecording, 102),
+        ("split regions/events", Name.splitRegionsAtPlayhead, 103),
+        ("cut", Name.cut, 108),
+        ("copy", Name.copy, 109),
+        ("paste", Name.paste, 110),
+        ("delete", Name.delete, 111),
+        ("nudge region", Name.nudgeRightByBar, 112),
+        ("nudge region", Name.nudgeLeftByBar, 113),
+        ("nudge region", Name.nudgeRightByBeat, 114),
+        ("nudge region", Name.nudgeLeftByBeat, 115),
+        ("duplicate", Name.duplicateTrack, 116),
+        ("delete track", Name.deleteTrack, 118),
+        ("rename track", Name.renameTrack, 119),
+        ("next plug-in", Name.nextPluginSetting, 120),
+        ("previous plug-in", Name.previousPluginSetting, 121),
+        ("create marker", Name.createMarker, 104)
     ]
 }
 

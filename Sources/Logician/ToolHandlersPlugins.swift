@@ -517,8 +517,8 @@ extension MCPServer {
         let labelBefore = logic.pluginPresetLabel(windowTitle: track)
         let presetCommand = try MCUController.resolveKeyCommand(
             named: direction == "next"
-                ? "Next Plug-in Setting for topmost Plug-in Window"
-                : "Previous Plug-in Setting for topmost Plug-in Window",
+                ? KeyCommandRegistry.Name.nextPluginSetting
+                : KeyCommandRegistry.Name.previousPluginSetting,
             logic: logic
         )
         for _ in 0..<steps {

@@ -16,7 +16,9 @@ extension MCPServer {
 
     func handleCreateTrack(_ arguments: [String: Any]) throws -> Any {
         let kind = (arguments["type"] as? String) ?? "software_instrument"
-        let commandName = kind == "audio" ? "New Audio Track" : "New Software Instrument Track"
+        let commandName = kind == "audio"
+            ? KeyCommandRegistry.Name.newAudioTrack
+            : KeyCommandRegistry.Name.newSoftwareInstrumentTrack
         let before = ((try? logic.listTracks())?["tracks"] as? [[String: Any]])?.count ?? 0
         let command = try MCUController.resolveKeyCommand(named: commandName, logic: logic)
         _ = try MCUController.triggerKeyCommand(note: command.note, channel: command.channel)
@@ -56,7 +58,9 @@ extension MCPServer {
         let dupTrack = try requiredString("track_name", in: arguments)
         _ = try logic.selectTrack(trackName: dupTrack, trackNumber: arguments["track_number"] as? Int, expectedProjectPath: nil)
         let dupBefore = ((try? logic.listTracks())?["tracks"] as? [[String: Any]])?.count ?? 0
-        let dupCommand = try MCUController.resolveKeyCommand(named: "New Track with Duplicate Settings and Content", logic: logic)
+        let dupCommand = try MCUController.resolveKeyCommand(
+            named: KeyCommandRegistry.Name.duplicateTrack, logic: logic
+        )
         _ = try MCUController.triggerKeyCommand(note: dupCommand.note, channel: dupCommand.channel)
         var dupAfter: [[String: Any]] = []
         var duplicated = false
@@ -87,7 +91,9 @@ extension MCPServer {
                 restored: true
             )
         }
-        let delCommand = try MCUController.resolveKeyCommand(named: "Delete Track", logic: logic)
+        let delCommand = try MCUController.resolveKeyCommand(
+            named: KeyCommandRegistry.Name.deleteTrack, logic: logic
+        )
         _ = try MCUController.triggerKeyCommand(note: delCommand.note, channel: delCommand.channel)
 
         // A track that still holds REGIONS raises a modal confirmation

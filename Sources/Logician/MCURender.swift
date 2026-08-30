@@ -55,7 +55,9 @@ extension MCUController {
     /// Logic's unfreeze confirmation dialog.
     static func ensureUnfrozen(logic: LogicAccessibility, trackName: String) throws {
         guard logic.trackFreezeState(trackName: trackName) == true else { return }
-        guard let freeze = try? resolveKeyCommand(named: "Toggle Track Freeze", logic: logic) else { return }
+        guard let freeze = try? resolveKeyCommand(
+            named: KeyCommandRegistry.Name.toggleTrackFreeze, logic: logic
+        ) else { return }
         _ = try triggerKeyCommand(note: freeze.note, channel: freeze.channel)
         var answered = false
         for _ in 0..<25 {
@@ -84,7 +86,7 @@ extension MCUController {
         sliceStartSeconds: Double? = nil, sliceEndSeconds: Double? = nil,
         logic: LogicAccessibility? = nil, trackName: String? = nil
     ) throws -> [String: Any] {
-        let freeze = try resolveKeyCommand(named: "Toggle Track Freeze", logic: logic)
+        let freeze = try resolveKeyCommand(named: KeyCommandRegistry.Name.toggleTrackFreeze, logic: logic)
         // A rolling transport queues freeze dialogs invisibly and swallows
         // toggles — make sure we start from silence. And a track that is
         // ALREADY frozen must be thawed first, or the toggle inverts.

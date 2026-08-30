@@ -300,7 +300,9 @@ extension MCPServer {
         var route = "list_editor_create_marker_button"
         if !logic.pressCreateMarkerButton() {
             route = "midi_key_command_create_marker"
-            let command = try MCUController.resolveKeyCommand(named: "Create Marker", logic: logic)
+            let command = try MCUController.resolveKeyCommand(
+                named: KeyCommandRegistry.Name.createMarker, logic: logic
+            )
             _ = try MCUController.triggerKeyCommand(note: command.note, channel: command.channel)
         }
         var after: [[String: Any]] = []

@@ -175,7 +175,7 @@ extension LogicAccessibility {
             .appendingPathComponent("Alternatives/000/ProjectData").path
         let mtimeBefore = (try? FileManager.default.attributesOfItem(atPath: projectData)[.modificationDate] as? Date)
             .flatMap { $0 }
-        let save = try MCUController.resolveKeyCommand(named: "Save", logic: self)
+        let save = try MCUController.resolveKeyCommand(named: KeyCommandRegistry.Name.save, logic: self)
         _ = try MCUController.triggerKeyCommand(note: save.note, channel: save.channel)
         for _ in 0..<40 {
             Thread.sleep(forTimeInterval: 0.25)

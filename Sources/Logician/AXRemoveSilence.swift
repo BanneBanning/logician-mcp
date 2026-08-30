@@ -25,7 +25,7 @@ extension LogicAccessibility {
     /// **`Remove Silence from Audio Region…`** (⌃X, in the "Windows Showing
     /// Audio Files" group), verified 2026-08-28. It opens a floating window
     /// titled `Remove Silence`.
-    static let removeSilenceCommand = "Remove Silence from Audio Region…"
+    static let removeSilenceCommand = KeyCommandRegistry.Name.removeSilenceFromAudioRegion
 
     func removeSilenceWindow(timeout: Double = 6) -> AXUIElement? {
         let deadline = Date().addingTimeInterval(timeout)
