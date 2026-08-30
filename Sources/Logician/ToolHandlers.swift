@@ -239,6 +239,33 @@ extension MCPServer {
         try? FileManager.default.removeItem(at: MCPServer.tempoMapCacheURL)
     }
 
+    /// What serving a cached tempo map is allowed to claim about itself.
+    enum CachedTempoMapVerdict: Equatable {
+        /// The control bar's live tempo is one the cached map could produce —
+        /// the cross-check ran and passed.
+        case serveCrossChecked
+        /// The control bar could not be read at all (a non-English Logic, a
+        /// hidden control bar), so the cross-check NEVER RAN. The cache may
+        /// still be served — it is the best answer available — but nothing
+        /// this call did verified it against the live project.
+        case serveUnverified
+        /// The live tempo is one the map cannot account for: the map is stale.
+        case discard
+    }
+
+    /// Whether a cached tempo map may be served, and what the result may say
+    /// about it. Pure, so all three outcomes can be pinned by tests — the
+    /// previous inline guard (`live == nil || cached.couldProduceTempo(...)`)
+    /// collapsed "the cross-check passed" and "the cross-check could not run"
+    /// into one branch, and on a French Logic (R4, measured 2026-08-30) that
+    /// served a cache as `verified: true` when nothing had verified anything.
+    static func cachedTempoMapVerdict(
+        _ cached: TempoMap, liveTempo: Double?
+    ) -> CachedTempoMapVerdict {
+        guard let liveTempo else { return .serveUnverified }
+        return cached.couldProduceTempo(liveTempo) ? .serveCrossChecked : .discard
+    }
+
     /// The project's tempo map, read from the Tempo List and cached per project.
     ///
     /// Only SUCCESS is cached: a read that failed (pane not found, rows
@@ -256,22 +283,31 @@ extension MCPServer {
     /// pane to open), so every cache hit is checked against it and a tempo the
     /// map cannot account for discards the cache. What that catches and what it
     /// cannot is documented on `TempoMap.couldProduceTempo`.
-    func resolveTempoMap() -> (map: TempoMap?, failure: TempoListFailure?) {
+    ///
+    /// `liveCrossChecked` is false in exactly one case: the map came from the
+    /// cache AND the control bar could not be read, so the staleness check
+    /// never ran. A fresh Tempo List read is its own evidence and reports true.
+    func resolveTempoMap() -> (
+        map: TempoMap?, failure: TempoListFailure?, liveCrossChecked: Bool
+    ) {
         let projectPath = try? logic.projectDocumentPath()
         if let cached = loadScopedCache(
             MCPServer.tempoMapCacheURL, projectPath: projectPath, as: TempoMap.self
         ) {
-            let live = logic.controlBarTempo()
-            if live == nil || cached.couldProduceTempo(live ?? 0) {
-                return (cached, nil)
+            switch MCPServer.cachedTempoMapVerdict(cached, liveTempo: logic.controlBarTempo()) {
+            case .serveCrossChecked:
+                return (cached, nil, true)
+            case .serveUnverified:
+                return (cached, nil, false)
+            case .discard:
+                invalidateTempoMapCache()
             }
-            invalidateTempoMapCache()
         }
         let read = logic.readTempoMap()
         if let map = read.map {
             saveScopedCache(map, to: MCPServer.tempoMapCacheURL, projectPath: projectPath)
         }
-        return (read.map, read.failure)
+        return (read.map, read.failure, true)
     }
 
     // MARK: - Meter map: acquisition, caching, and the one thing it changes

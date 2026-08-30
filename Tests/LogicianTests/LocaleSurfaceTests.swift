@@ -166,6 +166,34 @@ final class LocaleSurfaceTests: XCTestCase {
         XCTAssertEqual(ChannelStrip.decibels("1,0 \u{33A9}"), 1.0)
     }
 
+    // MARK: - An empty arrangement walk (the R4 silent failure)
+
+    /// R4 regression (measured on a French Logic, 2026-08-30): the row walk
+    /// found no `Track N "Name"` layout areas — their descriptions are
+    /// localized — and `logic_list_regions` answered `{"tracks": []}` with a
+    /// benign note and no error, so a 26-track project read as an empty
+    /// arrangement. The verdict below is what `listRegions` now consults
+    /// before it is allowed to say "empty": only a track header column that
+    /// answered ZERO proves empty; a header column that cannot be read, or
+    /// one that visibly holds tracks, must refuse instead.
+    func testAnEmptyRegionWalkMayOnlyReportEmptyWhenTheHeadersProveIt() {
+        XCTAssertEqual(
+            LogicAccessibility.emptyArrangementVerdict(headerItemCount: nil),
+            .headerUnreadable,
+            "an unreadable header column cannot tell empty from unreadable — refuse"
+        )
+        XCTAssertEqual(
+            LogicAccessibility.emptyArrangementVerdict(headerItemCount: 26),
+            .rowsUnreadable(headerCount: 26),
+            "26 visible track headers prove the arrangement is NOT empty — refuse"
+        )
+        XCTAssertEqual(
+            LogicAccessibility.emptyArrangementVerdict(headerItemCount: 0),
+            .genuinelyEmpty,
+            "a header column that answered zero is the one real empty arrangement"
+        )
+    }
+
     // MARK: - The language inference
 
     private func evidence(

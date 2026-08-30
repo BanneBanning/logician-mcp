@@ -82,10 +82,59 @@ extension LogicAccessibility {
         return entry
     }
 
+    /// What a walk that found NO track rows actually means. Pure, so all three
+    /// outcomes can be pinned by tests: the previous code returned
+    /// `{"tracks": []}` for every one of them, and on a French Logic (R4,
+    /// measured 2026-08-30) a 26-track project read as an empty arrangement —
+    /// a silently wrong answer with the same shape as a correct one, which is
+    /// the one failure mode this server exists to prevent.
+    ///
+    /// The discriminator is the track HEADER column, read independently of the
+    /// row walk: headers that cannot be found mean the whole Tracks area is
+    /// unreadable (a localized `AXDescription`, or no project window), and
+    /// headers that exist while the walk saw nothing mean the walk itself is
+    /// blind. Only a header column that answers "zero tracks" proves empty.
+    enum EmptyArrangementVerdict: Equatable {
+        /// The header column answered and holds no tracks: genuinely empty.
+        case genuinelyEmpty
+        /// The header column could not be read at all — empty vs unreadable
+        /// cannot be told apart, so nothing may be reported as empty.
+        case headerUnreadable
+        /// Track headers exist, so the arrangement is NOT empty; the row walk
+        /// found none of them.
+        case rowsUnreadable(headerCount: Int)
+    }
+
+    static func emptyArrangementVerdict(headerItemCount: Int?) -> EmptyArrangementVerdict {
+        guard let headerItemCount else { return .headerUnreadable }
+        return headerItemCount == 0 ? .genuinelyEmpty : .rowsUnreadable(headerCount: headerItemCount)
+    }
+
     /// The arrangement map: every region on every visible track, with bar
     /// positions and type parsed from the element's help text.
     func listRegions(trackName: String?) throws -> [String: Any] {
         let rows = try regionRows()
+        if rows.isEmpty {
+            let headerCount = (try? trackHeaderItems())?.count
+            switch LogicAccessibility.emptyArrangementVerdict(headerItemCount: headerCount) {
+            case .genuinelyEmpty:
+                break // zero tracks is a real answer, reported below as such
+            case .headerUnreadable:
+                throw LogicianError.trackNotExposed(
+                    requested: "the arrangement's track rows",
+                    exposed: "no 'Track N' layout areas AND the Tracks header group could not be"
+                        + " found — the Tracks area is UNREADABLE, not empty (a non-English Logic"
+                        + " UI localizes both descriptions; logic_health reports the UI language)."
+                        + " Refusing to report an unreadable arrangement as an empty one"
+                )
+            case .rowsUnreadable(let headerCount):
+                throw LogicianError.trackNotExposed(
+                    requested: "the arrangement's track rows",
+                    exposed: "\(headerCount) track header(s) are visible but the arrangement walk"
+                        + " found no track rows — the region map is unreadable, not empty"
+                )
+            }
+        }
         var tracks: [[String: Any]] = []
         for row in rows {
             if let filter = trackName,
