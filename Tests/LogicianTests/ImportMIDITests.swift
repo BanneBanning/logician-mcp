@@ -1,0 +1,349 @@
+import XCTest
+@testable import Logician
+
+/// `logic_import_midi` without Logic: the argument mapping, the filename, the
+/// tempo prompt's policy, the census diff and the note diff.
+///
+/// These are the parts that decide WHAT gets written and WHAT counts as proof,
+/// and none of them needs a running DAW to be wrong. The live route is
+/// verified by hand against the sandbox project; everything here is pinned.
+final class ImportMIDITests: XCTestCase {
+
+    // MARK: - Arguments to an arrangement
+
+    private func arrangement(_ tracks: [[String: Any]]) throws -> [SMFTrack] {
+        try ImportMIDI.tracks(from: tracks)
+    }
+
+    func testAWholeArrangementMapsOntoSMFTracksInOrder() throws {
+        let tracks = try arrangement([
+            [
+                "name": "Bass",
+                "channel": 2,
+                "notes": [
+                    ["pitch": "C1", "bar": 9, "beat": 1.5, "duration_beats": 0.5, "velocity": 88],
+                    ["pitch": 36, "bar": 10]
+                ],
+                "control_changes": [["cc": 1, "value": 64, "bar": 9, "beat": 2]],
+                "pitch_bends": [["value": -4096, "bar": 9, "channel": 3]],
+                "program_changes": [["program": 33, "bar": 9]]
+            ],
+            ["name": "Pad", "notes": [["pitch": "C3", "bar": 9]]]
+        ])
+        XCTAssertEqual(tracks.count, 2)
+        XCTAssertEqual(tracks.map(\.name), ["Bass", "Pad"])
+        XCTAssertEqual(tracks[0].channel, 2)
+        // The channel defaults to 1, not to the previous track's.
+        XCTAssertEqual(tracks[1].channel, 1)
+        XCTAssertEqual(tracks[0].notes, [
+            SMFNote(pitch: 36, bar: 9, beat: 1.5, durationBeats: 0.5, velocity: 88),
+            SMFNote(pitch: 36, bar: 10, beat: 1, durationBeats: 1, velocity: 100)
+        ])
+        XCTAssertEqual(
+            tracks[0].controlChanges, [SMFControlChange(controller: 1, value: 64, bar: 9, beat: 2)]
+        )
+        XCTAssertEqual(tracks[0].pitchBends, [SMFPitchBend(value: -4096, bar: 9, channel: 3)])
+        XCTAssertEqual(tracks[0].programChanges, [SMFProgramChange(program: 33, bar: 9)])
+        XCTAssertEqual(tracks[1].notes.first?.pitch, 60, "C3 is middle C = 60, Logic's convention")
+    }
+
+    /// JSON numbers arrive as Int or Double depending on how the client typed
+    /// them, and `2` and `2.0` are the same beat.
+    func testIntegerAndFloatingArgumentsMeanTheSameThing() throws {
+        let integers = try arrangement([["name": "A", "notes": [
+            ["pitch": 60, "bar": 2, "beat": 2, "duration_beats": 1, "velocity": 90]
+        ]]])
+        let doubles = try arrangement([["name": "A", "notes": [
+            ["pitch": 60.0, "bar": 2.0, "beat": 2.0, "duration_beats": 1.0, "velocity": 90.0]
+        ]]])
+        XCTAssertEqual(integers, doubles)
+    }
+
+    func testControllerIsAcceptedAsASpellingOfCC() throws {
+        let tracks = try arrangement([["name": "A", "control_changes": [
+            ["controller": 11, "value": 100, "bar": 1]
+        ]]])
+        XCTAssertEqual(tracks[0].controlChanges.first?.controller, 11)
+    }
+
+    func testAnArrangementWithNoTracksIsRefused() {
+        XCTAssertThrowsError(try arrangement([])) { error in
+            XCTAssertTrue("\(error)".contains("at least one track"), "\(error)")
+        }
+    }
+
+    func testATrackWithoutANameIsRefusedBecauseTheNameIsTheOnlyHandle() {
+        XCTAssertThrowsError(try arrangement([["notes": []]])) { error in
+            XCTAssertTrue("\(error)".contains("tracks[0] needs a non-empty name"), "\(error)")
+            XCTAssertTrue("\(error)".contains("REGION"), "\(error)")
+        }
+        XCTAssertThrowsError(try arrangement([["name": "   "]]))
+    }
+
+    /// Two regions with one name could not be told apart afterwards, and both
+    /// verification and cleanup address by name.
+    func testTwoTracksWithTheSameNameAreRefused() {
+        XCTAssertThrowsError(try arrangement([["name": "Pad"], ["name": "pad"]])) { error in
+            XCTAssertTrue("\(error)".contains("both named"), "\(error)")
+        }
+    }
+
+    func testAnEventWithoutABarIsRefusedAndNamesItsIndex() {
+        XCTAssertThrowsError(try arrangement([["name": "A", "notes": [
+            ["pitch": 60, "bar": 1], ["pitch": 62]
+        ]]])) { error in
+            XCTAssertTrue("\(error)".contains("tracks[0].notes[1] needs bar"), "\(error)")
+        }
+    }
+
+    func testAnUnparseablePitchIsRefusedWithTheConvention() {
+        XCTAssertThrowsError(try arrangement([["name": "A", "notes": [["pitch": "H4", "bar": 1]]]])) { error in
+            XCTAssertTrue("\(error)".contains("C3"), "\(error)")
+        }
+    }
+
+    func testAnEventListThatIsNotAListIsRefused() {
+        XCTAssertThrowsError(try arrangement([["name": "A", "notes": "C3"]])) { error in
+            XCTAssertTrue("\(error)".contains("tracks[0].notes must be an array"), "\(error)")
+        }
+    }
+
+    /// The mapping's real contract: what it produces, written out and read back
+    /// by the independent reader, is the arrangement that was asked for.
+    func testTheMappedArrangementRoundTripsThroughTheWriterAndBackOut() throws {
+        let tracks = try arrangement([
+            ["name": "Alpha", "channel": 1, "notes": [
+                ["pitch": "C3", "bar": 62, "duration_beats": 1, "velocity": 100],
+                ["pitch": "E3", "bar": 62, "beat": 2, "duration_beats": 1, "velocity": 100]
+            ]],
+            ["name": "Bravo", "channel": 2, "notes": [
+                ["pitch": "C4", "bar": 62, "beat": 3, "duration_beats": 2, "velocity": 64]
+            ]]
+        ])
+        var timing = SMFTiming()
+        timing.originBar = 62
+        let file = try SMFTestReader.read(
+            try SMFWriter(tracks: tracks, timing: timing).encode()
+        )
+        XCTAssertEqual(file.format, 1)
+        // Conductor + one MTrk per track.
+        XCTAssertEqual(file.tracks.count, 3)
+        XCTAssertEqual(file.tracks[1].name, "Alpha")
+        XCTAssertEqual(file.tracks[2].name, "Bravo")
+        XCTAssertEqual(file.tracks[1].notes, [
+            .note(tick: 0, endTick: 960, channel: 1, pitch: 60, velocity: 100, releaseVelocity: 0),
+            .note(tick: 960, endTick: 1920, channel: 1, pitch: 64, velocity: 100, releaseVelocity: 0)
+        ])
+        XCTAssertEqual(file.tracks[2].notes, [
+            .note(tick: 1920, endTick: 3840, channel: 2, pitch: 72, velocity: 64, releaseVelocity: 0)
+        ])
+    }
+
+    // MARK: - The file's name
+
+    func testTheFileNameCarriesTheFirstTrackAndCannotEscapeTheDirectory() {
+        XCTAssertEqual(
+            ImportMIDI.fileName(firstTrack: "Hook Bass", timestamp: 1234),
+            "logicmcp-import-Hook-Bass-1234.mid"
+        )
+        let escaped = ImportMIDI.fileName(firstTrack: "../../../../etc/passwd", timestamp: 1)
+        XCTAssertFalse(escaped.contains("/"))
+        XCTAssertTrue(escaped.hasSuffix(".mid"))
+        // The property that matters: glued onto the captures directory it
+        // cannot address anything outside it.
+        let path = URL(fileURLWithPath: "/base/captures").appendingPathComponent(escaped).path
+        XCTAssertTrue(path.hasPrefix("/base/captures/"))
+    }
+
+    func testANamelessArrangementStillGetsAFileName() {
+        XCTAssertEqual(
+            ImportMIDI.fileName(firstTrack: nil, timestamp: 7), "logicmcp-import-arrangement-7.mid"
+        )
+        XCTAssertEqual(
+            ImportMIDI.fileName(firstTrack: "..", timestamp: 7), "logicmcp-import-arrangement-7.mid"
+        )
+    }
+
+    // MARK: - The tempo prompt
+
+    /// The buttons are IDENTIFIED, not titled: the titles are localisable and
+    /// the window has no title at all.
+    func testThePromptPolicyPicksNoUnlessTempoWasAskedFor() {
+        XCTAssertEqual(ImportMIDI.answer(importTempo: false), .no)
+        XCTAssertEqual(ImportMIDI.answer(importTempo: true), .importTempo)
+        XCTAssertEqual(ImportMIDI.TempoPrompt.no.rawValue, "action-button-1")
+        XCTAssertEqual(ImportMIDI.TempoPrompt.importTempo.rawValue, "action-button-2")
+        XCTAssertEqual(ImportMIDI.TempoPrompt.cancel.rawValue, "action-button-3")
+    }
+
+    func testTheTempoPromptIsRecognisedByItsOwnFirstLine() {
+        XCTAssertTrue(ImportMIDI.isTempoPrompt(texts: [
+            "Also import tempo information?",
+            "This will replace the project’s current tempo information in the range of the MIDI file."
+        ]))
+        // The save-changes alert, which route 2 raises and which must never be
+        // answered by this tool.
+        XCTAssertFalse(ImportMIDI.isTempoPrompt(texts: [
+            "Do you want to save the changes made to the document “Testlåt Copy”?",
+            "Your changes will be lost if you don’t save them."
+        ]))
+        XCTAssertFalse(ImportMIDI.isTempoPrompt(texts: []))
+    }
+
+    // MARK: - The census
+
+    private func regionPayload(_ rows: [(Int, String, [(String, Int)])]) -> [String: Any] {
+        [
+            "tracks": rows.map { number, name, regions in
+                [
+                    "track_number": number,
+                    "track_name": name,
+                    "regions": regions.map { ["name": $0.0, "start_bar": $0.1] }
+                ] as [String: Any]
+            }
+        ]
+    }
+
+    func testTheRegionCensusDiffFindsOnlyWhatTheImportAdded() {
+        let before = ImportMIDI.RegionCensus.parse(regionPayload([
+            (1, "Lofi Pad", [("Lofi Pad", 1), ("Lofi Pad.1", 9)]),
+            (2, "Bas", [("Bas", 9)])
+        ]))
+        let after = ImportMIDI.RegionCensus.parse(regionPayload([
+            (1, "Lofi Pad", [("Lofi Pad", 1), ("Lofi Pad.1", 9)]),
+            (2, "Bas", [("Bas", 9)]),
+            (30, "Studio Grand", [("R2 Alpha", 62)]),
+            (31, "Epic Cloud Formation", [("R2 Bravo", 62)])
+        ]))
+        let added = after.added(since: before)
+        XCTAssertEqual(added.map(\.name), ["R2 Alpha", "R2 Bravo"])
+        XCTAssertEqual(added.map(\.startBar), [62, 62])
+        XCTAssertEqual(added.map(\.trackName), ["Studio Grand", "Epic Cloud Formation"])
+        XCTAssertTrue(before.added(since: after).isEmpty)
+    }
+
+    /// A SET difference, not an index one: a region added to an EXISTING track
+    /// must be found, and the untouched ones must not be.
+    func testARegionAddedToAnExistingTrackIsAlsoNew() {
+        let before = ImportMIDI.RegionCensus.parse(regionPayload([(1, "Pad", [("Pad", 1)])]))
+        let after = ImportMIDI.RegionCensus.parse(
+            regionPayload([(1, "Pad", [("Pad", 1), ("Pad.1", 5)])])
+        )
+        XCTAssertEqual(after.added(since: before).map(\.name), ["Pad.1"])
+    }
+
+    func testAddedTrackNumbersAreTheOnesThatWereNotThereBefore() {
+        let before: [[String: Any]] = [["track_number": 1], ["track_number": 2], ["track_number": 29]]
+        let after: [[String: Any]] = [
+            ["track_number": 1], ["track_number": 2], ["track_number": 29],
+            ["track_number": 30], ["track_number": 31]
+        ]
+        XCTAssertEqual(ImportMIDI.addedTrackNumbers(before: before, after: after), [30, 31])
+        XCTAssertEqual(ImportMIDI.addedTrackNumbers(before: after, after: after), [])
+    }
+
+    // MARK: - The note diff
+
+    private func row(
+        _ bar: Int, _ beat: Int, _ pitch: Int, velocity: Int?, status: String = "Note"
+    ) -> EventRow {
+        EventRow(
+            index: 0, position: [bar, beat, 1, 1], status: status, channel: "1",
+            numberText: EventListWrite.noteName(pitch), pitch: pitch, velocity: velocity,
+            length: [0, 1, 0, 0], lengthText: "0 1 0 0", positionText: "\(bar) \(beat) 1 1"
+        )
+    }
+
+    func testAnExactImportDiffsClean() {
+        let expected = [
+            SMFNote(pitch: 60, bar: 62, beat: 1, velocity: 100),
+            SMFNote(pitch: 64, bar: 62, beat: 2, velocity: 100)
+        ]
+        let diff = ImportMIDI.diff(expected: expected, observed: [
+            row(62, 1, 60, velocity: 100), row(62, 2, 64, velocity: 100)
+        ])
+        XCTAssertTrue(diff.matches)
+        XCTAssertEqual(diff.expected, 2)
+        XCTAssertEqual(diff.observed, 2)
+    }
+
+    /// A fractional beat lands inside Logic's 1/16 grid, so the diff compares
+    /// the BEAT and not the division and tick — otherwise every offbeat note
+    /// would read as drift the writer did not create.
+    func testAnOffbeatNoteMatchesTheBeatItSitsIn() {
+        let diff = ImportMIDI.diff(
+            expected: [SMFNote(pitch: 60, bar: 4, beat: 2.5, velocity: 100)],
+            observed: [EventRow(
+                index: 0, position: [4, 2, 3, 1], status: "Note", channel: "1",
+                numberText: "C3", pitch: 60, velocity: 100, length: [0, 0, 2, 0],
+                lengthText: "0 0 2 0", positionText: "4 2 3 1"
+            )]
+        )
+        XCTAssertTrue(diff.matches, "\(diff)")
+    }
+
+    func testAMissingNoteAndAnExtraNoteAreBothNamed() {
+        let diff = ImportMIDI.diff(
+            expected: [
+                SMFNote(pitch: 60, bar: 1, beat: 1, velocity: 100),
+                SMFNote(pitch: 64, bar: 1, beat: 2, velocity: 100)
+            ],
+            observed: [row(1, 1, 60, velocity: 100), row(1, 3, 67, velocity: 100)]
+        )
+        XCTAssertFalse(diff.matches)
+        XCTAssertEqual(diff.missing, ["bar 1 beat 2 E3 vel 100"])
+        XCTAssertEqual(diff.unexpected, ["bar 1 beat 3 G3 vel 100"])
+    }
+
+    func testAVelocityThatDidNotSurviveIsReportedWithoutLosingTheNote() {
+        let diff = ImportMIDI.diff(
+            expected: [SMFNote(pitch: 60, bar: 1, beat: 1, velocity: 100)],
+            observed: [row(1, 1, 60, velocity: 64)]
+        )
+        XCTAssertFalse(diff.matches)
+        XCTAssertTrue(diff.missing.isEmpty)
+        XCTAssertTrue(diff.unexpected.isEmpty)
+        XCTAssertEqual(diff.velocityMismatches, ["bar 1 beat 1 C3: wrote 100, Logic shows 64"])
+    }
+
+    /// Two notes on one pitch and position at different velocities: the pair
+    /// must match up rather than produce two spurious mismatches.
+    func testAUnisonAtTwoVelocitiesPairsUpByVelocity() {
+        let diff = ImportMIDI.diff(
+            expected: [
+                SMFNote(pitch: 60, bar: 1, beat: 1, velocity: 100),
+                SMFNote(pitch: 60, bar: 1, beat: 1, velocity: 40)
+            ],
+            observed: [row(1, 1, 60, velocity: 40), row(1, 1, 60, velocity: 100)]
+        )
+        XCTAssertTrue(diff.matches, "\(diff)")
+    }
+
+    /// A CC or program-change row is a row too. Counting it as an extra note
+    /// would make a correct import look wrong.
+    func testNonNoteRowsAreIgnored() {
+        let diff = ImportMIDI.diff(
+            expected: [SMFNote(pitch: 60, bar: 1, beat: 1, velocity: 100)],
+            observed: [
+                row(1, 1, 60, velocity: 100),
+                row(1, 1, 1, velocity: 64, status: "Control")
+            ]
+        )
+        XCTAssertTrue(diff.matches, "\(diff)")
+        XCTAssertEqual(diff.observed, 1)
+    }
+
+    func testAnImportThatLandedNothingReportsEveryNoteMissing() {
+        let diff = ImportMIDI.diff(
+            expected: [
+                SMFNote(pitch: 60, bar: 1, beat: 1, velocity: 100),
+                SMFNote(pitch: 62, bar: 1, beat: 2, velocity: 100)
+            ],
+            observed: []
+        )
+        XCTAssertFalse(diff.matches)
+        XCTAssertEqual(diff.observed, 0)
+        XCTAssertEqual(diff.missing.count, 2)
+        XCTAssertEqual(diff.payload["matches"] as? Bool, false)
+    }
+}

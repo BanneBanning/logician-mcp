@@ -418,7 +418,7 @@ extension MCPServer {
             Tool(
                 name: "logic_record_midi",
                 title: "Record MIDI",
-                description: "TAKES REAL WALL-CLOCK TIME (the music plays through: bars x beats x 60/BPM seconds, roughly doubled with the verification render). Composes MIDI into the project with ZERO dialogs and no files: notes are streamed in real time over the dedicated 'Logic MCP MIDI In' port while Logic records them onto the selected software-instrument track (playhead parked one bar early; the stream starts on the observed MCU-timecode crossing into start_bar, so count-in settings do not matter). Creates a normal recorded region. By default the result is verified with a dialog-free freeze render of the recorded bars (non-silent metrics prove the notes landed and sound through the instrument). The region can be removed with Undo in Logic. SMART TEMPO GUARD: a project tempo mode of ADAPT (or AUTO, which can resolve to Adapt) makes Logic rewrite the project's TEMPO MAP to follow the recording, so this refuses before arming and names the fix; when the mode cannot be read off the control bar the recording proceeds and the result carries a warning saying it went unverified. TEMPO MAP: note offsets are integrated over the project's tempo map, read out of Logic's Tempo List (View > List Editors > Tempo; ~2 s, no playhead movement, cached per project and reported in tempo_map), so notes land on the grid across a tempo change. When the Tempo List cannot be read, placement falls back to constant-tempo bar math and the tempo is sampled at the take's first and last bar instead (playhead parked, read, restored — once per call, shared with the verification render); differing readings then produce a `warning`. Either way speed > 1 is REFUSED with precondition_failed on a non-constant tempo: speed mode overwrites the tempo slider and restores a single value, which cannot put a tempo map back. Real-time recording (speed 1) touches no tempo and stays available.",
+                description: "TAKES REAL WALL-CLOCK TIME (the music plays through: bars x beats x 60/BPM seconds, roughly doubled with the verification render). THE SIBLING: logic_import_midi writes a whole multi-track arrangement as a Standard MIDI File and lets Logic import it - byte-exact, seconds rather than minutes, and free of the Smart Tempo hazard below - but it always lands on NEW tracks; this tool is the one that performs a part through an EXISTING track's actual instrument in real time. Composes MIDI into the project with ZERO dialogs and no files: notes are streamed in real time over the dedicated 'Logic MCP MIDI In' port while Logic records them onto the selected software-instrument track (playhead parked one bar early; the stream starts on the observed MCU-timecode crossing into start_bar, so count-in settings do not matter). Creates a normal recorded region. By default the result is verified with a dialog-free freeze render of the recorded bars (non-silent metrics prove the notes landed and sound through the instrument). The region can be removed with Undo in Logic. SMART TEMPO GUARD: a project tempo mode of ADAPT (or AUTO, which can resolve to Adapt) makes Logic rewrite the project's TEMPO MAP to follow the recording, so this refuses before arming and names the fix; when the mode cannot be read off the control bar the recording proceeds and the result carries a warning saying it went unverified. TEMPO MAP: note offsets are integrated over the project's tempo map, read out of Logic's Tempo List (View > List Editors > Tempo; ~2 s, no playhead movement, cached per project and reported in tempo_map), so notes land on the grid across a tempo change. When the Tempo List cannot be read, placement falls back to constant-tempo bar math and the tempo is sampled at the take's first and last bar instead (playhead parked, read, restored — once per call, shared with the verification render); differing readings then produce a `warning`. Either way speed > 1 is REFUSED with precondition_failed on a non-constant tempo: speed mode overwrites the tempo slider and restores a single value, which cannot put a tempo map back. Real-time recording (speed 1) touches no tempo and stays available.",
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -499,6 +499,124 @@ extension MCPServer {
                 mayWarn: true,
                 changesArrangement: true,
                 handler: MCPServer.handleRecordMidi
+            ),
+            Tool(
+                name: "logic_import_midi",
+                title: "Import a composed arrangement",
+                description: "Compose a WHOLE ARRANGEMENT in one call - many named tracks at once - by generating a Standard MIDI File server-side and driving Logic's own File > Import > MIDI File… The file is valid by construction (every value is validated before a byte is written) and nothing is played in real time, so a 4-track arrangement costs about 7 s of import plus ~2.8 s of panel driving and ~7 s of playhead parking, whatever the music's length. THE SIBLING: logic_record_midi plays a part in over the MIDI port in REAL TIME through the track's actual instrument, onto a track that already exists - reach for it when the take should be audible as it happens or must land on a specific instrument; this one is byte-exact, fast, multi-track, and always creates NEW tracks. It also SIDESTEPS THE SMART TEMPO HAZARD entirely: there is no recording pass, so an Adapt-mode project has nothing to follow and cannot rewrite its own tempo map. WHERE IT LANDS: Logic imports at the bar line nearest the playhead and always onto NEW software-instrument tracks - there is no way to steer an import onto an existing track - so this parks the playhead exactly on `at_bar` first (that park is the expensive step) and then verifies that every new region starts there. Every event's `bar` is an ABSOLUTE project bar at or after `at_bar`, and bar positions are written against the project's own meter map. NAMES, and this surprises people: Logic names the new TRACKS after whichever default patch it loads ('Studio Grand', 'Epic Cloud Formation'), NOT after your track names. Your names come back on the REGIONS - which is the only handle the import gives back, and what this tool's verification and its cleanup both address - so follow up with logic_rename_track when the track names matter. THE TEMPO PROMPT: Logic asks 'Also import tempo information?' on EVERY import, before it has even parsed the file, and this tool owns it - answered **No** by default, which leaves the project's tempo map byte-identical (measured). `import_tempo: true` answers 'Import Tempo' instead and is DESTRUCTIVE: it replaces the project's tempo information in the range of the file and desynchronises any previously recorded audio that is not in Flex mode; it requires an explicit `tempo` and discards the cached tempo map. Logic's 'Don't ask again' checkbox is never touched. VERIFICATION is a census: the track count and the region list are diffed against a snapshot taken before the import, and success means the new regions carry your track names and start on `at_bar`. `verify: 'events'` additionally selects each new region and reads its notes back out of the Event List, diffing them note for note against what was written (+~2 s per region). A file Logic cannot read fails SILENTLY - no error dialog, sometimes not even the tempo prompt - so an unchanged census is reported as `success: false` with the counts as evidence, never as an empty success. CLEANUP CONTRACT: no panel, sheet or prompt is ever left standing, and a half-landed import is taken back out one track at a time (`restored` says whether the census came back). An alert whose grammar this server has not measured is REPORTED and never pressed. The generated .mid is left in the captures directory and its path is in the result, so the same arrangement can be re-imported without regenerating it.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "tracks": [
+                            "type": "array",
+                            "description": "The arrangement: one entry per track. Logic creates one new track per entry, in this order.",
+                            "items": [
+                                "type": "object",
+                                "properties": [
+                                    "name": [
+                                        "type": "string",
+                                        "description": "Names the REGION Logic creates (not the track - see the description). Must be unique across the call: it is the handle verification and cleanup address by."
+                                    ],
+                                    "channel": [
+                                        "type": "integer", "minimum": 1, "maximum": 16,
+                                        "description": "MIDI channel every event on this track uses unless it says otherwise. Default 1. Channels do NOT split a track: the arrangement's shape is one Logic track per entry here, whatever channels the events carry."
+                                    ],
+                                    "notes": [
+                                        "type": "array",
+                                        "description": "The notes, in logic_record_midi's vocabulary.",
+                                        "items": [
+                                            "type": "object",
+                                            "properties": [
+                                                "pitch": [
+                                                    "type": ["integer", "string"],
+                                                    "minimum": 0, "maximum": 127,
+                                                    "description": "MIDI number 0-127 or a name like 'C3' (= MIDI 60, Logic convention), 'F#1', 'Bb2'."
+                                                ],
+                                                "bar": ["type": "integer", "minimum": 1, "description": "ABSOLUTE project bar, at or after at_bar."],
+                                                "beat": ["type": "number", "description": "Beat within the bar, 1-based; fractions allowed (1.5 = offbeat). Default 1."],
+                                                "duration_beats": ["type": "number", "description": "Length in quarter-note beats. Default 1."],
+                                                "velocity": ["type": "integer", "minimum": 1, "maximum": 127, "description": "1-127, default 100."],
+                                                "channel": ["type": "integer", "minimum": 1, "maximum": 16, "description": "Overrides the track's channel for this note."]
+                                            ],
+                                            "required": ["pitch", "bar"]
+                                        ]
+                                    ],
+                                    "control_changes": [
+                                        "type": "array",
+                                        "description": "CC events - mod wheel (1), expression (11), sustain (64). Emit many points for a smooth curve.",
+                                        "items": [
+                                            "type": "object",
+                                            "properties": [
+                                                "cc": ["type": "integer", "minimum": 0, "maximum": 127, "description": "Controller number 0-127."],
+                                                "value": ["type": "integer", "minimum": 0, "maximum": 127],
+                                                "bar": ["type": "integer", "minimum": 1],
+                                                "beat": ["type": "number", "description": "1-based, fractions allowed. Default 1."],
+                                                "channel": ["type": "integer", "minimum": 1, "maximum": 16]
+                                            ],
+                                            "required": ["cc", "value", "bar"]
+                                        ]
+                                    ],
+                                    "pitch_bends": [
+                                        "type": "array",
+                                        "description": "Pitch bends: -8192..8191, 0 = centre. Return to 0 at the end of a bend.",
+                                        "items": [
+                                            "type": "object",
+                                            "properties": [
+                                                "value": ["type": "integer", "minimum": -8192, "maximum": 8191],
+                                                "bar": ["type": "integer", "minimum": 1],
+                                                "beat": ["type": "number"],
+                                                "channel": ["type": "integer", "minimum": 1, "maximum": 16]
+                                            ],
+                                            "required": ["value", "bar"]
+                                        ]
+                                    ],
+                                    "program_changes": [
+                                        "type": "array",
+                                        "description": "Program changes. `program` is the WIRE number 0-127; Logic's UI counts these from 1.",
+                                        "items": [
+                                            "type": "object",
+                                            "properties": [
+                                                "program": ["type": "integer", "minimum": 0, "maximum": 127],
+                                                "bar": ["type": "integer", "minimum": 1],
+                                                "beat": ["type": "number"],
+                                                "channel": ["type": "integer", "minimum": 1, "maximum": 16]
+                                            ],
+                                            "required": ["program", "bar"]
+                                        ]
+                                    ]
+                                ],
+                                "required": ["name"]
+                            ]
+                        ],
+                        "at_bar": [
+                            "type": "integer", "minimum": 1,
+                            "description": "The bar the arrangement's first bar lands on. Default 1. The playhead is parked exactly here first (~7 s, the most expensive step of the call) because Logic imports at the bar line NEAREST the playhead, rounding rather than truncating. Every event's `bar` must be this bar or later."
+                        ],
+                        "import_tempo": [
+                            "type": "boolean",
+                            "description": "DESTRUCTIVE, default false. Answers Logic's tempo prompt with 'Import Tempo' instead of 'No', which REPLACES the project's tempo information in the range of the file and puts previously recorded audio that is not in Flex mode out of sync. Requires `tempo`. Leave it out and the project's tempo map is provably untouched."
+                        ],
+                        "tempo": [
+                            "type": "number",
+                            "description": "A BPM written into the file's conductor track. Only ever applied to the project when import_tempo is true - otherwise it just travels with the .mid for a later re-import. No TIME SIGNATURE is ever written: that would be a write to the project's signature track, and this tool has no argument that asks for one."
+                        ],
+                        "verify": [
+                            "type": "string",
+                            "enum": ["census", "events"],
+                            "description": "'census' (default): prove the import by the track/region diff - fast. 'events': additionally select each new region and diff its notes against what was written, reporting per-track counts and mismatches (+~2 s per region)."
+                        ],
+                        "expected_project_path": ["type": "string"]
+                    ],
+                    "required": ["tracks"],
+                    "additionalProperties": false
+                ],
+                // Additive: new tracks, new regions, and one file in the
+                // captures directory. Not idempotent - each call imports
+                // another copy onto another set of new tracks.
+                safety: .write,
+                mayWarn: true,
+                changesArrangement: true,
+                handler: MCPServer.handleImportMIDI
             ),
             Tool(
                 name: "logic_plugin_preset",

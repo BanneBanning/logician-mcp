@@ -156,6 +156,12 @@ enum AXDepth {
     static let bounceDialogControl = 9
     /// Bounce dialog's destination scroll area -> the destination checkboxes.
     static let bounceDestinationList = 5
+    /// Logic's `open-panel` import window -> a named control. MEASURED live
+    /// 2026-08-30: `OKButton` and `CancelButton` are children of the panel's
+    /// `AXSplitGroup` (depth 2) and the Go-to-Folder sheet is a direct child of
+    /// the window (depth 1) with its `PathTextField` one below that, so 6 is
+    /// headroom over a panel whose insides are drawn by another process.
+    static let importPanelControl = 6
 
     // MARK: Menus
 

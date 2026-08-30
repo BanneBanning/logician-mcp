@@ -314,7 +314,7 @@ final class MCPProtocolTests: XCTestCase {
         XCTAssertEqual(result["ttlMs"] as? Int, toolListCacheTTLMs)
         XCTAssertEqual(result["cacheScope"] as? String, "public")
         XCTAssertNotNil((result["_meta"] as? [String: Any])?["io.modelcontextprotocol/serverInfo"])
-        XCTAssertEqual((result["tools"] as? [[String: Any]])?.count, 82)
+        XCTAssertEqual((result["tools"] as? [[String: Any]])?.count, 83)
     }
 
     /// A legacy client has no schema for `resultType` or the caching hints, so
@@ -591,7 +591,7 @@ final class MCPProtocolTests: XCTestCase {
     func testToolsListIsWellFormedAndComplete() throws {
         let response = try XCTUnwrap(server.handle(request("tools/list", id: 1)))
         let tools = try XCTUnwrap((response["result"] as? [String: Any])?["tools"] as? [[String: Any]])
-        XCTAssertEqual(tools.count, 82)
+        XCTAssertEqual(tools.count, 83)
         let names = tools.compactMap { $0["name"] as? String }
         XCTAssertEqual(Set(names).count, tools.count, "duplicate tool name")
         XCTAssertTrue(names.allSatisfy { $0.hasPrefix("logic_") })
@@ -644,7 +644,7 @@ final class MCPProtocolTests: XCTestCase {
         }
     }
 
-    /// The census the result-key inventory produced: 28 tools can put a
+    /// The census the result-key inventory produced: 29 tools can put a
     /// top-level `warning` in their result. A new emitter that forgets the flag
     /// (or a flag on a tool that cannot warn) fails here rather than shipping a
     /// key no description mentions.
@@ -652,7 +652,8 @@ final class MCPProtocolTests: XCTestCase {
         let expected: Set<String> = [
             "logic_add_plugin", "logic_add_send", "logic_bounce_in_place", "logic_bounce_range",
             "logic_duplicate_project", "logic_edit_event", "logic_evaluate_change",
-            "logic_export_stems", "logic_learn_key_command", "logic_list_events",
+            "logic_export_stems", "logic_import_midi", "logic_learn_key_command",
+            "logic_list_events",
             "logic_load_instrument", "logic_markers", "logic_mixer_snapshot", "logic_plugin_preset",
             "logic_project_snapshot", "logic_read_automation", "logic_record_automation",
             "logic_record_midi", "logic_remove_plugin", "logic_remove_silence", "logic_render_track",

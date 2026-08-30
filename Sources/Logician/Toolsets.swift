@@ -138,6 +138,11 @@ enum Toolset: String, CaseIterable {
 
         // Composition: new material, new curves, the musical grid
         "logic_record_midi": [.composition],
+        // Composition ONLY, deliberately, even though it is one of the
+        // strongest tools here: it creates tracks and regions out of nothing,
+        // which is writing material, not mixing one. A `core` session that
+        // wants it finds it through logic_find_tool, which is in every set.
+        "logic_import_midi": [.composition],
         "logic_record_automation": [.composition],
         "logic_read_automation": [.composition],
         "logic_list_events": [.composition],
