@@ -992,6 +992,29 @@ extension LogicAccessibility {
         }
     }
 
+    /// Whether Logic is publishing a REAL window tree, not just the floats.
+    ///
+    /// `AXFrontmost` is not that evidence. Measured 2026-08-30 (R2 import
+    /// research §2) with Safari full-screen on the active Space: Logic reported
+    /// `AXFrontmost = 1` while `logicWindows()` returned ONLY the floating
+    /// `Transport` window — no project window, no modal alert, and
+    /// `CGWindowListCopyWindowInfo` listing no Logic window at all. Every read
+    /// and every synthetic keystroke in that state goes nowhere, which is where
+    /// three of that session's route failures came from.
+    ///
+    /// So this asks the question the callers actually have: is there a window
+    /// worth talking to? A document window (the project), or a dialog/sheet/
+    /// standard window (the bounce dialog, the import panel, an alert). A
+    /// Transport float alone answers no.
+    func logicPublishesItsWindows() -> Bool {
+        guard let windows = try? logicWindows() else { return false }
+        return windows.contains { window in
+            if documentPath(of: window) != nil { return true }
+            return ["AXStandardWindow", "AXDialog", "AXSystemDialog", "AXSheet"]
+                .contains(stringAttribute(window, kAXSubroleAttribute as String))
+        }
+    }
+
     func ensureLogicFrontmost(for label: String) throws {
         guard let application = NSRunningApplication
             .runningApplications(withBundleIdentifier: bundleIdentifier)
@@ -1002,9 +1025,13 @@ extension LogicAccessibility {
         func frontmost() -> Bool {
             stringAttribute(appElement, "AXFrontmost") == "1"
         }
+        /// Frontmost AND publishing a tree. The second half is what
+        /// `AXFrontmost` alone cannot promise; see `logicPublishesItsWindows`.
+        func ready() -> Bool { frontmost() && logicPublishesItsWindows() }
+        if ready() { return }
         if !frontmost() {
             application.activate()
-            for _ in 0..<10 where !frontmost() {
+            for _ in 0..<10 where !ready() {
                 Thread.sleep(forTimeInterval: 0.1)
             }
         }
@@ -1016,10 +1043,32 @@ extension LogicAccessibility {
                 "AXFocusedApplication" as CFString,
                 appElement
             )
-            for _ in 0..<10 where !frontmost() {
+            for _ in 0..<10 where !ready() {
                 Thread.sleep(forTimeInterval: 0.1)
             }
         }
+        if !ready() {
+            // THE LAST RESORT, and the only one measured to work from the
+            // collapsed state above: an AppleScript `activate`. Neither
+            // `NSRunningApplication.activate()` nor the system-wide
+            // `AXFocusedApplication` write brought the window tree back —
+            // after this one, `AXWindows` listed the modal alert, the Tracks
+            // window and Transport immediately, every time (R2 import research
+            // 2026-08-30 §2). It goes through the house AppleScript helper
+            // rather than a second Process spawn of its own; `source` is a
+            // constant, so nothing agent-controlled can reach osascript.
+            _ = LogicAccessibility.runAppleScript(
+                #"tell application "Logic Pro" to activate"#
+            )
+            for _ in 0..<15 where !ready() {
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+        }
+        // The REFUSAL is still `AXFrontmost` alone, deliberately: a Logic with
+        // no project open publishes no document window, and a tool that only
+        // needs the key focus (a save, a key command) must not start failing
+        // because the tree looks thin. An unpublished tree escalates; it does
+        // not refuse.
         guard frontmost() else {
             throw LogicianError.writeFailed("Logic could not be brought frontmost; refusing to interact with \(label)")
         }
