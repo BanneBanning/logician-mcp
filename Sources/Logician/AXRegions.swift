@@ -112,18 +112,28 @@ extension LogicAccessibility {
     /// Selects one region, identified by track + name and/or start bar.
     /// exclusive (default) first clears every other selected region so the
     /// following edit operation (cut/copy/nudge…) touches ONLY this one.
+    ///
+    /// `trackNumber`, when given, addresses the ROW rather than the name. Two
+    /// tracks can share a name — and a MIDI import makes that likely, because
+    /// Logic names the tracks it creates after whichever default patch it
+    /// loaded and a project can already hold a `Studio Grand`. Addressing the
+    /// row by number is what keeps `logic_import_midi`'s routing cutting from
+    /// the track it just created rather than from a namesake.
     func selectRegion(
-        trackName: String, regionName: String?, startBar: Int?, exclusive: Bool
+        trackName: String, regionName: String?, startBar: Int?, exclusive: Bool,
+        trackNumber: Int? = nil
     ) throws -> [String: Any] {
         guard regionName != nil || startBar != nil else {
             throw LogicianError.invalidArguments("pass region_name and/or start_bar")
         }
         let rows = try regionRows()
         guard let row = rows.first(where: {
-            $0.track.caseInsensitiveCompare(trackName) == .orderedSame
+            if let trackNumber { return $0.number == trackNumber }
+            return $0.track.caseInsensitiveCompare(trackName) == .orderedSame
         }) else {
             throw LogicianError.trackNotExposed(
-                requested: "track '\(trackName)'",
+                requested: trackNumber.map { "track row \($0) ('\(trackName)')" }
+                    ?? "track '\(trackName)'",
                 exposed: "visible track rows: " + rows.map(\.track).joined(separator: ", ")
             )
         }
@@ -317,9 +327,25 @@ extension LogicAccessibility {
         _ = try MCUController.triggerKeyCommand(note: command.note, channel: command.channel)
     }
 
-    func regionSnapshot(trackName: String) throws -> [[String: Any]] {
-        let map = try listRegions(trackName: trackName)
-        return ((map["tracks"] as? [[String: Any]])?.first?["regions"] as? [[String: Any]]) ?? []
+    /// Every region on one track row.
+    ///
+    /// `trackNumber` addresses the row by number, for the same duplicate-name
+    /// reason as `selectRegion`: `listRegions(trackName:)` filters by NAME and
+    /// would fold two namesake rows into one snapshot, which is exactly the
+    /// shape that makes a paste look verified on the wrong track.
+    func regionSnapshot(trackName: String, trackNumber: Int? = nil) throws -> [[String: Any]] {
+        guard let trackNumber else {
+            let map = try listRegions(trackName: trackName)
+            return ((map["tracks"] as? [[String: Any]])?.first?["regions"] as? [[String: Any]]) ?? []
+        }
+        let rows = try regionRows()
+        guard let row = rows.first(where: { $0.number == trackNumber }) else {
+            throw LogicianError.trackNotExposed(
+                requested: "track row \(trackNumber) ('\(trackName)')",
+                exposed: "visible track rows: " + rows.map(\.track).joined(separator: ", ")
+            )
+        }
+        return row.regions.map(parseRegion)
     }
 
     /// Counts selected regions across ALL visible rows — the guard that must
@@ -870,12 +896,18 @@ extension LogicAccessibility {
         ]
     }
 
+    /// - Parameters:
+    ///   - fromTrackNumber: addresses the SOURCE row by number instead of by
+    ///     name (duplicate track names; see `selectRegion`).
+    ///   - toTrackNumber: the same for the DESTINATION row.
     func copyRegion(
         trackName: String, regionName: String?, startBar: Int?,
-        toBar: Int, toTrack: String?, move: Bool
+        toBar: Int, toTrack: String?, move: Bool,
+        fromTrackNumber: Int? = nil, toTrackNumber: Int? = nil
     ) throws -> [String: Any] {
         let selection = try selectRegion(
-            trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true
+            trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true,
+            trackNumber: fromTrackNumber
         )
         guard try selectedRegionCount() == 1 else {
             throw LogicianError.verificationFailed(
@@ -886,6 +918,7 @@ extension LogicAccessibility {
         try fireKeyCommand(move ? KeyCommandRegistry.Name.cut : KeyCommandRegistry.Name.copy)
         Thread.sleep(forTimeInterval: 0.4)
         let destinationTrack = toTrack ?? trackName
+        let destinationNumber = toTrack == nil ? fromTrackNumber : toTrackNumber
         // ALWAYS select the destination — including the same-track case.
         // Paste lands on the SELECTED TRACK, and selecting a REGION does not
         // select its track: measured 2026-08-28, a copy of 'Crash' (track
@@ -895,7 +928,7 @@ extension LogicAccessibility {
         // someone else's track. A wrong-track write that reports failure is
         // the worst shape a bug can have.
         _ = try selectTrack(
-            trackName: destinationTrack, trackNumber: nil, expectedProjectPath: nil
+            trackName: destinationTrack, trackNumber: destinationNumber, expectedProjectPath: nil
         )
         // beat 1 explicitly: the bar converge alone leaves the beat wherever
         // the playhead last stood, and Paste lands at the playhead exactly.
@@ -910,13 +943,17 @@ extension LogicAccessibility {
         // modal swallows the key command and nothing happens — so the proof
         // has to be that the destination gained a region, not that one is
         // present.
-        let destinationBefore = (try? regionSnapshot(trackName: destinationTrack)) ?? []
+        let destinationBefore = (try? regionSnapshot(
+            trackName: destinationTrack, trackNumber: destinationNumber
+        )) ?? []
         let atBarBefore = destinationBefore.filter { $0["start_bar"] as? Int == toBar }
         try fireKeyCommand(KeyCommandRegistry.Name.paste)
         var pasted: [String: Any]?
         for _ in 0..<10 {
             Thread.sleep(forTimeInterval: 0.4)
-            let after = try regionSnapshot(trackName: destinationTrack)
+            let after = try regionSnapshot(
+                trackName: destinationTrack, trackNumber: destinationNumber
+            )
             let atBar = after.filter { $0["start_bar"] as? Int == toBar }
             guard after.count > destinationBefore.count || atBar.count > atBarBefore.count
             else { continue }

@@ -346,4 +346,144 @@ final class ImportMIDITests: XCTestCase {
         XCTAssertEqual(diff.missing.count, 2)
         XCTAssertEqual(diff.payload["matches"] as? Bool, false)
     }
+
+    // MARK: - Routing onto tracks that already exist (to_track)
+
+    private func routings(_ tracks: [[String: Any]]) throws -> [ImportMIDI.Routing] {
+        try ImportMIDI.routings(from: tracks)
+    }
+
+    /// The whole point of the argument: one import, each SMF track sent to its
+    /// own existing destination, and any subset left unrouted.
+    func testEachTrackRoutesToItsOwnDestinationAndUnroutedOnesAreAbsent() throws {
+        let routed = try routings([
+            ["name": "Bass Line", "to_track": "Bas"],
+            ["name": "Pad", "notes": []],
+            ["name": "Kit", "to_track": "Drums", "to_track_number": 7]
+        ])
+        XCTAssertEqual(routed, [
+            ImportMIDI.Routing(track: "Bass Line", destination: "Bas", destinationNumber: nil),
+            ImportMIDI.Routing(track: "Kit", destination: "Drums", destinationNumber: 7)
+        ])
+    }
+
+    func testNoToTrackAnywhereIsNoRouting() throws {
+        XCTAssertTrue(try routings([["name": "A"], ["name": "B"]]).isEmpty)
+    }
+
+    /// A blank destination is not a destination; it keeps the new track rather
+    /// than being resolved against a track named "".
+    func testABlankToTrackIsNotARouting() throws {
+        XCTAssertTrue(try routings([["name": "A", "to_track": "   "]]).isEmpty)
+    }
+
+    /// The number only ever disambiguates a NAME. Alone it is a mistake worth
+    /// naming, not a silent no-op.
+    func testAToTrackNumberWithoutAToTrackIsRefused() {
+        XCTAssertThrowsError(try routings([["name": "A", "to_track_number": 3]])) { error in
+            XCTAssertEqual((error as? LogicianError)?.code, "invalid_arguments")
+        }
+    }
+
+    /// Two parts onto one track would stack both regions on the same lane at
+    /// the same bar - one playing over the other, and no way to tell them
+    /// apart afterwards.
+    func testTwoTracksCannotShareOneDestination() {
+        XCTAssertThrowsError(try routings([
+            ["name": "Bass Line", "to_track": "Bas"],
+            ["name": "Bass Double", "to_track": "bas"]
+        ])) { error in
+            XCTAssertEqual((error as? LogicianError)?.code, "invalid_arguments")
+            XCTAssertTrue(
+                error.localizedDescription.contains("Bass Double"),
+                error.localizedDescription
+            )
+        }
+    }
+
+    /// The same NAME with two different numbers is two different tracks.
+    func testTheSameNameWithDifferentNumbersIsTwoDestinations() throws {
+        let routed = try routings([
+            ["name": "A", "to_track": "Gtr", "to_track_number": 4],
+            ["name": "B", "to_track": "Gtr", "to_track_number": 5]
+        ])
+        XCTAssertEqual(routed.count, 2)
+    }
+
+    /// JSON numbers arrive as Int or Double; both are track 7.
+    func testAFloatingToTrackNumberIsAnInteger() throws {
+        XCTAssertEqual(
+            try routings([["name": "A", "to_track": "Bas", "to_track_number": 7.0]]).first?
+                .destinationNumber,
+            7
+        )
+    }
+
+    // MARK: Resolving a destination against the track headers
+
+    private let headers = [
+        ImportMIDI.TrackHeader(number: 1, name: "Lofi Pad"),
+        ImportMIDI.TrackHeader(number: 2, name: "Bas"),
+        ImportMIDI.TrackHeader(number: 4, name: "Gtr"),
+        ImportMIDI.TrackHeader(number: 5, name: "Gtr")
+    ]
+
+    func testADestinationResolvesCaseInsensitivelyToItsHeader() {
+        XCTAssertEqual(
+            ImportMIDI.resolve(destination: "bas", number: nil, in: headers),
+            .resolved(ImportMIDI.TrackHeader(number: 2, name: "Bas"))
+        )
+    }
+
+    /// The refusal carries what IS there, so the retry is informed.
+    func testAMissingDestinationListsTheCandidates() {
+        XCTAssertEqual(
+            ImportMIDI.resolve(destination: "Baas", number: nil, in: headers),
+            .notFound(candidates: ["Lofi Pad", "Bas", "Gtr", "Gtr"])
+        )
+    }
+
+    func testADuplicatedDestinationNameIsAmbiguousAndOffersTheNumbers() {
+        XCTAssertEqual(
+            ImportMIDI.resolve(destination: "Gtr", number: nil, in: headers),
+            .ambiguous(numbers: [4, 5])
+        )
+    }
+
+    func testATrackNumberResolvesTheDuplicate() {
+        XCTAssertEqual(
+            ImportMIDI.resolve(destination: "Gtr", number: 5, in: headers),
+            .resolved(ImportMIDI.TrackHeader(number: 5, name: "Gtr"))
+        )
+    }
+
+    /// A number pointing at a track with another name is a stale reference,
+    /// not a rename request.
+    func testANumberNamingADifferentTrackIsAMismatch() {
+        XCTAssertEqual(
+            ImportMIDI.resolve(destination: "Bas", number: 4, in: headers),
+            .mismatch(number: 4, actual: "Gtr")
+        )
+    }
+
+    func testANumberThatIsNotAVisibleRowIsNotFound() {
+        XCTAssertEqual(
+            ImportMIDI.resolve(destination: "Bas", number: 99, in: headers),
+            .notFound(candidates: ["Lofi Pad", "Bas", "Gtr", "Gtr"])
+        )
+    }
+
+    /// The header rows come straight off logic_list_tracks; a row missing
+    /// either field is not a destination anyone can be routed to.
+    func testHeadersAreBuiltFromListTracksRowsAndIncompleteRowsAreDropped() {
+        let rows: [[String: Any]] = [
+            ["track_number": 2, "track_name": "Bas"],
+            ["track_name": "no number"],
+            ["track_number": 3]
+        ]
+        XCTAssertEqual(
+            rows.compactMap(ImportMIDI.TrackHeader.init(row:)),
+            [ImportMIDI.TrackHeader(number: 2, name: "Bas")]
+        )
+    }
 }

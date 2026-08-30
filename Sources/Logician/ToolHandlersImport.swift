@@ -19,6 +19,10 @@ extension MCPServer {
             )
         }
         let tracks = try ImportMIDI.tracks(from: rawTracks)
+        // Parsed here, resolved against the project further down — before the
+        // panel opens. A destination that does not exist is a free refusal at
+        // that point and an expensive cleanup after it.
+        let routings = try ImportMIDI.routings(from: rawTracks)
         let atBar = arguments["at_bar"] as? Int ?? 1
         guard atBar >= 1 else {
             throw LogicianError.invalidArguments("at_bar must be 1 or greater; got \(atBar)")
@@ -94,6 +98,12 @@ extension MCPServer {
             (try? logic.listRegions(trackName: nil)) ?? [:]
         )
 
+        // EVERY destination resolved before the panel opens. A `to_track` that
+        // turns out not to exist is a refusal that costs nothing here; the same
+        // refusal after the import has run would leave temp tracks and default
+        // patches behind, and it is the CLEANUP that can fail.
+        let plan = try resolveImportDestinations(routings, headers: tracksBefore)
+
         // Logic imports at the bar line NEAREST the playhead, meter-aware and
         // rounding rather than truncating (beat 3 of a 4/4 bar lands on the
         // NEXT bar). Parking on the grid first is what turns that into an
@@ -144,7 +154,7 @@ extension MCPServer {
             (try? logic.listRegions(trackName: nil)) ?? [:]
         )
         let newTrackNumbers = ImportMIDI.addedTrackNumbers(before: tracksBefore, after: tracksAfter)
-        let landed = regionsAfter.added(since: regionsBefore)
+        var landed = regionsAfter.added(since: regionsBefore)
         let wantedNames = tracks.compactMap(\.name)
         let landedNames = landed.map(\.name)
         let missing = wantedNames.filter { name in
@@ -173,7 +183,18 @@ extension MCPServer {
                 + " REGIONS, which is what this result verified against. Rename the tracks with"
                 + " logic_rename_track if the names matter. The .mid is left at `file` — re-import"
                 + " it, or hand it to another tool."
+                + (plan.isEmpty
+                    ? ""
+                    : " Tracks with a `to_track` were moved off the temp track Logic made for them"
+                        + " and onto the named existing track, whose instrument they now play"
+                        + " through; `routing` says what happened to each one.")
         ]
+        if !plan.isEmpty {
+            result["routed_to"] = plan.map {
+                ["track": $0.routing.track, "to_track": $0.destination.name,
+                 "to_track_number": $0.destination.number]
+            }
+        }
 
         // THE FAILURE SIGNAL IS THE CENSUS. A file Logic cannot read fails
         // SILENTLY — no error dialog, sometimes not even the tempo prompt — so
@@ -210,8 +231,63 @@ extension MCPServer {
             return result
         }
 
+        // THE ROUTING PHASE. The import is done and every region is where the
+        // census says it should be; now the routed ones are moved off the temp
+        // tracks Logic made and onto the tracks the caller named — so the
+        // material plays through THEIR instrument instead of a default patch.
+        //
+        // After the import, never interleaved with it: one import call produces
+        // all the temp tracks at once, and there is no way to steer it.
+        if !plan.isEmpty {
+            reportProgress("moving \(plan.count) track(s) onto their destinations", percent: 80)
+            let routed = relocateImportedRegions(plan: plan, landed: landed, atBar: atBar)
+            // The census moved under us: regions changed lanes and temp tracks
+            // were DELETED, which renumbers every track above them. Re-read it
+            // rather than reporting the numbers this call started with — the
+            // unrouted track's number in particular is one lower per temp track
+            // removed below it, and a stale one is a wrong answer that looks
+            // like a right one (measured live: a new track reported as 31 while
+            // the project showed it at 30).
+            let regionsNow = ImportMIDI.RegionCensus.parse(
+                (try? logic.listRegions(trackName: nil)) ?? [:]
+            ).added(since: regionsBefore)
+            landed = routed.landed.map { entry in
+                regionsNow.first {
+                    $0.name.caseInsensitiveCompare(entry.name) == .orderedSame
+                } ?? entry
+            }
+            result["routing"] = routed.reports
+            result["regions"] = landed.map(\.payload)
+            let tracksNow = trackRows()
+            let remainingNew = ImportMIDI.addedTrackNumbers(before: tracksBefore, after: tracksNow)
+            result["tracks_after"] = tracksNow.count
+            result["new_track_numbers"] = remainingNew
+            result["new_tracks"] = tracksNow.filter {
+                remainingNew.contains($0["track_number"] as? Int ?? -1)
+            }.map { ["track_number": $0["track_number"] ?? 0, "track_name": $0["track_name"] ?? ""] }
+            guard routed.complete else {
+                result["success"] = false
+                result["verified"] = false
+                result["state"] = "partial"
+                // NOT rolled back, and the result says so rather than implying
+                // it. Some of this material now sits on the caller's OWN
+                // tracks; deleting regions there to "restore" a state this call
+                // only half reached would be a destructive guess.
+                result["restored"] = false
+                result["remaining"] = routed.remaining
+                result["error"] = "The import landed, but the move onto existing tracks did not"
+                    + " finish: " + routed.failures.joined(separator: "; ")
+                    + ". NOTHING was rolled back. What is still in the project: "
+                    + (routed.remaining.isEmpty
+                        ? "nothing unexpected"
+                        : routed.remaining.joined(separator: "; "))
+                    + ". Read logic_list_regions and finish or undo by hand."
+                return result
+            }
+        }
+
         result["success"] = true
-        result["state"] = "imported"
+        result["state"] = plan.isEmpty ? "imported" : "imported_and_routed"
         result["verified"] = true
         if verify == "events" {
             let events = verifyImportedNotes(tracks: tracks, landed: landed)
@@ -243,6 +319,198 @@ extension MCPServer {
         }
         appendWarning(meterKnowledge.warning(sliced: "the bar positions written into the file"), to: &result)
         return result
+    }
+
+    // MARK: - Routing imported material onto tracks that already exist
+
+    /// One resolved `to_track`: what the caller asked for, and the track header
+    /// it actually points at.
+    struct ImportDestination {
+        let routing: ImportMIDI.Routing
+        let destination: ImportMIDI.TrackHeader
+    }
+
+    /// Turns every `to_track` into a real track header, or refuses.
+    ///
+    /// Called BEFORE the import panel opens, so each refusal below fires with
+    /// the project untouched — no temp track, no default patch, nothing to
+    /// clean up. The three shapes are the three ways a destination can be
+    /// wrong, and each says what to pass instead.
+    func resolveImportDestinations(
+        _ routings: [ImportMIDI.Routing], headers rows: [[String: Any]]
+    ) throws -> [ImportDestination] {
+        guard !routings.isEmpty else { return [] }
+        let headers = rows.compactMap(ImportMIDI.TrackHeader.init(row:))
+        return try routings.map { routing in
+            switch ImportMIDI.resolve(
+                destination: routing.destination, number: routing.destinationNumber, in: headers
+            ) {
+            case .resolved(let header):
+                return ImportDestination(routing: routing, destination: header)
+            case .ambiguous(let numbers):
+                throw LogicianError.trackAmbiguous(routing.destination, numbers: numbers)
+            case .mismatch(let number, let actual):
+                throw LogicianError.trackMismatch(
+                    number: number, expected: routing.destination, actual: actual
+                )
+            case .notFound(let candidates):
+                // A name that is not a track header can still be a real strip:
+                // `Stereo Out`, an aux, a bus. That is a DIFFERENT mistake and
+                // gets a different answer — a region needs a track lane to sit
+                // on, and no amount of retrying will give an output strip one.
+                if MCUController.freshStatus() != nil,
+                   ((try? MCUController.findChannel(trackName: routing.destination)) ?? nil) != nil {
+                    throw LogicianError.trackNotExposed(
+                        requested: "'\(routing.destination)' as a destination for imported material",
+                        exposed: "it is an output/aux/bus strip, not a track: it has no track header"
+                            + " and therefore no lane for a region to sit on. Import onto a"
+                            + " software-instrument track and route THAT track to"
+                            + " '\(routing.destination)' instead. Nothing was imported"
+                    )
+                }
+                throw LogicianError.trackNotFound(routing.destination, available: candidates)
+            }
+        }
+    }
+
+    /// What the routing phase did, region by region.
+    struct RelocationOutcome {
+        /// Per-routed-track reports, in the order they were attempted.
+        var reports: [[String: Any]] = []
+        /// The landed regions, with the routed ones now naming their
+        /// DESTINATION track — so `verify: "events"` diffs the region that is
+        /// actually in the arrangement, not the temp track it arrived on.
+        var landed: [ImportMIDI.RegionCensus.Entry] = []
+        /// One line per thing that did not work.
+        var failures: [String] = []
+        /// Exactly what is still in the project that should not be, in words a
+        /// human can act on.
+        var remaining: [String] = []
+
+        var complete: Bool { failures.isEmpty }
+    }
+
+    /// Moves each routed region off the temp track Logic created for it and
+    /// onto the existing track the caller named, then removes the temp track.
+    ///
+    /// The correspondence between "the track I asked for" and "the track Logic
+    /// made" is the REGION NAME and nothing else: Logic names the new tracks
+    /// after whichever default patch it loaded (R2 §5), while the SMF's FF 03
+    /// Track Name meta comes back verbatim on the region. So every step here
+    /// addresses the region by name and the track by NUMBER.
+    ///
+    /// Cut-and-paste, not a drag: `copyRegion(move: true)` is the proven route,
+    /// and it carries the paste verification that a wrong-track paste taught
+    /// this server to insist on — the destination has to GAIN a region, and
+    /// selecting a region is not selecting its track.
+    ///
+    /// Two phases, deliberately. Every region is moved first, then the empty
+    /// temp tracks go one at a time with a two-second gap: `Delete Track` fails
+    /// at its own 8.5 s timeout when it is fired less than ~2 s after the
+    /// previous delete (R2 §7). Deleting highest-numbered first keeps the
+    /// numbers read here valid all the way down.
+    func relocateImportedRegions(
+        plan: [ImportDestination], landed: [ImportMIDI.RegionCensus.Entry], atBar: Int
+    ) -> RelocationOutcome {
+        var outcome = RelocationOutcome()
+        outcome.landed = landed
+        var emptied: [(number: Int, name: String, region: String)] = []
+
+        for (index, step) in plan.enumerated() {
+            let started = Date()
+            var report: [String: Any] = [
+                "track": step.routing.track,
+                "to_track": step.destination.name,
+                "to_track_number": step.destination.number,
+                "relocated": false,
+                "temp_track_deleted": false
+            ]
+            guard let source = landed.first(where: {
+                $0.name.caseInsensitiveCompare(step.routing.track) == .orderedSame
+            }) else {
+                // Unreachable in practice — the census guard above already
+                // refused an import whose regions did not all arrive — but a
+                // silent skip here would be a routed track reported as routed.
+                report["reason"] = "no imported region named '\(step.routing.track)' was found"
+                outcome.failures.append(
+                    "'\(step.routing.track)' had no imported region to move")
+                outcome.reports.append(report)
+                continue
+            }
+            report["temp_track"] = [
+                "track_number": source.trackNumber, "track_name": source.trackName
+            ]
+            reportProgress(
+                "moving '\(source.name)' onto '\(step.destination.name)'"
+                    + " (\(index + 1)/\(plan.count))",
+                percent: 80 + 10 * Double(index) / Double(max(plan.count, 1))
+            )
+            try? logic.ensureLogicFrontmost(
+                for: "moving '\(source.name)' onto '\(step.destination.name)'")
+            do {
+                let moved = try logic.copyRegion(
+                    trackName: source.trackName, regionName: source.name,
+                    startBar: source.startBar, toBar: source.startBar ?? atBar,
+                    toTrack: step.destination.name, move: true,
+                    fromTrackNumber: source.trackNumber,
+                    toTrackNumber: step.destination.number
+                )
+                let bar = ((moved["to"] as? [String: Any])?["start_bar"] as? Int)
+                    ?? source.startBar
+                report["relocated"] = true
+                report["landed_at_bar"] = bar ?? NSNull()
+                // The region now belongs to the destination; the events pass
+                // must read it THERE.
+                outcome.landed = outcome.landed.map { entry in
+                    entry == source
+                        ? ImportMIDI.RegionCensus.Entry(
+                            trackNumber: step.destination.number,
+                            trackName: step.destination.name,
+                            name: entry.name, startBar: bar)
+                        : entry
+                }
+                emptied.append((source.trackNumber, source.trackName, source.name))
+            } catch {
+                // A Cut that landed nowhere is the one genuinely lossy shape
+                // here: the region is off the temp track and on Logic's
+                // clipboard. Say that, rather than a bare "failed".
+                report["reason"] = error.localizedDescription
+                outcome.failures.append(
+                    "'\(source.name)' could not be moved onto '\(step.destination.name)':"
+                        + " \(error.localizedDescription)")
+                outcome.remaining.append(
+                    "the temp track \(source.trackNumber) '\(source.trackName)' is still there;"
+                        + " its region '\(source.name)' is either still on it or on Logic's"
+                        + " clipboard (Undo in Logic restores a Cut that did not paste)")
+            }
+            report["ms"] = Int(Date().timeIntervalSince(started) * 1000)
+            outcome.reports.append(report)
+        }
+
+        // The temp tracks, now empty. An empty track deletes without Logic's
+        // "Delete Track and Regions?" alert; `handleDeleteTrack` answers it
+        // either way and refuses if the selection stops naming the track.
+        for (index, temp) in emptied.sorted(by: { $0.number > $1.number }).enumerated() {
+            if index > 0 { Thread.sleep(forTimeInterval: 2.0) }
+            try? logic.ensureLogicFrontmost(for: "removing the temp track '\(temp.name)'")
+            let outcomeOfDelete = try? handleDeleteTrack(
+                ["track_name": temp.name, "track_number": temp.number]
+            )
+            let deleted = (outcomeOfDelete as? [String: Any])?["success"] as? Bool == true
+            if let position = outcome.reports.firstIndex(where: {
+                ($0["track"] as? String)?.caseInsensitiveCompare(temp.region) == .orderedSame
+            }) {
+                outcome.reports[position]["temp_track_deleted"] = deleted
+            }
+            if !deleted {
+                outcome.failures.append(
+                    "the now-empty temp track \(temp.number) '\(temp.name)' could not be deleted")
+                outcome.remaining.append(
+                    "the EMPTY temp track \(temp.number) '\(temp.name)' (its region did move to"
+                        + " its destination); remove it with logic_delete_track")
+            }
+        }
+        return outcome
     }
 
     // MARK: - Note-level verification
