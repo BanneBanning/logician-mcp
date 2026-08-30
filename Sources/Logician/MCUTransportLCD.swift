@@ -152,15 +152,16 @@ extension MCUController {
         }
         func fullNames(_ status: [String: Any]) -> Bool {
             guard let top = status["lcd_top"] as? String else { return false }
-            return (status["assignment"] as? String) == "PN"
-                && !top.contains("parameter:")
-                && lcdFields(top).filter({ $0 == "-" }).count < 4
+            return (status["assignment"] as? String) == MCULCDStrings.Assignment.pan
+                && !top.contains(MCULCDStrings.parameterBannerMarker)
+                && lcdFields(top).filter({ $0 == MCULCDStrings.clearingCell }).count < 4
         }
         for iteration in 0..<6 {
             guard let state = stableState() else { debugLog("ensurePanNames[\(iteration)]: no stable state"); return false }
             debugLog("ensurePanNames[\(iteration)]: asgn='\(state.assignment)' top='\(state.top.prefix(48))'")
             if fullNames(["lcd_top": state.top, "assignment": state.assignment]) { return true }
-            if state.top.contains("parameter:") && state.assignment == "PN" {
+            if state.top.contains(MCULCDStrings.parameterBannerMarker)
+                && state.assignment == MCULCDStrings.Assignment.pan {
                 // Names view with Logic's mode BANNER ("Pan/Surround
                 // parameter: Pan") still covering the right half - it fades
                 // on its own; pressing now would toggle AWAY from the
@@ -357,8 +358,8 @@ extension MCUController {
             // ">= 4 dash fields" = the display is being cleared; "parameter:"
             // = a single-channel view label (or a half-repainted hybrid of
             // one) - neither is ever part of the multi-channel names row.
-            let transient = lcdFields(top).filter { $0 == "-" }.count >= 4
-                || top.contains("parameter:")
+            let transient = lcdFields(top).filter { $0 == MCULCDStrings.clearingCell }.count >= 4
+                || top.contains(MCULCDStrings.parameterBannerMarker)
             if !transient {
                 let heldASecond = unchangedSince.map { Date().timeIntervalSince($0) >= 1.0 } ?? false
                 if previous == nil || top != previous {

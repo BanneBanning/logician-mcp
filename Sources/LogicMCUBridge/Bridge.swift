@@ -635,7 +635,9 @@ func handleCommand(_ object: BridgeCommand) -> BridgeResponse {
         var ratio = object.ratio ?? 2.0
         func parseValue(_ text: String) -> Double? {
             let normalized = text.replacingOccurrences(of: ",", with: ".")
-            if normalized.hasPrefix("-oo") { return -70.0 }
+            if normalized.hasPrefix(MCULCDStrings.minusInfinity) {
+                return MCULCDStrings.minusInfinityDb
+            }
             let numeric = normalized.prefix { "+-0123456789.".contains($0) }
             guard !numeric.isEmpty, numeric != "-", numeric != "+" else { return nil }
             return Double(numeric.hasSuffix(".") ? String(numeric.dropLast()) : String(numeric))

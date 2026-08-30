@@ -222,7 +222,7 @@ extension MCUController {
             // within seconds of play, the toggle never engaged (track
             // stacks and buses cannot be frozen) — Logic is just playing.
             if let timecode = freshStatus()?["timecode"] as? String,
-               timecode.contains("ALERT") {
+               timecode.contains(MCULCDStrings.modalAlertTimecode) {
                 _ = try? setPlaying(false)
                 _ = try? triggerKeyCommand(note: freeze.note, channel: freeze.channel)
                 throw LogicianError.openVerificationFailed(

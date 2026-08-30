@@ -37,7 +37,7 @@ extension MCUController {
     /// matches, and a wrong answer instantiates the wrong instrument.
     static func splitInstrumentEntry(_ entry: String) -> (name: String, format: String?) {
         let trimmed = entry.trimmingCharacters(in: .whitespaces)
-        for format in ["Multi-Output", "Multi Output", "Stereo", "Mono"] {
+        for format in MCULCDStrings.instrumentChannelFormats {
             let suffix = " " + format
             if trimmed.lowercased().hasSuffix(suffix.lowercased()) {
                 return (String(trimmed.dropLast(suffix.count)).trimmingCharacters(in: .whitespaces),
@@ -101,7 +101,9 @@ extension MCUController {
         // in the pan view, where the names ARE painted, before entering.
         try selectChannelVerified(channel: channel, expectedName: trackName)
         try press("assign_instrument")
-        guard waitFor(seconds: 3.0, { ($0["assignment"] as? String) == "IN" }) != nil else {
+        guard waitFor(seconds: 3.0, {
+            ($0["assignment"] as? String) == MCULCDStrings.Assignment.instrument
+        }) != nil else {
             exitToPan()
             throw LogicianError.openVerificationFailed(
                 "the control surface's instrument (IN) view did not appear; nothing was changed"
@@ -113,7 +115,7 @@ extension MCUController {
         func slotCell() -> String {
             guard let bottom = freshStatus()?["lcd_bottom"] as? String else { return "" }
             return lcdFields(bottom)[channel]
-                .trimmingCharacters(in: CharacterSet(charactersIn: "* "))
+                .trimmingCharacters(in: CharacterSet(charactersIn: MCULCDStrings.bypassMarker + " "))
         }
         /// The browsed entry: the bottom row from this strip's cell rightwards,
         /// cut at the first long gap so the next occupied slot does not leak in.
@@ -139,7 +141,7 @@ extension MCUController {
             _ = awaitEvents(since: events, timeoutMs: 300)
             if step % 4 == 3 { _ = quiescentStatus() }
             shown = browsed()
-            guard !shown.isEmpty, shown != "--" else { continue }
+            guard !shown.isEmpty, shown != MCULCDStrings.emptySlot else { continue }
             if instrumentEntryMatches(entry: shown, request: instrument, format: format) {
                 found = true
                 break
@@ -227,19 +229,21 @@ extension MCUController {
         // row it says WHICH channel the instrument landed on.
         exitToPan()
         try press("assign_instrument")
-        _ = waitFor(seconds: 3.0, { ($0["assignment"] as? String) == "IN" })
+        _ = waitFor(seconds: 3.0, {
+            ($0["assignment"] as? String) == MCULCDStrings.Assignment.instrument
+        })
         _ = quiescentStatus()
         Thread.sleep(forTimeInterval: 0.8)
         let slotAfter = slotCell()
         exitToPan()
 
         let expectedName = splitInstrumentEntry(confirmedEntry).name
-        let slotAgrees = !slotAfter.isEmpty && slotAfter != "--"
+        let slotAgrees = !slotAfter.isEmpty && slotAfter != MCULCDStrings.emptySlot
             && lcdAbbreviationPlausible(track: expectedName, lcd: slotAfter)
         guard slotAgrees else {
             throw LogicianError.verificationFailed(
                 requested: "'\(expectedName)' in '\(trackName)'s instrument slot",
-                actual: slotAfter.isEmpty || slotAfter == "--"
+                actual: slotAfter.isEmpty || slotAfter == MCULCDStrings.emptySlot
                     ? "the slot still reads empty after the confirmation"
                     : "the slot reads '\(slotAfter)', which is not an abbreviation of it",
                 restored: false
@@ -248,12 +252,13 @@ extension MCUController {
         var result: [String: Any] = [
             "success": true,
             "verified": true,
-            "state": slotBefore.isEmpty || slotBefore == "--" ? "loaded" : "replaced",
+            "state": slotBefore.isEmpty || slotBefore == MCULCDStrings.emptySlot
+                ? "loaded" : "replaced",
             "track": trackName, "track_name": trackName,
             "instrument": expectedName,
             "browser_entry": confirmedEntry,
             "format": splitInstrumentEntry(confirmedEntry).format as Any? ?? NSNull(),
-            "slot_before": slotBefore.isEmpty ? "--" : slotBefore,
+            "slot_before": slotBefore.isEmpty ? MCULCDStrings.emptySlot : slotBefore,
             "slot_after": slotAfter,
             "mcu_strip": channel + 1,
             "entries_stepped": entries.count + 1,
@@ -262,7 +267,7 @@ extension MCUController {
             "edit_page_after_confirm": editTop.trimmingCharacters(in: .whitespaces),
             "note": "Loaded through the control surface's instrument browser (IN view) — no mouse, no menus. Read the new instrument's parameters with logic_mcu_instrument_parameters, which is also the independent second read of what landed."
         ]
-        if !(slotBefore.isEmpty || slotBefore == "--") {
+        if !(slotBefore.isEmpty || slotBefore == MCULCDStrings.emptySlot) {
             appendWarning(
                 "'\(trackName)' already held an instrument ('\(slotBefore)') and it was REPLACED,"
                     + " along with all of its settings. Logic's own Undo is the way back; this"

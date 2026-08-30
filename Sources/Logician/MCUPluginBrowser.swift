@@ -25,7 +25,7 @@ extension MCUController {
             exitToPan()
             throw LogicianError.verificationFailed(
                 requested: "the control surface's plug-in list to be '\(trackName)'s",
-                actual: "it shows [\(inserts.filter { !$0.isEmpty && $0 != "--" }.joined(separator: ", "))]"
+                actual: "it shows [\(inserts.filter { !$0.isEmpty && $0 != MCULCDStrings.emptySlot }.joined(separator: ", "))]"
                     + " while Accessibility reads [\(axNames.joined(separator: ", "))] on that strip"
                     + " — the PL view is pointed at another channel (a SELECT press on an already-lit"
                     + " strip is a no-op; select a different strip and come back). Nothing was written",
@@ -61,7 +61,9 @@ extension MCUController {
         let listEvidence = try verifyPluginListStrip(
             inserts: inserts, logic: logic, trackName: trackName
         )
-        guard let emptyIndex = inserts.firstIndex(where: { $0.isEmpty || $0 == "--" }) else {
+        guard let emptyIndex = inserts.firstIndex(where: {
+            $0.isEmpty || $0 == MCULCDStrings.emptySlot
+        }) else {
             throw LogicianError.trackNotExposed(
                 requested: "an empty insert slot",
                 exposed: "all 8 MCU insert slots are occupied"
@@ -104,7 +106,7 @@ extension MCUController {
             guard response.ok else { abortBrowse(); return nil }
             _ = awaitEvents(since: before, timeoutMs: 250)
             if step % 4 == 3 { _ = quiescentStatus() }
-            guard let name = browseName(), !name.isEmpty, name != "--" else { continue }
+            guard let name = browseName(), !name.isEmpty, name != MCULCDStrings.emptySlot else { continue }
             if matches(name) { found = true; break }
             if name == entries.last { continue }
             if let first = entries.first, name == first, entries.count > 2 {
@@ -155,10 +157,12 @@ extension MCUController {
         // Verify: back in the plugin list the slot is occupied.
         guard let after = try pluginInsertNames() else { return nil }
         let slotName = after.indices.contains(emptyIndex)
-            ? after[emptyIndex].trimmingCharacters(in: CharacterSet(charactersIn: "*"))
+            ? after[emptyIndex].trimmingCharacters(
+                in: CharacterSet(charactersIn: MCULCDStrings.bypassMarker)
+            )
             : ""
         exitToPan()
-        guard !slotName.isEmpty, slotName != "--" else {
+        guard !slotName.isEmpty, slotName != MCULCDStrings.emptySlot else {
             throw LogicianError.verificationFailed(
                 requested: "'\(pluginName)' instantiated in slot \(emptyIndex + 1)",
                 actual: "the slot still shows empty after confirmation",
@@ -239,8 +243,10 @@ extension MCUController {
         )
         // Match the target slot by LCD name (truncated) against the request.
         let matches = inserts.enumerated().filter { _, name in
-            let cleaned = name.trimmingCharacters(in: CharacterSet(charactersIn: "*"))
-            guard !cleaned.isEmpty, cleaned != "--" else { return false }
+            let cleaned = name.trimmingCharacters(
+                in: CharacterSet(charactersIn: MCULCDStrings.bypassMarker)
+            )
+            guard !cleaned.isEmpty, cleaned != MCULCDStrings.emptySlot else { return false }
             return lcdNameMatches(track: pluginName, lcd: cleaned)
                 || pluginName.lowercased().hasPrefix(cleaned.lowercased())
         }
@@ -249,7 +255,7 @@ extension MCUController {
             throw LogicianError.trackNotExposed(
                 requested: "exactly one insert matching '\(pluginName)'",
                 exposed: "MCU slots: " + inserts.enumerated()
-                    .map { "\($0 + 1): \($1.isEmpty ? "--" : $1)" }.joined(separator: ", ")
+                    .map { "\($0 + 1): \($1.isEmpty ? MCULCDStrings.emptySlot : $1)" }.joined(separator: ", ")
             )
         }
         let slotIndex = target.offset
@@ -269,7 +275,7 @@ extension MCUController {
             guard response.ok else { exitToPan(); return nil }
             _ = awaitEvents(since: before, timeoutMs: 250)
             if step % 4 == 3 { _ = quiescentStatus() }
-            if browseName() == "--" { reached = true; break }
+            if browseName() == MCULCDStrings.emptySlot { reached = true; break }
         }
         guard reached else {
             exitToPan()
@@ -281,13 +287,13 @@ extension MCUController {
         _ = quiescentStatus()
         Thread.sleep(forTimeInterval: 0.3)
         var corrections = 0
-        while browseName() != "--", corrections < 4 {
+        while browseName() != MCULCDStrings.emptySlot, corrections < 4 {
             _ = try? MCUBridge.send(.vpot(index: slotIndex, delta: 2))
             Thread.sleep(forTimeInterval: 0.4)
             _ = quiescentStatus()
             corrections += 1
         }
-        guard browseName() == "--" else {
+        guard browseName() == MCULCDStrings.emptySlot else {
             exitToPan()
             throw LogicianError.verificationFailed(
                 requested: "the No Plug-in entry shown at confirmation time",
@@ -302,7 +308,7 @@ extension MCUController {
         guard let after = try pluginInsertNames() else { return nil }
         exitToPan()
         let nowEmpty = !after.indices.contains(slotIndex)
-            || after[slotIndex].isEmpty || after[slotIndex] == "--"
+            || after[slotIndex].isEmpty || after[slotIndex] == MCULCDStrings.emptySlot
         // AX cross-check: the plugin must be gone from the strip's inserts.
         var axGone = false
         var axReachable = false

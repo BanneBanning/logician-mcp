@@ -97,7 +97,7 @@ extension MCUController {
         _ raw: String?, expectedBar: Int? = nil, barTolerance: Int = 1
     ) -> MCUTimecodeReading {
         guard let raw else { return .notReported }
-        if raw.uppercased().contains("ALERT") { return .alert }
+        if raw.uppercased().contains(MCULCDStrings.modalAlertTimecode) { return .alert }
         let shown = raw.trimmingCharacters(in: .whitespaces)
         if shown.isEmpty { return .notReported }
         guard let fields = timecodeFields(raw) else {
@@ -752,7 +752,8 @@ extension MCUController {
         return waitFor(seconds: 2.5, { status in
             guard let assignment = status["assignment"] as? String,
                   let top = status["lcd_top"] as? String else { return false }
-            return assignment == "P\(slot)" && !top.hasPrefix("Ins1Pl")
+            return assignment == MCULCDStrings.Assignment.insertSlot(slot)
+                && !top.hasPrefix(MCULCDStrings.insertListFirstSlotLabel)
         }) != nil
     }
 

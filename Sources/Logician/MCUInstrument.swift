@@ -14,7 +14,9 @@ extension MCUController {
         guard freshStatus() != nil else { return nil }
         guard let channel = try findChannel(trackName: trackName) else { return nil }
         try press("assign_instrument")
-        guard let inView = waitFor(seconds: 2.0, { ($0["assignment"] as? String) == "IN" }),
+        guard let inView = waitFor(seconds: 2.0, {
+            ($0["assignment"] as? String) == MCULCDStrings.Assignment.instrument
+        }),
               let instrumentBankTop = inView["lcd_top"] as? String else {
             exitToPan()
             return nil
@@ -22,8 +24,10 @@ extension MCUController {
         // Empty instrument slot shows "--"; entering it would be pointless.
         var instrumentName = ""
         if let status = freshStatus(), let bottom = status["lcd_bottom"] as? String {
-            instrumentName = lcdFields(bottom)[channel].trimmingCharacters(in: CharacterSet(charactersIn: "*"))
-            if instrumentName.isEmpty || instrumentName == "--" {
+            instrumentName = lcdFields(bottom)[channel].trimmingCharacters(
+                in: CharacterSet(charactersIn: MCULCDStrings.bypassMarker)
+            )
+            if instrumentName.isEmpty || instrumentName == MCULCDStrings.emptySlot {
                 exitToPan()
                 return nil
             }
@@ -34,7 +38,7 @@ extension MCUController {
             return nil
         }
         if waitFor(seconds: 2.5, { status in
-            guard (status["assignment"] as? String) == "IN",
+            guard (status["assignment"] as? String) == MCULCDStrings.Assignment.instrument,
                   let top = status["lcd_top"] as? String else { return false }
             return top != instrumentBankTop
         }) != nil {
@@ -89,7 +93,8 @@ extension MCUController {
                     let shifted = (0..<6).contains { index in
                         liveNames[index] != names[index]
                             && liveNames[index].range(
-                                of: #"Page +\d+"#, options: .regularExpression
+                                of: MCULCDStrings.pageIndicatorCellPattern,
+                                options: .regularExpression
                             ) == nil
                     }
                     if !shifted {

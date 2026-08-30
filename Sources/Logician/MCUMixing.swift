@@ -67,7 +67,9 @@ extension MCUController {
         let normalized = text
             .replacingOccurrences(of: ",", with: ".")
             .trimmingCharacters(in: .whitespaces)
-        if normalized.hasPrefix("-oo") { return -70.0 } // Logic's minus infinity
+        if normalized.hasPrefix(MCULCDStrings.minusInfinity) {
+            return MCULCDStrings.minusInfinityDb
+        }
         let numeric = normalized.prefix { "+-0123456789.".contains($0) }
         return Double(numeric)
     }
@@ -147,13 +149,14 @@ extension MCUController {
         // repeated presses) - the LCD label is the functional truth.
         func volumeViewShowing() -> Bool {
             guard let status = freshStatus(), let top = status["lcd_top"] as? String else { return false }
-            return top.contains("Channel Strip parameter: Volume")
+            return top.contains(MCULCDStrings.channelStripVolumeBanner)
         }
         var csReady = volumeViewShowing()
         for _ in 0..<3 where !csReady {
             try press("assign_track")
             csReady = waitFor(seconds: 1.2, { status in
-                (status["lcd_top"] as? String)?.contains("Channel Strip parameter: Volume") == true
+                (status["lcd_top"] as? String)?
+                    .contains(MCULCDStrings.channelStripVolumeBanner) == true
             }) != nil
         }
         guard csReady else {
@@ -264,7 +267,7 @@ extension MCUController {
     static func ensurePluginList() throws -> [String: Any]? {
         for _ in 0..<5 {
             guard let status = freshStatus(), let top = status["lcd_top"] as? String else { return nil }
-            if top.hasPrefix("Ins1Pl") { return status }
+            if top.hasPrefix(MCULCDStrings.insertListFirstSlotLabel) { return status }
             let before = status["received_events"] as? Int ?? -1
             try press("assign_plugin")
             _ = awaitEvents(since: before, timeoutMs: 350)

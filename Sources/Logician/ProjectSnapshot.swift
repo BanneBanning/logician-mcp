@@ -358,7 +358,7 @@ extension MCPServer {
                 insertRows.append([
                     "track_name": name,
                     "mcu_slots": inserts.enumerated().map { index, plugin in
-                        ["slot": index + 1, "plugin": plugin.isEmpty ? "--" : plugin]
+                        ["slot": index + 1, "plugin": plugin.isEmpty ? MCULCDStrings.emptySlot : plugin]
                     }
                 ])
             } catch {

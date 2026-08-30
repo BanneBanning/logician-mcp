@@ -1,4 +1,5 @@
 import Foundation
+import LogicMCUBridge
 
 // Plugins and instruments: inserts, windows, parameters, presets.
 extension MCPServer {
@@ -66,7 +67,7 @@ extension MCPServer {
             "route_used": "mcu",
             "numbering": "insert_slot",
             "inserts": inserts.enumerated().map { index, name in
-                ["slot": index + 1, "plugin": name.isEmpty ? "--" : name]
+                ["slot": index + 1, "plugin": name.isEmpty ? MCULCDStrings.emptySlot : name]
             },
             "note": MCPServer.insertNumberingNote
         ]
@@ -558,7 +559,7 @@ extension MCPServer {
                   cacheKey: (listStatus["lcd_bottom"] as? String).flatMap { bottom -> String? in
                       let name = MCUController.lcdFields(bottom)[slot - 1]
                           .trimmingCharacters(in: CharacterSet(charactersIn: "*"))
-                      return name.isEmpty || name == "--" ? nil : name
+                      return name.isEmpty || name == MCULCDStrings.emptySlot ? nil : name
                   },
                   maxPages: pluginMaxPages
               ) else {

@@ -63,7 +63,7 @@ extension MCUController {
                 let trimmed = cell.trimmingCharacters(in: .whitespaces)
                 // A bank that is not full pads with empty cells (and Logic
                 // paints a lone "-" while clearing) — neither is a strip.
-                guard !trimmed.isEmpty, trimmed != "-" else { continue }
+                guard !trimmed.isEmpty, trimmed != MCULCDStrings.clearingCell else { continue }
                 entries.append(StripEntry(
                     position: entries.count + 1, bank: bank, channel: channel, cell: trimmed
                 ))
@@ -197,13 +197,14 @@ extension MCUController {
     static func ensureVolumeView() throws -> Bool {
         func showing() -> Bool {
             (freshStatus()?["lcd_top"] as? String)?
-                .contains("Channel Strip parameter: Volume") == true
+                .contains(MCULCDStrings.channelStripVolumeBanner) == true
         }
         if showing() { return true }
         for _ in 0..<3 {
             try press("assign_track")
             if waitFor(seconds: 1.2, { status in
-                (status["lcd_top"] as? String)?.contains("Channel Strip parameter: Volume") == true
+                (status["lcd_top"] as? String)?
+                    .contains(MCULCDStrings.channelStripVolumeBanner) == true
             }) != nil { return true }
         }
         return showing()

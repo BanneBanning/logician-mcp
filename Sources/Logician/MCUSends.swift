@@ -14,13 +14,13 @@ extension MCUController {
         for _ in 0..<4 {
             guard let status = freshStatus(),
                   let assignment = status["assignment"] as? String else { return false }
-            if assignment == "SE" { return true }
+            if assignment == MCULCDStrings.Assignment.send { return true }
             let before = status["received_events"] as? Int ?? -1
             try press("assign_send")
             _ = awaitEvents(since: before, timeoutMs: 400)
             _ = quiescentStatus()
         }
-        return (freshStatus()?["assignment"] as? String) == "SE"
+        return (freshStatus()?["assignment"] as? String) == MCULCDStrings.Assignment.send
     }
 
     static func sendViewLeftmost() throws {
@@ -51,8 +51,8 @@ extension MCUController {
                   let bottom = status["lcd_bottom"] as? String else { break }
             for half in 0..<2 {
                 let base = half * 4
-                if lcdFields(top)[base].hasPrefix("Sen"),
-                   ["", "--"].contains(lcdFields(bottom)[base]) {
+                if lcdFields(top)[base].hasPrefix(MCULCDStrings.sendFieldLabelPrefix),
+                   ["", MCULCDStrings.emptySlot].contains(lcdFields(bottom)[base]) {
                     slotNumber = page * 2 + half + 1
                     break
                 }
@@ -85,7 +85,7 @@ extension MCUController {
             _ = awaitEvents(since: before, timeoutMs: 300)
             _ = quiescentStatus()
             let name = shownDestination()
-            guard !name.isEmpty, name != "--" else { continue }
+            guard !name.isEmpty, name != MCULCDStrings.emptySlot else { continue }
             if name.caseInsensitiveCompare(destination) == .orderedSame { found = true; break }
             if name == entries.last { continue }
             if let firstEntry = entries.first, name == firstEntry, entries.count > 2 {
@@ -174,9 +174,9 @@ extension MCUController {
             for half in 0..<2 {
                 let base = half * 4
                 let number = page * 2 + half + 1
-                guard fields[base].name.hasPrefix("Sen") else { continue }
+                guard fields[base].name.hasPrefix(MCULCDStrings.sendFieldLabelPrefix) else { continue }
                 let destination = fields[base].value
-                guard !destination.isEmpty, destination != "--" else { continue }
+                guard !destination.isEmpty, destination != MCULCDStrings.emptySlot else { continue }
                 pageHadSend = true
                 sends.append([
                     "send": number,
@@ -216,13 +216,14 @@ extension MCUController {
         let base = ((sendNumber - 1) % 2) * 4
         let levelIndex = base + 1
         let destination = fields[base].value
-        guard fields[base].name.hasPrefix("Sen"), !destination.isEmpty, destination != "--" else {
+        guard fields[base].name.hasPrefix(MCULCDStrings.sendFieldLabelPrefix),
+              !destination.isEmpty, destination != MCULCDStrings.emptySlot else {
             throw LogicianError.trackNotExposed(
                 requested: "send \(sendNumber)",
                 exposed: "the selected track has no send in slot \(sendNumber)"
             )
         }
-        guard fields[levelIndex].name == "Send \(sendNumber)" else {
+        guard fields[levelIndex].name == MCULCDStrings.sendLevelFieldLabel(sendNumber) else {
             return nil // unexpected layout: refuse rather than turn a stranger's vpot
         }
         let originalText = fields[levelIndex].value

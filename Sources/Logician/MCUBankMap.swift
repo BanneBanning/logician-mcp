@@ -1,4 +1,5 @@
 import Foundation
+import LogicMCUBridge
 
 /// Pure reasoning about the MCU bank map: which strip a requested name refers
 /// to, given nothing but the LCD name rows Logic paints per bank. No bridge,
@@ -142,8 +143,12 @@ extension MCUController {
         guard !axNames.isEmpty else { return nil }
         // A leading '*' is Logic's bypass marker, not part of the name.
         let occupied = mcuCells
-            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "* ")) }
-            .filter { !$0.isEmpty && $0 != "--" }
+            .map {
+                $0.trimmingCharacters(
+                    in: CharacterSet(charactersIn: MCULCDStrings.bypassMarker + " ")
+                )
+            }
+            .filter { !$0.isEmpty && $0 != MCULCDStrings.emptySlot }
         guard occupied.count == axNames.count else { return false }
         var remaining = axNames
         for cell in occupied {
@@ -160,7 +165,8 @@ extension MCUController {
     static func bankMapCells(_ bankTops: [String]) -> [String] {
         var seen: [String] = []
         for top in bankTops {
-            for cell in lcdFields(top) where !cell.isEmpty && cell != "-" && !seen.contains(cell) {
+            for cell in lcdFields(top)
+            where !cell.isEmpty && cell != MCULCDStrings.clearingCell && !seen.contains(cell) {
                 seen.append(cell)
             }
         }

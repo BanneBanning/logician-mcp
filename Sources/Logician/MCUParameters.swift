@@ -17,7 +17,9 @@ extension MCUController {
     /// cursor press. Returns nil when no indicator is visible.
     static func pageIndicator() -> (current: Int, total: Int)? {
         guard let status = freshStatus(), let top = status["lcd_top"] as? String else { return nil }
-        guard let range = top.range(of: #"Page +(\d+)/(\d+)"#, options: .regularExpression) else {
+        guard let range = top.range(
+            of: MCULCDStrings.pageIndicatorPattern, options: .regularExpression
+        ) else {
             return nil
         }
         let digits = top[range].split(separator: " ").last?.split(separator: "/") ?? []
@@ -33,7 +35,7 @@ extension MCUController {
         while Date() < deadline {
             guard let status = freshStatus(), let top = status["lcd_top"] as? String else { return nil }
             let events = status["received_events"] as? Int ?? -1
-            if top.range(of: #"Page +\d+/\d+"#, options: .regularExpression) == nil {
+            if top.range(of: MCULCDStrings.pageIndicatorPresentPattern, options: .regularExpression) == nil {
                 // quiescent = the indicator faded and Logic stopped redrawing
                 if let after = awaitEvents(since: events, timeoutMs: 130),
                    after["timed_out"] as? Bool == true {
@@ -55,7 +57,7 @@ extension MCUController {
         // redraw event, so wait for it explicitly rather than for any event.
         _ = waitFor(seconds: 0.9) { status in
             (status["lcd_top"] as? String)?
-                .range(of: #"Page +\d+/\d+"#, options: .regularExpression) != nil
+                .range(of: MCULCDStrings.pageIndicatorPresentPattern, options: .regularExpression) != nil
         }
         guard let indicator = pageIndicator() else {
             return 1 // single-page plugins may show no indicator at all
@@ -122,7 +124,7 @@ extension MCUController {
     static func cachedNameRowMatches(cached: [String], live: [String]) -> Bool {
         guard cached.count == 8, live.count == 8 else { return false }
         if live.contains(where: {
-            $0.range(of: #"Page +\d+"#, options: .regularExpression) != nil
+            $0.range(of: MCULCDStrings.pageIndicatorCellPattern, options: .regularExpression) != nil
         }) { return false }
         return cached == live
     }
@@ -237,7 +239,10 @@ extension MCUController {
                 guard names.count == 8 else { return nil }
                 for index in 0..<6
                 where liveNames[index] != names[index]
-                    && liveNames[index].range(of: #"Page +\d+"#, options: .regularExpression) == nil {
+                    && liveNames[index].range(
+                        of: MCULCDStrings.pageIndicatorCellPattern,
+                        options: .regularExpression
+                    ) == nil {
                     return nil // layout changed; rescan slowly
                 }
                 pages.append(zip(names, values).map { ($0, $1) })
@@ -327,13 +332,14 @@ extension MCUController {
         var slotName: String?
         let isHot = trackName != nil && hotPluginView?.track == trackName
             && hotPluginView?.slot == slot
-            && (freshStatus()?["assignment"] as? String) == "P\(slot)"
+            && (freshStatus()?["assignment"] as? String) == MCULCDStrings.Assignment.insertSlot(slot)
         if isHot {
             slotName = hotPluginView?.cacheKey
         } else {
             guard let listStatus = try ensurePluginList() else { return nil }
             slotName = (listStatus["lcd_bottom"] as? String).map {
-                lcdFields($0)[slot - 1].trimmingCharacters(in: CharacterSet(charactersIn: "*"))
+                lcdFields($0)[slot - 1]
+                    .trimmingCharacters(in: CharacterSet(charactersIn: MCULCDStrings.bypassMarker))
             }
             guard try enterPluginEdit(slot: slot) else {
                 exitToPan()
@@ -346,14 +352,14 @@ extension MCUController {
         // any other operation re-establishes its own view anyway.
         if let trackName {
             hotPluginView = (trackName, slot,
-                             slotName.flatMap { $0.isEmpty || $0 == "--" ? nil : $0 })
+                             slotName.flatMap { $0.isEmpty || $0 == MCULCDStrings.emptySlot ? nil : $0 })
         }
         guard var result = try searchAndSetParameter(
             parameter: parameter,
             targetValue: targetValue,
             expectedCurrentValue: expectedCurrentValue,
             tolerance: tolerance,
-            cacheKey: slotName.flatMap { $0.isEmpty || $0 == "--" ? nil : $0 }
+            cacheKey: slotName.flatMap { $0.isEmpty || $0 == MCULCDStrings.emptySlot ? nil : $0 }
         ) else {
             hotPluginView = nil
             exitToPan()
