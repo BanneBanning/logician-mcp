@@ -221,6 +221,15 @@ enum ChannelStrip {
 
     /// `"Read, automation enabled"` -> `"Read"`. The strip's automation group
     /// carries the mode as the head of its description.
+    ///
+    /// FRENCH (R4, 2026-08-30) — **good news, and it settles a question the
+    /// locale checklist raised.** A French Logic publishes
+    /// `"Read, automation activée"`: only the TRAILING phrase is translated,
+    /// and the MODE WORD stays English. Since this function takes the head of
+    /// the description, and `MCUAutomation` compares that head against the
+    /// English mode words (`Read`, `Latch`, `Touch`, `Write`), **both survive
+    /// a French UI unchanged.** No work is needed here for French, and no
+    /// per-locale mode table should be added on speculation.
     static func automationMode(fromGroupDescription description: String) -> String? {
         let head = description.split(separator: ",", maxSplits: 1)
             .first.map(String.init)?

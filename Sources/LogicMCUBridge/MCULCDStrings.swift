@@ -33,6 +33,34 @@ import Foundation
 /// * **The `dB` suffix.** A 7-character cell cuts it mid-word (`-10,0 d`), so
 ///   nothing matches on it: parsing keeps the leading numeric run and drops
 ///   the rest. A translated unit therefore costs nothing.
+///
+/// # Measured against a FRENCH Logic, 2026-08-30 (R4)
+///
+/// **The mode banners are NOT localized.** With Logic's UI in French,
+/// `assign_track` still painted `Channel Strip parameter: Volume` across the
+/// top row, and the `Pan/Surround parameter…` banner appeared in English too —
+/// so `channelStripVolumeBanner` and `parameterBannerMarker` both matched
+/// unchanged, and the whole control-surface plane read correctly
+/// (`logic_mixer_snapshot` returned all 25 strips with the right dB, pan,
+/// mute, solo, selection and record-arm).
+///
+/// The PROTOCOL-CONSTANT reasoning is confirmed: the assignment display read
+/// `PN` for the Pan view and `CS` for the channel-strip view under a French
+/// UI, exactly as this file predicts. Leave that section alone.
+///
+/// Two cautions for the next locale pass:
+///
+/// * **Do not generalize "the LCD is English".** The surround pan page painted
+///   `Angle Divers LFE Spread … CStrip Ang/Dv X/Y`, and `Divers` IS French. So
+///   Logic draws *some* LCD pages from its localized catalogue; only the
+///   entries measured above are known safe.
+/// * `insertListFirstSlotLabel`, `sendFieldLabelPrefix`,
+///   `sendLevelFieldLabel`, `pageIndicatorWord`, `instrumentChannelFormats`
+///   and `minusInfinity` are STILL UNMEASURED in French. Not because the LCD
+///   was unreachable, but because every tool that would put those views on
+///   screen resolves its target with `track_name`, and `selectStripTarget`
+///   gates that on an Accessibility track-header read that a French Logic
+///   fails — see `Logician-archive/R4-LOCALE-SESSION-CHECKLIST.md` §6.
 public enum MCULCDStrings {
 
     // MARK: - LOCALE-RISK — Logic's own words on the LCD

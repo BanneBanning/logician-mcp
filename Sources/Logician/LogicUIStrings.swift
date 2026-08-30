@@ -32,6 +32,33 @@ import Foundation
 /// nobody has recorded it, the string match STAYS and the checklist names the
 /// probe that would replace it — a guessed identifier that silently matches
 /// nothing is worse than an honest English literal.
+///
+/// # Measured against a FRENCH Logic, 2026-08-30 (R4)
+///
+/// The full per-entry table is in
+/// `Logician-archive/R4-LOCALE-SESSION-CHECKLIST.md`. The four results that
+/// change how this file should be FIXED, rather than merely translated:
+///
+/// 1. **Descriptions and help text ARE localized.** The hoped-for cheap
+///    outcome did not happen: `Control Bar` is `Barre des commandes`,
+///    `Tracks header` is `En-tête Pistes`. A handful of words survive by
+///    coincidence (`Tempo`, `Cycle`, `Solo`, `solo`, `pan`, `automation`,
+///    `Note`), and no call site may rely on that.
+/// 2. **Word order reverses.** `Tracks header` → `En-tête Pistes`,
+///    `Output slot.` → `Slot de sortie .`, `MIDI File` → `Fichier MIDI…`,
+///    and `Left inspector` stops being a PREFIX entirely (French appends
+///    `gauche` to the end of the sentence). Those call sites need a different
+///    matching STRATEGY, not a second string.
+/// 3. **NO-BREAK SPACE, U+00A0, appears inside Logic's own French text**:
+///    `Logic\u{00A0}Pro` in the menu bar, `« \u{00A0}…\u{00A0} »` around a
+///    track name, `Région MIDI\u{00A0}.` in a region's help. A shared
+///    whitespace-normalizing comparison is a precondition for French to work
+///    and is behaviour-neutral for English.
+/// 4. **The structural escape hatches held.** Logic's bounce dialog publishes
+///    `AXDefaultButton` (`OK`) and `AXCancelButton` (`Annuler`) in French, and
+///    every `AXIdentifier` read was unchanged — so `Identifier` and
+///    `AXDialogShape` are the right preference order and it is now measured,
+///    not assumed.
 enum LogicUIStrings {
 
     // MARK: - Identifiers (locale-independent — the gold standard)
@@ -94,6 +121,12 @@ enum LogicUIStrings {
         /// later tool. The cleanup path therefore also accepts any
         /// `AXDialog`-subrole window (structure), which is what actually saves
         /// it on a non-English Logic.
+        ///
+        /// FRENCH (R4, measured): the title is `Bounce « Testlåt Copy »`,
+        /// so this prefix STILL MATCHES — Logic does not translate the word.
+        /// The dialog also publishes `AXDefaultButton` = `OK` and
+        /// `AXCancelButton` = `Annuler`, so answering it is already
+        /// locale-independent and only the recognition above needed checking.
         static let bouncePrefix = "Bounce"
         /// The Remove Silence floating window. Read by `removeSilenceWindow()`.
         /// If it drifts, `logic_remove_silence` reports the command fired and
@@ -134,9 +167,17 @@ enum LogicUIStrings {
     /// exposure: they are what turns "some group in the project window" into
     /// "the Control Bar". Logic ships them through the same localisation
     /// machinery as its visible strings, so a Swedish Logic is expected to
-    /// publish Swedish descriptions — UNVERIFIED, and the first thing the
-    /// locale session should measure, because if descriptions turn out NOT to
-    /// be localised then most of this section costs nothing.
+    /// publish Swedish descriptions — **VERIFIED 2026-08-30 against a French
+    /// Logic: they are.** `Control Bar` is `Barre des commandes`,
+    /// `Tracks header` is `En-tête Pistes`, `Playhead Position` is
+    /// `Position de la tête de lecture`. This section is therefore the real
+    /// cost of a non-English Logic, not the free win it might have been:
+    /// `logic_get_transport`, `logic_list_tracks`, `logic_list_inserts` and
+    /// `logic_track_info` all answer "not found" on a perfectly healthy
+    /// French Logic.
+    ///
+    /// A few entries survive by coincidence and are marked below. Do not read
+    /// a survivor as a pattern — `Tempo` survives, `Time Signature` does not.
     enum Element {
         // MARK: Tracks area
 
@@ -208,7 +249,15 @@ enum LogicUIStrings {
         /// one's starts with `leftInspectorPrefix`. Read by `inspectorStrip`,
         /// `anyInspectorStrip`, `visibleInspectorStripNames`, and the Mixer
         /// census. The single most-read literal in the file.
+        ///
+        /// FRENCH (R4): `Tranche de console d’inspecteur`.
         static let inspectorChannelStrip = "inspector channel strip"
+        /// FRENCH (R4): **this stops being a prefix.** English says
+        /// `Left inspector channel strip.`; French says
+        /// `Tranche de console d’inspecteur gauche .` — the qualifier moves to
+        /// the END. A translated constant cannot fix this call site; it needs
+        /// a suffix (or contains) test, which is why the checklist proposes
+        /// carrying a match STRATEGY alongside each string.
         static let leftInspectorPrefix = "Left inspector"
         /// Strip controls, by description.
         static let mute = "mute"
@@ -244,6 +293,17 @@ enum LogicUIStrings {
         /// These drive strip READS (what kind of slot is this?) and strip
         /// WRITES (which slot do I open to change the output?), so a
         /// translation takes the whole Accessibility strip plane with it.
+        ///
+        /// FRENCH (R4, measured): **every entry reverses word order.** English
+        /// is `<Thing> slot.`; French is `Slot de <thing> .` —
+        /// `Output slot.` → `Slot de sortie .`, `Send slot.` →
+        /// `Slot d’envoi .`, `Audio Effect slot.` → `Slot d’effet audio .`,
+        /// `MIDI Effect slot.` → `Slot d’effet MIDI .`, `Group slot.` →
+        /// `Slot de groupe .`, `Setting button.` → `Bouton Réglage .`,
+        /// `Volume fader.` → `Curseur Volume .`, `Pan/Balance knob.` →
+        /// `Potentiomètre Pan/Balance .`. So no `hasPrefix` match survives and
+        /// the DISCRIMINATING word moves from first position to third.
+        /// `input` and `inputGain` were not on the probed strips.
         enum StripSlotHelp {
             static let output = "Output slot."
             static let input = "Input slot."
@@ -299,6 +359,14 @@ enum LogicUIStrings {
         /// `tempo` is spelled the same as `Element.tempo` (the control bar's
         /// LCD field) and is a separate entry on purpose: same word, two
         /// unrelated controls, and a translation may well differ.
+        ///
+        /// FRENCH (R4, measured with the pane open): `Event` → `Évènement`,
+        /// `Marker` → `Marqueur`, `Tempo` → `Tempo` (survives),
+        /// `Signature` → `Altération`. `tempoListTabs(in:)` requires **all
+        /// four** to match before it returns a tab strip, so three misses
+        /// make the one survivor worthless: the function returns `[]`, and
+        /// every marker / event / tempo / signature read falls back or fails.
+        /// A partial translation of this enum buys exactly nothing.
         enum ListEditorTab {
             static let event = "Event"
             static let marker = "Marker"
@@ -449,6 +517,35 @@ enum LogicUIStrings {
     /// to the keystroke the item advertises through `AXMenuItemCmdChar`. That
     /// only helps once the item has been FOUND, which is the part that needs
     /// the title.)
+    ///
+    /// # FRENCH (R4, 2026-08-30) — read verbatim off Logic's own menu bar
+    ///
+    /// | entry | French |
+    /// |---|---|
+    /// | `bounce` | `Bounce` — **survives** |
+    /// | `projectOrSection` | `Projet ou section…` |
+    /// | `regionsInPlace` | `Régions en place…` |
+    /// | `tracksInPlace` | `Pistes à leur place…` / `Piste à sa place…` |
+    /// | `importMenu` | `Importer` |
+    /// | `midiFile` | `Fichier MIDI…` (word order reversed) |
+    /// | `view` | `Présentation` |
+    /// | `listEditors` | `Éditeurs de listes` |
+    /// | `projectSettings` | `Réglages du projet` |
+    /// | `smartTempo` | `Smart Tempo…` — **survives** |
+    /// | `keyCommands` | `Raccourcis clavier` |
+    /// | `editAssignments` | `Modifier les assignations…` |
+    /// | `window` | `Fenêtre` |
+    /// | `openMixer` | `Ouvrir la table de mixage` |
+    ///
+    /// Two traps a plain translation would walk into:
+    ///
+    /// * **`tracksInPlace` changes with the selection** — Logic writes
+    ///   `Pistes à leur place…` or `Piste à sa place…` depending on how many
+    ///   tracks are selected, so a fragment match must not carry the plural.
+    /// * **The application menu is `Logic\u{00A0}Pro`**, with a NO-BREAK
+    ///   SPACE. `pressMenuItem` matches the parent by exact equality, so any
+    ///   future entry naming that menu needs the U+00A0 — or, better, the
+    ///   whitespace-normalizing comparison the checklist proposes.
     enum Menu {
         /// `File > Bounce > …`
         static let bounce = "Bounce"
@@ -477,6 +574,27 @@ enum LogicUIStrings {
     /// Values Logic publishes IN a control, and option names the tools pass
     /// back INTO one. These leak into tool arguments and results, so a
     /// translation here is an API change as well as a UI one.
+    ///
+    /// # FRENCH (R4) — the bounce dialog, captured in full
+    ///
+    /// Labels: `Uncompressed` → `Sans compression`; `File Type` →
+    /// `Type de fichier :`; `Bit Depth` → `Profondeur de bit :`;
+    /// `Sample Rate` → `Fréquence d’échantillonnage :`; `Dithering` →
+    /// `Dithering :`; `Normalize` → `Normaliser :`. (French adds a trailing
+    /// colon to every one of them.) Checkboxes: `Include Audio Tail` →
+    /// `Inclure les résonances`; `Include Tempo Information` →
+    /// `Inclure des informations de tempo`; `Bounce 2nd Cycle Pass` →
+    /// `Bounce du 2e cycle`. Buttons: `OK` → `OK`, `Cancel` → `Annuler`.
+    ///
+    /// **And the VALUES, which are also tool ARGUMENTS in
+    /// `BounceOptions.swift`:** `AIFF` survives, `24-bit` → `24 bits`,
+    /// `44.1 kHz` → **`44,1 kHz`**, dithering `None` → `Aucun`, normalize
+    /// off → `Non`, `Interleaved` → `Entrelacé`.
+    ///
+    /// `44,1 kHz` settles the open question the checklist raised: a locale can
+    /// put a DECIMAL COMMA inside a value the caller is expected to pass, so
+    /// **keep the English argument vocabulary and MAP it to the localized menu
+    /// item.** No API should make an agent guess the host's number format.
     enum Value {
         /// A track header toggle's lit state is the word, not `"1"`. The
         /// ruler's cycle region publishes the same pair as its
@@ -540,15 +658,29 @@ enum LogicUIStrings {
         /// TYPOGRAPHIC quotes, U+201C and U+201D, not `"`. Read by
         /// `parseTrackDescription` and `regionRows()`; a straight-quote build
         /// of Logic would make every region read return nothing.
+        ///
+        /// FRENCH (R4, exact code points): `Piste 1 « Lofi Pad »` is
+        /// `P i s t e SP 1 SP U+00AB U+00A0 L o f i SP P a d U+00A0 U+00BB` —
+        /// French GUILLEMETS, each with a NO-BREAK SPACE on the inside. So
+        /// both of these change GLYPH per locale, and the space inside the
+        /// quotes is part of the punctuation, not part of the name. The
+        /// number still comes BEFORE the name, so `parseTrackDescription`'s
+        /// shape holds and this is a constants problem, not a parser one.
         static let openQuote: Character = "\u{201C}"
         static let closeQuote: Character = "\u{201D}"
         /// The word before the number in that same description.
+        /// FRENCH (R4): `Piste `.
         static let trackDescriptionPrefix = "Track "
 
         /// Logic suffixes level readouts with this and formats the number in
         /// the SYSTEM's locale — so a Swedish Mac reads `-6,0 dB`. Every dB
         /// parser therefore strips the suffix and maps `,` to `.` before
         /// `Double(_:)`.
+        ///
+        /// FRENCH (R4): confirmed handled, no change needed. Logic printed
+        /// `-16,5 dB` on the inspector strip and `+0,0dB` / `-10,7` on the MCU
+        /// LCD; `logic_mixer_snapshot` parsed all 25 strips correctly. The
+        /// unit stayed the two ASCII letters and no `㏈` was sighted.
         static let decibelSuffix = "dB"
         /// Some Logic panels print the SQUARE DB glyph U+33A9 (`㏈`) instead of
         /// the two letters. Both are stripped.
@@ -571,6 +703,30 @@ enum LogicUIStrings {
         /// this element. The locale session's job here is to capture the
         /// translated sentence and add a second pattern, not to find a better
         /// address.
+        ///
+        /// FRENCH (R4, measured verbatim on MIDI and audio regions, with and
+        /// without a beat offset):
+        ///
+        /// ```
+        /// La région commence à 1 mesure  et se termine à 5 mesures , Région MIDI .
+        /// La région commence à 39 mesures 4 temps 4 divisions  et se termine à 41 mesures 35 ticks , Région audio .
+        /// ```
+        ///
+        /// * `starts at` → `commence à`, `ends at` → `se termine à`
+        /// * `bars` → `mesures` (singular `mesure` for 1, so `mesures?`
+        ///   still does the right thing); `beats` → `temps`; `divisions` and
+        ///   `ticks` keep their English nouns
+        /// * **`typePattern` cannot be translated, only RESHAPED.** English
+        ///   writes `<TYPE> region`; French writes `Région <TYPE>` — the noun
+        ///   comes FIRST, so the capture group has to move:
+        ///   `#",\s*Région ([A-Za-zÀ-ÿ]+)"#`. And the tail carries a NO-BREAK
+        ///   SPACE before the period (`Région MIDI\u{00A0}.`).
+        /// * The type words differ in case between kinds — `MIDI` uppercase,
+        ///   `audio` lowercase — so a case-sensitive map would miss one.
+        ///
+        /// This is also why `logic_list_regions` FAILS SILENTLY on a French
+        /// Logic today rather than erroring: the header walk finds nothing and
+        /// the tool answers `{"tracks": []}`, which reads as an empty project.
         enum RegionHelp {
             static let startPattern = #"starts at \d+ bars?\s*(\d+ beats?)?"#
             static let endPattern = #"ends at \d+ bars?\s*(\d+ beats?)?"#

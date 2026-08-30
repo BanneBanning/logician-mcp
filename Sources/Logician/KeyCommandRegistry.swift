@@ -127,6 +127,31 @@ enum KeyCommandRegistry {
     /// row. The English name is not always the menu item's text (`New Track
     /// with Duplicate Settings and Content` has no menu twin), so each one has
     /// to be read out of that window, not translated from the menu bar.
+    ///
+    /// # FRENCH (R4, 2026-08-30) — what was and was not established
+    ///
+    /// **Triggering an already-learned command still works, and this was
+    /// PROVEN rather than argued.** With Logic's UI in French,
+    /// `logic_trigger_key_command {name: "Rename Track"}` sent note 119 on
+    /// channel 16 and Logic's `AXFocusedUIElement` changed from a control-bar
+    /// button to an `AXTextField` holding the selected track's name — the
+    /// inline rename editor, open and focused. The binding is a note, the
+    /// registry holds the note, and Logic's MIDI-learn assignment does not
+    /// care what language the window that made it was drawn in. All 22
+    /// `standardCommands` still report `registered: true`.
+    ///
+    /// **Learning a NEW one by name is dead, and fails loudly:**
+    /// `logic_learn_key_command` reports
+    /// `menu item 'Edit Assignments' under 'Key Commands'` not found, because
+    /// French spells those `Modifier les assignations…` under
+    /// `Raccourcis clavier` (both captured — see `LogicUIStrings.Menu`).
+    ///
+    /// **The 28 French row names below are NOT captured.** Activating
+    /// `Modifier les assignations…` by `AXPress` did not open the window in
+    /// two attempts, so the rows could not be read. Note when someone does
+    /// capture them: `standardCommands`' search TERMS are English substrings
+    /// of these English names, so the two columns must be re-measured
+    /// together — which the suite's substring check already enforces.
     enum Name {
         static let save = "Save"
         static let newSoftwareInstrumentTrack = "New Software Instrument Track"
