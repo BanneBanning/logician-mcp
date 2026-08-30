@@ -108,6 +108,128 @@ enum ImportMIDI {
         }
     }
 
+    // MARK: - Routing an imported track onto a track that already exists
+
+    /// One `tracks[]` entry's request to land somewhere other than the new
+    /// track Logic makes for it.
+    ///
+    /// `track` is the SMF track name, which is also the REGION name Logic hands
+    /// back — the only correspondence between "what was asked for" and "what
+    /// appeared" that the import gives (R2 §5). `destination` is a track that
+    /// already exists in the project.
+    struct Routing: Equatable {
+        /// The SMF track name = the imported region's name.
+        let track: String
+        /// The existing track the region is moved onto.
+        let destination: String
+        /// Disambiguates duplicate destination names; nil when the name is
+        /// unique enough on its own.
+        let destinationNumber: Int?
+    }
+
+    /// The `to_track` / `to_track_number` pairs out of the `tracks[]` array, in
+    /// order, with the three argument-level refusals that do not need Logic.
+    ///
+    /// PER TRACK, not top level: a multi-track import routes drums onto Drums
+    /// and bass onto Bas in one call, and any subset may be left out — those
+    /// entries keep the new track Logic makes for them.
+    static func routings(from raw: [[String: Any]]) throws -> [Routing] {
+        var routings: [Routing] = []
+        var claimed: [String: String] = [:] // destination key -> the track that claimed it
+        for (index, entry) in raw.enumerated() {
+            let ordinal = "tracks[\(index)]"
+            let name = (entry["name"] as? String) ?? ordinal
+            let number = integer(entry["to_track_number"])
+            guard let destination = entry["to_track"] as? String,
+                  !destination.trimmingCharacters(in: .whitespaces).isEmpty else {
+                guard number == nil else {
+                    throw LogicianError.invalidArguments(
+                        "\(ordinal) has to_track_number but no to_track. The number only"
+                            + " disambiguates duplicate destination NAMES; pass to_track as well,"
+                            + " or leave both out and this track lands on a new track of its own."
+                    )
+                }
+                continue
+            }
+            // Two imported tracks onto one destination would stack both regions
+            // on the same lane at the same bar — audible as one part playing
+            // over another, and impossible to tell apart afterwards.
+            let key = destination.lowercased() + "#" + (number.map(String.init) ?? "")
+            if let earlier = claimed[key] {
+                throw LogicianError.invalidArguments(
+                    "'\(earlier)' and '\(name)' both route to '\(destination)'. Two imported"
+                        + " tracks cannot share one destination: both regions would land on that"
+                        + " track at the same bar, on top of each other. Give one of them its own"
+                        + " destination, or leave its to_track out so it keeps a new track."
+                )
+            }
+            claimed[key] = name
+            routings.append(Routing(
+                track: name, destination: destination, destinationNumber: number
+            ))
+        }
+        return routings
+    }
+
+    /// A track header, as the destination resolver sees one.
+    struct TrackHeader: Equatable {
+        let number: Int
+        let name: String
+
+        init(number: Int, name: String) {
+            self.number = number
+            self.name = name
+        }
+
+        /// From `logic_list_tracks`' rows.
+        init?(row: [String: Any]) {
+            guard let number = row["track_number"] as? Int,
+                  let name = row["track_name"] as? String else { return nil }
+            self.number = number
+            self.name = name
+        }
+    }
+
+    /// What resolving one destination against the visible track headers found.
+    enum DestinationResolution: Equatable {
+        case resolved(TrackHeader)
+        /// No header carries the name. Carries what IS there, so the retry is
+        /// informed rather than a second guess.
+        case notFound(candidates: [String])
+        /// Several headers carry it and no `to_track_number` said which.
+        case ambiguous(numbers: [Int])
+        /// A `to_track_number` was given and that track is named something else.
+        case mismatch(number: Int, actual: String)
+    }
+
+    /// Resolves one destination BEFORE anything is imported.
+    ///
+    /// Early on purpose: a destination that turns out not to exist after the
+    /// import has already run leaves temp tracks and default patches behind to
+    /// clean up, and the cleanup is the part that can fail. Resolving first
+    /// makes the refusal free — nothing has been written when it fires.
+    static func resolve(
+        destination: String, number: Int?, in headers: [TrackHeader]
+    ) -> DestinationResolution {
+        if let number {
+            guard let row = headers.first(where: { $0.number == number }) else {
+                return .notFound(candidates: headers.map(\.name))
+            }
+            guard row.name.caseInsensitiveCompare(destination) == .orderedSame else {
+                return .mismatch(number: number, actual: row.name)
+            }
+            return .resolved(row)
+        }
+        let hits = headers.filter {
+            $0.name.caseInsensitiveCompare(destination) == .orderedSame
+        }
+        switch hits.count {
+        case 0: return .notFound(candidates: headers.map(\.name))
+        case 1: return .resolved(hits[0])
+        default: return .ambiguous(numbers: hits.map(\.number).sorted())
+        }
+    }
+
     private static func array(
         _ value: Any?, of ordinal: String, called key: String
     ) throws -> [[String: Any]] {

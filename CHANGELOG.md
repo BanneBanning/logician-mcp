@@ -27,7 +27,12 @@ with every render coming back as audio the agent can listen to.
 - **A whole arrangement in one call.** `logic_import_midi` writes many named tracks as a
   byte-exact Standard MIDI File and drives Logic's own importer - seconds instead of the
   music's own length, no Smart Tempo hazard, verified by a track/region census diff and
-  optionally note for note out of the Event List.
+  optionally note for note out of the Event List. Per-track `to_track` composes onto the
+  tracks the user already has, so the material plays through their instruments instead of
+  the default patches Logic's importer would pick: destinations are resolved before the
+  import runs, each routed region is moved off its temp track and the emptied temp track
+  removed, and a move that does not finish is reported as `partial` with `restored: false`
+  and every leftover named.
 - **Typed discovery.** `logic_find_tool` searches every tool by keyword (BM25 over names,
   descriptions and argument text) and answers with the full typed definitions — schemas and
   safety annotations included — naming the toolset that holds any match this session does
