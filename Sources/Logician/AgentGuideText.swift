@@ -63,6 +63,8 @@ When the Tempo List cannot be read at all, the pre-map behavior is the fallback:
 
 **11. The tool list can be narrowed at launch.** `--toolsets=core,delivery` (or `LOGICIAN_TOOLSETS`) makes the server advertise only the sets a session needs — `core`, `regions`, `composition`, `delivery`, `project`, `keycommands`, or `all`, which is the default. A whole surface is 81 tools; `core` alone is 40 and costs less than half the bytes. Nothing about a tool changes when it is offered; a tool that is NOT offered answers a call with the unknown-tool error plus a line naming the sets that hold it and the flag that would bring it back. Nothing an agent does can change the active sets — it is the user's launch configuration.
 
+**12. The surface is built for client-side tool search, and `--toolsets` is the floor for clients without it.** Claude Code (2.1.221+) defers every MCP tool definition by transport, stdio included: it hands the model the 81 tool NAMES and the server instructions, and a schema arrives only when the model searches for one. Nothing is flattened — the typed schema you get back is the whole schema — so the cost of the surface is paid on demand instead of up front, and the names plus the six group names in the server instructions are what you navigate by. Two caveats worth knowing. **Behind a proxy, tool search is off**: Claude Code disables it whenever `ANTHROPIC_BASE_URL` points at any host other than `api.anthropic.com`, unless `ENABLE_TOOL_SEARCH` is set explicitly, so a proxied user pays for all 81 definitions in every prompt — that is the case for `--toolsets`. **Some clients cap the list instead of searching it** (Cursor truncates around 40, VS Code shares 128 with extensions, Windsurf 100); there `--toolsets` is not an optimisation but the difference between a working session and a silently truncated one.
+
 ## Workflows (recipes)
 
 **Understand a project:**
@@ -232,7 +234,7 @@ compare-and-set argument say so in that argument's own description.
 
 #### `logic_health`
 
-Read Logic Pro process and Accessibility readiness without changing Logic.
+Check that Logic Pro is ready and set up, without changing anything: the process, the open project, Accessibility trust, the MCU bridge daemon (started here when it is down) and the registered key commands. Read-only, and it names the fix for whatever is missing.
 
 Parameters:
 
@@ -288,7 +290,7 @@ Parameters:
 
 #### `logic_bounce_range`
 
-Offline-bounce a bar range of the master output to an audio file, many times faster than realtime playback. Drives Logic's bounce dialog and its XPC save panel entirely through verified accessibility (no playback). Switches the bounce destination to Uncompressed. DELIVERY OPTIONS: file_type, bit_depth, sample_rate, dithering and normalize drive the dialog's own pop-ups (values are matched leniently - '48k', '48000' and '48 kHz' all reach '48 kHz' - and an unknown one is refused with the real list BEFORE anything is bounced), and include_audio_tail drives its checkbox. Whatever is not passed is left exactly as the user set it, and the result reports the full delivery state in `delivered_as`, read off the dialog just before OK. These are the USER'S OWN settings and Logic keeps them for the next bounce: they are changed, not borrowed, and nothing puts them back — `options_changed` says what moved. MP3 and M4A destinations exist in the dialog with their own option set and are NOT implemented here. ONE CONSEQUENCE OF CHANGING file_type: the metrics reader parses AIFF/AIFC only, so a WAVE or CAF bounce comes back with no `metrics` and therefore WITHOUT the silent-bounce warning — keep the default AIFF when you intend to judge the file by its numbers, and switch format only for the delivery itself. Returns the file path. MAY RETURN `warning` — read it before the rest of the result (RESULT CONTRACT in the server instructions).
+Offline-bounce a bar range of the master output to an audio file and listen to the mix, many times faster than realtime playback. Drives Logic's bounce dialog and its XPC save panel entirely through verified accessibility (no playback). Switches the bounce destination to Uncompressed. DELIVERY OPTIONS: file_type, bit_depth, sample_rate, dithering and normalize drive the dialog's own pop-ups (values are matched leniently - '48k', '48000' and '48 kHz' all reach '48 kHz' - and an unknown one is refused with the real list BEFORE anything is bounced), and include_audio_tail drives its checkbox. Whatever is not passed is left exactly as the user set it, and the result reports the full delivery state in `delivered_as`, read off the dialog just before OK. These are the USER'S OWN settings and Logic keeps them for the next bounce: they are changed, not borrowed, and nothing puts them back — `options_changed` says what moved. MP3 and M4A destinations exist in the dialog with their own option set and are NOT implemented here. ONE CONSEQUENCE OF CHANGING file_type: the metrics reader parses AIFF/AIFC only, so a WAVE or CAF bounce comes back with no `metrics` and therefore WITHOUT the silent-bounce warning — keep the default AIFF when you intend to judge the file by its numbers, and switch format only for the delivery itself. Returns the file path. MAY RETURN `warning` — read it before the rest of the result (RESULT CONTRACT in the server instructions).
 
 Parameters:
 
@@ -808,7 +810,7 @@ Parameters:
 
 #### `logic_get_transport`
 
-Read the transport state from the control bar: playing, recording, cycle, playhead bar/beat, tempo, time signature, key signature, metronome, count-in. Read-only. Fields whose control bar element is missing are null. The Smart Tempo project tempo mode (Keep/Adapt/Auto) is NOT in the cheap read — Logic publishes no value on the control bar's Project Tempo pop-up — so it comes back as project_tempo_mode_note saying why. Pass read_smart_tempo_mode: true to get the real value: that opens File > Project Settings on the Smart Tempo pane, reads the mode off its pop-up and closes the window again (~1.6 s, nothing written), and the result then carries project_tempo_mode plus project_tempo_mode_route. Worth knowing before recording: an ADAPT-mode project rewrites its own tempo map to follow a recording, and logic_record_midi runs this same read and refuses on Adapt/Auto.
+Read the transport state and where the playhead is right now, from the control bar: playing, recording, cycle, playhead position in bars/beats, tempo, time signature, key signature, metronome, count-in. Read-only. Fields whose control bar element is missing are null. The Smart Tempo project tempo mode (Keep/Adapt/Auto) is NOT in the cheap read — Logic publishes no value on the control bar's Project Tempo pop-up — so it comes back as project_tempo_mode_note saying why. Pass read_smart_tempo_mode: true to get the real value: that opens File > Project Settings on the Smart Tempo pane, reads the mode off its pop-up and closes the window again (~1.6 s, nothing written), and the result then carries project_tempo_mode plus project_tempo_mode_route. Worth knowing before recording: an ADAPT-mode project rewrites its own tempo map to follow a recording, and logic_record_midi runs this same read and refuses on Adapt/Auto.
 
 Parameters:
 
@@ -1089,9 +1091,9 @@ Parameters:
 
   - `expected_current_value` (string): Compare-and-set. REQUIRED on the ax route (it is that route's whole safety contract); optional on the mcu route, which verifies by LCD echo.
   - `insert_slot` (integer): Names the plugin on the control-surface route. MACKIE physical slot 1-8 (logic_list_inserts route 'mcu'), NOT the Accessibility insert_index — see INSERT NUMBERING in the server instructions.
-  - `parameter` (string) **(required)**
+  - `parameter` (string) **(required)**: Parameter name as the plugin spells it - an EQ band's Frequency or Gain, a compressor's Threshold or Ratio, a reverb's Mix.
   - `route` (string): 'auto' (default) picks by argument: window_title means ax (falling back to mcu when insert_slot is given and the parameter is not ax_writable), track_name + insert_slot means mcu. 'ax' or 'mcu' forces one and refuses rather than falling back. One of: `auto`, `ax`, `mcu`.
-  - `target_value` (string) **(required)**
+  - `target_value` (string) **(required)**: Value to write, in the parameter's own units - '500 Hz', '2.0 dB', 'On'.
   - `tolerance` (number): Control-surface route only: accepted deviation for a numeric target, in the parameter's own units.
   - `track_name` (string): Control-surface route: the strip the plugin sits on.
   - `track_number` (integer): Tracks only; disambiguates two headers sharing a name.
