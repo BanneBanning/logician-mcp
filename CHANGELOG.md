@@ -1,8 +1,8 @@
 # Changelog
 
-## 1.0.0 — 2026-08-30
+## 1.0.0 — unreleased
 
-First public release.
+The first public release, staged and waiting on the go-public decision.
 
 Logician gives any MCP client verified control of Logic Pro: 81 typed tools across
 mixing, plugins (third-party parameters included), regions, MIDI composition and

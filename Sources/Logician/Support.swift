@@ -5,7 +5,7 @@ import LogicMCUBridge
 
 let protocolVersion = "2025-06-18"
 let serverName = "logician"
-let serverVersion = "1.0.0"
+let serverVersion = "0.61.0"
 
 /// Schema version stamped into every on-disk cache. Deliberately tied to
 /// `serverVersion`: these files hold measurements of Logic's MCU LCD, and a
