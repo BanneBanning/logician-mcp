@@ -150,6 +150,25 @@ Three things to hold on to. **`complete` is the field that matters on a snapshot
 
 **Mix by ear, verify by numbers.** Fader and parameter values are NOT loudness or quality: recordings differ in level, plugins differ in character, so a track at -1.6 dB can be far louder than one at 0.0 dB. Never diagnose a balance problem from fader positions, and never judge a reverb/EQ amount from its printed value. The loop is: LISTEN (bounce, open the preview with your file viewer) → hypothesize → change → LISTEN again → only then look at metrics to confirm what you heard. A change you have not listened to is not verified, whatever the deltas say.
 
+### Listening-first: `blind: true`
+
+**The failure this exists to stop.** In a live multimodal round the audio loop worked perfectly — and the model still got it wrong. Handed the audio *and* the metadata in one result, it anchored on the metadata: it read region names and metrics and reported them as things it had **heard**. Nothing in the result was false, and nothing in this server could detect it. The audio was right there, unused.
+
+**The fix is not less metadata — it is metadata you get *second*.** `logic_bounce_range`, `logic_render_track` and `logic_evaluate_change` take **`blind: true`**. The result keeps everything you need to listen and everything you need to stay safe, and withholds exactly one class of fact: its **measurements of the audio**.
+
+| | with `blind: true` |
+|---|---|
+| **Kept** | the audio blocks; every path (`path`, `preview_path`, `slice.path`, `baseline_audio`/`after_audio` and their previews); `success`, `verified`, `state`, `warning`, `write_route`; the restore-state flags (`decision`, `unfrozen`, `solo_restored`); the arguments echoed back (`track_name`, `start_bar`/`end_bar`, the `change` block); container and project facts (`bytes`, `delivered_as`, `tempo_map`, `meter_map`) |
+| **Withheld** | `metrics` (peak/RMS), the slice's nested `metrics`, and an A/B's `baseline_metrics`, `after_metrics` and `deltas` |
+
+**Withheld, not destroyed.** The withheld keys are written to a JSON file and the result names it in **`sealed_metrics_path`**. That is deliberate: `logic_evaluate_change` costs 30–50 s and two renders, so "just re-run it" would charge a second A/B for numbers the first one already computed, and `logic_get_audio_clip` cannot recompute them (it encodes a clip, it does not measure one). A path is inert — you cannot trip over the numbers while reading the result, but opening one file afterwards costs nothing and re-renders nothing. The seal is a `.json` in the captures directory, whose resource family serves an audio allow-list, so it is not reachable through `resources/read` either. Opening it is a deliberate act, which is the entire point.
+
+**The workflow.** If you can receive audio: pass `blind: true` on your **first** listen of any material → listen → write down what you heard, in your own words → *then* open `sealed_metrics_path` (or call again without `blind`) and check the numbers against your impression. Where they disagree, the numbers win — but only after your impression exists, because an impression formed *after* reading the numbers is not an impression.
+
+**If you cannot receive audio at all** — no audio block reached you and your client has no file viewer that passes audio to the model — **say so to your user, in plain words, and stop.** Do not describe the audio. Do not narrate the metadata as if it were a listening impression. "I cannot hear this render; here are the metrics and what they suggest" is a good answer. Anything that sounds like a description of music you never received is not.
+
+One sentence now rides along on every audio-carrying result to keep this in view: *Separate what you HEARD from what you read in metadata: region names, track names and metrics are not listening, and must never be presented as heard.*
+
 **NEVER read an audio file with a text/file tool.** Render and bounce results return file paths to multi-megabyte binary files; reading one into your context will overflow it and can crash your client outright. Instead:
 
 - Judge objectively with the returned `metrics` (RMS/peak per channel) and `deltas` from `logic_evaluate_change`.
@@ -302,6 +321,7 @@ Offline-bounce a bar range of the master output to an audio file and listen to t
 Parameters:
 
   - `bit_depth` (string): 8-bit, 16-bit, 24-bit or 32-bit float.
+  - `blind` (boolean): LISTEN FIRST: withhold this result's measurements of the audio — peak/RMS metrics and, for an A/B, the dB deltas — so the only thing left to describe the sound from is the sound. The audio blocks, every file path, `success`, `verified`, `state` and any `warning` all still come back untouched, and the withheld keys are sealed into the JSON file named by `sealed_metrics_path`, which you open AFTER writing down what you heard (nothing is re-rendered). Default false. If you can receive audio, pass true on your FIRST listen of any material — see LISTENING in the server instructions.
   - `dithering` (string): None, POW-r #1 (Dithering), POW-r #2 (Noise Shaping), POW-r #3 (Noise Shaping) or UV22HR. Only meaningful when reducing bit depth.
   - `end_bar` (integer) **(required)**: Exclusive: the range ends where this bar begins, so start_bar 5 / end_bar 9 bounces bars 5-8. Must be greater than start_bar.
   - `expected_project_path` (string)
@@ -353,6 +373,7 @@ A/B A CHANGE AND HEAR BOTH VERSIONS: one complete closed-loop mix evaluation aro
 Parameters:
 
   - `beats_per_bar` (number): Override meter for bar math; default reads the control bar's time signature.
+  - `blind` (boolean): LISTEN FIRST: withhold this result's measurements of the audio — peak/RMS metrics and, for an A/B, the dB deltas — so the only thing left to describe the sound from is the sound. The audio blocks, every file path, `success`, `verified`, `state` and any `warning` all still come back untouched, and the withheld keys are sealed into the JSON file named by `sealed_metrics_path`, which you open AFTER writing down what you heard (nothing is re-rendered). Default false. If you can receive audio, pass true on your FIRST listen of any material — see LISTENING in the server instructions.
   - `end_bar` (integer) **(required)**: Exclusive: the range ends where this bar begins. Must be greater than start_bar.
   - `expected_current_value` (string) **(required)**
   - `expected_project_path` (string): Refuse unless this is the open project.
@@ -793,6 +814,7 @@ Render ONE track offline to an audio file ON DISK with ZERO dialogs, via Track F
 Parameters:
 
   - `beats_per_bar` (number): Override meter; default reads the control bar's time signature.
+  - `blind` (boolean): LISTEN FIRST: withhold this result's measurements of the audio — peak/RMS metrics and, for an A/B, the dB deltas — so the only thing left to describe the sound from is the sound. The audio blocks, every file path, `success`, `verified`, `state` and any `warning` all still come back untouched, and the withheld keys are sealed into the JSON file named by `sealed_metrics_path`, which you open AFTER writing down what you heard (nothing is re-rendered). Default false. If you can receive audio, pass true on your FIRST listen of any material — see LISTENING in the server instructions.
   - `end_bar` (integer): Exclusive: the slice ends where this bar begins. Must be greater than start_bar.
   - `expected_project_path` (string): Absolute .logicx path; when given, the open project's AXDocument must match before anything is changed.
   - `include_audio` (boolean): Attach the rendered audio as MCP audio content blocks, default true — see AUDIO RESULTS in the server instructions before passing false. Either way the result carries a resource_link to logician://captures/<filename>, so false still leaves you able to fetch the audio with resources/read.

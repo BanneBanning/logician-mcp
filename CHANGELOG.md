@@ -21,6 +21,10 @@ with every render coming back as audio the agent can listen to.
   recording so an Adapt-mode project is refused rather than rewritten.
 - **Audio-carrying results**, inline for multimodal clients and as fetchable MCP
   resource links for everyone else; renders live under `logician://captures/`.
+- **Blind listening.** `logic_bounce_range`, `logic_render_track` and `logic_evaluate_change`
+  take `blind: true`: the result keeps its audio, its paths and every safety field and defers
+  its measurements of that audio into a `sealed_metrics_path` you read after saying what you
+  heard — so a multimodal model describes the sound instead of paraphrasing the metrics.
 - **Modern protocol**: 2026-07-28 era (`server/discover`, per-request versioning,
   cache hints) with legacy `initialize` down to 2025-03-26; progress notifications and
   cancellation on every long-running tool; the server is inert until first use.
