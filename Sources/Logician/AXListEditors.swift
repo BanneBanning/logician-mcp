@@ -97,14 +97,18 @@ extension LogicAccessibility {
         guard let window = try? projectWindow() else { return (nil, .paneUnavailable) }
         let wasOpen = tempoListTabs(in: window).isEmpty == false
         if !wasOpen {
-            guard (try? pressMenuItem(containing: "List Editors", underMenu: "View")) != nil else {
+            guard (try? pressMenuItem(
+                containing: LogicUIStrings.Menu.listEditors, underMenu: LogicUIStrings.Menu.view
+            )) != nil else {
                 return (nil, .paneUnavailable)
             }
             settleForListEditors()
         }
         defer {
             if !wasOpen {
-                try? pressMenuItem(containing: "List Editors", underMenu: "View")
+                try? pressMenuItem(
+                    containing: LogicUIStrings.Menu.listEditors, underMenu: LogicUIStrings.Menu.view
+                )
             }
         }
         let tabs = tempoListTabs(in: window)
@@ -148,7 +152,8 @@ extension LogicAccessibility {
             guard stringAttribute(element, kAXRoleAttribute as String) == "AXGroup",
                   stringAttribute(element, kAXDescriptionAttribute as String) == tab,
                   children(of: element).contains(where: {
-                      stringAttribute($0, kAXDescriptionAttribute as String) == "Number of Items"
+                      stringAttribute($0, kAXDescriptionAttribute as String)
+                    == LogicUIStrings.Element.numberOfItems
                   }) else { return .descend }
             tabGroup = element
             return .stop
@@ -159,7 +164,7 @@ extension LogicAccessibility {
         walk(from: group, maximumDepth: AXDepth.listEditorTable) { element in
             let role = stringAttribute(element, kAXRoleAttribute as String)
             let description = stringAttribute(element, kAXDescriptionAttribute as String)
-            if role == "AXStaticText", description == "Number of Items" {
+            if role == "AXStaticText", description == LogicUIStrings.Element.numberOfItems {
                 declaredCount = TempoMap.parseTempoListItemCount(
                     stringAttribute(element, kAXValueAttribute as String)
                 )
@@ -246,7 +251,7 @@ extension LogicAccessibility {
         guard AXUIElementCopyActionNames(row.element, &names) == .success,
               let actions = names as? [String] else { return false }
         guard let delete = actions.first(where: {
-            $0.localizedCaseInsensitiveContains("Delete")
+            $0.localizedCaseInsensitiveContains(LogicUIStrings.Element.deleteRowAction)
         }) else { return false }
         return AXUIElementPerformAction(row.element, delete as CFString) == .success
     }

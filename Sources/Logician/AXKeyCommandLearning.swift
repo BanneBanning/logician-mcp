@@ -11,7 +11,8 @@ extension LogicAccessibility {
     func keyCommandsWindow() throws -> AXUIElement {
         func existing() throws -> AXUIElement? {
             try logicWindows().first {
-                stringAttribute($0, kAXTitleAttribute as String).contains("Key Command")
+                stringAttribute($0, kAXTitleAttribute as String)
+                    .contains(LogicUIStrings.Window.keyCommandsFragment)
             }
         }
         if let window = try existing() { return window }
@@ -22,7 +23,8 @@ extension LogicAccessibility {
         // this machine), which does open it — every time, within 0.5 s.
         try ensureLogicFrontmost(for: "the Key Commands window")
         try pressMenuItem(
-            containing: "Edit Assignments", underMenu: "Key Commands",
+            containing: LogicUIStrings.Menu.editAssignments,
+            underMenu: LogicUIStrings.Menu.keyCommands,
             settled: { ((try? existing()) ?? nil) != nil }
         )
         guard let window = try existing() else {
@@ -35,7 +37,8 @@ extension LogicAccessibility {
         // A close button that is not an element leaves the window open (same
         // as no close button) instead of trapping the server.
         guard let window = try? logicWindows().first(where: {
-            stringAttribute($0, kAXTitleAttribute as String).contains("Key Command")
+            stringAttribute($0, kAXTitleAttribute as String)
+                    .contains(LogicUIStrings.Window.keyCommandsFragment)
         }), let close = elementAttribute(window, kAXCloseButtonAttribute as String) else { return }
         _ = AXUIElementPerformAction(close, kAXPressAction as CFString)
     }
@@ -59,9 +62,9 @@ extension LogicAccessibility {
                 return true
             }
             if stringAttribute(candidate, kAXHelpAttribute as String)
-                .localizedCaseInsensitiveContains("search") { return true }
+                .localizedCaseInsensitiveContains(LogicUIStrings.Element.search) { return true }
             return children(of: candidate).contains {
-                stringAttribute($0, kAXDescriptionAttribute as String) == "search"
+                stringAttribute($0, kAXDescriptionAttribute as String) == LogicUIStrings.Element.search
             }
         }) else { throw LogicianError.windowNotFound("Key Commands search field") }
         return field
@@ -164,9 +167,10 @@ extension LogicAccessibility {
                     let role = stringAttribute(element, kAXRoleAttribute as String)
                     if role == "AXStaticText",
                        stringAttribute(element, kAXValueAttribute as String)
-                           .contains("already assigned") { isConflict = true }
+                           .contains(LogicUIStrings.AlertMarker.alreadyAssigned) { isConflict = true }
                     if role == "AXButton",
-                       stringAttribute(element, kAXTitleAttribute as String) == "Cancel" {
+                       stringAttribute(element, kAXTitleAttribute as String)
+                           == LogicUIStrings.Button.cancel {
                         cancel = element
                     }
                 }
@@ -251,7 +255,7 @@ extension LogicAccessibility {
             let row = match.row
             let resolvedName = match.name
             let pre = rowTexts(row).joined(separator: " ")
-            if !forceRelearn, pre.contains("Note \(target.preferredNote)") {
+            if !forceRelearn, pre.contains(LogicUIStrings.Format.keyCommandNotePrefix + "\(target.preferredNote)") {
                 var already: [String: Any] = ["name": resolvedName, "status": "already_learned",
                                               "midi_note": target.preferredNote]
                 if resolvedName != target.name { already["requested_name"] = target.name }
@@ -267,7 +271,8 @@ extension LogicAccessibility {
             Thread.sleep(forTimeInterval: 0.5)
             guard let learn = findIn(window, {
                 stringAttribute($0, kAXRoleAttribute as String) == "AXCheckBox"
-                    && stringAttribute($0, kAXTitleAttribute as String) == "Learn New Assignment"
+                    && stringAttribute($0, kAXTitleAttribute as String)
+                        == LogicUIStrings.Button.learnNewAssignment
             }) else {
                 results.append(["name": resolvedName, "status": "no_learn_checkbox"])
                 continue
@@ -297,7 +302,8 @@ extension LogicAccessibility {
                     Thread.sleep(forTimeInterval: 0.2)
                     guard let deleteButton = findIn(window, {
                         stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
-                            && stringAttribute($0, kAXTitleAttribute as String) == "Delete Assignment"
+                            && stringAttribute($0, kAXTitleAttribute as String)
+                            == LogicUIStrings.Button.deleteAssignment
                     }) else { break }
                     _ = AXUIElementPerformAction(deleteButton, kAXPressAction as CFString)
                     Thread.sleep(forTimeInterval: 0.4)
@@ -323,7 +329,8 @@ extension LogicAccessibility {
                 // makes earlier element references silently inert
                 let freshLearn = findIn(window, {
                     stringAttribute($0, kAXRoleAttribute as String) == "AXCheckBox"
-                        && stringAttribute($0, kAXTitleAttribute as String) == "Learn New Assignment"
+                        && stringAttribute($0, kAXTitleAttribute as String)
+                        == LogicUIStrings.Button.learnNewAssignment
                 }) ?? learn
                 if stringAttribute(freshLearn, kAXValueAttribute as String) != "1" {
                     _ = AXUIElementPerformAction(freshLearn, kAXPressAction as CFString)
@@ -340,7 +347,7 @@ extension LogicAccessibility {
                         // on the MCU device shows as "F2 (Modifiers ...)"), so
                         // "Note N" is not always present — any change in the
                         // row's assignment display counts as the learn landing.
-                        if text.contains("Note \(candidate)") || text != preLearnText {
+                        if text.contains(LogicUIStrings.Format.keyCommandNotePrefix + "\(candidate)") || text != preLearnText {
                             verified = true
                             break
                         }
@@ -368,7 +375,8 @@ extension LogicAccessibility {
             }
             if let finalLearn = findIn(window, {
                 stringAttribute($0, kAXRoleAttribute as String) == "AXCheckBox"
-                    && stringAttribute($0, kAXTitleAttribute as String) == "Learn New Assignment"
+                    && stringAttribute($0, kAXTitleAttribute as String)
+                        == LogicUIStrings.Button.learnNewAssignment
             }) ?? Optional(learn),
                stringAttribute(finalLearn, kAXValueAttribute as String) == "1" {
                 _ = AXUIElementPerformAction(finalLearn, kAXPressAction as CFString)

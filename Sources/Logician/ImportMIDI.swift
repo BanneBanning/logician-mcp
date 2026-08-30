@@ -175,12 +175,46 @@ enum ImportMIDI {
     /// window title, which is empty (measured 2026-08-30 §3.5).
     ///
     /// A modal that is not this one must never be pressed on a guess — the
-    /// house rule `logic_reset_to` already follows — so this is the gate.
+    /// house rule `logic_reset_to` already follows — so this is one of the two
+    /// gates; `recognise(texts:shapeMatches:)` is the one callers use.
     static func isTempoPrompt(texts: [String]) -> Bool {
         texts.contains {
             $0.trimmingCharacters(in: .whitespaces)
                 .lowercased()
-                .hasPrefix("also import tempo")
+                .hasPrefix(LogicUIStrings.AlertMarker.alsoImportTempo)
+        }
+    }
+
+    /// WHY the tempo prompt was recognised — or that it was not.
+    ///
+    /// Two independent witnesses, and the result says which spoke:
+    ///
+    /// * **shape** — three buttons identified `action-button-1…3` plus a
+    ///   `supression-checkbox`. Identifiers, so this holds in any language.
+    ///   It is what separates the tempo prompt from the OTHER alert an import
+    ///   can meet — the save-changes prompt, which has the same three buttons
+    ///   and NO checkbox (R2 §3.5, §8).
+    /// * **text** — the alert's first line, "Also import tempo information?".
+    ///   English only.
+    ///
+    /// Either alone is enough to answer. Reporting which one fired is the
+    /// point: on an English Logic both do, and the day only the shape does is
+    /// the day this server learns it is talking to a translated Logic.
+    enum PromptRecognition: String, Equatable {
+        case shapeAndText = "shape+text"
+        case shapeOnly = "shape"
+        case textOnly = "text"
+        case unrecognised = "unrecognised"
+
+        var recognised: Bool { self != .unrecognised }
+    }
+
+    static func recognise(texts: [String], shapeMatches: Bool) -> PromptRecognition {
+        switch (shapeMatches, isTempoPrompt(texts: texts)) {
+        case (true, true): return .shapeAndText
+        case (true, false): return .shapeOnly
+        case (false, true): return .textOnly
+        case (false, false): return .unrecognised
         }
     }
 

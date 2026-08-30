@@ -58,7 +58,7 @@ extension LogicAccessibility {
         // Which column is the position is read off the header rather than
         // assumed: it is column 0 on the Signature tab and column 1 on the
         // Marker tab, and the two tables are read by the same code.
-        let positionIndex = table.columns.firstIndex { $0.lowercased().contains("position") } ?? 0
+        let positionIndex = table.columns.firstIndex { $0.lowercased().contains(LogicUIStrings.Element.positionColumn) } ?? 0
         var events: [MeterEvent] = []
         var keyRows = 0
         for row in table.rows {

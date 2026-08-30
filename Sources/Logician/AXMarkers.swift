@@ -84,7 +84,7 @@ extension LogicAccessibility {
 
     func markerBar(of row: ListEditorRow, in table: ListEditorTable) -> Int? {
         let positionIndex = table.columns.firstIndex {
-            $0.lowercased().contains("position")
+            $0.lowercased().contains(LogicUIStrings.Element.positionColumn)
         } ?? 0
         return TempoMap.parseTempoListPosition(row.cell(positionIndex))?.bar
     }
@@ -105,7 +105,7 @@ extension LogicAccessibility {
             guard let button = self.children(of: table.group).first(where: {
                 self.stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
                     && self.stringAttribute($0, kAXDescriptionAttribute as String)
-                        .localizedCaseInsensitiveContains("Create new Marker")
+                        .localizedCaseInsensitiveContains(LogicUIStrings.Element.createNewMarker)
             }) else { return false }
             let pressed = AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
             // Settle inside the scope: the pane closes on the way out and the

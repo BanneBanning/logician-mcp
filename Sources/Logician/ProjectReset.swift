@@ -56,13 +56,13 @@ enum ProjectReset {
     /// a button an unattended reset may click.
     static let knownDialogs: [DialogGrammar] = [
         DialogGrammar(
-            marker: "save the changes",
-            answers: ["Don’t Save", "Don't Save"],
+            marker: LogicUIStrings.AlertMarker.saveChanges,
+            answers: LogicUIStrings.Button.dontSaveSpellings,
             effect: "discarded the open project's unsaved changes (the contract of this tool)"
         ),
         DialogGrammar(
-            marker: "auto-saved",
-            answers: ["Saved"],
+            marker: LogicUIStrings.AlertMarker.autoSaved,
+            answers: [LogicUIStrings.Button.saved],
             effect: "opened the last SAVED version rather than the auto-saved one"
         )
     ]

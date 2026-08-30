@@ -147,7 +147,8 @@ extension LogicAccessibility {
             writeRoute = "has_focus_press"
             guard let focusButton = children(of: target.item).first(where: {
                 stringAttribute($0, kAXRoleAttribute as String) == "AXRadioButton"
-                    && stringAttribute($0, kAXDescriptionAttribute as String) == "Has Focus"
+                    && stringAttribute($0, kAXDescriptionAttribute as String)
+                        == LogicUIStrings.Element.hasFocus
             }) else {
                 throw LogicianError.writeFailed(
                     "AXSelectedChildren returned AXError \(setStatus.rawValue) and no Has Focus button was found"
@@ -448,7 +449,7 @@ extension LogicAccessibility {
         let button = try selectedStripChild(
             trackName: trackName, trackNumber: trackNumber, description: control
         )
-        let current = stringAttribute(button, kAXValueAttribute as String) == "on"
+        let current = stringAttribute(button, kAXValueAttribute as String) == LogicUIStrings.Value.on
         // Compare-and-set, from the same read that decides whether to press.
         if let expectedCurrent, current != expectedCurrent {
             throw LogicianError.currentValueMismatch(
@@ -470,7 +471,8 @@ extension LogicAccessibility {
             Thread.sleep(forTimeInterval: 0.1)
             if let refreshed = try? selectedStripChild(
                 trackName: trackName, trackNumber: trackNumber, description: control
-            ), (stringAttribute(refreshed, kAXValueAttribute as String) == "on") == enabled {
+            ), (stringAttribute(refreshed, kAXValueAttribute as String)
+                == LogicUIStrings.Value.on) == enabled {
                 return [
                     "success": true, "verified": true,
                     "state": enabled ? "on" : "off",
@@ -485,11 +487,9 @@ extension LogicAccessibility {
     }
 
     func decibelValue(of element: AXUIElement) -> Double? {
-        let text = stringAttribute(element, kAXValueDescriptionAttribute as String)
-            .replacingOccurrences(of: "dB", with: "")
-            .replacingOccurrences(of: ",", with: ".")
-            .trimmingCharacters(in: .whitespaces)
-        return Double(text)
+        Double(LogicUIStrings.Format.normalizedDecibelText(
+            stringAttribute(element, kAXValueDescriptionAttribute as String)
+        ))
     }
 
     func setTrackVolume(
@@ -499,7 +499,8 @@ extension LogicAccessibility {
         toleranceDb: Double
     ) throws -> [String: Any] {
         let fader = try selectedStripChild(
-            trackName: trackName, trackNumber: trackNumber, description: "volume fader"
+            trackName: trackName, trackNumber: trackNumber,
+            description: LogicUIStrings.Element.volumeFader
         )
         guard let beforeDb = decibelValue(of: fader) else {
             throw LogicianError.valueNotWritable("the volume fader exposes no readable dB value")
@@ -566,7 +567,8 @@ extension LogicAccessibility {
         expectedCurrentPosition: Int? = nil
     ) throws -> [String: Any] {
         let knob = try selectedStripChild(
-            trackName: trackName, trackNumber: trackNumber, description: "pan"
+            trackName: trackName, trackNumber: trackNumber,
+            description: LogicUIStrings.Element.pan
         )
         guard let minRaw = Int(stringAttribute(knob, kAXMinValueAttribute as String)),
               let maxRaw = Int(stringAttribute(knob, kAXMaxValueAttribute as String)),
@@ -632,8 +634,22 @@ extension LogicAccessibility {
 /// dialog may need attention" and everything after it stalled until a human
 /// pressed a button. Earlier sessions deleted only EMPTY tracks, which is why
 /// nobody had seen it.
+///
+/// STILL STRING-GATED for RECOGNITION, and this is the one place where that
+/// is a decision rather than a gap. The alert's shape — two buttons, two
+/// static texts, one image, no identifiers — describes half of Logic's
+/// alerts, so shape cannot tell this one from any other two-button
+/// confirmation. Widening the gate to "any two-button alert" would let an
+/// unattended tool press `Delete` on something it never measured, and
+/// deleting the wrong track is unrecoverable in practice. So a translated
+/// heading means the alert is NOT recognised, the answer falls to Cancel, the
+/// delete is abandoned and the tool says so — the safe direction.
+///
+/// The ANSWER, once recognised, is structural: `Delete` is the alert's
+/// default button and `Cancel` its cancel button, both addressed through
+/// `AXDefaultButton`/`AXCancelButton` with the English titles as fallback.
 enum TrackDeletionAlert {
-    static let heading = "Delete Track and Regions?"
+    static let heading = LogicUIStrings.AlertMarker.deleteTrackAndRegions
 
     enum Answer: String {
         case delete
@@ -684,8 +700,13 @@ extension LogicAccessibility {
     /// Presses one of the alert's buttons and waits for it to go away.
     @discardableResult
     func answerTrackDeletionAlert(_ alert: AXUIElement, _ answer: TrackDeletionAlert.Answer) -> Bool {
-        let title = answer == .delete ? "Delete" : "Cancel"
-        guard let button = children(of: alert).first(where: {
+        // `Delete` is this alert's DEFAULT button and `Cancel` its cancel
+        // button (measured 2026-08-28, see the tree above), so both are
+        // addressed structurally first and by English title only if the alert
+        // publishes neither attribute.
+        let structural = answer == .delete ? defaultButton(of: alert) : cancelButton(of: alert)
+        let title = answer == .delete ? LogicUIStrings.Button.delete : LogicUIStrings.Button.cancel
+        guard let button = structural ?? children(of: alert).first(where: {
             stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
                 && stringAttribute($0, kAXTitleAttribute as String) == title
         }) else { return false }

@@ -94,7 +94,8 @@ extension LogicAccessibility {
             // 18 notes. Reported so the SCOPE of the answer travels with it
             // instead of being something the caller has to remember.
             region = self.children(of: group).first {
-                self.stringAttribute($0, kAXDescriptionAttribute as String) == "Region Path"
+                self.stringAttribute($0, kAXDescriptionAttribute as String)
+                    == LogicUIStrings.Element.regionPath
             }.map { self.stringAttribute($0, kAXValueAttribute as String) }
         }
         guard let entries = read.entries else {
@@ -140,7 +141,7 @@ enum ListEditorPayload {
         // on a CC row — which is why they keep Logic's names in the verbatim map
         // and only the NOTE reading is spelled out under names of its own.
         if let status = entry.field(["Status"]),
-           status.localizedCaseInsensitiveContains("note") {
+           status.localizedCaseInsensitiveContains(LogicUIStrings.Element.noteStatus) {
             // Logic prints the pitch as a NOTE NAME here (`D♯2`), which is the
             // same vocabulary logic_record_midi accepts, so it is passed through
             // as text rather than converted to a number this code would have to

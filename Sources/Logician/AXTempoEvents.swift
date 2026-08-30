@@ -250,7 +250,7 @@ extension LogicAccessibility {
                     of: table.group, maximumDepth: AXDepth.listEditorTable,
                     where: {
                         self.stringAttribute($0, kAXDescriptionAttribute as String)
-                            == "Create new Tempo Event"
+                            == LogicUIStrings.Element.createNewTempoEvent
                     }
                 ) else { return "the Tempo tab publishes no 'Create new Tempo Event' button" }
                 guard AXUIElementPerformAction(button, kAXPressAction as CFString) == .success else {

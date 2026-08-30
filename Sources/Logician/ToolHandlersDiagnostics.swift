@@ -39,6 +39,16 @@ extension MCPServer {
         if !KeyCommandRegistry.standardCommands.allSatisfy({ registered.contains($0.name) }) {
             health["key_commands_fix"] = "run logic_setup_key_commands (or let the first tool that needs one learn it automatically); if commands are listed as registered but never fire, run it with relearn: true - port recreation orphans the bindings in Logic"
         }
+        // Which language Logic is drawing in — the one setup property that
+        // silently disables a third of the surface and that nothing used to
+        // report. An INFERENCE, and the block says so; see `LogicUILanguage`.
+        // Promoted to a top-level `language_note` when it is not English, so
+        // an agent skimming the doctor's output cannot miss it.
+        let language = LogicUILanguage.healthPayload(bundleIdentifier: logic.bundleIdentifier)
+        health["logic_ui_language"] = language
+        if let note = language["language_note"] as? String {
+            health["language_note"] = note
+        }
         if health["accessibility_trusted"] as? Bool != true {
             health["accessibility_fix"] = "grant Accessibility in System Settings: x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
         }

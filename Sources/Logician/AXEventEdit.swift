@@ -347,7 +347,10 @@ extension LogicAccessibility {
             }
             guard let button = firstDescendant(
                 of: table.group, maximumDepth: AXDepth.listEditorTable,
-                where: { self.stringAttribute($0, kAXDescriptionAttribute as String) == "Create new Event" }
+                where: {
+                    self.stringAttribute($0, kAXDescriptionAttribute as String)
+                        == LogicUIStrings.Element.createNewEvent
+                }
             ) else {
                 return .failure(.writeFailed("the Event tab publishes no 'Create new Event' button"))
             }

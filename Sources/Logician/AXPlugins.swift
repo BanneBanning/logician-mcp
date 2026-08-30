@@ -27,9 +27,9 @@ extension LogicAccessibility {
     func pluginChooserMenu() -> AXUIElement? {
         popupMenus().first { menu in
             children(of: menu).contains {
-                stringAttribute($0, kAXTitleAttribute as String) == "Audio Units"
+                stringAttribute($0, kAXTitleAttribute as String) == LogicUIStrings.Value.audioUnits
             } || children(of: menu).contains {
-                stringAttribute($0, kAXTitleAttribute as String) == "No Plug-in"
+                stringAttribute($0, kAXTitleAttribute as String) == LogicUIStrings.Value.noPlugIn
             }
         }
     }
@@ -174,12 +174,12 @@ extension LogicAccessibility {
         let strip = try inspectorStrip(named: trackName)
         let before = insertSlots(of: strip)
         let bars = children(of: strip).filter {
-            stringAttribute($0, kAXDescriptionAttribute as String) == "insert bar"
+            stringAttribute($0, kAXDescriptionAttribute as String) == LogicUIStrings.Element.insertBar
         }
         // A pristine strip (no inserts yet) renders no "insert bar" elements;
         // its first empty slot is the "audio plug-in" button instead.
         let pristineSlot = children(of: strip).first {
-            stringAttribute($0, kAXDescriptionAttribute as String) == "audio plug-in"
+            stringAttribute($0, kAXDescriptionAttribute as String) == LogicUIStrings.Element.audioPlugIn
         }
         guard let appendSlot = bars.last ?? pristineSlot else {
             throw LogicianError.trackNotExposed(
@@ -250,7 +250,7 @@ extension LogicAccessibility {
         let before = insertSlots(of: strip)
         let slot = try resolveSlot(before, track: trackName, plugin: pluginName, index: insertIndex)
         guard let listButton = children(of: slot.group).first(where: {
-            stringAttribute($0, kAXDescriptionAttribute as String) == "list"
+            stringAttribute($0, kAXDescriptionAttribute as String) == LogicUIStrings.Element.list
         }) else {
             throw LogicianError.trackNotExposed(
                 requested: "plugin menu button on slot \(slot.index)",
