@@ -201,6 +201,25 @@ final class LocaleSurfaceTests: XCTestCase {
         XCTAssertEqual(british.isEnglish, true)
     }
 
+    /// The real configuration on the machine this was built on, and the
+    /// reason the inference uses CFBundle's matcher instead of just reading
+    /// `AppleLanguages`: a Swedish Mac running a Logic that ships no Swedish
+    /// is showing an ENGLISH UI, and a naive read would have warned about a
+    /// degradation that is not happening.
+    func testAPreferredLanguageLogicDoesNotShipFallsBackToItsDevelopmentRegion() {
+        let report = LogicUILanguage.report(evidence(
+            localizations: ["en", "de", "fr", "ja", "zh-Hans"],
+            preferences: ["sv-SE"],
+            matched: [],
+            development: "en"
+        ))
+        XCTAssertEqual(report.language, "en")
+        XCTAssertEqual(report.isEnglish, true)
+        XCTAssertNil(report.note)
+        XCTAssertTrue(report.method.contains("NONE of them matches"))
+        XCTAssertTrue(report.method.contains("development region 'en'"))
+    }
+
     func testANonEnglishLogicIsWarnedAboutByPlane() {
         let report = LogicUILanguage.report(evidence(
             localizations: ["en", "sv"], preferences: ["sv-SE", "en"], matched: ["sv"]

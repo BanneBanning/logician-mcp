@@ -249,7 +249,7 @@ Parameters:
 
 #### `logic_list_windows`
 
-List Logic windows with subrole and project document path, read-only. Windows whose document is set are project windows; dialogs without a document are plugin or auxiliary windows.
+List Logic windows with subrole and project document path, read-only. Windows whose document is set are project windows; dialogs without a document are plugin or auxiliary windows. Each entry also reports `default_button` and `cancel_button` - the titles of whatever the window publishes as its Return and Escape buttons. Those are LOCALE-INDEPENDENT addresses (this server presses them before it ever matches an English button title), and `null` means the window publishes none, so answering it needs the title.
 
 Parameters:
 

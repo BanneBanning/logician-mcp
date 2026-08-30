@@ -113,10 +113,23 @@ enum LogicUILanguage {
         let source = evidence.perApplicationOverride
             ? "Logic Pro's own per-application language setting"
             : "the system-wide language order (AppleLanguages)"
-        let method = "Logic Pro's app bundle ships \(evidence.appLocalizations.count)"
-            + " localizations; matched against \(source)"
-            + " [\(evidence.preferenceOrder.prefix(3).joined(separator: ", "))]"
-            + " this resolves to '\(chosen)'."
+        // Two different stories end in the same word, and they are worth
+        // telling apart: the preferred language IS one Logic ships, versus
+        // the preferred language is one Logic does NOT ship and it falls back
+        // to the language it was written in. The second is the common case on
+        // a Mac set to a language Apple never localised Logic into — where the
+        // system says Swedish and Logic is nevertheless drawing in English.
+        let matchedAPreference = !evidence.matched.isEmpty
+        let method = matchedAPreference
+            ? "Logic Pro's app bundle ships \(evidence.appLocalizations.count)"
+                + " localizations; matched against \(source)"
+                + " [\(evidence.preferenceOrder.prefix(3).joined(separator: ", "))]"
+                + " this resolves to '\(chosen)'."
+            : "Logic Pro's app bundle ships \(evidence.appLocalizations.count)"
+                + " localizations and NONE of them matches \(source)"
+                + " [\(evidence.preferenceOrder.prefix(3).joined(separator: ", "))],"
+                + " so Logic falls back to the language it was written in,"
+                + " its development region '\(chosen)'."
         return Report(
             language: chosen,
             isEnglish: english,
@@ -174,8 +187,16 @@ enum LogicUILanguage {
         // The per-application language override (System Settings > General >
         // Language & Region > Applications) lives in the app's OWN domain and
         // beats the system order, so it is checked first.
-        let perApp = UserDefaults(suiteName: bundleIdentifier)?
-            .stringArray(forKey: "AppleLanguages")
+        //
+        // `persistentDomain(forName:)` and NOT `UserDefaults(suiteName:)`:
+        // a suite is ADDED to the standard search list, so asking a suite for
+        // `AppleLanguages` happily answers with NSGlobalDomain's value. That
+        // read reported "per-application override" on this machine for a
+        // system-wide Swedish setting Logic had never been given (measured
+        // 2026-08-30) — the answer was still right, the reason it gave was a
+        // lie. This domain read sees only what was written for Logic itself.
+        let perApp = UserDefaults.standard
+            .persistentDomain(forName: bundleIdentifier)?["AppleLanguages"] as? [String]
         let system = UserDefaults.standard.stringArray(forKey: "AppleLanguages") ?? []
         let order = (perApp?.isEmpty == false ? perApp : nil) ?? system
 

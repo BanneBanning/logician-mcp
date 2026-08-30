@@ -22,12 +22,27 @@ final class LogicAccessibility {
 
     func listWindows() throws -> [[String: Any]] {
         try logicWindows().map { window in
-            [
+            // `default_button` / `cancel_button` are the LOCALE-INDEPENDENT
+            // way to answer a dialog: the titles of whatever `AXDefaultButton`
+            // and `AXCancelButton` point at. Reported here because this is
+            // where a dialog on screen is already being described, and because
+            // it is the probe that says whether a given Logic dialog CAN be
+            // answered without reading English — the question a locale session
+            // has to answer per dialog. `null` means the window publishes no
+            // such attribute, and the code falls back to matching the button's
+            // English title (see `AXDialogShape`).
+            let defaultTitle = defaultButton(of: window)
+                .map { stringAttribute($0, kAXTitleAttribute as String) }
+            let cancelTitle = cancelButton(of: window)
+                .map { stringAttribute($0, kAXTitleAttribute as String) }
+            return [
                 "title": stringAttribute(window, kAXTitleAttribute as String),
                 "subrole": stringAttribute(window, kAXSubroleAttribute as String),
                 "is_main": stringAttribute(window, kAXMainAttribute as String) == "1",
                 "document": documentPath(of: window) ?? NSNull(),
-                "kind": documentPath(of: window) != nil ? "project" : "plugin_or_auxiliary"
+                "kind": documentPath(of: window) != nil ? "project" : "plugin_or_auxiliary",
+                "default_button": defaultTitle ?? NSNull(),
+                "cancel_button": cancelTitle ?? NSNull()
             ]
         }
     }
