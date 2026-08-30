@@ -75,6 +75,16 @@ extension MCPServer {
         let bytes = try writer.write(to: file)
         reportProgress("wrote \(bytes) bytes of Standard MIDI File", percent: 5)
 
+        // FRONTMOST BEFORE THE CENSUS, not just before the panel. Measured
+        // 2026-08-30: with Logic in the background `logic_list_regions` came
+        // back with ZERO track rows on a project holding dozens — the region
+        // rows hang off the standard window, and Logic publishes almost
+        // nothing while it is not genuinely frontmost. An empty "before"
+        // census would make every pre-existing region look newly imported,
+        // which is the diff deciding the tool half-failed and rolling back
+        // material it never created.
+        try logic.ensureLogicFrontmost(for: "reading the project census")
+
         // The census, before anything moves. Both halves: tracks answer "how
         // many appeared", regions answer "and are they the ones we wrote" —
         // the region name is the ONLY handle the import gives back, because
@@ -126,6 +136,9 @@ extension MCPServer {
             invalidateTempoMapCache()
         }
 
+        // Same reason as the census before: a background Logic publishes no
+        // region rows, and the diff would read that as a failed import.
+        try? logic.ensureLogicFrontmost(for: "reading the project census")
         let tracksAfter = trackRows()
         let regionsAfter = ImportMIDI.RegionCensus.parse(
             (try? logic.listRegions(trackName: nil)) ?? [:]
@@ -237,49 +250,64 @@ extension MCPServer {
     /// Reads each new region's notes back out of Logic's Event List and diffs
     /// them against what was written. ~2 s per region: the Event List opens and
     /// restores the List Editors pane on every read.
+    ///
+    /// RETRIED, because the first read after an import is taken while Logic is
+    /// still busy. Measured 2026-08-30: the tempo prompt closes as soon as the
+    /// import is done, but Logic goes on instantiating the new tracks'
+    /// instruments — and during that window the View menu answered a press with
+    /// nothing ("the List Editors pane could not be opened"), and one read
+    /// later `NSRunningApplication` briefly listed no Logic at all ("Logic Pro
+    /// is not running") on a Logic that was perfectly healthy. Both attempts
+    /// came back clean a second apart. So: settle, then up to three tries a
+    /// second and a half apart, each preceded by the frontmost escalation.
     private func verifyImportedNotes(
         tracks: [SMFTrack], landed: [ImportMIDI.RegionCensus.Entry]
     ) -> (perTrack: [[String: Any]], allMatch: Bool) {
         var reports: [[String: Any]] = []
         var allMatch = true
+        Thread.sleep(forTimeInterval: 1.5)
         for track in tracks {
             guard let name = track.name,
                   let region = landed.first(where: {
                       $0.name.caseInsensitiveCompare(name) == .orderedSame
                   }) else { continue }
-            do {
-                _ = try logic.selectRegion(
-                    trackName: region.trackName, regionName: region.name,
-                    startBar: region.startBar, exclusive: true
-                )
-                let read = logic.readEventList()
-                guard let events = read.events else {
-                    allMatch = false
-                    reports.append([
-                        "region": region.name,
-                        "read": false,
-                        "reason": read.failure?.reason ?? "the Event tab published no table"
-                    ])
-                    continue
+            var payload: [String: Any] = [
+                "region": region.name, "read": false,
+                "reason": "not attempted"
+            ]
+            for attempt in 0..<3 {
+                if attempt > 0 { Thread.sleep(forTimeInterval: 1.5) }
+                try? logic.ensureLogicFrontmost(for: "reading '\(region.name)' back")
+                do {
+                    _ = try logic.selectRegion(
+                        trackName: region.trackName, regionName: region.name,
+                        startBar: region.startBar, exclusive: true
+                    )
+                    let read = logic.readEventList()
+                    guard let events = read.events else {
+                        payload["reason"] = read.failure?.reason
+                            ?? "the Event tab published no table"
+                        continue
+                    }
+                    let rows = EventListWrite.rows(
+                        cells: events.map { ($0["cells"] as? [String]) ?? [] },
+                        columns: read.columns
+                    )
+                    let diff = ImportMIDI.diff(expected: track.notes, observed: rows)
+                    payload = diff.payload
+                    payload["region"] = region.name
+                    payload["track_name"] = region.trackName
+                    payload["read"] = true
+                    if attempt > 0 { payload["attempts"] = attempt + 1 }
+                    break
+                } catch {
+                    payload["reason"] = error.localizedDescription
                 }
-                let rows = EventListWrite.rows(
-                    cells: events.map { ($0["cells"] as? [String]) ?? [] },
-                    columns: read.columns
-                )
-                let diff = ImportMIDI.diff(expected: track.notes, observed: rows)
-                if !diff.matches { allMatch = false }
-                var payload = diff.payload
-                payload["region"] = region.name
-                payload["track_name"] = region.trackName
-                payload["read"] = true
-                reports.append(payload)
-            } catch {
-                allMatch = false
-                reports.append([
-                    "region": region.name, "read": false,
-                    "reason": error.localizedDescription
-                ])
             }
+            if payload["read"] as? Bool != true || payload["matches"] as? Bool != true {
+                allMatch = false
+            }
+            reports.append(payload)
         }
         return (reports, allMatch)
     }

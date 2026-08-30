@@ -11,11 +11,15 @@ extension LogicAccessibility {
     /// with name in AXDescription and musical position in AXHelp
     /// ("Region starts at X bars ... and ends at Y bars ..., MIDI region.").
     func regionRows() throws -> [(number: Int, track: String, regions: [AXUIElement])] {
-        guard let window = try logicWindows().first(where: {
-            stringAttribute($0, kAXSubroleAttribute as String) == "AXStandardWindow"
-        }) else {
-            throw LogicianError.windowNotFound("project window")
-        }
+        // `projectWindow()`, not "the first standard window": Logic's floats
+        // and utility windows are standard windows too, and whichever one is
+        // first in the list decides what this walk sees. Measured 2026-08-30
+        // with `Control Surface Setup` open — it sorted first, the walk found
+        // no `Track N “Name”` layout areas under it, and `logic_list_regions`
+        // reported a project full of regions as having NO track rows at all.
+        // A silently empty arrangement map is the worst possible answer here:
+        // it is the same shape as a correct one.
+        let window = try projectWindow()
         var rows: [(Int, String, [AXUIElement])] = []
         walk(from: window, maximumDepth: AXDepth.trackRegionRow) { element in
             let description = stringAttribute(element, kAXDescriptionAttribute as String)
