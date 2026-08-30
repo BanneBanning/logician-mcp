@@ -7,6 +7,7 @@
 **Give your AI agent hands and ears in Logic Pro.**
 
 [![macOS](https://img.shields.io/badge/macOS-13%2B-black?logo=apple)](#requirements)
+[![CI](https://github.com/BanneBanning/logician-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/BanneBanning/logician-mcp/actions/workflows/ci.yml)
 [![Swift](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](Package.swift)
 [![MCP](https://img.shields.io/badge/MCP-81_tools-4be37a)](docs/AGENT-GUIDE.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
