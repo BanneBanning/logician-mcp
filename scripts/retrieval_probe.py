@@ -23,6 +23,16 @@ and breaks another cannot land unnoticed.
 
 Exit status is 1 when any query misses, so it can gate a change.
 
+THIS ALGORITHM ALSO SHIPS. `logic_find_tool` runs the same search inside the
+server, for the clients that have no tool search of their own, and
+`Sources/Logician/ToolSearch.swift` is a deliberate line-by-line port of the
+tokenizer, the corpus and the scoring below (the tie-break too: Python's stable
+sort means ties fall back to registry order). `ToolSearchTests` runs the 53
+scored queries through the shipped tool and asserts the same verdict this probe
+prints, so the two cannot drift. Editing the scoring here without editing
+Swift, or the reverse, fails the suite. Measured 2026-08-30 over all 55
+queries: identical top-five names AND identical scores to two decimals.
+
 It talks to the binary itself rather than parsing Swift, and it KILLS that
 process instead of closing its stdin: a clean EOF makes the server run its
 `exitToPan()` shutdown, which would reach into the control surface of whatever

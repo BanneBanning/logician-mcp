@@ -61,9 +61,11 @@ When the Tempo List cannot be read at all, the pre-map behavior is the fallback:
 
 **10. Warm paths are faster.** Consecutive `logic_set_plugin_parameter` calls on the same track+slot skip setup (~1.6 s vs ~4 s cold) on the control-surface route. Batch your parameter work per plugin.
 
-**11. The tool list can be narrowed at launch.** `--toolsets=core,delivery` (or `LOGICIAN_TOOLSETS`) makes the server advertise only the sets a session needs — `core`, `regions`, `composition`, `delivery`, `project`, `keycommands`, or `all`, which is the default. A whole surface is 81 tools; `core` alone is 40 and costs less than half the bytes. Nothing about a tool changes when it is offered; a tool that is NOT offered answers a call with the unknown-tool error plus a line naming the sets that hold it and the flag that would bring it back. Nothing an agent does can change the active sets — it is the user's launch configuration.
+**11. The tool list can be narrowed at launch.** `--toolsets=core,delivery` (or `LOGICIAN_TOOLSETS`) makes the server advertise only the sets a session needs — `core`, `regions`, `composition`, `delivery`, `project`, `keycommands`, or `all`, which is the default. A whole surface is 82 tools; `core` alone is 41 and costs less than half the bytes. Nothing about a tool changes when it is offered; a tool that is NOT offered answers a call with the unknown-tool error plus a line naming the sets that hold it and the flag that would bring it back. Nothing an agent does can change the active sets — it is the user's launch configuration.
 
-**12. The surface is built for client-side tool search, and `--toolsets` is the floor for clients without it.** Claude Code (2.1.221+) defers every MCP tool definition by transport, stdio included: it hands the model the 81 tool NAMES and the server instructions, and a schema arrives only when the model searches for one. Nothing is flattened — the typed schema you get back is the whole schema — so the cost of the surface is paid on demand instead of up front, and the names plus the six group names in the server instructions are what you navigate by. Two caveats worth knowing. **Behind a proxy, tool search is off**: Claude Code disables it whenever `ANTHROPIC_BASE_URL` points at any host other than `api.anthropic.com`, unless `ENABLE_TOOL_SEARCH` is set explicitly, so a proxied user pays for all 81 definitions in every prompt — that is the case for `--toolsets`. **Some clients cap the list instead of searching it** (Cursor truncates around 40, VS Code shares 128 with extensions, Windsurf 100); there `--toolsets` is not an optimisation but the difference between a working session and a silently truncated one.
+**12. The surface is built for client-side tool search, and `--toolsets` is the floor for clients without it.** Claude Code (2.1.221+) defers every MCP tool definition by transport, stdio included: it hands the model the 82 tool NAMES and the server instructions, and a schema arrives only when the model searches for one. Nothing is flattened — the typed schema you get back is the whole schema — so the cost of the surface is paid on demand instead of up front, and the names plus the six group names in the server instructions are what you navigate by. Two caveats worth knowing. **Behind a proxy, tool search is off**: Claude Code disables it whenever `ANTHROPIC_BASE_URL` points at any host other than `api.anthropic.com`, unless `ENABLE_TOOL_SEARCH` is set explicitly, so a proxied user pays for all 82 definitions in every prompt — that is the case for `--toolsets`. **Some clients cap the list instead of searching it** (Cursor truncates around 40, VS Code shares 128 with extensions, Windsurf 100); there `--toolsets` is not an optimisation but the difference between a working session and a silently truncated one.
+
+**13. `logic_find_tool` is the search for everywhere else.** Where your client has no tool search of its own — behind a proxy, under a hard cap, or launched with `--toolsets=core` — this is how you get from an intention to a callable schema. Give it a few technical words (`{query: "record a volume automation pass"}`) and it returns the top 5 (up to 10) matches, each with the FULL typed definition: name, title, description, complete `inputSchema` and the safety annotations. It is a keyword search — Okapi BM25 over names, descriptions, argument names, argument descriptions and enum values — so name the thing rather than describing the outcome: `quantize swing region` lands in one hop, `what is in this project` cannot, because one content word does not discriminate between forty tools that mention a project. An exact tool name (with or without the `logic_` prefix) is answered with that tool first, which is why there is no separate schema-lookup tool: find IS the lookup. Three things worth knowing. It searches the WHOLE registry however the session was narrowed, and every hit says which toolsets hold it, whether it is `active` here, and — when it is not — the flag that would offer it, so a narrowed session can tell "no such tool" apart from "not switched on". `schemas: false` returns names, titles, descriptions and toolsets only, about half the bytes, for a cheap first pass before you ask for the real thing. And it is the one tool here that never touches Logic Pro at all: it reads a constant, it is in every toolset, and it works with the app closed.
 
 ## Workflows (recipes)
 
@@ -225,12 +227,22 @@ Every successful result carries the same four fields, and they mean different th
 
 ## Tool reference
 
-All 81 tools, generated from the live server schemas (v0.55.0) by
+All 82 tools, generated from the live server schemas (v0.61.0) by
 `scripts/dump_tools.py` — every description and parameter below is the exact
 text the server advertises in `tools/list`, so this section cannot drift from
 the surface the way a hand-kept copy did. Regenerate it whenever the registry
 changes. Every write is verified by readback; the ones that also accept a
 compare-and-set argument say so in that argument's own description.
+
+#### `logic_find_tool`
+
+Search every tool this server has by keyword and get the matching typed definitions back: name, description, full input schema and safety annotations. Use it when you know what you want to do but not which tool does it, or when a tool you expected is not being offered. The search covers the whole registry even when `--toolsets` narrows a session, and each match says which toolsets hold it and whether it is active here.
+
+Parameters:
+
+  - `limit` (integer): How many matches to return. Default 5, maximum 10.
+  - `query` (string) **(required)**: What you are trying to do, in the technical words a tool's own text would use. Ranked by keyword relevance (BM25) over names, descriptions and argument text - literal words, not meaning, so spell out the thing you want rather than describing it. An exact tool name is answered with that tool first.
+  - `schemas` (boolean): Include each match's full input schema and annotations. Default true; false returns a cheap shortlist of names, titles and descriptions.
 
 #### `logic_health`
 

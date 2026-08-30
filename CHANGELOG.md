@@ -4,7 +4,7 @@
 
 The first public release, staged and waiting on the go-public decision.
 
-Logician gives any MCP client verified control of Logic Pro: 81 typed tools across
+Logician gives any MCP client verified control of Logic Pro: 82 typed tools across
 mixing, plugins (third-party parameters included), regions, MIDI composition and
 editing, tempo and meter maps, automation, markers, and dialog-free audio export —
 with every render coming back as audio the agent can listen to.
@@ -24,7 +24,11 @@ with every render coming back as audio the agent can listen to.
 - **Modern protocol**: 2026-07-28 era (`server/discover`, per-request versioning,
   cache hints) with legacy `initialize` down to 2025-03-26; progress notifications and
   cancellation on every long-running tool; the server is inert until first use.
-- **`--toolsets`** launch flag for clients with hard tool caps (`core` = 40 tools);
+- **Typed discovery.** `logic_find_tool` searches every tool by keyword (BM25 over names,
+  descriptions and argument text) and answers with the full typed definitions — schemas and
+  safety annotations included — naming the toolset that holds any match this session does
+  not offer. In every toolset, never touches Logic.
+- **`--toolsets`** launch flag for clients with hard tool caps (`core` = 41 tools);
   the full surface is designed for client-side tool search.
 
 ### Known limitations (honest by design)
