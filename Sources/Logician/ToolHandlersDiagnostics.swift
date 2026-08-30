@@ -317,4 +317,127 @@ extension MCPServer {
         payload = try MCUBridge.sendRaw(command)
         return payload
     }
+
+    // MARK: - Finding a tool
+
+    /// The most tools `logic_find_tool` will return in one answer. Ten full
+    /// typed definitions is already ~15 KB of the ~145 KB surface; past that
+    /// the search stops being cheaper than the list it exists to replace.
+    static let findToolLimit = 10
+    static let findToolDefaultLimit = 5
+
+    /// `logic_find_tool`: keyword search over the WHOLE registry, answered
+    /// with the same typed definitions `tools/list` advertises.
+    ///
+    /// The only tool here that never touches Logic Pro — no Accessibility, no
+    /// control surface, no bridge. It reads `toolRegistry()`, which is a
+    /// constant, so it is safe to call with Logic closed, and it deliberately
+    /// searches the full registry rather than `activeTools()`: a session
+    /// narrowed to `core` is exactly the session that needs to be told a tool
+    /// exists and which flag would bring it back.
+    func handleFindTool(_ arguments: [String: Any]) throws -> Any {
+        let query = try requiredString("query", in: arguments)
+        // A query with no letters and no digits in it is a caller bug, not a
+        // search that found nothing, and the empty-result note ("no tool
+        // shares a word with that query") would be a lie about it.
+        guard !ToolSearch.tokenize(query).isEmpty else {
+            throw LogicianError.invalidArguments(
+                "query has no searchable words (letters or digits): '\(query)'"
+            )
+        }
+        let includeSchemas = arguments["schemas"] as? Bool ?? true
+        let limit = try findToolRequestedLimit(arguments)
+
+        let registry = toolRegistry()
+        let index = ToolSearch.Index(
+            documents: registry.map { ToolSearch.corpusText(for: $0.definition) }
+        )
+        let position = Dictionary(uniqueKeysWithValues: registry.enumerated().map { ($1.name, $0) })
+        let ranked = index.ranking(for: query)
+        let score = Dictionary(uniqueKeysWithValues: ranked.map { ($0.document, $0.score) })
+
+        // Exact names first, then the keyword ranking with those removed:
+        // an agent that typed a name has already made its choice, and BM25 is
+        // not reliably able to honour it (see `ToolSearch.exactNames`).
+        var order = ToolSearch.exactNames(in: query, registry: Set(position.keys))
+            .compactMap { position[$0] }
+        let named = Set(order)
+        order += ranked.map(\.document).filter { !named.contains($0) }
+
+        let matches = order.prefix(limit).map { document in
+            findToolMatch(
+                registry[document],
+                score: score[document] ?? 0,
+                byName: named.contains(document),
+                schemas: includeSchemas
+            )
+        }
+        var result: [String: Any] = [
+            "success": true,
+            "state": "searched",
+            "query": query,
+            "matches": matches,
+            "match_count": matches.count,
+            "total_matched": order.count,
+            "searched_tools": registry.count,
+            "active_toolsets": MCPServer.activeToolsets.map(\.rawValue).sorted()
+        ]
+        if matches.isEmpty {
+            // Not an error: a search that matched nothing ran perfectly. What
+            // it owes the caller is the reason and a better second attempt.
+            result["note"] = "No tool shares a word with that query. This is a KEYWORD search, "
+                + "not a semantic one: name the thing (a Logic noun like 'region', 'send', "
+                + "'marker', 'tempo', or a verb like 'bounce', 'quantize', 'freeze') rather than "
+                + "describing the outcome. The six groups the surface is built from - core, "
+                + "regions, composition, delivery, project, keycommands - are described in the "
+                + "server instructions and are the coarse map to search inside."
+        }
+        return result
+    }
+
+    /// One hit. The FULL typed definition by default, because the point of
+    /// searching is to be able to CALL what you found without a second round
+    /// trip — this tool finds tools, it does not run them.
+    private func findToolMatch(
+        _ tool: Tool, score: Double, byName: Bool, schemas: Bool
+    ) -> [String: Any] {
+        let sets = Toolset.membership[tool.name]?.map(\.rawValue).sorted() ?? []
+        var match: [String: Any] = [
+            "name": tool.name,
+            "title": tool.title,
+            // The ADVERTISED description, warning note and all: what a client
+            // reading tools/list would have seen.
+            "description": tool.definition["description"] as? String ?? tool.description,
+            "toolsets": sets,
+            "active": isActive(tool),
+            "score": (score * 100).rounded() / 100,
+            "matched_by": byName ? "name" : "keyword"
+        ]
+        // The same sentence `tools/call` answers with, from the same place, so
+        // a hit you cannot call and a call that gets refused cannot disagree
+        // about why or about the fix.
+        if let excluded = toolsetExclusionNote(name: tool.name) {
+            match["not_offered"] = excluded
+        }
+        if schemas {
+            match["inputSchema"] = tool.inputSchema
+            match["annotations"] = tool.annotations
+        }
+        return match
+    }
+
+    /// A refusal rather than a silent clamp: an agent that asked for 40 tools
+    /// and got 10 would believe it had seen the whole ranking.
+    private func findToolRequestedLimit(_ arguments: [String: Any]) throws -> Int {
+        let requested = (arguments["limit"] as? Int)
+            ?? doubleArgument("limit", in: arguments).map { Int($0.rounded()) }
+        guard let requested else { return MCPServer.findToolDefaultLimit }
+        guard requested >= 1, requested <= MCPServer.findToolLimit else {
+            throw LogicianError.invalidArguments(
+                "limit must be 1-\(MCPServer.findToolLimit) (got \(requested));"
+                    + " each match carries a full typed schema."
+            )
+        }
+        return requested
+    }
 }

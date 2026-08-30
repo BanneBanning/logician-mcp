@@ -314,7 +314,7 @@ final class MCPProtocolTests: XCTestCase {
         XCTAssertEqual(result["ttlMs"] as? Int, toolListCacheTTLMs)
         XCTAssertEqual(result["cacheScope"] as? String, "public")
         XCTAssertNotNil((result["_meta"] as? [String: Any])?["io.modelcontextprotocol/serverInfo"])
-        XCTAssertEqual((result["tools"] as? [[String: Any]])?.count, 81)
+        XCTAssertEqual((result["tools"] as? [[String: Any]])?.count, 82)
     }
 
     /// A legacy client has no schema for `resultType` or the caching hints, so
@@ -591,7 +591,7 @@ final class MCPProtocolTests: XCTestCase {
     func testToolsListIsWellFormedAndComplete() throws {
         let response = try XCTUnwrap(server.handle(request("tools/list", id: 1)))
         let tools = try XCTUnwrap((response["result"] as? [String: Any])?["tools"] as? [[String: Any]])
-        XCTAssertEqual(tools.count, 81)
+        XCTAssertEqual(tools.count, 82)
         let names = tools.compactMap { $0["name"] as? String }
         XCTAssertEqual(Set(names).count, tools.count, "duplicate tool name")
         XCTAssertTrue(names.allSatisfy { $0.hasPrefix("logic_") })

@@ -1,13 +1,13 @@
 import Foundation
 
 /// A named slice of the tool surface, so a session can advertise the tools it
-/// will actually use instead of all 81.
+/// will actually use instead of all 82.
 ///
 /// WHY THIS EXISTS. A typed per-operation schema is the thing this server has
 /// that a dispatcher-style MCP does not: the model sees `start_bar` with its
 /// minimum and its exclusivity rule, and the client sees a per-tool
 /// `destructiveHint`, instead of one `operation: string` and a prose manual.
-/// That is worth paying for — but the whole 81-tool bill arrives before the
+/// That is worth paying for — but the whole 82-tool bill arrives before the
 /// first call, in every session, whether the user came to mix a chorus or to
 /// export stems. Toolsets keep the schemas and drop the tools that were never
 /// going to be called: the GitHub MCP server's answer to the same problem.
@@ -54,6 +54,12 @@ enum Toolset: String, CaseIterable {
     /// no entry here fails the suite rather than quietly becoming unreachable
     /// under every non-`all` flag.
     static let membership: [String: Set<Toolset>] = [
+        // The map, and therefore in EVERY set. A session narrowed to `core` is
+        // the session most likely to need a tool it cannot see, and the search
+        // covers the whole registry however the flag was set — so leaving it
+        // out of any set would remove the one tool that explains the flag.
+        "logic_find_tool": Set(Toolset.allCases),
+
         // Readiness and orientation
         "logic_health": [.core],
         "logic_list_windows": [.core],

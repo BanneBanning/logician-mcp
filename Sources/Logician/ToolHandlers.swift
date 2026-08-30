@@ -33,19 +33,42 @@ extension MCPServer {
         let offered = activeTools().map(\.name)
         guard !offered.contains(name) else { return nil }
         var message = "Unknown tool: '\(name)'. Nothing was executed."
-        // A tool that EXISTS but is not offered is a configuration answer, not
-        // a spelling one. Saying "unknown tool" and stopping would send an
-        // agent hunting for a name it already had right.
-        if let sets = Toolset.membership[name], toolRegistry().contains(where: { $0.name == name }) {
-            message += " That tool exists but is not in this session's active toolsets"
-                + " (\(MCPServer.activeToolsets.map(\.rawValue).sorted().joined(separator: ", ")))."
-                + " It is in \(sets.map(\.rawValue).sorted().joined(separator: ", ")):"
-                + " relaunch the server with \(MCPServer.toolsetsFlag)=<comma list>"
-                + " (or the \(MCPServer.toolsetsEnvironmentVariable) environment variable,"
-                + " or \(MCPServer.toolsetsFlag)=\(Toolset.everything)) to offer it."
-        }
+        if let excluded = toolsetExclusionNote(name: name) { message += " " + excluded }
+        message += " " + MCPServer.findToolHint
         return message + " Available tools: " + offered.sorted().joined(separator: ", ")
     }
+
+    /// Why a tool that EXISTS is not callable here, and the flag that would
+    /// make it callable — or nil when the flag is not the problem (the name is
+    /// not a tool at all, or it is one this session already offers).
+    ///
+    /// A configuration answer, not a spelling one: saying "unknown tool" and
+    /// stopping would send an agent hunting for a name it already had right.
+    /// Lives on its own because two paths owe the caller this sentence —
+    /// `tools/call` refusing a name, and `logic_find_tool` returning a hit the
+    /// session cannot call. One sentence, one place, no way for the two to
+    /// give different accounts of the same configuration.
+    func toolsetExclusionNote(name: String) -> String? {
+        guard let sets = Toolset.membership[name],
+              toolRegistry().contains(where: { $0.name == name }),
+              sets.isDisjoint(with: MCPServer.activeToolsets) else { return nil }
+        return "That tool exists but is not in this session's active toolsets"
+            + " (\(MCPServer.activeToolsets.map(\.rawValue).sorted().joined(separator: ", ")))."
+            + " It is in \(sets.map(\.rawValue).sorted().joined(separator: ", ")):"
+            + " relaunch the server with \(MCPServer.toolsetsFlag)=<comma list>"
+            + " (or the \(MCPServer.toolsetsEnvironmentVariable) environment variable,"
+            + " or \(MCPServer.toolsetsFlag)=\(Toolset.everything)) to offer it."
+    }
+
+    /// Appended to every unknown-tool refusal. The name list that follows it
+    /// answers "what may I call"; this answers "how do I find the right one",
+    /// which is the question an agent that just guessed a name actually has.
+    /// `logic_find_tool` is in every toolset, so this can never point at a
+    /// tool the session does not offer.
+    static let findToolHint = "To find the right tool instead of guessing, call"
+        + " logic_find_tool with a few words for what you are trying to do: it searches every"
+        + " tool's name, description and arguments — including the ones this session does not"
+        + " offer — and returns full typed schemas."
 
     /// `era` is carried all the way down to `toolResult` for one reason: the
     /// `resource_link` blocks it attaches to an audio result do not exist

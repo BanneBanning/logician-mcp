@@ -10,6 +10,41 @@ extension MCPServer {
     /// instead of a hand-maintained set of names.
     func toolRegistry() -> [Tool] {
         [
+            // First because it is the MAP. A client that defers definitions,
+            // caps the list, or was launched with --toolsets=core sees a set
+            // of names and nothing else; this is the one that turns a name
+            // back into a schema, and the one that finds the name.
+            Tool(
+                name: "logic_find_tool",
+                title: "Find a tool",
+                description: "Search every tool this server has by keyword and get the matching typed definitions back: name, description, full input schema and safety annotations. Use it when you know what you want to do but not which tool does it, or when a tool you expected is not being offered. The search covers the whole registry even when `--toolsets` narrows a session, and each match says which toolsets hold it and whether it is active here.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "query": [
+                            "type": "string",
+                            "description": "What you are trying to do, in the technical words a tool's own text would use. Ranked by keyword relevance (BM25) over names, descriptions and argument text - literal words, not meaning, so spell out the thing you want rather than describing it. An exact tool name is answered with that tool first."
+                        ],
+                        "limit": [
+                            "type": "integer",
+                            "description": "How many matches to return. Default 5, maximum 10.",
+                            "minimum": 1,
+                            "maximum": 10
+                        ],
+                        "schemas": [
+                            "type": "boolean",
+                            "description": "Include each match's full input schema and annotations. Default true; false returns a cheap shortlist of names, titles and descriptions."
+                        ]
+                    ],
+                    "required": ["query"],
+                    "additionalProperties": false
+                ],
+                // Reads a constant. The only tool here that never reaches
+                // Logic Pro at all - it works with the app closed.
+                safety: .readOnly,
+                idempotent: true,
+                handler: MCPServer.handleFindTool
+            ),
             Tool(
                 name: "logic_health",
                 title: "Check readiness",
