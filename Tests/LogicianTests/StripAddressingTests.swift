@@ -178,11 +178,48 @@ final class StripAddressingTests: XCTestCase {
         ))
     }
 
+    func testAnUnreadableHeaderColumnReroutesToTheSurfaceToo() {
+        // A non-English Logic publishes a localized description on the header
+        // column, so EVERY track name dies with this exact signature before
+        // either plane is asked — while the surface found the same track by
+        // its LCD name in the same session (measured 2026-08-30, French
+        // Logic: "Crash" at bank 2 channel 8). The literal string is what
+        // `trackHeaderGroup()` throws; the constant and the throw are the
+        // same declaration, and this pins both.
+        XCTAssertEqual(LogicAccessibility.tracksHeaderGroupMissing, "Tracks header group")
+        XCTAssertTrue(isHeaderlessStripCandidate(
+            .windowNotFound("Tracks header group"), trackNumberGiven: false
+        ))
+    }
+
+    func testOtherMissingWindowsAreNeverRerouted() {
+        // Any other windowNotFound means the plane's own preconditions failed
+        // for reasons the surface cannot vouch for — a missing PROJECT window
+        // means the project-path check never ran at all, so a rerouted write
+        // could land in the wrong project.
+        for missing in [
+            "project window with AXDocument",
+            "left inspector channel strip",
+            "Control Bar group",
+            "bounce dialog"
+        ] {
+            XCTAssertFalse(isHeaderlessStripCandidate(
+                .windowNotFound(missing), trackNumberGiven: false
+            ), missing)
+        }
+    }
+
     func testATrackNumberPinsTheRequestToTheHeaderPlane() {
         // Numbers exist only on track headers, so a caller that passed one is
         // not talking about an output strip — rerouting would hide a typo.
         XCTAssertFalse(isHeaderlessStripCandidate(
             .trackNotFound("track 42", available: []), trackNumberGiven: true
+        ))
+        // And numbers exist only on headers even when the header column is
+        // unreadable: the surface cannot verify a NUMBER, so a non-English
+        // Logic must refuse rather than guess.
+        XCTAssertFalse(isHeaderlessStripCandidate(
+            .windowNotFound("Tracks header group"), trackNumberGiven: true
         ))
     }
 
@@ -233,7 +270,44 @@ final class StripAddressingTests: XCTestCase {
     func testAnUnreachableSurfaceIsNotExposedAndCarriesTheReason() {
         let failure = error(for: .unavailable(reason: "the bridge is down"))
         XCTAssertEqual(failure.code, "not_exposed")
-        XCTAssertTrue((failure.errorDescription ?? "").contains("the bridge is down"))
+        let message = failure.errorDescription ?? ""
+        XCTAssertTrue(message.contains("the bridge is down"))
+        // The header column WAS readable here (the miss is trackNotFound),
+        // so the header-plane half keeps its original phrasing.
+        XCTAssertTrue(message.contains("not a track header"))
+    }
+
+    func testAGenuinelyAbsentNameOnANonEnglishLogicStillNamesBothPlanes() {
+        // The header column was unreadable AND the surface has no such strip:
+        // the message must say the column could not be read — not claim the
+        // name "is not a track header", which nothing ever established — and
+        // still show what the surface DID see.
+        let failure = headerlessStripError(
+            name: "Chrash",
+            resolution: .notFound(cells: ["LofPad", "Crash"]),
+            visibleTracks: [],
+            trackMiss: .windowNotFound("Tracks header group")
+        )
+        XCTAssertEqual(failure.code, "not_found")
+        let message = failure.errorDescription ?? ""
+        XCTAssertTrue(message.contains("none readable"), "no header list to show, and it says so")
+        XCTAssertTrue(message.contains("Crash"), "the surface strips it did see")
+        XCTAssertTrue(message.contains("Nothing was written"))
+    }
+
+    func testAnUnreachableSurfaceOnANonEnglishLogicNamesTheUnreadableColumn() {
+        let failure = headerlessStripError(
+            name: "Crash",
+            resolution: .unavailable(reason: "the bridge is down"),
+            visibleTracks: [],
+            trackMiss: .windowNotFound("Tracks header group")
+        )
+        XCTAssertEqual(failure.code, "not_exposed")
+        let message = failure.errorDescription ?? ""
+        XCTAssertTrue(message.contains("could not be read"))
+        XCTAssertTrue(message.contains("the bridge is down"))
+        XCTAssertFalse(message.contains("not a track header"),
+                       "nothing established that; the column was unreadable")
     }
 
     // MARK: - Plane naming (goes into results as selection_route)
