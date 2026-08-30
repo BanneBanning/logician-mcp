@@ -46,7 +46,9 @@ extension LogicAccessibility {
         try ensureLogicFrontmost(for: "the MIDI import panel")
         mark("frontmost")
 
-        try pressMenuItem(containing: "MIDI File", underMenu: "Import")
+        try pressMenuItem(
+            containing: LogicUIStrings.Menu.midiFile, underMenu: LogicUIStrings.Menu.importMenu
+        )
         guard let panel = importPanel(timeout: 10) else {
             throw LogicianError.openVerificationFailed(
                 "File > Import > MIDI File… was pressed and no import panel appeared within 10 s."
@@ -78,7 +80,14 @@ extension LogicAccessibility {
         var prompt: [String: Any] = ["appeared": false]
         if let alert = importAlert(timeout: 2.5) {
             let texts = alertTexts(alert)
-            guard ImportMIDI.isTempoPrompt(texts: texts) else {
+            // Two witnesses, either of which is enough: the alert's SHAPE
+            // (three `action-button-*` plus a `supression-checkbox` — pure
+            // identifiers, so it survives translation) and its English first
+            // line. The result records which one recognised it.
+            let recognition = ImportMIDI.recognise(
+                texts: texts, shapeMatches: dialogShape(of: alert).isTempoPromptShape
+            )
+            guard recognition.recognised else {
                 // The house rule: a modal whose grammar was never measured is
                 // REPORTED and never pressed. Pressing a button whose
                 // consequence is unknown is the one thing worse than leaving it.
@@ -100,6 +109,7 @@ extension LogicAccessibility {
                 "texts": texts,
                 "answered": answer == .importTempo ? "Import Tempo" : "No",
                 "button_identifier": answer.rawValue,
+                "recognised_by": recognition.rawValue,
                 "pressed": pressed,
                 "dismissed": gone
             ]
@@ -131,7 +141,8 @@ extension LogicAccessibility {
         let deadline = Date().addingTimeInterval(timeout)
         repeat {
             if let window = (try? logicWindows())?.first(where: {
-                stringAttribute($0, kAXIdentifierAttribute as String) == "open-panel"
+                stringAttribute($0, kAXIdentifierAttribute as String)
+                    == LogicUIStrings.Identifier.openPanel
             }) { return window }
             if Date() >= deadline { break }
             Thread.sleep(forTimeInterval: 0.1)
@@ -167,7 +178,9 @@ extension LogicAccessibility {
                 "the panel's Go to Folder sheet (⌘⇧G) did not open."
             )
         }
-        guard let field = importPanelControl(sheet, identifier: "PathTextField") else {
+        guard let field = importPanelControl(
+            sheet, identifier: LogicUIStrings.Identifier.pathTextField
+        ) else {
             throw LogicianError.windowNotFound("the Go to Folder sheet's path field")
         }
         let write = AXUIElementSetAttributeValue(
@@ -196,7 +209,9 @@ extension LogicAccessibility {
     private func goToFolderSheet(in panel: AXUIElement, timeout: Double) -> AXUIElement? {
         let deadline = Date().addingTimeInterval(timeout)
         repeat {
-            if let sheet = importPanelControl(panel, identifier: "GoToWindow") { return sheet }
+            if let sheet = importPanelControl(
+                panel, identifier: LogicUIStrings.Identifier.goToFolderSheet
+            ) { return sheet }
             if Date() >= deadline { break }
             Thread.sleep(forTimeInterval: 0.1)
         } while true
@@ -205,7 +220,9 @@ extension LogicAccessibility {
 
     /// Presses `Import`, having first waited for it to actually be armed.
     private func commitImportPanel(panel: AXUIElement) throws {
-        guard let ok = importPanelControl(panel, identifier: "OKButton") else {
+        guard let ok = importPanelControl(
+            panel, identifier: LogicUIStrings.Identifier.okButton
+        ) else {
             throw LogicianError.windowNotFound("the import panel's Import button")
         }
         // `AXEnabled` lags the selection by 15-35 ms and, once in a dozen runs,
@@ -247,7 +264,7 @@ extension LogicAccessibility {
         let deadline = Date().addingTimeInterval(timeout)
         repeat {
             if let alert = (try? logicWindows())?.first(where: {
-                stringAttribute($0, kAXDescriptionAttribute as String) == "alert"
+                stringAttribute($0, kAXDescriptionAttribute as String) == LogicUIStrings.Element.alert
             }) { return alert }
             if Date() >= deadline { break }
             Thread.sleep(forTimeInterval: 0.1)
@@ -289,12 +306,16 @@ extension LogicAccessibility {
         var closed: [String] = []
         if let panel = importPanel() {
             if let sheet = goToFolderSheet(in: panel, timeout: 0),
-               let close = importPanelControl(sheet, identifier: "CloseButton") {
+               let close = importPanelControl(
+                   sheet, identifier: LogicUIStrings.Identifier.closeButton
+               ) {
                 _ = AXUIElementPerformAction(close, kAXPressAction as CFString)
                 Thread.sleep(forTimeInterval: 0.2)
                 closed.append("the Go to Folder sheet")
             }
-            if let cancel = importPanelControl(panel, identifier: "CancelButton") {
+            if let cancel = importPanelControl(
+                panel, identifier: LogicUIStrings.Identifier.cancelButton
+            ) {
                 _ = AXUIElementPerformAction(cancel, kAXPressAction as CFString)
                 for _ in 0..<20 where importPanel() != nil {
                     Thread.sleep(forTimeInterval: 0.1)
@@ -305,7 +326,10 @@ extension LogicAccessibility {
         // A tempo prompt still standing is the one alert whose Cancel button is
         // known (`action-button-3`), so it is the one alert cleanup may press.
         // Anything else is reported by the caller and left alone.
-        if let alert = importAlert(timeout: 0), ImportMIDI.isTempoPrompt(texts: alertTexts(alert)) {
+        if let alert = importAlert(timeout: 0),
+           ImportMIDI.recognise(
+               texts: alertTexts(alert), shapeMatches: dialogShape(of: alert).isTempoPromptShape
+           ).recognised {
             if pressAlertButton(alert, identifier: ImportMIDI.TempoPrompt.cancel.rawValue) {
                 _ = waitForAlertToClose(timeout: 10)
                 closed.append("the tempo prompt (Cancel)")

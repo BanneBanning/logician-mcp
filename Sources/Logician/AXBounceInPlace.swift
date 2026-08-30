@@ -10,18 +10,28 @@ extension LogicAccessibility {
     /// only thing that names it is a static text reading `Bounce Regions In
     /// Place` (measured 2026-08-28), which is also how the region and track
     /// variants are told apart.
+    ///
+    /// SHAPE, then words. Being an `AXSheet` is structure; carrying at least
+    /// two radio buttons and a pop-up is structure too, and it is what
+    /// separates this sheet from the OTHER sheet a bounce flow can raise — a
+    /// save panel has pop-ups and no radios. The `Bounce` static text is kept
+    /// as a second accepted witness rather than as the gate: on an English
+    /// Logic both agree and the same element is returned, and on a translated
+    /// one the shape alone still finds it.
     func bounceInPlaceSheet(timeout: Double = 8) -> AXUIElement? {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            /// The sheet has no title, so it is identified by the static text
-            /// that names it — never by "the first sheet in the window",
-            /// which would happily return a save panel or an alert.
             func named(_ candidate: AXUIElement) -> Bool {
-                stringAttribute(candidate, kAXRoleAttribute as String) == "AXSheet"
-                    && children(of: candidate).contains {
-                        stringAttribute($0, kAXValueAttribute as String)
-                            .localizedCaseInsensitiveContains("Bounce")
-                    }
+                guard stringAttribute(candidate, kAXRoleAttribute as String) == "AXSheet" else {
+                    return false
+                }
+                if dialogShape(of: candidate, maximumDepth: 2).isBounceInPlaceSheetShape {
+                    return true
+                }
+                return children(of: candidate).contains {
+                    stringAttribute($0, kAXValueAttribute as String)
+                        .localizedCaseInsensitiveContains(LogicUIStrings.AlertMarker.bounceInPlaceSheet)
+                }
             }
             for window in (try? logicWindows()) ?? [] {
                 if named(window) { return window }
@@ -48,10 +58,12 @@ extension LogicAccessibility {
     }
 
     /// Cancels a bounce-in-place sheet if one is up. Same discipline as
-    /// `cancelBounceDialog`: a modal left open freezes everything after it.
+    /// `cancelBounceDialog`: a modal left open freezes everything after it —
+    /// so the sheet's own `AXCancelButton` is tried before its English title.
     func cancelBounceInPlaceSheet() {
         guard let sheet = bounceInPlaceSheet(timeout: 0.4),
-              let cancel = sheetButton(sheet, "Cancel") else { return }
+              let cancel = cancelButton(of: sheet)
+                ?? sheetButton(sheet, LogicUIStrings.Button.cancel) else { return }
         _ = AXUIElementPerformAction(cancel, kAXPressAction as CFString)
         Thread.sleep(forTimeInterval: 0.4)
     }
@@ -70,7 +82,8 @@ extension LogicAccessibility {
                     // Two groups (Source: Mute/Leave/Delete, Destination:
                     // Selected Track/New Track) with no group element between
                     // them, so the selected member of each is reported by name.
-                    state[["Mute", "Leave", "Delete"].contains(title) ? "source" : "destination"] = title
+                    let isSource = LogicUIStrings.Value.bounceInPlaceSourceModes.contains(title)
+                    state[isSource ? "source" : "destination"] = title
                 }
             case "AXPopUpButton":
                 let value = stringAttribute(child, kAXValueAttribute as String)
@@ -119,7 +132,8 @@ extension LogicAccessibility {
         source: String?,
         checkboxes: [String: Bool]
     ) throws -> [String: Any] {
-        let menuItem = scope == "track" ? "Tracks in Place" : "Regions in Place"
+        let menuItem = scope == "track"
+            ? LogicUIStrings.Menu.tracksInPlace : LogicUIStrings.Menu.regionsInPlace
         var anchor: [String: Any]?
         if scope == "region" {
             guard let trackName else {
@@ -141,7 +155,7 @@ extension LogicAccessibility {
         let before = try flatRegionMap()
 
         try ensureLogicFrontmost(for: "the bounce-in-place sheet")
-        try pressMenuItem(containing: menuItem, underMenu: "Bounce")
+        try pressMenuItem(containing: menuItem, underMenu: LogicUIStrings.Menu.bounce)
         guard let sheet = bounceInPlaceSheet() else {
             throw LogicianError.windowNotFound("the '\(menuItem)' sheet")
         }
@@ -186,8 +200,8 @@ extension LogicAccessibility {
             changed["normalize"] = ["from": try selectPopUpItem(popup, title: mode), "to": mode]
         }
         for (argument, titles) in [
-            ("destination", ["selected_track": "Selected Track", "new_track": "New Track"]),
-            ("source", ["mute": "Mute", "leave": "Leave", "delete": "Delete"])
+            ("destination", LogicUIStrings.Value.bounceInPlaceDestinations),
+            ("source", LogicUIStrings.Value.bounceInPlaceSources)
         ] {
             let requested = argument == "destination" ? destination : source
             guard let requested else { continue }
@@ -218,7 +232,8 @@ extension LogicAccessibility {
         }
         let sheetState = readBounceInPlaceSheet(sheet)
 
-        guard let okButton = sheetButton(sheet, "OK") else {
+        guard let okButton = defaultButton(of: sheet)
+            ?? sheetButton(sheet, LogicUIStrings.Button.ok) else {
             throw LogicianError.windowNotFound("the OK button in the bounce-in-place sheet")
         }
         _ = AXUIElementPerformAction(okButton, kAXPressAction as CFString)
@@ -267,7 +282,7 @@ extension LogicAccessibility {
                 + "sheet's settings are the user's own and Logic keeps them for next time."
         ]
         if let anchor { result["source_region"] = anchor["name"] ?? NSNull() }
-        if (sheetState["Bypass Effect Plug-ins"] as? Bool) == true {
+        if (sheetState[LogicUIStrings.Value.bypassEffectPlugIns] as? Bool) == true {
             result["warning"] = "'Bypass Effect Plug-ins' was ON, so the printed audio is DRY - the "
                 + "track's inserts were NOT rendered into it. Pass bypass_effect_plugins: false to "
                 + "print the sound as you hear it."

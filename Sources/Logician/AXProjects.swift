@@ -77,9 +77,10 @@ extension LogicAccessibility {
                 let role = stringAttribute(element, kAXRoleAttribute as String)
                 if role == "AXStaticText",
                    stringAttribute(element, kAXValueAttribute as String)
-                       .contains("Create New Track") { isPrompt = true }
+                       .contains(LogicUIStrings.AlertMarker.createNewTrack) { isPrompt = true }
                 if role == "AXButton",
-                   stringAttribute(element, kAXTitleAttribute as String) == "Create" {
+                   stringAttribute(element, kAXTitleAttribute as String)
+                       == LogicUIStrings.Button.create {
                     create = element
                 }
             }
@@ -101,9 +102,10 @@ extension LogicAccessibility {
                 let role = stringAttribute(element, kAXRoleAttribute as String)
                 if role == "AXStaticText",
                    stringAttribute(element, kAXValueAttribute as String)
-                       .contains("auto-saved") { isPrompt = true }
+                       .contains(LogicUIStrings.AlertMarker.autoSaved) { isPrompt = true }
                 if role == "AXButton",
-                   stringAttribute(element, kAXTitleAttribute as String) == "Saved" {
+                   stringAttribute(element, kAXTitleAttribute as String)
+                       == LogicUIStrings.Button.saved {
                     savedButton = element
                 }
             }
@@ -116,23 +118,42 @@ extension LogicAccessibility {
 
     /// Answers Logic's "Do you want to save the changes…?" prompt.
     /// Returns false when no such prompt is visible.
+    ///
+    /// RECOGNITION is still English (`save the changes`): the alert publishes
+    /// no identifier on the WINDOW, and its shape — three `action-button-*`
+    /// and no suppression checkbox — is shared with other three-button alerts,
+    /// so it does not discriminate. Recognising nothing is the safe failure:
+    /// the prompt is left alone rather than answered on a guess.
+    ///
+    /// ANSWERING is locale-independent. The alert's buttons carry measured
+    /// identifiers (R2 §8): `action-button-1` = Save, `action-button-2` =
+    /// Don't Save, `action-button-3` = Cancel. The English titles remain as
+    /// the fallback for a Logic build that publishes no identifiers, and both
+    /// apostrophe spellings of "Don't Save" are accepted.
     func answerSaveChangesDialog(save: Bool) -> Bool {
         guard let windows = try? logicWindows() else { return false }
+        let identifier = save
+            ? LogicUIStrings.Identifier.actionButton1
+            : LogicUIStrings.Identifier.actionButton2
+        let titles = save ? [LogicUIStrings.Button.save] : LogicUIStrings.Button.dontSaveSpellings
         for window in windows {
             var isPrompt = false
-            var target: AXUIElement?
-            let wanted = save ? "Save" : "Don’t Save"
+            var byIdentifier: AXUIElement?
+            var byTitle: AXUIElement?
             collect(from: window, maximumDepth: AXDepth.alertDialog) { element in
                 let role = stringAttribute(element, kAXRoleAttribute as String)
                 if role == "AXStaticText",
                    stringAttribute(element, kAXValueAttribute as String)
-                       .contains("save the changes") { isPrompt = true }
-                if role == "AXButton",
-                   stringAttribute(element, kAXTitleAttribute as String) == wanted {
-                    target = element
+                       .contains(LogicUIStrings.AlertMarker.saveChanges) { isPrompt = true }
+                guard role == "AXButton" else { return }
+                if stringAttribute(element, kAXIdentifierAttribute as String) == identifier {
+                    byIdentifier = element
+                }
+                if titles.contains(stringAttribute(element, kAXTitleAttribute as String)) {
+                    byTitle = element
                 }
             }
-            if isPrompt, let button = target {
+            if isPrompt, let button = byIdentifier ?? byTitle {
                 return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
             }
         }
@@ -275,7 +296,8 @@ extension LogicAccessibility {
                     dialogsAnswered.append([
                         "phase": "open",
                         "dialog": "save_changes",
-                        "answered_with": save ? "Save" : "Don’t Save",
+                        "answered_with": save
+                            ? LogicUIStrings.Button.save : LogicUIStrings.Button.dontSave,
                         "effect": save
                             ? "saved the previously open project before closing it"
                             : "discarded the previously open project's unsaved changes"
@@ -288,7 +310,7 @@ extension LogicAccessibility {
                 dialogsAnswered.append([
                     "phase": "open",
                     "dialog": "autosave_recovery",
-                    "answered_with": "Saved",
+                    "answered_with": LogicUIStrings.Button.saved,
                     "effect": "opened the last SAVED version rather than the auto-saved one"
                 ])
             }

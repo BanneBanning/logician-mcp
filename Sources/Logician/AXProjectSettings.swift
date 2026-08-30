@@ -57,7 +57,8 @@ extension LogicAccessibility {
     func projectSettingsWindow() -> AXUIElement? {
         (try? logicWindows())?.first {
             stringAttribute($0, kAXTitleAttribute as String)
-                .components(separatedBy: " - ").last == "Project Settings"
+                .components(separatedBy: LogicUIStrings.Window.viewSeparator).last
+                == LogicUIStrings.Window.projectSettingsView
         }
     }
 
@@ -73,7 +74,7 @@ extension LogicAccessibility {
         firstDescendant(of: window, maximumDepth: AXDepth.projectSettingsControl) { element in
             stringAttribute(element, kAXRoleAttribute as String) == "AXPopUpButton"
                 && stringAttribute(element, kAXHelpAttribute as String)
-                    .hasPrefix("Project Tempo Mode pop-up menu")
+                    .hasPrefix(LogicUIStrings.Element.projectTempoModeHelpPrefix)
         }
     }
 
@@ -81,7 +82,7 @@ extension LogicAccessibility {
     private func selectSmartTempoPane(in window: AXUIElement) -> Bool {
         guard let button = firstDescendant(of: window, maximumDepth: AXDepth.projectSettingsControl, where: {
             stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
-                && stringAttribute($0, kAXTitleAttribute as String) == "Smart Tempo"
+                && stringAttribute($0, kAXTitleAttribute as String) == LogicUIStrings.Button.smartTempo
         }) else { return false }
         guard AXUIElementPerformAction(button, kAXPressAction as CFString) == .success else { return false }
         Thread.sleep(forTimeInterval: 0.5)
@@ -131,7 +132,8 @@ extension LogicAccessibility {
             let before = Set(((try? logicWindows()) ?? []).map(WindowKey.init))
             do {
                 try pressMenuItem(
-                    containing: "Smart Tempo", underMenu: "Project Settings",
+                    containing: LogicUIStrings.Menu.smartTempo,
+                    underMenu: LogicUIStrings.Menu.projectSettings,
                     settled: { [weak self] in
                         guard let self else { return false }
                         return self.projectSettingsWindow() != nil

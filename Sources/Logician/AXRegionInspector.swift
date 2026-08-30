@@ -81,7 +81,7 @@ extension LogicAccessibility {
         let window = try projectWindow()
         guard let inspector = firstDescendant(of: window, maximumDepth: AXDepth.inspectorPanel, where: {
             stringAttribute($0, kAXRoleAttribute as String) == "AXGroup"
-                && stringAttribute($0, kAXDescriptionAttribute as String) == "Inspector"
+                && stringAttribute($0, kAXDescriptionAttribute as String) == LogicUIStrings.Element.inspector
         }) else {
             throw LogicianError.trackNotExposed(
                 requested: "the Region inspector",
@@ -101,7 +101,8 @@ extension LogicAccessibility {
         guard let group = children(of: list).first(where: { panel in
             children(of: panel).contains {
                 stringAttribute($0, kAXRoleAttribute as String) == "AXStaticText"
-                    && stringAttribute($0, kAXValueAttribute as String).hasPrefix("Region")
+                    && stringAttribute($0, kAXValueAttribute as String)
+                    .hasPrefix(LogicUIStrings.Element.regionPanelPrefix)
             }
         }) else {
             throw LogicianError.trackNotExposed(
@@ -127,7 +128,8 @@ extension LogicAccessibility {
         let name = nameField.map { stringAttribute($0, kAXValueAttribute as String) }
             ?? children(of: group).first {
                 stringAttribute($0, kAXRoleAttribute as String) == "AXStaticText"
-                    && !stringAttribute($0, kAXValueAttribute as String).hasPrefix("Region")
+                    && !stringAttribute($0, kAXValueAttribute as String)
+                    .hasPrefix(LogicUIStrings.Element.regionPanelPrefix)
             }.map { stringAttribute($0, kAXValueAttribute as String) } ?? ""
         return RegionInspectorPanel(
             group: group, disclosure: disclosure, nameField: nameField,

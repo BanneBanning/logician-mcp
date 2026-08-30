@@ -48,7 +48,7 @@ extension MCPServer {
             Tool(
                 name: "logic_health",
                 title: "Check readiness",
-                description: "Check that Logic Pro is ready and set up, without changing anything: the process, the open project, Accessibility trust, the MCU bridge daemon (started here when it is down) and the registered key commands. Read-only, and it names the fix for whatever is missing.",
+                description: "Check that Logic Pro is ready and set up, without changing anything: the process, the open project, Accessibility trust, the MCU bridge daemon (started here when it is down), the registered key commands, and Logic's UI LANGUAGE. Read-only, and it names the fix for whatever is missing. `logic_ui_language` is an INFERENCE (Logic's app bundle's localizations matched against the language order that applies to it - macOS cannot be asked what a running app is drawing in) and it says so; when it is not English the result also carries a top-level `language_note` naming exactly which planes degrade - the Accessibility plane matches some of Logic's own English words, while the control-surface plane speaks MIDI and is unaffected.",
                 inputSchema: ["type": "object", "properties": [:], "additionalProperties": false],
                 // Starts the server's own bridge daemon if it is down; Logic
                 // itself is only read.
@@ -59,7 +59,7 @@ extension MCPServer {
             Tool(
                 name: "logic_list_windows",
                 title: "List Logic windows",
-                description: "List Logic windows with subrole and project document path, read-only. Windows whose document is set are project windows; dialogs without a document are plugin or auxiliary windows.",
+                description: "List Logic windows with subrole and project document path, read-only. Windows whose document is set are project windows; dialogs without a document are plugin or auxiliary windows. Each entry also reports `default_button` and `cancel_button` - the titles of whatever the window publishes as its Return and Escape buttons. Those are LOCALE-INDEPENDENT addresses (this server presses them before it ever matches an English button title), and `null` means the window publishes none, so answering it needs the title.",
                 inputSchema: ["type": "object", "properties": [:], "additionalProperties": false],
                 safety: .readOnly,
                 idempotent: true,

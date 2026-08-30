@@ -61,7 +61,7 @@ extension LogicAccessibility {
             // and does nothing is a measured Logic 12.3.1 behaviour, and the
             // item's own advertised shortcut is the fallback.
             try pressMenuItem(
-                containing: "Open Mixer", underMenu: "Window",
+                containing: LogicUIStrings.Menu.openMixer, underMenu: LogicUIStrings.Menu.window,
                 settled: { [weak self] in self?.mixerWindow() != nil }
             )
         } else if let window = before {
@@ -130,8 +130,10 @@ extension LogicAccessibility {
     /// not fool it.
     func isMixerWindow(_ window: AXUIElement) -> Bool {
         let title = stringAttribute(window, kAXTitleAttribute as String)
-        guard let view = title.components(separatedBy: " - ").last else { return false }
-        return view.hasPrefix("Mixer")
+        guard let view = title.components(
+            separatedBy: LogicUIStrings.Window.viewSeparator
+        ).last else { return false }
+        return view.hasPrefix(LogicUIStrings.Window.mixerViewPrefix)
     }
 
     /// Every channel strip an INSPECTOR is showing, by name — the strips the
@@ -142,7 +144,9 @@ extension LogicAccessibility {
             walk(from: window, maximumDepth: AXDepth.inspectorStrip) { element in
                 guard stringAttribute(element, kAXRoleAttribute as String) == "AXLayoutItem",
                       stringAttribute(element, kAXHelpAttribute as String)
-                        .localizedCaseInsensitiveContains("inspector channel strip") else { return .descend }
+                        .localizedCaseInsensitiveContains(
+                        LogicUIStrings.Element.inspectorChannelStrip
+                      ) else { return .descend }
                 let name = stringAttribute(element, kAXDescriptionAttribute as String)
                 if !name.isEmpty, !names.contains(name) { names.append(name) }
                 return .skipChildren
@@ -165,7 +169,7 @@ extension LogicAccessibility {
             guard stringAttribute(element, kAXRoleAttribute as String) == "AXLayoutItem",
                   !stringAttribute(element, kAXDescriptionAttribute as String).isEmpty,
                   let field = children(of: element).first(where: {
-                      stringAttribute($0, kAXDescriptionAttribute as String) == "name"
+                      stringAttribute($0, kAXDescriptionAttribute as String) == LogicUIStrings.Element.name
                   }) else { return .descend }
             let name = stringAttribute(field, kAXValueAttribute as String)
             if !name.isEmpty { names.append(name) }

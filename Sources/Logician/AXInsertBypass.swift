@@ -108,7 +108,7 @@ extension LogicAccessibility {
     private func bypassCheckBox(of slot: InsertSlot) -> AXUIElement? {
         children(of: slot.group).first {
             stringAttribute($0, kAXRoleAttribute as String) == "AXCheckBox"
-                && stringAttribute($0, kAXDescriptionAttribute as String) == "bypass"
+                && stringAttribute($0, kAXDescriptionAttribute as String) == LogicUIStrings.Element.bypass
         }
     }
 

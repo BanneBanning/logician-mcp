@@ -24,13 +24,19 @@ extension LogicAccessibility {
         walk(from: window, maximumDepth: AXDepth.trackRegionRow) { element in
             let description = stringAttribute(element, kAXDescriptionAttribute as String)
             if stringAttribute(element, kAXRoleAttribute as String) == "AXLayoutArea",
-               description.hasPrefix("Track "), description.contains("“") {
-                let digits = description.dropFirst(6).prefix { $0.isNumber }
-                let name = description.split(separator: "“").last.map {
-                    String($0).replacingOccurrences(of: "”", with: "")
+               description.hasPrefix(LogicUIStrings.Format.trackDescriptionPrefix),
+               description.contains(LogicUIStrings.Format.openQuote) {
+                let digits = description
+                    .dropFirst(LogicUIStrings.Format.trackDescriptionPrefix.count)
+                    .prefix { $0.isNumber }
+                let name = description.split(separator: LogicUIStrings.Format.openQuote).last.map {
+                    String($0).replacingOccurrences(
+                        of: String(LogicUIStrings.Format.closeQuote), with: ""
+                    )
                 } ?? description
                 let regions = children(of: element).filter {
-                    stringAttribute($0, "AXRoleDescription") == "Region"
+                    stringAttribute($0, "AXRoleDescription")
+                        == LogicUIStrings.Element.regionRoleDescription
                 }
                 rows.append((Int(digits) ?? 0, name, regions))
                 return .skipChildren // region items have no nested rows
@@ -55,19 +61,21 @@ extension LogicAccessibility {
             guard let bar = parts.first else { return nil }
             return (bar, parts.count > 1 ? parts[1] : 1)
         }
-        if let start = capture(#"starts at \d+ bars?\s*(\d+ beats?)?"#) {
+        if let start = capture(LogicUIStrings.Format.RegionHelp.startPattern) {
             entry["start_bar"] = start.bar
             if start.beat != 1 { entry["start_beat"] = start.beat }
         }
-        if let end = capture(#"ends at \d+ bars?\s*(\d+ beats?)?"#) {
+        if let end = capture(LogicUIStrings.Format.RegionHelp.endPattern) {
             entry["end_bar"] = end.bar
             if end.beat != 1 { entry["end_beat"] = end.beat }
         }
-        if let typeRange = help.range(of: #",\s*([A-Za-z]+) region"#, options: .regularExpression) {
+        if let typeRange = help.range(
+            of: LogicUIStrings.Format.RegionHelp.typePattern, options: .regularExpression
+        ) {
             let segment = String(help[typeRange])
             entry["type"] = segment
                 .replacingOccurrences(of: ",", with: "")
-                .replacingOccurrences(of: "region", with: "")
+                .replacingOccurrences(of: LogicUIStrings.Format.RegionHelp.typeNoun, with: "")
                 .trimmingCharacters(in: .whitespaces)
                 .lowercased()
         }
@@ -180,7 +188,7 @@ extension LogicAccessibility {
     func stripPanValue(trackName: String) -> Double? {
         guard let strip = try? inspectorStrip(named: trackName) else { return nil }
         for child in children(of: strip)
-        where stringAttribute(child, kAXDescriptionAttribute as String) == "pan" {
+        where stringAttribute(child, kAXDescriptionAttribute as String) == LogicUIStrings.Element.pan {
             return Double(stringAttribute(child, kAXValueAttribute as String))
         }
         return nil
@@ -271,7 +279,7 @@ extension LogicAccessibility {
             throw LogicianError.windowNotFound("channel strip for '\(trackName)'")
         }
         guard let knob = children(of: strip).first(where: {
-            stringAttribute($0, kAXDescriptionAttribute as String) == "pan"
+            stringAttribute($0, kAXDescriptionAttribute as String) == LogicUIStrings.Element.pan
         }) else {
             throw LogicianError.windowNotFound("pan knob on '\(trackName)'")
         }
@@ -291,7 +299,7 @@ extension LogicAccessibility {
         guard let strip = try? inspectorStrip(named: trackName) else { return nil }
         for child in children(of: strip) {
             let description = stringAttribute(child, kAXDescriptionAttribute as String)
-            if description.contains("automation") {
+            if description.contains(LogicUIStrings.Element.automation) {
                 return description.split(separator: ",").first.map(String.init)
             }
         }
@@ -374,9 +382,19 @@ extension LogicAccessibility {
     /// nothing happened". It is an `AXFloatingWindow` titled `Notes Crossing
     /// Split Point`, holding three radio buttons (`Keep`, `Shorten`, `Split`,
     /// with `Split` pre-selected) plus `OK` and `Cancel`.
+    ///
+    /// STILL TITLE-GATED. The window publishes no identifier, and its shape
+    /// (three radios, OK, Cancel) is not unique enough to press blind — and
+    /// this is a modal that BLOCKS everything, so a wrong match would be
+    /// answered and the answer applied to some other dialog. A translated
+    /// title means the modal is not found, `answerNotesCrossingSplit` returns
+    /// nil, and `logic_split_region` reports the split unverified with the
+    /// modal still up. Checklist item, and the highest-priority one: the cost
+    /// of missing THIS dialog is a stalled Logic.
     func notesCrossingSplitDialog() -> AXUIElement? {
         (try? logicWindows())?.first {
-            stringAttribute($0, kAXTitleAttribute as String) == "Notes Crossing Split Point"
+            stringAttribute($0, kAXTitleAttribute as String)
+                == LogicUIStrings.Window.notesCrossingSplitPoint
         }
     }
 
@@ -439,8 +457,16 @@ extension LogicAccessibility {
                         .caseInsensitiveCompare(title) == .orderedSame
             }
         }
+        // The two universal answers are addressed structurally
+        // (`AXDefaultButton` / `AXCancelButton`) with the English titles as
+        // fallback; the three RADIOS keep their English titles, because
+        // `keep` / `shorten` / `split` are also this tool's own argument
+        // values and pressing the wrong one silently cuts the notes the other
+        // way — there is no structural way to tell them apart, and order is
+        // not a guarantee worth a musical result.
+        let cancelAnswer = cancelButton(of: dialog) ?? button("AXButton", LogicUIStrings.Button.cancel)
         guard let choice else {
-            if let cancel = button("AXButton", "Cancel") {
+            if let cancel = cancelAnswer {
                 _ = AXUIElementPerformAction(cancel, kAXPressAction as CFString)
                 Thread.sleep(forTimeInterval: 0.4)
             }
@@ -451,12 +477,12 @@ extension LogicAccessibility {
             radioPressed = AXUIElementPerformAction(radio, kAXPressAction as CFString) == .success
             Thread.sleep(forTimeInterval: 0.25)
         }
-        guard let ok = button("AXButton", "OK") else {
+        guard let ok = defaultButton(of: dialog) ?? button("AXButton", LogicUIStrings.Button.ok) else {
             // No OK to press: the modal is still up and would block every
             // later tool. Cancel it (abandoning the split, which the region
             // count below then reports as a failure) rather than walking away
             // from an open dialog and calling it an answer.
-            if let cancel = button("AXButton", "Cancel") {
+            if let cancel = cancelAnswer {
                 _ = AXUIElementPerformAction(cancel, kAXPressAction as CFString)
                 Thread.sleep(forTimeInterval: 0.4)
             }

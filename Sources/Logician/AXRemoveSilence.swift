@@ -27,11 +27,18 @@ extension LogicAccessibility {
     /// titled `Remove Silence`.
     static let removeSilenceCommand = KeyCommandRegistry.Name.removeSilenceFromAudioRegion
 
+    /// The Remove Silence floating window.
+    ///
+    /// STILL TITLE-GATED: the window publishes no identifier this server has
+    /// measured, and its shape (a few numeric groups, a checkbox, OK/Cancel)
+    /// is not distinctive. A translated title means the command fires and the
+    /// tool reports that no window appeared — nothing is left standing, so the
+    /// failure is safe. Checklist item.
     func removeSilenceWindow(timeout: Double = 6) -> AXUIElement? {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if let window = (try? logicWindows())?.first(where: {
-                stringAttribute($0, kAXTitleAttribute as String) == "Remove Silence"
+                stringAttribute($0, kAXTitleAttribute as String) == LogicUIStrings.Window.removeSilence
             }) { return window }
             Thread.sleep(forTimeInterval: 0.15)
         }
@@ -99,10 +106,7 @@ extension LogicAccessibility {
         var committed = false
         defer {
             if !committed, let window = removeSilenceWindow(timeout: 0.4),
-               let cancel = children(of: window).first(where: {
-                   stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
-                       && stringAttribute($0, kAXTitleAttribute as String) == "Cancel"
-               }) {
+               let cancel = abortButton(of: window, maximumDepth: 1) {
                 _ = AXUIElementPerformAction(cancel, kAXPressAction as CFString)
                 Thread.sleep(forTimeInterval: 0.3)
             }
@@ -132,10 +136,7 @@ extension LogicAccessibility {
                     + "write - change them in Logic's window if the preview is wrong."
             ]
         }
-        guard let ok = children(of: window).first(where: {
-            stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
-                && stringAttribute($0, kAXTitleAttribute as String) == "OK"
-        }) else {
+        guard let ok = confirmButton(of: window, maximumDepth: 1) else {
             throw LogicianError.windowNotFound("the OK button in the Remove Silence window")
         }
         _ = AXUIElementPerformAction(ok, kAXPressAction as CFString)

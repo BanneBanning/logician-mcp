@@ -13,7 +13,7 @@ extension LogicAccessibility {
         let match = firstDescendant(of: mainWindow, maximumDepth: AXDepth.inspectorStrip) { element in
             stringAttribute(element, kAXRoleAttribute as String) == "AXLayoutItem"
                 && stringAttribute(element, kAXHelpAttribute as String)
-                    .localizedCaseInsensitiveContains("inspector channel strip")
+                    .localizedCaseInsensitiveContains(LogicUIStrings.Element.inspectorChannelStrip)
                 && stringAttribute(element, kAXDescriptionAttribute as String) == name
         }
         guard let strip = match else {
@@ -33,14 +33,18 @@ extension LogicAccessibility {
         collect(from: mainWindow, maximumDepth: AXDepth.inspectorStrip) { element in
             guard stringAttribute(element, kAXRoleAttribute as String) == "AXLayoutItem" else { return }
             let help = stringAttribute(element, kAXHelpAttribute as String)
-            guard help.localizedCaseInsensitiveContains("inspector channel strip") else { return }
+            guard help.localizedCaseInsensitiveContains(
+                LogicUIStrings.Element.inspectorChannelStrip
+            ) else { return }
             strips.append((
                 name: stringAttribute(element, kAXDescriptionAttribute as String),
                 help: help,
                 element: element
             ))
         }
-        guard let left = strips.first(where: { $0.help.hasPrefix("Left inspector") }) ?? strips.first else {
+        guard let left = strips.first(where: {
+            $0.help.hasPrefix(LogicUIStrings.Element.leftInspectorPrefix)
+        }) ?? strips.first else {
             throw LogicianError.windowNotFound("left inspector channel strip")
         }
         if left.name == trackName {
@@ -66,8 +70,12 @@ extension LogicAccessibility {
             for grandchild in children(of: child) {
                 let role = stringAttribute(grandchild, kAXRoleAttribute as String)
                 let description = stringAttribute(grandchild, kAXDescriptionAttribute as String)
-                if role == "AXCheckBox", description == "bypass" { bypass = grandchild }
-                if role == "AXButton", description == "open" { open = grandchild }
+                if role == "AXCheckBox", description == LogicUIStrings.Element.bypass {
+                    bypass = grandchild
+                }
+                if role == "AXButton", description == LogicUIStrings.Element.open {
+                    open = grandchild
+                }
             }
             guard let bypassBox = bypass, open != nil else { continue }
             slots.append(InsertSlot(
@@ -124,12 +132,15 @@ extension LogicAccessibility {
     }
 
     func parseTrackDescription(_ description: String) -> (number: Int, name: String)? {
-        guard description.hasPrefix("Track "),
-              let openQuote = description.firstIndex(of: "\u{201C}"),
-              let closeQuote = description.lastIndex(of: "\u{201D}") else {
+        let prefix = LogicUIStrings.Format.trackDescriptionPrefix
+        guard description.hasPrefix(prefix),
+              let openQuote = description.firstIndex(of: LogicUIStrings.Format.openQuote),
+              let closeQuote = description.lastIndex(of: LogicUIStrings.Format.closeQuote) else {
             return nil
         }
-        let numberText = description[description.index(description.startIndex, offsetBy: 6)..<openQuote]
+        let numberText = description[
+            description.index(description.startIndex, offsetBy: prefix.count)..<openQuote
+        ]
             .trimmingCharacters(in: .whitespaces)
         guard let number = Int(numberText) else { return nil }
         let name = String(description[description.index(after: openQuote)..<closeQuote])
@@ -140,7 +151,8 @@ extension LogicAccessibility {
         let mainWindow = try projectWindow()
         let headerGroup = firstDescendant(of: mainWindow, maximumDepth: AXDepth.trackHeaderGroup) { element in
             stringAttribute(element, kAXRoleAttribute as String) == "AXGroup"
-                && stringAttribute(element, kAXDescriptionAttribute as String) == "Tracks header"
+                && stringAttribute(element, kAXDescriptionAttribute as String)
+                    == LogicUIStrings.Element.tracksHeader
         }
         guard let group = headerGroup else {
             throw LogicianError.windowNotFound("Tracks header group")
@@ -291,7 +303,7 @@ extension LogicAccessibility {
         // Windows like Drum Machine Designer expose no AXCloseButton attribute
         // but have a child button described as "close".
         if let childClose = children(of: window).first(where: {
-            stringAttribute($0, kAXDescriptionAttribute as String) == "close"
+            stringAttribute($0, kAXDescriptionAttribute as String) == LogicUIStrings.Element.close
         }) {
             return AXUIElementPerformAction(childClose, kAXPressAction as CFString) == .success
         }
@@ -505,7 +517,7 @@ extension LogicAccessibility {
     }
 
     func extractedParameterName(fromHelp help: String) -> String {
-        let suffixes = [" knob and field", " knob"]
+        let suffixes = LogicUIStrings.Element.parameterHelpSuffixes
         let firstSentence = help.split(separator: ".", maxSplits: 1).first.map(String.init) ?? help
         for suffix in suffixes {
             if let range = firstSentence.range(of: suffix, options: [.caseInsensitive, .backwards]) {
@@ -557,6 +569,10 @@ extension LogicAccessibility {
     }
 
     func normalizedFormattedValue(_ value: String) -> (text: String, number: Double?) {
+        // The comma-to-point map is LOCALE handling, not cosmetics: Logic
+        // formats plugin readouts in the system's locale, so the same
+        // Compressor ratio reads `4.0` on one Mac and `4,0` on the next.
+        // See `LogicUIStrings.Format` for the other places this bites.
         var text = value
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()

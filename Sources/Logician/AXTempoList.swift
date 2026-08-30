@@ -61,7 +61,7 @@ extension LogicAccessibility {
         // opened) lives in `withListEditorsTab` — established here on
         // 2026-08-27 and lifted out when the Event, Marker and Signature tabs
         // needed exactly the same dance.
-        let read = withListEditorsTab(named: "Tempo") { self.parseTempoList(in: $0) }
+        let read = withListEditorsTab(named: LogicUIStrings.Element.ListEditorTab.tempo) { self.parseTempoList(in: $0) }
         if let failure = read.failure {
             // The shared vocabulary, translated back into this reader's own —
             // the tempo family's warnings and payloads are written against it.
@@ -84,7 +84,7 @@ extension LogicAccessibility {
                 return .descend
             }
             let name = stringAttribute(element, kAXDescriptionAttribute as String)
-            guard ["Event", "Marker", "Tempo", "Signature"].contains(name) else { return .descend }
+            guard LogicUIStrings.Element.listEditorTabs.contains(name) else { return .descend }
             found.append((
                 name, element, stringAttribute(element, kAXValueAttribute as String) == "1"
             ))
@@ -107,9 +107,10 @@ extension LogicAccessibility {
         var tempoGroup: AXUIElement?
         walk(from: window, maximumDepth: AXDepth.listEditorTab) { element in
             guard stringAttribute(element, kAXRoleAttribute as String) == "AXGroup",
-                  stringAttribute(element, kAXDescriptionAttribute as String) == "Tempo",
+                  stringAttribute(element, kAXDescriptionAttribute as String) == LogicUIStrings.Element.tempo,
                   children(of: element).contains(where: {
-                      stringAttribute($0, kAXDescriptionAttribute as String) == "Number of Items"
+                      stringAttribute($0, kAXDescriptionAttribute as String)
+                    == LogicUIStrings.Element.numberOfItems
                   }) else { return .descend }
             tempoGroup = element
             return .stop
@@ -118,7 +119,7 @@ extension LogicAccessibility {
         walk(from: group, maximumDepth: AXDepth.listEditorTable) { element in
             let role = stringAttribute(element, kAXRoleAttribute as String)
             let description = stringAttribute(element, kAXDescriptionAttribute as String)
-            if role == "AXStaticText", description == "Number of Items" {
+            if role == "AXStaticText", description == LogicUIStrings.Element.numberOfItems {
                 declaredCount = TempoMap.parseTempoListItemCount(
                     stringAttribute(element, kAXValueAttribute as String)
                 )

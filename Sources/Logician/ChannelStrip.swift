@@ -127,18 +127,23 @@ enum ChannelStrip {
 
     /// Logic's help-text prefixes, which are how a slot says what it is.
     /// Measured verbatim 2026-08-28.
-    static let slotHelpPrefixes: [(String, SlotKind)] = [
-        ("Output slot.", .output),
-        ("Input slot.", .input),
-        ("Send slot.", .send),
-        ("Audio Effect slot.", .audioEffect),
-        ("MIDI Effect slot.", .midiEffect),
-        ("Input Gain field and knob.", .inputGain),
-        ("Group slot.", .group),
-        ("Setting button.", .setting),
-        ("Volume fader.", .volume),
-        ("Pan/Balance knob.", .pan)
-    ]
+    /// The words are in `LogicUIStrings.Element.StripSlotHelp`; the PAIRING is
+    /// here because it needs `SlotKind`.
+    static let slotHelpPrefixes: [(String, SlotKind)] = {
+        typealias Help = LogicUIStrings.Element.StripSlotHelp
+        return [
+            (Help.output, .output),
+            (Help.input, .input),
+            (Help.send, .send),
+            (Help.audioEffect, .audioEffect),
+            (Help.midiEffect, .midiEffect),
+            (Help.inputGain, .inputGain),
+            (Help.group, .group),
+            (Help.setting, .setting),
+            (Help.volume, .volume),
+            (Help.pan, .pan)
+        ]
+    }()
 
     /// Logic's placeholder label on an EMPTY group slot. The pop-up's title is
     /// `"group, <label>"`, and with no group the label is the word "Group"
@@ -211,12 +216,7 @@ enum ChannelStrip {
     /// `"-10,6 dB"` / `"1,0 dB"` -> the number. Logic prints a decimal comma in
     /// a Swedish locale and a point elsewhere; both parse.
     static func decibels(_ text: String) -> Double? {
-        let cleaned = text
-            .replacingOccurrences(of: "dB", with: "")
-            .replacingOccurrences(of: "\u{33A9}", with: "") // ㏈, the glyph Logic uses in some panels
-            .replacingOccurrences(of: ",", with: ".")
-            .trimmingCharacters(in: .whitespaces)
-        return Double(cleaned)
+        Double(LogicUIStrings.Format.normalizedDecibelText(text))
     }
 
     /// `"Read, automation enabled"` -> `"Read"`. The strip's automation group

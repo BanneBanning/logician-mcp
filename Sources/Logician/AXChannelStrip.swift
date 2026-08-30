@@ -37,15 +37,9 @@ extension LogicAccessibility {
         var state: [String: Bool] = [:]
         for child in children(of: item)
         where stringAttribute(child, kAXRoleAttribute as String) == "AXCheckBox" {
-            let key: String
-            switch stringAttribute(child, kAXDescriptionAttribute as String) {
-            case "Mute": key = "mute"
-            case "Solo": key = "solo"
-            case "Freeze": key = "freeze"
-            case "Record Enable": key = "record_enable"
-            case "Input Monitoring": key = "input_monitoring"
-            default: continue
-            }
+            guard let key = LogicUIStrings.Element.trackHeaderControls[
+                stringAttribute(child, kAXDescriptionAttribute as String)
+            ] else { continue }
             state[key] = stringAttribute(child, kAXValueAttribute as String) == "1"
         }
         return state

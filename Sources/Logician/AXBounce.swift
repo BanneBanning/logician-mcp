@@ -125,7 +125,8 @@ extension LogicAccessibility {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if let dialog = (try? logicWindows())?.first(where: {
-                stringAttribute($0, kAXTitleAttribute as String).hasPrefix("Bounce")
+                stringAttribute($0, kAXTitleAttribute as String)
+                    .hasPrefix(LogicUIStrings.Window.bouncePrefix)
             }) {
                 return dialog
             }
@@ -244,15 +245,21 @@ extension LogicAccessibility {
 
     /// Cancels an open Bounce dialog (modal — it freezes MCU and most AX
     /// operations, so it must NEVER be left up on an error path).
+    ///
+    /// Structure first, words second, in both halves of the search. WHICH
+    /// window: the `AXDialog` subrole is the locale-independent half of the
+    /// filter and the `Bounce` title fragment the English one, and they are
+    /// already ORed — so a translated title still reaches the cancel below.
+    /// WHICH button: `AXCancelButton` if the dialog publishes one (it is the
+    /// button Escape activates, and it does not translate), the button titled
+    /// `Cancel` otherwise.
     func cancelBounceDialog() {
         guard let windows = try? logicWindows() else { return }
         for window in windows
-        where stringAttribute(window, kAXTitleAttribute as String).contains("Bounce")
+        where stringAttribute(window, kAXTitleAttribute as String)
+            .contains(LogicUIStrings.Window.bouncePrefix)
             || stringAttribute(window, kAXSubroleAttribute as String) == "AXDialog" {
-            if let cancel = firstDescendant(of: window, maximumDepth: AXDepth.bounceDialogControl, where: {
-                stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
-                    && stringAttribute($0, kAXTitleAttribute as String) == "Cancel"
-            }) {
+            if let cancel = abortButton(of: window, maximumDepth: AXDepth.bounceDialogControl) {
                 _ = AXUIElementPerformAction(cancel, kAXPressAction as CFString)
                 Thread.sleep(forTimeInterval: 0.4)
                 return
@@ -407,11 +414,11 @@ extension LogicAccessibility {
     ) throws -> [String: Any] {
         var applied: [String: Any] = [:]
         let popupSpec: [(argument: String, label: String, values: [String])] = [
-            ("file_type", "File Type", BounceFormat.fileTypes),
-            ("bit_depth", "Bit Depth", BounceFormat.bitDepths),
-            ("sample_rate", "Sample Rate", BounceFormat.sampleRates),
-            ("dithering", "Dithering", BounceFormat.ditherings),
-            ("normalize", "Normalize", BounceFormat.normalizeModes)
+            ("file_type", LogicUIStrings.Value.bounceFileType, BounceFormat.fileTypes),
+            ("bit_depth", LogicUIStrings.Value.bounceBitDepth, BounceFormat.bitDepths),
+            ("sample_rate", LogicUIStrings.Value.bounceSampleRate, BounceFormat.sampleRates),
+            ("dithering", LogicUIStrings.Value.bounceDithering, BounceFormat.ditherings),
+            ("normalize", LogicUIStrings.Value.bounceNormalize, BounceFormat.normalizeModes)
         ]
         for spec in popupSpec {
             guard let raw = options[spec.argument] else { continue }
@@ -430,7 +437,9 @@ extension LogicAccessibility {
             applied[spec.argument] = ["from": before, "to": title]
         }
         if let includeAudioTail {
-            guard let box = checkBox(in: dialog, titled: "Include Audio Tail") else {
+            guard let box = checkBox(
+                in: dialog, titled: LogicUIStrings.Value.includeAudioTail
+            ) else {
                 throw LogicianError.windowNotFound("the 'Include Audio Tail' checkbox")
             }
             let before = try setCheckBox(box, to: includeAudioTail)
@@ -444,24 +453,49 @@ extension LogicAccessibility {
     func readBounceOptions(dialog: AXUIElement) -> [String: Any] {
         var state: [String: Any] = [:]
         for (argument, label) in [
-            ("file_type", "File Type"), ("bit_depth", "Bit Depth"),
-            ("sample_rate", "Sample Rate"), ("dithering", "Dithering"),
-            ("normalize", "Normalize")
+            ("file_type", LogicUIStrings.Value.bounceFileType),
+            ("bit_depth", LogicUIStrings.Value.bounceBitDepth),
+            ("sample_rate", LogicUIStrings.Value.bounceSampleRate),
+            ("dithering", LogicUIStrings.Value.bounceDithering),
+            ("normalize", LogicUIStrings.Value.bounceNormalize)
         ] {
             if let popup = labelledPopUp(in: dialog, label: label) {
                 state[argument] = stringAttribute(popup, kAXValueAttribute as String)
             }
         }
         for (argument, title) in [
-            ("include_audio_tail", "Include Audio Tail"),
-            ("include_tempo_information", "Include Tempo Information"),
-            ("bounce_2nd_cycle_pass", "Bounce 2nd Cycle Pass")
+            ("include_audio_tail", LogicUIStrings.Value.includeAudioTail),
+            ("include_tempo_information", LogicUIStrings.Value.includeTempoInformation),
+            ("bounce_2nd_cycle_pass", LogicUIStrings.Value.bounce2ndCyclePass)
         ] {
             if let box = checkBox(in: dialog, titled: title) {
                 state[argument] = stringAttribute(box, kAXValueAttribute as String) == "1"
             }
         }
         return state
+    }
+
+    /// The bounce save panel's commit button — the one titled `Bounce`.
+    ///
+    /// Identifier first: AppKit gives a save/open panel's confirm button the
+    /// `AXIdentifier` `OKButton` whatever it is TITLED (measured on Logic's
+    /// import panel, R2 §3.4, where the same button reads `Import`). The
+    /// English title is the fallback for a panel that publishes no
+    /// identifier, which is exactly the behaviour this had before.
+    ///
+    /// Doubles as the test for "is this window the save panel?" — the panel is
+    /// hosted either inside a Logic window or in an AppKit XPC process, and
+    /// carrying this button is what identifies it in both places.
+    func savePanelCommitButton(in root: AXUIElement) -> AXUIElement? {
+        firstDescendant(of: root, maximumDepth: AXDepth.bounceDialogControl) {
+            self.stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
+                && self.stringAttribute($0, kAXIdentifierAttribute as String)
+                    == LogicUIStrings.Identifier.okButton
+        } ?? firstDescendant(of: root, maximumDepth: AXDepth.bounceDialogControl) {
+            self.stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
+                && self.stringAttribute($0, kAXTitleAttribute as String)
+                    == LogicUIStrings.Button.bounce
+        }
     }
 
     func savePanelApplication() -> AXUIElement? {
@@ -501,7 +535,9 @@ extension LogicAccessibility {
         // existing 60 s timeout is (the file Logic is writing is left where
         // Logic put it, and nothing is moved into the captures directory).
         try checkCancelled()
-        try pressMenuItem(containing: "Project or Section", underMenu: "Bounce")
+        try pressMenuItem(
+            containing: LogicUIStrings.Menu.projectOrSection, underMenu: LogicUIStrings.Menu.bounce
+        )
         guard let dialog = bounceDialog() else {
             throw LogicianError.windowNotFound("bounce dialog")
         }
@@ -511,7 +547,7 @@ extension LogicAccessibility {
         // bounces, so this is usually zero presses.
         for (name, checkbox) in destinationRows(in: dialog) {
             let checked = stringAttribute(checkbox, kAXValueAttribute as String) == "1"
-            let wanted = name == "Uncompressed"
+            let wanted = name == LogicUIStrings.Value.uncompressed
             if checked != wanted {
                 _ = AXUIElementPerformAction(checkbox, kAXPressAction as CFString)
                 Thread.sleep(forTimeInterval: 0.12)
@@ -540,7 +576,7 @@ extension LogicAccessibility {
                 && stringAttribute($0, kAXValueAttribute as String).contains("\t")
         }
         guard groups.count == 2 else {
-            _ = children(of: dialog).first { stringAttribute($0, kAXTitleAttribute as String) == "Cancel" }
+            _ = abortButton(of: dialog, maximumDepth: AXDepth.bounceDialogControl)
                 .map { AXUIElementPerformAction($0, kAXPressAction as CFString) }
             throw LogicianError.windowNotFound("start/end position fields in the bounce dialog")
         }
@@ -581,9 +617,9 @@ extension LogicAccessibility {
             )
         }
 
-        guard let okButton = children(of: dialog).first(where: {
-            stringAttribute($0, kAXTitleAttribute as String) == "OK"
-        }) else {
+        guard let okButton = confirmButton(
+            of: dialog, maximumDepth: AXDepth.bounceDialogControl
+        ) else {
             throw LogicianError.windowNotFound("OK button in the bounce dialog")
         }
         // Last cancellation point that costs nothing: after this the dialog is
@@ -600,11 +636,8 @@ extension LogicAccessibility {
         let panelDeadline = Date().addingTimeInterval(8)
         while Date() < panelDeadline && panelRoot == nil {
             Thread.sleep(forTimeInterval: 0.08)
-            if let hosted = (try? logicWindows())?.first(where: { window in
-                self.firstDescendant(of: window, maximumDepth: AXDepth.bounceDialogControl, where: {
-                    self.stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
-                        && self.stringAttribute($0, kAXTitleAttribute as String) == "Bounce"
-                }) != nil
+            if let hosted = (try? logicWindows())?.first(where: {
+                self.savePanelCommitButton(in: $0) != nil
             }) {
                 panelRoot = hosted
             } else if let xpc = savePanelApplication() {
@@ -619,22 +652,26 @@ extension LogicAccessibility {
         // accept the default and move the rendered file to the label name after.
         let timestamp = Int(Date().timeIntervalSince1970)
         let filename = "logicmcp-\(sanitizedFilenameComponent(label, fallback: "bounce"))-\(timestamp)"
-        guard let bounceButton = firstDescendant(of: panel, maximumDepth: AXDepth.bounceDialogControl, where: {
-            stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
-                && stringAttribute($0, kAXTitleAttribute as String) == "Bounce"
-        }) else {
+        guard let bounceButton = savePanelCommitButton(in: panel) else {
             throw LogicianError.openVerificationFailed("no Bounce button in the save panel")
         }
         guard AXUIElementPerformAction(bounceButton, kAXPressAction as CFString) == .success else {
             throw LogicianError.writeFailed("pressing Bounce failed")
         }
         // A possible "already exists" sheet: press Replace.
+        //
+        // STILL STRING-GATED, on purpose. This sheet publishes a default
+        // button too, but AppKit's overwrite alert makes CANCEL the default
+        // — pressing "the default" would silently abandon the bounce instead
+        // of replacing the file. Only the title says Replace, so only the
+        // title is trusted; the checklist carries the probe that would give
+        // this one a locale-independent address.
         Thread.sleep(forTimeInterval: 0.25)
         if let replace = (try? logicWindows())?.lazy.compactMap({ window in
-            self.firstDescendant(of: window, maximumDepth: AXDepth.bounceDialogControl, where: {
-                self.stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
-                    && self.stringAttribute($0, kAXTitleAttribute as String) == "Replace"
-            })
+            self.button(
+                in: window, titled: LogicUIStrings.Button.replace,
+                maximumDepth: AXDepth.bounceDialogControl
+            )
         }).first {
             _ = AXUIElementPerformAction(replace, kAXPressAction as CFString)
         }
@@ -844,9 +881,10 @@ extension LogicAccessibility {
         for header in headers {
             for child in children(of: header.item)
             where stringAttribute(child, kAXRoleAttribute as String) == "AXCheckBox"
-                && stringAttribute(child, kAXDescriptionAttribute as String) == "Solo" {
+                && stringAttribute(child, kAXDescriptionAttribute as String)
+                    == LogicUIStrings.Element.soloDescription {
                 let value = stringAttribute(child, kAXValueAttribute as String)
-                if value == "1" || value == "on" { names.append(header.name) }
+                if value == "1" || value == LogicUIStrings.Value.on { names.append(header.name) }
             }
         }
         return names

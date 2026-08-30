@@ -15,9 +15,9 @@ extension LogicAccessibility {
         }
         let bar = try controlBarGroup()
         guard let inner = children(of: bar).first(where: {
-            stringAttribute($0, kAXDescriptionAttribute as String) == "Control Bar"
+            stringAttribute($0, kAXDescriptionAttribute as String) == LogicUIStrings.Element.controlBar
         }), let slider = children(of: inner).first(where: {
-            stringAttribute($0, kAXDescriptionAttribute as String) == "Tempo"
+            stringAttribute($0, kAXDescriptionAttribute as String) == LogicUIStrings.Element.tempo
         }) else {
             throw LogicianError.windowNotFound("Tempo slider in the control bar")
         }
@@ -89,7 +89,7 @@ extension LogicAccessibility {
     func projectTempoMode() -> ProjectTempoMode {
         guard let bar = try? controlBarGroup(),
               let inner = children(of: bar).first(where: {
-                  stringAttribute($0, kAXDescriptionAttribute as String) == "Control Bar"
+                  stringAttribute($0, kAXDescriptionAttribute as String) == LogicUIStrings.Element.controlBar
               }) else {
             return .absent
         }
@@ -102,7 +102,7 @@ extension LogicAccessibility {
         guard let popup = children(of: inner).first(where: {
             stringAttribute($0, kAXRoleAttribute as String) == "AXPopUpButton"
                 && stringAttribute($0, kAXHelpAttribute as String)
-                    .hasPrefix("Project Tempo menu")
+                    .hasPrefix(LogicUIStrings.Element.projectTempoMenuHelpPrefix)
         }) else {
             return .absent
         }
@@ -155,10 +155,10 @@ extension LogicAccessibility {
     func controlBarTempo() -> Double? {
         guard let bar = try? controlBarGroup(),
               let inner = children(of: bar).first(where: {
-                  stringAttribute($0, kAXDescriptionAttribute as String) == "Control Bar"
+                  stringAttribute($0, kAXDescriptionAttribute as String) == LogicUIStrings.Element.controlBar
               }),
               let slider = children(of: inner).first(where: {
-                  stringAttribute($0, kAXDescriptionAttribute as String) == "Tempo"
+                  stringAttribute($0, kAXDescriptionAttribute as String) == LogicUIStrings.Element.tempo
               }) else { return nil }
         return Double(stringAttribute(slider, kAXValueAttribute as String))
     }
@@ -181,13 +181,13 @@ extension LogicAccessibility {
         let cannotSample = "the tempo could not be sampled at bars \(firstBar) and \(secondBar)"
         guard let controlBar = try? controlBarGroup(),
               let lcd = playheadGroup(in: controlBar),
-              let savedBar = sliderValue(lcd, "bar") else {
+              let savedBar = sliderValue(lcd, LogicUIStrings.Element.playheadBarSlider) else {
             return .verdict(.unverified(
                 reason: "\(cannotSample): the control bar reports no playhead position, and the"
                     + " playhead is never moved when it cannot be put back"
             ))
         }
-        let savedBeat = sliderValue(lcd, "beat")
+        let savedBeat = sliderValue(lcd, LogicUIStrings.Element.playheadBeatSlider)
         func read(at bar: Int) throws -> Double {
             _ = try setPlayhead(barNumber: bar, beat: nil)
             guard let tempo = controlBarTempo() else {
@@ -258,7 +258,7 @@ extension LogicAccessibility {
     func sampleTempoAgainstProjectStart() -> TempoSample {
         guard let controlBar = try? controlBarGroup(),
               let lcd = playheadGroup(in: controlBar),
-              let playheadBar = sliderValue(lcd, "bar") else {
+              let playheadBar = sliderValue(lcd, LogicUIStrings.Element.playheadBarSlider) else {
             return .verdict(.unverified(
                 reason: "the tempo could not be sampled at a second bar: the control bar reports"
                     + " no playhead position, and the playhead is never moved when it cannot be"
@@ -277,8 +277,12 @@ extension LogicAccessibility {
             "project_document": (try? projectDocumentPath()) ?? NSNull()
         ]
         let checkboxes = [
-            ("playing", "Play"), ("recording", "Record"), ("cycle", "Cycle"),
-            ("metronome", "Metronome Click"), ("count_in", "Count In"), ("solo_mode", "Solo")
+            ("playing", LogicUIStrings.Element.playButton),
+            ("recording", LogicUIStrings.Element.recordButton),
+            ("cycle", LogicUIStrings.Element.cycleButton),
+            ("metronome", LogicUIStrings.Element.metronomeButton),
+            ("count_in", LogicUIStrings.Element.countInButton),
+            ("solo_mode", LogicUIStrings.Element.soloModeButton)
         ]
         for (key, description) in checkboxes {
             result[key] = controlBarChild(bar, description).map {
@@ -291,20 +295,22 @@ extension LogicAccessibility {
             result["cycle_source"] = "ruler_cycle_region"
         }
         if let lcd = playheadGroup(in: bar) {
-            result["playhead_bar"] = sliderValue(lcd, "bar") ?? NSNull()
-            result["playhead_beat"] = sliderValue(lcd, "beat") ?? NSNull()
+            result["playhead_bar"] = sliderValue(lcd, LogicUIStrings.Element.playheadBarSlider) ?? NSNull()
+            result["playhead_beat"] = sliderValue(lcd, LogicUIStrings.Element.playheadBeatSlider) ?? NSNull()
         }
         if let inner = children(of: bar).first(where: {
-            stringAttribute($0, kAXDescriptionAttribute as String) == "Control Bar"
+            stringAttribute($0, kAXDescriptionAttribute as String) == LogicUIStrings.Element.controlBar
         }) {
             result["tempo"] = children(of: inner)
-                .first { stringAttribute($0, kAXDescriptionAttribute as String) == "Tempo" }
+                .first { stringAttribute($0, kAXDescriptionAttribute as String) == LogicUIStrings.Element.tempo }
                 .flatMap { Double(stringAttribute($0, kAXValueAttribute as String)) } ?? NSNull()
             result["time_signature"] = children(of: inner)
-                .first { stringAttribute($0, kAXDescriptionAttribute as String) == "Time Signature" }
+                .first { stringAttribute($0, kAXDescriptionAttribute as String)
+                == LogicUIStrings.Element.timeSignature }
                 .map { stringAttribute($0, kAXValueAttribute as String) } ?? NSNull()
             result["key_signature"] = children(of: inner)
-                .first { stringAttribute($0, kAXDescriptionAttribute as String) == "Key Signature" }
+                .first { stringAttribute($0, kAXDescriptionAttribute as String)
+                == LogicUIStrings.Element.keySignature }
                 .map { stringAttribute($0, kAXValueAttribute as String) } ?? NSNull()
             // Smart Tempo: which mode a recording will apply to the project's
             // tempo map. The key is present only when the mode is actually
@@ -336,9 +342,9 @@ extension LogicAccessibility {
     }
 
     func setCycle(enabled: Bool) throws -> [String: Any] {
-        if controlBarChild(try controlBarGroup(), "Cycle") != nil {
+        if controlBarChild(try controlBarGroup(), LogicUIStrings.Element.cycleButton) != nil {
             return try setTransportCheckbox(
-                description: "Cycle",
+                description: LogicUIStrings.Element.cycleButton,
                 key: "cycle",
                 desired: enabled,
                 onState: "cycle_on",
@@ -377,11 +383,11 @@ extension LogicAccessibility {
 
     func cycleStateFromRuler() -> Bool? {
         guard let ruler = try? rulerArea(),
-              let region = rulerChild(ruler, "cycle region") else { return nil }
+              let region = rulerChild(ruler, LogicUIStrings.Element.cycleRegion) else { return nil }
         switch stringAttribute(region, kAXValueDescriptionAttribute as String)
             .trimmingCharacters(in: .whitespaces).lowercased() {
-        case "on": return true
-        case "off": return false
+        case LogicUIStrings.Value.on: return true
+        case LogicUIStrings.Value.off: return false
         default: return nil
         }
     }
@@ -391,7 +397,7 @@ extension LogicAccessibility {
             // Pressing the Play checkbox starts playback, but pressing it again
             // does NOT stop (verified 2026-08-24), so only the start path uses it.
             return try setTransportCheckbox(
-                description: "Play",
+                description: LogicUIStrings.Element.playButton,
                 key: "playing",
                 desired: true,
                 onState: "playing",
@@ -400,7 +406,7 @@ extension LogicAccessibility {
         }
 
         let bar = try controlBarGroup()
-        guard let play = controlBarChild(bar, "Play") else {
+        guard let play = controlBarChild(bar, LogicUIStrings.Element.playButton) else {
             throw LogicianError.windowNotFound("Play button in the control bar")
         }
         guard stringAttribute(play, kAXValueAttribute as String) == "1" else {
@@ -418,7 +424,7 @@ extension LogicAccessibility {
         try sendKeystrokeToFrontmostLogic(virtualKey: 49, label: "space (play/stop)")
         for _ in 0..<20 {
             Thread.sleep(forTimeInterval: 0.1)
-            if let refreshed = controlBarChild(try controlBarGroup(), "Play"),
+            if let refreshed = controlBarChild(try controlBarGroup(), LogicUIStrings.Element.playButton),
                stringAttribute(refreshed, kAXValueAttribute as String) == "0" {
                 return [
                     "success": true,
@@ -449,21 +455,21 @@ extension LogicAccessibility {
         guard let lcd = playheadGroup(in: controlBar) else {
             throw LogicianError.windowNotFound("Playhead Position display in the control bar")
         }
-        let beforeBar = sliderValue(lcd, "bar")
-        let beforeBeat = sliderValue(lcd, "beat")
+        let beforeBar = sliderValue(lcd, LogicUIStrings.Element.playheadBarSlider)
+        let beforeBeat = sliderValue(lcd, LogicUIStrings.Element.playheadBeatSlider)
 
-        try convergeSlider(in: controlBar, sliderName: "bar", target: barNumber)
+        try convergeSlider(in: controlBar, sliderName: LogicUIStrings.Element.playheadBarSlider, target: barNumber)
         if let beat = beat {
-            try convergeSlider(in: controlBar, sliderName: "beat", target: beat)
+            try convergeSlider(in: controlBar, sliderName: LogicUIStrings.Element.playheadBeatSlider, target: beat)
         }
 
         guard let refreshed = playheadGroup(in: try controlBarGroup()),
-              let afterBar = sliderValue(refreshed, "bar"),
+              let afterBar = sliderValue(refreshed, LogicUIStrings.Element.playheadBarSlider),
               afterBar == barNumber,
-              beat == nil || sliderValue(refreshed, "beat") == beat else {
+              beat == nil || sliderValue(refreshed, LogicUIStrings.Element.playheadBeatSlider) == beat else {
             throw LogicianError.verificationFailed(
                 requested: "bar \(barNumber)\(beat.map { ", beat \($0)" } ?? "")",
-                actual: "bar \(sliderValue(lcd, "bar").map(String.init) ?? "?"), beat \(sliderValue(lcd, "beat").map(String.init) ?? "?")",
+                actual: "bar \(sliderValue(lcd, LogicUIStrings.Element.playheadBarSlider).map(String.init) ?? "?"), beat \(sliderValue(lcd, LogicUIStrings.Element.playheadBeatSlider).map(String.init) ?? "?")",
                 restored: false
             )
         }
@@ -473,7 +479,7 @@ extension LogicAccessibility {
             "verified": true,
             "state": "moved",
             "before": ["bar": beforeBar ?? -1, "beat": beforeBeat ?? -1],
-            "after": ["bar": barNumber, "beat": beat ?? sliderValue(refreshed, "beat") ?? -1],
+            "after": ["bar": barNumber, "beat": beat ?? sliderValue(refreshed, LogicUIStrings.Element.playheadBeatSlider) ?? -1],
             "write_route": "ax_value_stepwise"
         ]
     }
@@ -545,8 +551,8 @@ extension LogicAccessibility {
         let after = residue()
         let group = playheadGroup(in: try controlBarGroup())
         var result: [String: Any] = [
-            "bar": group.flatMap { sliderValue($0, "bar") } ?? bar,
-            "beat": group.flatMap { sliderValue($0, "beat") } ?? beat,
+            "bar": group.flatMap { sliderValue($0, LogicUIStrings.Element.playheadBarSlider) } ?? bar,
+            "beat": group.flatMap { sliderValue($0, LogicUIStrings.Element.playheadBeatSlider) } ?? beat,
             "rewound_first": rewound,
             "transport_rolling": rolling,
             "on_grid": isZero(after).map { $0 as Any } ?? NSNull() as Any
@@ -670,20 +676,20 @@ extension LogicAccessibility {
         let targetLength = endBar - startBar
 
         let ruler = try rulerArea()
-        guard let region = rulerChild(ruler, "cycle region") else {
+        guard let region = rulerChild(ruler, LogicUIStrings.Element.cycleRegion) else {
             throw LogicianError.trackNotExposed(requested: "cycle region", exposed: "no cycle region in the ruler")
         }
         let originalLength = cycleLengthBars(region)
 
         let controlBar = try controlBarGroup()
         guard let lcd = playheadGroup(in: controlBar),
-              let savedBar = sliderValue(lcd, "bar"),
-              let savedBeat = sliderValue(lcd, "beat") else {
+              let savedBar = sliderValue(lcd, LogicUIStrings.Element.playheadBarSlider),
+              let savedBeat = sliderValue(lcd, LogicUIStrings.Element.playheadBeatSlider) else {
             throw LogicianError.windowNotFound("Playhead Position display in the control bar")
         }
         defer {
-            try? convergeSlider(in: controlBar, sliderName: "bar", target: savedBar)
-            try? convergeSlider(in: controlBar, sliderName: "beat", target: savedBeat)
+            try? convergeSlider(in: controlBar, sliderName: LogicUIStrings.Element.playheadBarSlider, target: savedBar)
+            try? convergeSlider(in: controlBar, sliderName: LogicUIStrings.Element.playheadBeatSlider, target: savedBeat)
         }
 
         // Snapshot helper: Logic auto-scrolls the view when the playhead moves,
@@ -691,8 +697,8 @@ extension LogicAccessibility {
         // and never compared across playhead moves.
         func snapshot() throws -> (regionX: CGFloat, regionY: CGFloat, thumbX: CGFloat, slope: CGFloat, rulerFrame: CGRect) {
             let freshRuler = try rulerArea()
-            guard let freshRegion = rulerChild(freshRuler, "cycle region"),
-                  let thumb = rulerChild(freshRuler, "Playhead thumb") else {
+            guard let freshRegion = rulerChild(freshRuler, LogicUIStrings.Element.cycleRegion),
+                  let thumb = rulerChild(freshRuler, LogicUIStrings.Element.playheadThumb) else {
                 throw LogicianError.windowNotFound("cycle region or playhead thumb in the ruler")
             }
             let regionFrame = try frame(of: freshRegion)
@@ -712,8 +718,8 @@ extension LogicAccessibility {
         let approximateBar = try approximateBarAt(x: initial.regionX, in: try rulerArea())
         var anchor: (bar: Int, thumbOffset: CGFloat, regionX: CGFloat, slope: CGFloat)?
         for candidate in [approximateBar, approximateBar - 1, approximateBar + 1] where candidate >= 1 {
-            try convergeSlider(in: controlBar, sliderName: "bar", target: candidate)
-            try convergeSlider(in: controlBar, sliderName: "beat", target: 1)
+            try convergeSlider(in: controlBar, sliderName: LogicUIStrings.Element.playheadBarSlider, target: candidate)
+            try convergeSlider(in: controlBar, sliderName: LogicUIStrings.Element.playheadBeatSlider, target: 1)
             Thread.sleep(forTimeInterval: 0.15)
             let snap = try snapshot()
             if abs(snap.regionX - snap.thumbX) <= snap.slope * 0.55 {
@@ -754,13 +760,13 @@ extension LogicAccessibility {
         let writeRoute: String
 
         func regionFrameNow() throws -> CGRect {
-            guard let current = rulerChild(try rulerArea(), "cycle region") else {
+            guard let current = rulerChild(try rulerArea(), LogicUIStrings.Element.cycleRegion) else {
                 throw LogicianError.windowNotFound("cycle region in the ruler")
             }
             return try frame(of: current)
         }
         func setRegionPosition(x: CGFloat) throws {
-            guard let current = rulerChild(try rulerArea(), "cycle region") else {
+            guard let current = rulerChild(try rulerArea(), LogicUIStrings.Element.cycleRegion) else {
                 throw LogicianError.windowNotFound("cycle region in the ruler")
             }
             var origin = CGPoint(x: x, y: preDrag.regionY)
@@ -813,15 +819,15 @@ extension LogicAccessibility {
         // Semantic verification: with the playhead on the start bar, the thumb
         // (plus the measured constant offset) must line up with the region edge,
         // and the region's size description must report the requested bar count.
-        try convergeSlider(in: controlBar, sliderName: "bar", target: startBar)
-        try convergeSlider(in: controlBar, sliderName: "beat", target: 1)
+        try convergeSlider(in: controlBar, sliderName: LogicUIStrings.Element.playheadBarSlider, target: startBar)
+        try convergeSlider(in: controlBar, sliderName: LogicUIStrings.Element.playheadBeatSlider, target: 1)
         Thread.sleep(forTimeInterval: 0.15)
         let verifySnap = try snapshot()
         let startError = (verifySnap.regionX - verifySnap.thumbX - anchored.thumbOffset) / verifySnap.slope
-        guard let resized = rulerChild(try rulerArea(), "cycle region"),
+        guard let resized = rulerChild(try rulerArea(), LogicUIStrings.Element.cycleRegion),
               abs(startError) <= 0.3,
               cycleLengthBars(resized) == targetLength else {
-            let actualLength = rulerChild((try? rulerArea()) ?? ruler, "cycle region")
+            let actualLength = rulerChild((try? rulerArea()) ?? ruler, LogicUIStrings.Element.cycleRegion)
                 .map { stringAttribute($0, "AXSizeDescription") } ?? "?"
             throw LogicianError.verificationFailed(
                 requested: "cycle bars \(startBar)-\(endBar) (\(targetLength) bars)",
@@ -833,7 +839,7 @@ extension LogicAccessibility {
         if let enabled = enabled {
             _ = try MCUController.setCycle(enabled) ?? setCycle(enabled: enabled)
         }
-        let finalCycle = controlBarChild(try controlBarGroup(), "Cycle")
+        let finalCycle = controlBarChild(try controlBarGroup(), LogicUIStrings.Element.cycleButton)
             .map { stringAttribute($0, kAXValueAttribute as String) == "1" }
 
         return [
@@ -858,7 +864,8 @@ extension LogicAccessibility {
         let mainWindow = try projectWindow()
         let ruler = firstDescendant(of: mainWindow, maximumDepth: AXDepth.timeRuler) { element in
             stringAttribute(element, kAXRoleAttribute as String) == "AXLayoutArea"
-                && stringAttribute(element, kAXDescriptionAttribute as String) == "Tracks time ruler"
+                && stringAttribute(element, kAXDescriptionAttribute as String)
+                == LogicUIStrings.Element.tracksTimeRuler
         }
         guard let area = ruler else {
             throw LogicianError.windowNotFound("Tracks time ruler")
@@ -887,8 +894,8 @@ extension LogicAccessibility {
     /// Pixels per bar, from the ruler's project Start/End markers whose
     /// AXValueDescription names their bar ("1 bar ", "82 bars ").
     func pixelsPerBar(in ruler: AXUIElement) throws -> CGFloat {
-        guard let start = rulerChild(ruler, "Start Marker"),
-              let end = rulerChild(ruler, "End Marker"),
+        guard let start = rulerChild(ruler, LogicUIStrings.Element.startMarker),
+              let end = rulerChild(ruler, LogicUIStrings.Element.endMarker),
               let startBar = leadingInt(stringAttribute(start, kAXValueDescriptionAttribute as String)),
               let endBar = leadingInt(stringAttribute(end, kAXValueDescriptionAttribute as String)),
               endBar > startBar else {
@@ -904,7 +911,7 @@ extension LogicAccessibility {
     }
 
     func approximateBarAt(x: CGFloat, in ruler: AXUIElement) throws -> Int {
-        guard let start = rulerChild(ruler, "Start Marker"),
+        guard let start = rulerChild(ruler, LogicUIStrings.Element.startMarker),
               let startBar = leadingInt(stringAttribute(start, kAXValueDescriptionAttribute as String)) else {
             throw LogicianError.windowNotFound("Start marker in the ruler")
         }
@@ -916,7 +923,7 @@ extension LogicAccessibility {
     func cycleLengthBars(_ region: AXUIElement) -> Int? {
         let description = stringAttribute(region, "AXSizeDescription")
         guard let bars = leadingInt(description),
-              description.range(of: "beat", options: .caseInsensitive) == nil,
+              description.range(of: LogicUIStrings.Element.beat, options: .caseInsensitive) == nil,
               description.range(of: "division", options: .caseInsensitive) == nil else {
             return nil
         }
@@ -929,7 +936,7 @@ extension LogicAccessibility {
 
     func restoreRegionPosition(to x: CGFloat, y: CGFloat) {
         guard let ruler = try? rulerArea(),
-              let region = rulerChild(ruler, "cycle region") else { return }
+              let region = rulerChild(ruler, LogicUIStrings.Element.cycleRegion) else { return }
         var origin = CGPoint(x: x, y: y)
         guard let value = AXValueCreate(.cgPoint, &origin) else { return }
         _ = AXUIElementSetAttributeValue(region, kAXPositionAttribute as CFString, value)
@@ -1078,8 +1085,10 @@ extension LogicAccessibility {
         let mainWindow = try projectWindow()
         let bar = firstDescendant(of: mainWindow, maximumDepth: AXDepth.controlBar) { element in
             stringAttribute(element, kAXRoleAttribute as String) == "AXGroup"
-                && stringAttribute(element, kAXDescriptionAttribute as String) == "Control Bar"
-                && stringAttribute(element, kAXHelpAttribute as String).hasPrefix("Control bar")
+                && stringAttribute(element, kAXDescriptionAttribute as String)
+                    == LogicUIStrings.Element.controlBar
+                && stringAttribute(element, kAXHelpAttribute as String)
+                    .hasPrefix(LogicUIStrings.Element.controlBarHelpPrefix)
         }
         guard let group = bar else {
             throw LogicianError.windowNotFound("Control Bar group")
@@ -1095,10 +1104,11 @@ extension LogicAccessibility {
 
     func playheadGroup(in controlBar: AXUIElement) -> AXUIElement? {
         guard let inner = children(of: controlBar).first(where: {
-            stringAttribute($0, kAXDescriptionAttribute as String) == "Control Bar"
+            stringAttribute($0, kAXDescriptionAttribute as String) == LogicUIStrings.Element.controlBar
         }) else { return nil }
         return children(of: inner).first {
-            stringAttribute($0, kAXDescriptionAttribute as String) == "Playhead Position"
+            stringAttribute($0, kAXDescriptionAttribute as String)
+                == LogicUIStrings.Element.playheadPosition
         }
     }
 
