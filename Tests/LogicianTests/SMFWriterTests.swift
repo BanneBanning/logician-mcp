@@ -215,25 +215,29 @@ final class SMFWriterTests: XCTestCase {
         let bytes = [UInt8](data)
         // Header says four chunks: the conductor plus three tracks.
         XCTAssertEqual(Array(bytes[10..<12]), [0x00, 0x04])
+        // Walk the chunks by their declared lengths alone: every hop must land
+        // on an "MTrk", and the last must land exactly on the end of the file.
         var offset = 14
-        var seen: [(name: String, length: Int)] = []
+        var lengths: [Int] = []
         while offset < bytes.count {
             XCTAssertEqual(
                 String(decoding: bytes[offset..<(offset + 4)], as: UTF8.self), "MTrk",
-                "chunk at offset \(offset) is not an MTrk — a previous length is wrong"
+                "the hop to offset \(offset) missed a chunk header — a previous length is wrong"
             )
             let length = (Int(bytes[offset + 4]) << 24) | (Int(bytes[offset + 5]) << 16)
                 | (Int(bytes[offset + 6]) << 8) | Int(bytes[offset + 7])
-            seen.append((String(offset), length))
+            lengths.append(length)
             offset += 8 + length
         }
         XCTAssertEqual(offset, bytes.count, "the last chunk's length overruns or underruns the file")
-        XCTAssertEqual(seen.count, 4)
-        // Conductor: end-of-track only. Each named track: name meta + note pair.
-        XCTAssertEqual(seen[0].length, 4)
-        XCTAssertEqual(seen[1].length, 9 + 4 + 4 + 4)  // "Drums" is five characters
-        XCTAssertEqual(seen[2].length, 8 + 4 + 4 + 4)  // "Bass" four
-        XCTAssertEqual(seen[3].length, 8 + 4 + 4 + 4)  // "Keys" four
+        // Conductor: end-of-track only. Each named track: name meta, note-on,
+        // note-off, end of track.
+        XCTAssertEqual(lengths, [
+            4,
+            9 + 4 + 4 + 4,  // "Drums" is five characters
+            8 + 4 + 4 + 4,  // "Bass" four
+            8 + 4 + 4 + 4   // "Keys" four
+        ])
         let file = try SMFTestReader.read(data)
         XCTAssertEqual(file.declaredTrackCount, file.tracks.count)
         XCTAssertEqual(file.tracks.dropFirst().map(\.name), ["Drums", "Bass", "Keys"])
