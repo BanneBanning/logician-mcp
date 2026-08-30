@@ -26,7 +26,7 @@ extension LogicAccessibility {
     /// It never throws: a map that cannot be read means the bar math keeps the
     /// constant-meter assumption it has always had.
     func readMeterMap() -> (map: MeterMap?, failure: ListEditorFailure?, keySignatureRows: Int) {
-        let read = withListEditorsTab(named: "Signature") { window in
+        let read = withListEditorsTab(named: LogicUIStrings.Element.ListEditorTab.signature) { window in
             self.parseSignatureList(in: window)
         }
         if let failure = read.failure { return (nil, failure, 0) }
@@ -39,7 +39,7 @@ extension LogicAccessibility {
     private func parseSignatureList(
         in window: AXUIElement
     ) -> (map: MeterMap?, failure: ListEditorFailure?, keySignatureRows: Int) {
-        let read = readListEditorTable(tab: "Signature", in: window)
+        let read = readListEditorTable(tab: LogicUIStrings.Element.ListEditorTab.signature, in: window)
         guard let table = read.table else {
             return (nil, read.failure ?? .tableNotFound("Signature"), 0)
         }
@@ -51,7 +51,7 @@ extension LogicAccessibility {
         if let declared = table.declaredCount, declared != table.rows.count {
             return (
                 nil,
-                .countMismatch(tab: "Signature", rows: table.rows.count, declared: declared),
+                .countMismatch(tab: LogicUIStrings.Element.ListEditorTab.signature, rows: table.rows.count, declared: declared),
                 0
             )
         }
@@ -68,7 +68,7 @@ extension LogicAccessibility {
             case .keySignature:
                 keyRows += 1
             case .unreadable(let detail):
-                return (nil, .rowsUnreadable(tab: "Signature", detail: detail), keyRows)
+                return (nil, .rowsUnreadable(tab: LogicUIStrings.Element.ListEditorTab.signature, detail: detail), keyRows)
             }
         }
         guard let map = MeterMap(events: events, source: .signatureList) else {
@@ -77,7 +77,7 @@ extension LogicAccessibility {
             return (
                 nil,
                 .rowsUnreadable(
-                    tab: "Signature",
+                    tab: LogicUIStrings.Element.ListEditorTab.signature,
                     detail: "no time signature in \(table.rows.count) row(s)"
                 ),
                 keyRows

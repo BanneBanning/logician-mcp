@@ -88,7 +88,7 @@ extension LogicAccessibility {
         region: String?, failure: ListEditorFailure?
     ) {
         var region: String?
-        let read = readListEditorEntries(tab: "Event") { group in
+        let read = readListEditorEntries(tab: LogicUIStrings.Element.ListEditorTab.event) { group in
             // "Region Path" is the Event tab's own answer to "what am I
             // showing?" -- it read `Inst 4` while the list held that region's
             // 18 notes. Reported so the SCOPE of the answer travels with it
@@ -112,7 +112,7 @@ extension LogicAccessibility {
     func readMarkerList() -> (
         markers: [[String: Any]]?, columns: [String], failure: ListEditorFailure?
     ) {
-        let read = readListEditorEntries(tab: "Marker")
+        let read = readListEditorEntries(tab: LogicUIStrings.Element.ListEditorTab.marker)
         guard let entries = read.entries else { return (nil, read.columns, read.failure) }
         return (entries.map(ListEditorPayload.marker(from:)), read.columns, nil)
     }

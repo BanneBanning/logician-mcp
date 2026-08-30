@@ -386,8 +386,8 @@ extension LogicAccessibility {
               let region = rulerChild(ruler, LogicUIStrings.Element.cycleRegion) else { return nil }
         switch stringAttribute(region, kAXValueDescriptionAttribute as String)
             .trimmingCharacters(in: .whitespaces).lowercased() {
-        case "on": return true
-        case "off": return false
+        case LogicUIStrings.Value.on: return true
+        case LogicUIStrings.Value.off: return false
         default: return nil
         }
     }

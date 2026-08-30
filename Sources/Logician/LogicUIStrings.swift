@@ -290,8 +290,24 @@ enum LogicUIStrings {
         // MARK: List Editors
 
         /// The four List Editors tabs, by the radio buttons' descriptions.
-        /// Read by `tempoListTabs(in:)` and everything scoped through it.
-        static let listEditorTabs = ["Event", "Marker", "Tempo", "Signature"]
+        /// Read by `tempoListTabs(in:)` and, as the `named:`/`tab:` argument,
+        /// by every tool scoped through it — the event, marker, tempo and
+        /// signature lists. They are also the tab names those tools print in
+        /// their own failure payloads, which is why they come from here rather
+        /// than being typed at each of the twenty call sites.
+        ///
+        /// `tempo` is spelled the same as `Element.tempo` (the control bar's
+        /// LCD field) and is a separate entry on purpose: same word, two
+        /// unrelated controls, and a translation may well differ.
+        enum ListEditorTab {
+            static let event = "Event"
+            static let marker = "Marker"
+            static let tempo = "Tempo"
+            static let signature = "Signature"
+            static let all = [event, marker, tempo, signature]
+        }
+
+        static let listEditorTabs = ListEditorTab.all
         /// The count text every List Editors tab publishes.
         static let numberOfItems = "Number of Items"
         /// The Event tab's "what am I showing?" field.
@@ -462,8 +478,12 @@ enum LogicUIStrings {
     /// back INTO one. These leak into tool arguments and results, so a
     /// translation here is an API change as well as a UI one.
     enum Value {
-        /// A track header toggle's lit state is the word, not `"1"`.
+        /// A track header toggle's lit state is the word, not `"1"`. The
+        /// ruler's cycle region publishes the same pair as its
+        /// `AXValueDescription`, which is the fallback cycle read for a window
+        /// too narrow to show the Cycle button.
         static let on = "on"
+        static let off = "off"
         /// The bounce dialog's destination row this server insists on.
         static let uncompressed = "Uncompressed"
         /// The bounce dialog's delivery pop-up labels, paired with their

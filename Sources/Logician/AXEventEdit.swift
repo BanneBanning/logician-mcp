@@ -51,7 +51,7 @@ extension LogicAccessibility {
     private func eventTable(
         in window: AXUIElement
     ) -> (table: ListEditorTable, rows: [EventRow])? {
-        let (table, _) = readListEditorTable(tab: "Event", in: window)
+        let (table, _) = readListEditorTable(tab: LogicUIStrings.Element.ListEditorTab.event, in: window)
         guard let table else { return nil }
         return (table, EventListWrite.rows(cells: table.rows.map(\.cells), columns: table.columns))
     }
@@ -278,7 +278,7 @@ extension LogicAccessibility {
             steps.append("playhead parked at bar \(address.bar) beat \(address.beat ?? 1)")
         }
 
-        let outcome = withListEditorsTab(named: "Event") { window -> Result<[String: Any], LogicianError> in
+        let outcome = withListEditorsTab(named: LogicUIStrings.Element.ListEditorTab.event) { window -> Result<[String: Any], LogicianError> in
             self.runEventEdit(
                 window: window, action: action, address: address, change: change, steps: &steps
             )

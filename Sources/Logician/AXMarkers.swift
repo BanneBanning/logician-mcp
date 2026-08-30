@@ -18,8 +18,8 @@ extension LogicAccessibility {
         name: String?, bar: Int?,
         body: (ListEditorRow, ListEditorTable) -> Value
     ) throws -> Value {
-        let read = withListEditorsTab(named: "Marker") { window -> (ListEditorTable?, Value?, Error?) in
-            let table = self.readListEditorTable(tab: "Marker", in: window).table
+        let read = withListEditorsTab(named: LogicUIStrings.Element.ListEditorTab.marker) { window -> (ListEditorTable?, Value?, Error?) in
+            let table = self.readListEditorTable(tab: LogicUIStrings.Element.ListEditorTab.marker, in: window).table
             guard let table else { return (nil, nil, nil) }
             let candidates = table.rows.filter { row in
                 if let name {
@@ -99,8 +99,8 @@ extension LogicAccessibility {
     /// Logic's ports are recreated. The key command stays as the fallback for a
     /// Logic version that does not publish the button.
     func pressCreateMarkerButton() -> Bool {
-        let read = withListEditorsTab(named: "Marker") { window -> Bool in
-            guard let table = self.readListEditorTable(tab: "Marker", in: window).table
+        let read = withListEditorsTab(named: LogicUIStrings.Element.ListEditorTab.marker) { window -> Bool in
+            guard let table = self.readListEditorTable(tab: LogicUIStrings.Element.ListEditorTab.marker, in: window).table
             else { return false }
             guard let button = self.children(of: table.group).first(where: {
                 self.stringAttribute($0, kAXRoleAttribute as String) == "AXButton"

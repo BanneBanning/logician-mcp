@@ -94,7 +94,7 @@ extension LogicAccessibility {
         var last: Double?
         var stalled = 0
         for _ in 0..<maxSteps {
-            let (table, _) = readListEditorTable(tab: "Tempo", in: window)
+            let (table, _) = readListEditorTable(tab: LogicUIStrings.Element.ListEditorTab.tempo, in: window)
             guard let table, let row = table.rows.first(where: {
                 TempoMap.parseTempoListPosition($0.cell(0))?.bar == bar
             }), let current = TempoMap.parseTempoListBPM(row.cell(1)) else {
@@ -244,8 +244,8 @@ extension LogicAccessibility {
         }
 
         if action == "create" {
-            let created = withListEditorsTab(named: "Tempo") { window -> String? in
-                let (table, _) = self.readListEditorTable(tab: "Tempo", in: window)
+            let created = withListEditorsTab(named: LogicUIStrings.Element.ListEditorTab.tempo) { window -> String? in
+                let (table, _) = self.readListEditorTable(tab: LogicUIStrings.Element.ListEditorTab.tempo, in: window)
                 guard let table, let button = self.firstDescendant(
                     of: table.group, maximumDepth: AXDepth.listEditorTable,
                     where: {
@@ -262,7 +262,7 @@ extension LogicAccessibility {
                 // position steppers are the second chance, and if THEY are not
                 // published the event is removed again rather than left in the
                 // user's tempo track at a position nobody asked for.
-                let (after, _) = self.readListEditorTable(tab: "Tempo", in: window)
+                let (after, _) = self.readListEditorTable(tab: LogicUIStrings.Element.ListEditorTab.tempo, in: window)
                 guard let after else { return "the Tempo List could not be re-read after the create" }
                 guard let row = after.rows.first(where: { row in
                     TempoMap.parseTempoListPosition(row.cell(0))?.bar == bar
@@ -274,7 +274,7 @@ extension LogicAccessibility {
                 }
                 self.selectListEditorRow(row, in: after)
                 Thread.sleep(forTimeInterval: 0.5)
-                let (selected, _) = self.readListEditorTable(tab: "Tempo", in: window)
+                let (selected, _) = self.readListEditorTable(tab: LogicUIStrings.Element.ListEditorTab.tempo, in: window)
                 let live = selected?.rows.first { candidate in
                     TempoMap.parseTempoListPosition(candidate.cell(0))?.bar == bar
                 }
@@ -306,7 +306,7 @@ extension LogicAccessibility {
 
         if action == "create" || action == "set" {
             guard let bpm else { throw LogicianError.invalidArguments("bpm required") }
-            let outcome = withListEditorsTab(named: "Tempo") { window -> (Double?, Int) in
+            let outcome = withListEditorsTab(named: LogicUIStrings.Element.ListEditorTab.tempo) { window -> (Double?, Int) in
                 self.convergeRowTempo(in: window, bar: bar, to: bpm)
             }
             if let failure = outcome.failure {
@@ -319,8 +319,8 @@ extension LogicAccessibility {
         }
 
         if action == "delete" {
-            let deleted = withListEditorsTab(named: "Tempo") { window -> String? in
-                let (table, _) = self.readListEditorTable(tab: "Tempo", in: window)
+            let deleted = withListEditorsTab(named: LogicUIStrings.Element.ListEditorTab.tempo) { window -> String? in
+                let (table, _) = self.readListEditorTable(tab: LogicUIStrings.Element.ListEditorTab.tempo, in: window)
                 guard let table else { return "the Tempo List could not be read" }
                 guard let row = table.rows.first(where: { candidate in
                     let position = TempoMap.parseTempoListPosition(candidate.cell(0))
