@@ -169,7 +169,8 @@ extension MCPServer {
                         "normalize": ["type": "string", "description": "Off, Overload Protection Only, or On. 'On' changes the level of the delivered file - say so when you report the result."],
                         "include_audio_tail": ["type": "boolean", "description": "Let reverb/delay tails ring past the end bar into the file."],
                         "expected_project_path": ["type": "string"],
-                        "include_audio": MCPServer.includeAudioProperty
+                        "include_audio": MCPServer.includeAudioProperty,
+                        "blind": MCPServer.blindProperty
                     ],
                     "required": ["start_bar", "end_bar"],
                     "additionalProperties": false
@@ -265,7 +266,8 @@ extension MCPServer {
                         "beats_per_bar": ["type": "number", "description": "Override meter for bar math; default reads the control bar's time signature."],
                         "keep_change": ["type": "boolean", "description": "true keeps the change after measuring; default false rolls it back."],
                         "expected_project_path": ["type": "string", "description": "Refuse unless this is the open project."],
-                        "include_audio": MCPServer.includeAudioProperty
+                        "include_audio": MCPServer.includeAudioProperty,
+                        "blind": MCPServer.blindProperty
                     ],
                     "required": ["track_name", "parameter", "expected_current_value", "target_value", "start_bar", "end_bar", "method"],
                     "additionalProperties": false
@@ -1291,7 +1293,8 @@ extension MCPServer {
                         "tempo": ["type": "number", "description": "Override BPM for the bar math; default reads the control bar. Only used when the tempo map cannot be read from the Tempo List — a readable map is integrated instead. Constant METER is still assumed (signature changes are not read)."],
                         "beats_per_bar": ["type": "number", "description": "Override meter; default reads the control bar's time signature."],
                         "expected_project_path": ["type": "string", "description": "Absolute .logicx path; when given, the open project's AXDocument must match before anything is changed."],
-                        "include_audio": MCPServer.includeAudioProperty
+                        "include_audio": MCPServer.includeAudioProperty,
+                        "blind": MCPServer.blindProperty
                     ],
                     "required": ["track_name"],
                     "additionalProperties": false
@@ -2061,6 +2064,19 @@ extension MCPServer {
         // Said here rather than in four descriptions: the link is the reason
         // false is no longer a dead end.
         "description": "Attach the rendered audio as MCP audio content blocks, default true — see AUDIO RESULTS in the server instructions before passing false. Either way the result carries a resource_link to logician://captures/<filename>, so false still leaves you able to fetch the audio with resources/read."
+    ] }
+
+    /// The `blind: true` opt-in, declared identically by the three tools whose
+    /// results carry audio AND measurements of it (logic_bounce_range,
+    /// logic_render_track, logic_evaluate_change). What it withholds, what it
+    /// deliberately keeps and why the seal is a file rather than a key is the
+    /// `Blind` type's documentation; the workflow it belongs to is the
+    /// instructions' LISTENING paragraph, so this says the minimum and points
+    /// there. Computed for the same reason as `includeAudioProperty`:
+    /// `[String: Any]` is not Sendable.
+    static var blindProperty: [String: Any] { [
+        "type": "boolean",
+        "description": "LISTEN FIRST: withhold this result's measurements of the audio — peak/RMS metrics and, for an A/B, the dB deltas — so the only thing left to describe the sound from is the sound. The audio blocks, every file path, `success`, `verified`, `state` and any `warning` all still come back untouched, and the withheld keys are sealed into the JSON file named by `sealed_metrics_path`, which you open AFTER writing down what you heard (nothing is re-rendered). Default false. If you can receive audio, pass true on your FIRST listen of any material — see LISTENING in the server instructions."
     ] }
 
     /// What `tools/list` puts on the wire, derived from the registry —

@@ -678,6 +678,11 @@ final class MCPServer: @unchecked Sendable {
         var textPayload = payload
         var audioBlocks: [[String: Any]] = []
         if var object = payload as? [String: Any] {
+            // Whether this payload was an AUDIO-CARRYING one, decided BEFORE
+            // the keys are lifted out and independently of `includeAudio`: a
+            // result whose blocks were suppressed still sends the agent to the
+            // file paths, so it still owes the same epistemic warning.
+            let carriedAudio = object["_audio"] != nil || object["_audio_list"] != nil
             if let audio = object["_audio"] as? [String: String],
                let data = audio["data"], let mime = audio["mimeType"] {
                 audioBlocks.append(["type": "audio", "data": data, "mimeType": mime])
@@ -700,6 +705,19 @@ final class MCPServer: @unchecked Sendable {
                     object["listen_note"] = omitted
                 } else if object["note"] != nil {
                     object["note"] = omitted
+                }
+            }
+            // The epistemics line, after the omission rewrite so it survives
+            // it. Attached to whichever note the agent is already going to
+            // read; a result that carries audio and no note at all gets one.
+            if carriedAudio {
+                if let existing = object["listen_note"] as? String {
+                    object["listen_note"] = existing + Tool.epistemicsNote
+                } else if let existing = object["note"] as? String {
+                    object["note"] = existing + Tool.epistemicsNote
+                } else {
+                    object["listen_note"] = Tool.epistemicsNote
+                        .trimmingCharacters(in: .whitespaces)
                 }
             }
             textPayload = object

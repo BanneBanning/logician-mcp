@@ -197,4 +197,18 @@ struct Tool {
     static let mcuInsertSlotNote = " MACKIE physical slot 1-8 (logic_list_inserts route 'mcu'), NOT the Accessibility insert_index — see INSERT NUMBERING in the server instructions."
 
     static let evaluateChangeListenNote = "Do not decide keep/rollback from the numbers alone: LISTEN to baseline_audio and after_audio (open the preview/clip files with your client's file viewer) before judging."
+
+    /// Appended by `toolResult` to the note of EVERY result that carried audio
+    /// — the bounce, the render, the A/B and the clip — rather than declared
+    /// per tool like `listenNote`.
+    ///
+    /// It answers a failure mode a live multimodal round produced and no
+    /// result key can detect: given the audio AND the metadata, the model
+    /// described region names it had read as things it had heard. The
+    /// `blind: true` argument is the tool for avoiding that; this sentence is
+    /// the standing reminder for the calls that do not pass it, delivered at
+    /// the only moment it can land — beside the audio itself. ONE sentence on
+    /// purpose: the note it joins already carries the mix-by-ear contract, and
+    /// a paragraph here would be read as boilerplate and skipped.
+    static let epistemicsNote = " Separate what you HEARD from what you read in metadata: region names, track names and metrics are not listening, and must never be presented as heard."
 }

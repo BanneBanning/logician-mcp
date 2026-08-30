@@ -88,7 +88,16 @@ extension MCPServer {
             // reason those tools exist. A client that stringifies unknown
             // content blocks instead can now ask for the paths alone.
             let includeAudio = arguments["include_audio"] as? Bool ?? true
-            let payload = try tool.handler(self)(arguments)
+            var payload = try tool.handler(self)(arguments)
+            // `blind: true` — withhold the describable metadata so the audio
+            // in this same result is the only thing left to describe it from.
+            // Applied HERE, centrally, for the same reason the listen note is:
+            // the withholding must not depend on which of a tool's three
+            // methods produced the payload. Before the listen note, so the
+            // note the agent reads is the one attached to the blind result.
+            if arguments["blind"] as? Bool == true {
+                payload = Blind.applied(toolName: name, payload: payload)
+            }
             // Every write that changes how the song SOUNDS carries a standing
             // instruction to judge it by ear. Parameter and fader numbers say
             // nothing about how loud or good something IS (recordings differ,
