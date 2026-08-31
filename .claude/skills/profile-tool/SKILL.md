@@ -1,65 +1,71 @@
 ---
 name: profile-tool
-description: Profile one Logician tool phase-by-phase with wall-clock timing against live Logic, rank its optimizations, ship the safe ones, and record it all in the optimization ledger. Pass the tool name as the argument, e.g. /profile-tool logic_mixer_snapshot.
+description: Profile one Logician tool phase-by-phase with wall-clock timing against live Logic and DOCUMENT its optimization candidates in the ledger — measurement only, no code changes. Pass the tool name as the argument, e.g. /profile-tool logic_mixer_snapshot.
 ---
 
-# Profile one tool — the efficiency campaign's unit of work
+# Profile one tool — measure and document, do not fix
 
-You are profiling ONE tool of the Logician MCP server (the repo you are in), the way
-the EQ-write flow was profiled (see the reference report
-`/Users/dev/Desktop/Progg/Random Projekt/Logician-archive/PROFILING-EQ-WRITE.md`
-and the ledger `TOOL-OPTIMIZATION-LEDGER.md` beside it). The tool name is the skill's
-argument; refuse politely if it is not in the registry.
+You are profiling ONE tool of the Logician MCP server (the repo you are in). The
+tool name is the skill's argument; refuse politely if it is not in the registry.
+
+**This skill is measurement-only.** Earlier profiles (see
+`Logician-archive/profiles/logic_add_plugin.md` and `logic_add_send.md`) shipped
+their fixes too and took an hour+ per tool. That is over: the candidates repeat
+across tools, so they are DOCUMENTED here and implemented later in batched
+passes the user reviews. You change no source code except temporary
+instrumentation, which you fully revert. No commits. Target: well under
+30 minutes per tool.
 
 ## The doctrine (read before profiling)
 
-- **Target: human parity.** A person performs the common version of most of these
-  intents in 1–2 s. A warm call should land in that class. Call count matters as much
-  as call speed — if this tool is usually one link in a multi-call chain, folding the
-  chain into one call is a first-class finding.
-- **Cut WAITS, not VERIFICATION.** Everything cacheable gets cached (with the house
-  ScopedCache discipline — per build, per project, delete-on-mismatch). Sleeps and
-  quiescence windows that buy the last 10% of certainty are replaced by fast POSITIVE
-  checks (does the LCD/element already show the expected content?) with honest
-  fallback: one retry, or `verified: false` with the reason. 99% certain and 90%
-  faster beats 110% certain. What remains forbidden is SILENT wrongness — a fast
-  path that can misread must be caught by the existing readback/compare-and-set and
-  reported, never papered over.
-- **Constants are lowered by MEASUREMENT, never by guess.** A timing constant that
-  encodes real Logic repaint behavior (the comments say which) may only shrink after
-  its underlying distribution is measured (log the real gaps/latencies across many
-  samples; threshold = observed max + margin).
+- **Target: human parity** — a person does the common version of most intents in
+  1–2 s; a warm call should be in that class. Call count is a first-class cost.
+- **Cut WAITS, not VERIFICATION.** Silent wrongness stays forbidden.
+- **Constants shrink only via measured distributions**, never by guess.
 
 ## Procedure
 
-1. **Map the path**: read the tool's handler and every internal call it makes; list
-   the phases with file:line. Note every `Thread.sleep`/poll/quiescence wait on the
-   path and every cache it reads or fails to read.
-2. **Instrument temporarily**: Date()-bracket the phases (stderr or in-memory log).
-   The shipped tree must be byte-identical afterwards (`git status` clean) — same
-   rule as the temp-XCTest pattern.
-3. **Run the matrix live** (sandbox project "Testlåt Copy"; standing rules:
-   never save, no blind Undo, no second `logician --bridge`, probe for modals, leave
-   the surface in PN view and the project at baseline; restore anything you write;
-   Bash with AX/socket needs dangerouslyDisableSandbox: true): ≥3 warm runs + 1 cold
-   (relevant caches cleared — note which caches this tool even touches), plus the
-   tool's meaningful variants (routes, scopes, sizes). Mean + spread per phase.
-4. **Analyze**: phase table (phase → file:line → ms warm/cold → % of total) and a
-   RANKED optimization list — mechanism, estimated saving, risk (LOW/MEDIUM/HIGH),
-   and whether it is tool-local or cross-tool (cross-tool candidates go to the
-   ledger's standing list instead of being half-fixed locally).
-5. **Ship the obviously safe ones** (waits that never fire, missing cache
-   populations, redundant re-reads) with tests; everything else is report-only.
-   `swift build -c release -Xswiftc -warnings-as-errors` + `swift test` green.
-   Commit on main, do NOT push (the orchestrator reviews).
-6. **Record**: write the full report to
-   `Logician-archive/profiles/<tool>.md`, then update the tool's row in
-   `TOOL-OPTIMIZATION-LEDGER.md` — measured cost, check the Profiled box, note what
-   shipped and what is pending. If the profile re-measured a number the README's
-   "How fast is it?" table states, flag the discrepancy in your report (do not edit
-   the README — the user owns its voice).
+1. **Pattern triage first (code reading, no Logic).** Read the tool's handler
+   and every internal call; list the phases with file:line. Then check the path
+   against the ledger's "Proven patterns" section and standing cross-tool list
+   (`Logician-archive/TOOL-OPTIMIZATION-LEDGER.md`). Known repeat offenders and
+   their measured prices from earlier profiles: `exitToPan` walks home from a
+   view the flow re-enters (1.3–3.4 s each), `sendViewLeftmost`/page
+   normalisation without a positive early-exit (~1 s), blind `Thread.sleep`
+   (its full duration), duplicate `ensurePanNames`/view entries, one-entry-at-a-
+   time catalog walks (jump mechanism proven; note ticks-per-entry differs per
+   browser), unpaced message streams (Logic swallows messages sent into an
+   unfinished repaint), missing cache population on a computing path. Every hit
+   goes straight into the candidate list with an estimated saving borrowed from
+   the pattern's measured price — no experiment needed to re-prove a proven
+   pattern.
+2. **Instrument temporarily**: Date()-bracket the phases behind the usual env
+   guard. The tree must be byte-identical afterwards — verify with `git status`
+   / `git diff` yourself.
+3. **Run a LIGHT matrix live** (sandbox project "Testlåt Copy"; standing
+   rules: never save, no blind Undo, no second `logician --bridge`, probe for
+   modals, unknown dialog → Cancel, leave the surface in PN view and the project
+   at baseline, restore anything you write; Bash with AX/socket needs
+   dangerouslyDisableSandbox: true): **2 warm runs + 1 cold** (note which caches
+   the tool touches), plus extra variants ONLY when the phase table says cost
+   depends on them. Do not run side experiments (jump proofs, catalog
+   enumeration, distribution logging) — if one would be needed to size a
+   candidate, write the candidate as "unsized, needs <experiment>" and move on.
+4. **Document**: a compact report at `Logician-archive/profiles/<tool>.md` —
+   the phase table (phase → file:line → ms warm/cold → %), the totals, and the
+   candidate list where each entry is either a NAMED KNOWN PATTERN (with
+   file:line and borrowed estimate) or a genuinely new finding (with mechanism,
+   estimate, risk). Defects that make correct calls fail or lie are still gold:
+   document them prominently and offer a background-task chip, but do not fix
+   them. If the profile contradicts a README "How fast is it?" number, flag it
+   in the report — never edit the README.
+5. **Record**: update the tool's row in `TOOL-OPTIMIZATION-LEDGER.md` (measured
+   cost, Profiled ☑, candidates by pattern name). Add genuinely new cross-tool
+   patterns to the standing list.
 
 ## Report back
 
-The phase table, the totals (warm/cold, per variant), the ranked list with savings
-and risks, what shipped, and the one-line ledger update you made.
+Totals (warm/cold), the phase table, the candidate list grouped as
+known-pattern vs new, any defects found, and the one-line ledger update. The
+optimizations themselves happen later, in batched passes across all profiled
+tools — that is the user's call, not this session's.

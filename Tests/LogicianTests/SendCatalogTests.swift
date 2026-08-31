@@ -73,50 +73,94 @@ final class SendCatalogTests: XCTestCase {
 
     // MARK: - Cutting the destination out of the row
 
-    /// These rows are SYNTHETIC, and say so: they exercise the cut rule, and
-    /// they make no claim about how Logic pads the row it paints while a
-    /// destination is being browsed (`SendViewRowTests` holds the captured
-    /// rows, and its captures are all TOP rows). What the rule has to do is
-    /// read forward from the slot's own cell, stop at the first wide gap
-    /// because a browsed name spills past its cell, and not carry a
-    /// neighbour's `--` home with it.
-    func testTheNameIsReadForwardFromTheSlotsOwnCellAndCutAtTheGap() {
-        // Built out of 7-character cells rather than written out, so the
-        // fixture cannot be a column off and quietly test the wrong thing.
-        let row = ["Bus 1", "", "", "", "Bus 90", "", "", ""]
-            .map { $0.padding(toLength: 7, withPad: " ", startingAt: 0) }
-            .joined()
-        XCTAssertEqual(row.count, MCULCDRow.length)
-        XCTAssertEqual(MCUController.sendDestinationCell(row, destIndex: 0), "Bus 1")
-        XCTAssertEqual(MCUController.sendDestinationCell(row, destIndex: 4), "Bus 90")
+    /// The TOP rows below are verbatim captures — the same ones
+    /// `SendViewRowTests` documents — because the top row is the half that
+    /// decides this read: it is what tells a browse (banner up, name allowed to
+    /// spill past its cell) from a settled slot (every cell labelled, the
+    /// neighbours are other fields). The bottom rows are built from 7-character
+    /// cells, and the settled one is the row the live
+    /// `logic_remove_send` failure of 2026-08-31 quoted back
+    /// (*"the field reads 'Bus 90 -oodB  PosPan active'"*).
+    private let browsingSlot1Top =
+        "Send 1 Destination   -      Sen2In -      -      -      "
+    private let settledSlot1Top =
+        "Sen1In Send 1 Sen1Po Sen1Mu Sen2In -      -      -      "
+    private let browsingSlot2Top =
+        "Sen1In Send 1 Sen1Po Sen1Mu Send 2 Destination   -      "
+
+    private func row(_ cells: [String]) -> String {
+        let padded = cells.map { $0.padding(toLength: 7, withPad: " ", startingAt: 0) }.joined()
+        return padded.padding(toLength: MCULCDRow.length, withPad: " ", startingAt: 0)
     }
 
-    /// A name longer than its 7-character cell is the ordinary case here, not
-    /// the exception: `Output 3-4` is ten characters and was browsed to and
-    /// created live on 2026-08-31.
-    func testANameLongerThanItsCellIsReadWhole() {
-        let row = "Output 3-4                                              "
-        XCTAssertEqual(row.count, MCULCDRow.length)
-        XCTAssertEqual(MCUController.sendDestinationCell(row, destIndex: 0), "Output 3-4")
-    }
-
-    /// A neighbour's `--` carried into the read is the contamination that used
-    /// to defeat the plug-in browser's wrap test, and it would defeat the exact
-    /// name match the press is gated on here.
-    func testANeighboursEmptyMarkerIsTakenBackOff() {
+    /// A browsed name spills past its own cell — `Output 3-4` is ten characters
+    /// and a cell holds six — and the banner leaves the cells it spills into
+    /// unlabelled, which is the licence to read on.
+    func testABrowsedNameIsReadOnPastItsOwnCell() {
+        let bottom = row(["Output", "3-4", "", "", "", "", "", ""])
         XCTAssertEqual(
-            MCUController.sendDestinationCell(
-                "Bus 90 --                                               ", destIndex: 0
-            ),
+            MCUController.sendDestinationCell(top: browsingSlot1Top, bottom: bottom, destIndex: 0),
+            "Output 3-4"
+        )
+    }
+
+    /// The live failure this read exists to end: a SETTLED slot's neighbours
+    /// are its level, position and status, and reading on into them returned
+    /// the whole field group as though it were the destination's name.
+    func testASettledSlotStopsAtItsOwnCell() {
+        let bottom = row(["Bus 90", "-oodB", "PosPan", "active", "", "", "", ""])
+        XCTAssertEqual(bottom.prefix(28), "Bus 90 -oodB  PosPan active ")
+        XCTAssertEqual(
+            MCUController.sendDestinationCell(top: settledSlot1Top, bottom: bottom, destIndex: 0),
             "Bus 90"
         )
-        // An empty slot is still empty: the marker is only stripped when there
-        // is a name in front of it.
+    }
+
+    /// Slot 2's group starts at cell 4, and send 1's settled fields must not
+    /// leak into it in either direction.
+    func testTheSecondSlotIsReadAtItsOwnFieldGroup() {
+        let bottom = row(["Bus 1", "-12,2", "Post", "active", "Stereo", "Output", "", ""])
         XCTAssertEqual(
-            MCUController.sendDestinationCell(
-                "--     --                                               ", destIndex: 0
-            ),
+            MCUController.sendDestinationCell(top: browsingSlot2Top, bottom: bottom, destIndex: 4),
+            "Stereo Output"
+        )
+        XCTAssertEqual(
+            MCUController.sendDestinationCell(top: browsingSlot2Top, bottom: bottom, destIndex: 0),
+            "Bus 1"
+        )
+    }
+
+    /// A name that spills mid-word comes back as Logic spelled it: the text is
+    /// sliced out of the raw row, not rejoined from trimmed cells with invented
+    /// spaces. A cell is seven characters, so `Compressor` breaks after
+    /// `Compres` — there is no space at the boundary to rejoin on.
+    func testANameThatSpillsMidWordIsNotGivenASpace() {
+        let bottom = row(["Compres", "sor", "", "", "", "", "", ""])
+        XCTAssertEqual(
+            MCUController.sendDestinationCell(top: browsingSlot1Top, bottom: bottom, destIndex: 0),
+            "Compressor"
+        )
+    }
+
+    /// An empty slot reads as the empty marker, and a neighbour's marker is
+    /// never read as part of a name — the contamination that used to defeat the
+    /// plug-in browser's wrap test, and that would defeat the exact name match
+    /// the confirming press is gated on here.
+    func testPlaceholdersAreNotReadAsPartOfAName() {
+        let empty = row([MCULCDStrings.emptySlot, MCULCDStrings.emptySlot, "", "", "", "", "", ""])
+        XCTAssertEqual(
+            MCUController.sendDestinationCell(top: browsingSlot1Top, bottom: empty, destIndex: 0),
             MCULCDStrings.emptySlot
+        )
+        let named = row(["Bus 90", MCULCDStrings.emptySlot, "", "", "", "", "", ""])
+        XCTAssertEqual(
+            MCUController.sendDestinationCell(top: browsingSlot1Top, bottom: named, destIndex: 0),
+            "Bus 90"
+        )
+        let clearing = row(["Bus 90", MCULCDStrings.clearingCell, "", "", "", "", "", ""])
+        XCTAssertEqual(
+            MCUController.sendDestinationCell(top: browsingSlot1Top, bottom: clearing, destIndex: 0),
+            "Bus 90"
         )
     }
 
@@ -227,33 +271,48 @@ final class SendCatalogTests: XCTestCase {
     // MARK: - Reading the send list back
 
     /// The send list's destination cell is six characters of Logic's own
-    /// abbreviation, so an exact compare called a good write a failure —
-    /// measured live 2026-08-31: `Output 3-4` was created and reported as
-    /// `verification_failed` with `restored: false`, and the send was in the
-    /// project the whole time. These two rows are what the surface said.
+    /// abbreviation, so the exact compare the add's readback used called a good
+    /// write a failure — measured live 2026-08-31: `Output 3-4` was created and
+    /// reported as `verification_failed` with `restored: false`, and the send
+    /// was in the project the whole time. `sendDestinationMatches` is the one
+    /// matcher both ends of the send tools use; `SendRemovalTests` pins the
+    /// removal's side of the same contract.
     func testTheSendListsAbbreviationIsAcceptedAsTheDestination() {
-        XCTAssertTrue(MCUController.sendListDestinationMatches("Out3-4", requested: "Output 3-4"))
-        XCTAssertTrue(MCUController.sendListDestinationMatches("Bus 90", requested: "Bus 90"))
-        XCTAssertTrue(MCUController.sendListDestinationMatches("  Bus 90 ", requested: "bus 90"))
+        XCTAssertTrue(MCUController.sendDestinationMatches(
+            requested: "Output 3-4", listed: "Out3-4"
+        ))
+        XCTAssertTrue(MCUController.sendDestinationMatches(requested: "Bus 90", listed: "Bus 90"))
+        XCTAssertTrue(MCUController.sendDestinationMatches(requested: "bus 90", listed: "Bus 90"))
     }
 
-    /// The confusion the tolerance must NOT admit: `Bus 1` is an ordered
-    /// subsequence of `Bus 12`, so a bare subsequence test would accept a send
-    /// to the wrong bus as proof of the right one.
-    func testAShorterBusIsNotAcceptedForALongerOne() {
-        XCTAssertFalse(MCUController.sendListDestinationMatches("Bus 1", requested: "Bus 12"))
-        XCTAssertFalse(MCUController.sendListDestinationMatches("Bus 12", requested: "Bus 1"))
-        XCTAssertFalse(MCUController.sendListDestinationMatches("Out3-4", requested: "Output 5-6"))
-        XCTAssertFalse(MCUController.sendListDestinationMatches("", requested: "Bus 90"))
-        XCTAssertFalse(MCUController.sendListDestinationMatches(
-            MCULCDStrings.emptySlot, requested: "Bus 90"
+    /// The frame that actually caused the false failure: while the browse
+    /// banner is still up, the slot's cell holds the first seven characters of
+    /// the browsed name. `Output` is an ordered subsequence of `Output 3-4`, so
+    /// only the trailing number keeps a repaint frame from passing as a
+    /// verified send.
+    func testATruncatedRepaintFrameIsNotProofOfASettledSend() {
+        XCTAssertFalse(MCUController.sendDestinationMatches(
+            requested: "Output 3-4", listed: "Output"
+        ))
+        XCTAssertFalse(MCUController.sendDestinationMatches(
+            requested: "Bus 100", listed: "Bus 10"
         ))
     }
 
-    /// A destination with no number at either end is matched on the
-    /// abbreviation alone, which is all there is to go on.
-    func testANumberlessDestinationIsMatchedOnItsAbbreviation() {
-        XCTAssertTrue(MCUController.sendListDestinationMatches("StOutp", requested: "Stereo Output"))
+    /// Live, 2026-08-31: a send created to `Bus 200` is listed as `B 200` —
+    /// Logic abbreviates past the space once the name needs more than the
+    /// cell's six content characters. Nothing shorter than `Bus 100` does, which
+    /// is why this only became reachable when the add browse stopped stopping at
+    /// `Bus 72`.
+    func testTheHeavierAbbreviationOfADeepBusIsAccepted() {
+        XCTAssertTrue(MCUController.sendDestinationMatches(requested: "Bus 200", listed: "B 200"))
+        XCTAssertTrue(MCUController.sendDestinationMatches(requested: "Bus 100", listed: "Bus100"))
+        // And still not across numbers.
+        XCTAssertFalse(MCUController.sendDestinationMatches(requested: "Bus 200", listed: "B 20"))
+        XCTAssertFalse(MCUController.sendDestinationMatches(requested: "Bus 20", listed: "B 200"))
+    }
+
+    func testTheTrailingNumberIsReadOffEitherSpelling() {
         XCTAssertNil(MCUController.sendDestinationTrailingNumber("Stereo Output"))
         XCTAssertEqual(MCUController.sendDestinationTrailingNumber("Out3-4"), 4)
         XCTAssertEqual(MCUController.sendDestinationTrailingNumber("Bus 256"), 256)

@@ -165,13 +165,14 @@ extension MCUController {
         // keep the last word on whether the send exists.
         _ = waitFor(seconds: 1.5) { status in
             guard let bottom = status["lcd_bottom"] as? String else { return false }
-            return sendListDestinationMatches(
-                lcdValueFields(bottom)[destIndex], requested: destination
+            return sendDestinationMatches(
+                requested: destination, listed: lcdValueFields(bottom)[destIndex]
             )
         }
         let sends = try readSends(restoringView: false)
         let listed = sends?.first { ($0["send"] as? Int) == slot }?["destination"] as? String
-        guard let listed, sendListDestinationMatches(listed, requested: destination) else {
+        guard let listed,
+              sendDestinationMatches(requested: destination, listed: listed) else {
             throw LogicianError.verificationFailed(
                 requested: "send \(slot) -> \(destination)",
                 // Name what the list DID show. "Does not show it" was true and
@@ -194,12 +195,14 @@ extension MCUController {
         ]
     }
 
-    /// The destination name the browse is showing at a send slot's field
-    /// group right now.
+    /// The destination text painted for one send's field group on the bottom
+    /// row — what the add and remove browses both settle-verify before they
+    /// trust a single vpot press.
     static func shownSendDestination(destIndex: Int) -> String {
         guard let status = freshStatus(),
+              let top = status["lcd_top"] as? String,
               let bottom = status["lcd_bottom"] as? String else { return "" }
-        return sendDestinationCell(bottom, destIndex: destIndex)
+        return sendDestinationCell(top: top, bottom: bottom, destIndex: destIndex)
     }
 
     /// Browses an empty send slot's destination field to `destination` and
@@ -265,24 +268,14 @@ extension MCUController {
             return true
         }
 
-        /// Carries the browse `entries` entries from where it is now, in
-        /// clamp-sized messages with a silence proof between them. The proof is
-        /// not optional: a 63-entry repaint is still arriving when the next
-        /// message would go out, and a message sent into it is swallowed — so
-        /// the landing would be neither where it was asked for nor reversible
-        /// (measured on the plug-in browser, same surface, same failure).
-        ///
+        /// `sendBrowseJump` with this browse's bookkeeping around it.
         /// `recording: false` is for the endgame jump, which runs after `seen`
         /// is finished and therefore puts no holes in it.
         func jump(entries entriesToJump: Int, recording: Bool = true) throws -> Bool {
-            for chunk in sendBrowseJumpPlan(entries: entriesToJump) {
-                let before = freshStatus()?["received_events"] as? Int ?? -1
-                guard try MCUBridge.send(.vpot(index: destIndex, delta: chunk)).ok
-                else { return false }
-                position += chunk
-                _ = awaitEvents(since: before, timeoutMs: 400)
-                waitForSurfaceQuiet(seconds: 1.5)
+            guard try sendBrowseJump(destIndex: destIndex, entries: entriesToJump) else {
+                return false
             }
+            position += entriesToJump
             if recording { report.jumped = true }
             jumps += 1
             return true
@@ -584,6 +577,325 @@ extension MCUController {
             "write_route": "mcu_vpot_converge",
             "readback_route": "mcu_lcd_echo"
         ]
+    }
+
+    // MARK: Removing a send (the destination browser, walked the other way)
+
+    /// What one removal request means against the send list that was just
+    /// read. Pure: arguments and a read, no surface — so every branch of the
+    /// addressing contract can be pinned by a test.
+    enum SendRemoval: Equatable {
+        /// This slot, holding this destination (as the send list spells it),
+        /// is the one to remove.
+        case remove(slot: Int, destination: String)
+        /// The addressed send does not exist — a verified no-op, and `detail`
+        /// says what the list showed instead.
+        case alreadyRemoved(detail: String)
+    }
+
+    /// True when a listed destination is the one the caller named. Exact
+    /// case-insensitive first, then the LCD abbreviation matcher — but ONLY
+    /// for a name the cell had to shorten. A name that fits the cell whole
+    /// ('Bus 1', 'Bus 12') is shown whole, and letting the subsequence matcher
+    /// at those makes 'Bus 1' answer for 'Bus 12': a wrong send removed on a
+    /// trailing digit.
+    ///
+    /// Used by BOTH ends of the send tools — the removal's addressing and the
+    /// add's readback — and each end needed the other's guard. The add needs
+    /// the abbreviation: a send created to 'Output 3-4' reads back as 'Out3-4',
+    /// and the exact compare it used to make called that perfectly good write a
+    /// `verification_failed` with `restored: false` (measured live
+    /// 2026-08-31, with the send sitting in the project the whole time).
+    /// The removal needs the trailing NUMBER to agree, and so, it turns out,
+    /// does the add: without it, `Output` — the first seven characters of
+    /// 'Output 3-4', which is what the cell holds while the browse banner is
+    /// still up — passes as proof of a settled send, and the readback then
+    /// verifies a repaint frame instead of a write.
+    static func sendDestinationMatches(requested: String, listed: String) -> Bool {
+        if listed.caseInsensitiveCompare(requested) == .orderedSame { return true }
+        let compactRequested = requested.replacingOccurrences(of: " ", with: "")
+        let compactListed = listed.replacingOccurrences(of: " ", with: "")
+        // Logic's first abbreviation is dropping the space ('Bus 100' paints
+        // as 'Bus100'), which is still the whole name.
+        if compactListed.caseInsensitiveCompare(compactRequested) == .orderedSame { return true }
+        // Content width is the 7-character cell MINUS its separator column, and
+        // the difference is not academic: `Bus 200` compacts to six characters
+        // and Logic paints it `B 200`, so gating on the full cell width refused
+        // the abbreviation test for exactly the destinations that get
+        // abbreviated. Measured live 2026-08-31, that is what made
+        // `logic_remove_send` answer "no send goes to 'Bus 200'" about the send
+        // it was listing as `B 200` in the same sentence — reachable only since
+        // the add browse stopped stopping at `Bus 72`, because `Bus 72` and
+        // everything shorter is painted whole.
+        guard compactRequested.count >= MCULCDRow.cellWidth - 1 else { return false }
+        guard lcdNameMatches(track: requested, lcd: listed) else { return false }
+        // Logic abbreviates by dropping characters from the MIDDLE and keeps
+        // the tail ('Lofi Pad' -> 'LofPad', 'Output 3-4' -> 'Out3-4'), so
+        // requiring the tail costs nothing and closes what the subsequence
+        // test leaves open on numbers: 'Bus 10' is an ordered subsequence of
+        // 'Bus 100', and 'Output' is one of 'Output 3-4'.
+        return sendDestinationTrailingNumber(listed)
+            == sendDestinationTrailingNumber(requested)
+    }
+
+    /// The `readSends` result in the shape the pure resolution and verdict
+    /// functions take.
+    static func sendListEntries(_ sends: [[String: Any]]) -> [(slot: Int, destination: String)] {
+        sends.compactMap { entry in
+            guard let slot = entry["send"] as? Int,
+                  let destination = entry["destination"] as? String else { return nil }
+            return (slot, destination)
+        }
+    }
+
+    /// Resolves (send?, destination?) against the send list. The contract:
+    /// a slot holding something OTHER than the destination the caller named
+    /// is a refusal, never a removal — the caller's model of the strip is
+    /// wrong, and the send that would have gone is one nothing asked for.
+    static func resolveSendRemoval(
+        sendNumber: Int?, destination: String?,
+        sends: [(slot: Int, destination: String)]
+    ) throws -> SendRemoval {
+        if let slot = sendNumber, !(1...8).contains(slot) {
+            throw LogicianError.invalidArguments("send must be 1-8")
+        }
+        let listing = sends.isEmpty
+            ? "the track has no sends"
+            : "sends: " + sends.map { "\($0.slot): \($0.destination)" }.joined(separator: ", ")
+        switch (sendNumber, destination) {
+        case (nil, nil):
+            throw LogicianError.invalidArguments(
+                "name the send to remove: send (slot 1-8 as logic_mcu_sends lists them),"
+                    + " destination (e.g. 'Bus 1'), or both"
+            )
+        case (let slot?, nil):
+            guard let occupant = sends.first(where: { $0.slot == slot }) else {
+                return .alreadyRemoved(detail: "send slot \(slot) is empty (\(listing))")
+            }
+            return .remove(slot: slot, destination: occupant.destination)
+        case (nil, let requested?):
+            let hits = sends.filter {
+                sendDestinationMatches(requested: requested, listed: $0.destination)
+            }
+            guard hits.count <= 1 else {
+                throw LogicianError.trackNotExposed(
+                    requested: "exactly one send to '\(requested)'",
+                    exposed: "sends \(hits.map { String($0.slot) }.joined(separator: " and "))"
+                        + " each go there — pass send: to pick one"
+                )
+            }
+            guard let hit = hits.first else {
+                return .alreadyRemoved(detail: "no send goes to '\(requested)' (\(listing))")
+            }
+            return .remove(slot: hit.slot, destination: hit.destination)
+        case (let slot?, let requested?):
+            guard let occupant = sends.first(where: { $0.slot == slot }) else {
+                // The named destination sitting in ANOTHER slot is not "already
+                // removed" — it is a numbering the caller holds stale (sends
+                // renumber when one is removed), and acting on either half of
+                // a wrong address would be a guess.
+                if let elsewhere = sends.first(where: {
+                    sendDestinationMatches(requested: requested, listed: $0.destination)
+                }) {
+                    throw LogicianError.currentValueMismatch(
+                        expected: "'\(requested)' in send slot \(slot)",
+                        actual: "slot \(slot) is empty and '\(elsewhere.destination)' is send"
+                            + " \(elsewhere.slot) — re-read with logic_mcu_sends"
+                    )
+                }
+                return .alreadyRemoved(
+                    detail: "send slot \(slot) is empty and no send goes to '\(requested)' (\(listing))"
+                )
+            }
+            guard sendDestinationMatches(requested: requested, listed: occupant.destination) else {
+                throw LogicianError.currentValueMismatch(
+                    expected: "'\(requested)' in send slot \(slot)",
+                    actual: "slot \(slot) goes to '\(occupant.destination)' (\(listing))"
+                )
+            }
+            return .remove(slot: slot, destination: occupant.destination)
+        }
+    }
+
+    /// The readback verdict on a removal. Pure, because Logic has two
+    /// plausible after-states and the verdict must accept exactly those and
+    /// nothing else: the slot left EMPTY where it was, or the remaining sends
+    /// COMPACTED up over it — which renumbers them, so the verdict also says
+    /// whether the caller's held slot numbers just went stale.
+    ///
+    /// What counts as verified is a set equation, not a slot peek: exactly one
+    /// send fewer, and the destinations that remain are the destinations that
+    /// were there minus one occurrence of the removed one. A slot peek would
+    /// pass a removal that also dragged a neighbour along; the equation
+    /// cannot.
+    static func sendRemovalVerdict(
+        before: [(slot: Int, destination: String)],
+        after: [(slot: Int, destination: String)],
+        removedSlot: Int, removedDestination: String
+    ) -> (verified: Bool, renumbered: Bool, detail: String) {
+        let shown = after.isEmpty
+            ? "the track now has no sends"
+            : "the send list now shows: "
+                + after.map { "\($0.slot): \($0.destination)" }.joined(separator: ", ")
+        guard after.count == before.count - 1 else {
+            return (false, false,
+                    "the send list holds \(after.count) sends where \(before.count - 1)"
+                        + " were expected — \(shown)")
+        }
+        var remaining = before.map { $0.destination.lowercased() }
+        guard let index = remaining.firstIndex(of: removedDestination.lowercased()) else {
+            return (false, false,
+                    "'\(removedDestination)' was not in the before list — nothing to judge against")
+        }
+        remaining.remove(at: index)
+        guard after.map({ $0.destination.lowercased() }).sorted() == remaining.sorted() else {
+            return (false, false,
+                    "the send list changed by more than the one removal — \(shown)")
+        }
+        // Compaction is visible as the removed slot being re-occupied: only a
+        // send from below can move up into it, and with the count and the set
+        // equation already holding, that is the only way this can be true.
+        let renumbered = after.contains { $0.slot == removedSlot }
+        return (true, renumbered,
+                renumbered
+                    ? "The remaining sends renumbered (Logic compacts them upward), so slot"
+                        + " numbers from before this call are stale — \(shown)."
+                    : shown.prefix(1).uppercased() + String(shown.dropFirst()) + ".")
+    }
+
+    /// Removes a send by browsing its DESTINATION field back to the No-Send
+    /// boundary entry ("--") and confirming — `removePluginViaBrowser`'s
+    /// shape, in the browser `addSend` walks forward (1 entry per tick here,
+    /// unlike the plugin browser's 1-per-2). Returns nil when the MCU route
+    /// is unavailable.
+    static func removeSend(
+        trackName: String, sendNumber: Int?, destination: String?
+    ) throws -> [String: Any]? {
+        guard freshStatus() != nil else { return nil }
+        guard let channel = try findChannel(trackName: trackName) else { return nil }
+        guard try selectFoundChannel(channel) else { return nil }
+        // ONE walk home for the whole call, however it exits: the read below,
+        // the page walk, the browse and the readback all inherit the send
+        // view (`restoringView: false`), and this defer is the only exit —
+        // the pattern the add-and-level path already runs on.
+        defer { exitToPan() }
+        guard let beforeList = try readSends(restoringView: false) else { return nil }
+        let before = sendListEntries(beforeList)
+        switch try resolveSendRemoval(
+            sendNumber: sendNumber, destination: destination, sends: before
+        ) {
+        case .alreadyRemoved(let detail):
+            return [
+                "success": true, "verified": true, "state": "already_removed",
+                "sends": beforeList,
+                "note": "Nothing was pressed: \(detail). A verified no-op, not a failure."
+            ]
+        case .remove(let slot, let listedDestination):
+            let destIndex = ((slot - 1) % 2) * 4
+            try sendViewToPage(forSend: slot)
+            func shownName() -> String { shownSendDestination(destIndex: destIndex) }
+            // The list read and this page view are moments apart, so the slot
+            // must still show what the resolution matched before one tick is
+            // sent: a surface that moved in between costs a refusal, never a
+            // browse on a stranger's send.
+            _ = quiescentStatus()
+            guard shownName() == listedDestination else {
+                throw LogicianError.verificationFailed(
+                    requested: "'\(listedDestination)' shown in send slot \(slot) before browsing",
+                    actual: "the field reads '\(shownName())'; nothing was changed",
+                    restored: true
+                )
+            }
+            // Browse backward toward the No-Send boundary.
+            //
+            // The 120-step cap this walk had was sound by construction: the add
+            // browse could not reach past `Bus 72`, ~80 entries in, so no send
+            // could exist deeper than the walk could climb back from. That
+            // premise is gone — the add browse now reaches every destination
+            // Logic offers, `Bus 256` at entry 264 — so the walk both has to be
+            // able to climb further and ought not to have to.
+            //
+            // The destination's own name says how deep it is, so jump most of
+            // the way home first and stop deliberately short: the paced walk is
+            // still what finds the boundary, and a jump that lands wrong (or
+            // overshoots into a wrap) costs steps, which the raised cap now has
+            // room for.
+            if let ordinal = sendDestinationOrdinal(listedDestination),
+               ordinal > sendRemovalHomeMargin {
+                guard try sendBrowseJump(
+                    destIndex: destIndex, entries: -(ordinal - sendRemovalHomeMargin)
+                ) else { return nil }
+            }
+            var reached = false
+            for _ in 0..<sendBrowseEntryCap {
+                let beforeEvents = freshStatus()?["received_events"] as? Int ?? -1
+                let response = try MCUBridge.send(.vpot(index: destIndex, delta: -1))
+                guard response.ok else { return nil }
+                _ = awaitEvents(since: beforeEvents, timeoutMs: 300)
+                _ = quiescentStatus()
+                if shownName() == MCULCDStrings.emptySlot { reached = true; break }
+            }
+            guard reached else {
+                throw LogicianError.openVerificationFailed(
+                    "the destination browser never reached the No-Send entry within"
+                        + " \(sendBrowseEntryCap) steps; nothing was confirmed (browse"
+                        + " abandoned, send unchanged)"
+                )
+            }
+            // Settle and re-verify the boundary is STILL shown before
+            // confirming — the same drift check the add makes on its
+            // destination, and here it is what stands between this call and
+            // REWRITING the send to whatever entry a repaint left showing.
+            // Corrections walk forward: past the boundary is the wrapped far
+            // end of the list, and forward from there comes back to it.
+            Thread.sleep(forTimeInterval: 0.3)
+            _ = quiescentStatus()
+            var corrections = 0
+            while shownName() != MCULCDStrings.emptySlot, corrections < 4 {
+                _ = try? MCUBridge.send(.vpot(index: destIndex, delta: 1))
+                Thread.sleep(forTimeInterval: 0.4)
+                _ = quiescentStatus()
+                corrections += 1
+            }
+            guard shownName() == MCULCDStrings.emptySlot else {
+                throw LogicianError.verificationFailed(
+                    requested: "the No-Send entry shown at confirmation time",
+                    actual: "the entry drifted to '\(shownName())'; aborted without removing",
+                    restored: true
+                )
+            }
+            let confirm = try MCUBridge.send(.vpotPress(index: destIndex))
+            guard confirm.ok else { return nil }
+            // What the slot repaints to after a REMOVAL has not been captured
+            // live the way the add's commit frame was, so there is no content
+            // to wait for yet: wait the flat second the plugin removal waits
+            // and let the send-list readback be the verdict.
+            Thread.sleep(forTimeInterval: 1.0)
+            _ = quiescentStatus()
+            guard let afterList = try readSends(restoringView: false) else { return nil }
+            let verdict = sendRemovalVerdict(
+                before: before, after: sendListEntries(afterList),
+                removedSlot: slot, removedDestination: listedDestination
+            )
+            guard verdict.verified else {
+                throw LogicianError.verificationFailed(
+                    requested: "send \(slot) -> \(listedDestination) removed",
+                    actual: verdict.detail,
+                    restored: false
+                )
+            }
+            var result: [String: Any] = [
+                "success": true, "verified": true, "state": "removed",
+                "send": slot, "destination": listedDestination,
+                "write_route": "mcu_send_destination_browser",
+                "readback_route": "mcu_send_list",
+                "sends_after": afterList,
+                "note": "Removed by browsing the send's destination field back to the No-Send"
+                    + " entry and confirming — no mouse, no blind Undo. " + verdict.detail
+            ]
+            if verdict.renumbered { result["renumbered"] = true }
+            return result
+        }
     }
 
 }

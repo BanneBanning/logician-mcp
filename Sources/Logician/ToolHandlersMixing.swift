@@ -200,6 +200,23 @@ extension MCPServer {
         return sendPayload
     }
 
+    func handleRemoveSend(_ arguments: [String: Any]) throws -> Any {
+        let track = try requiredString("track_name", in: arguments)
+        guard var removed = try MCUController.removeSend(
+            trackName: track,
+            sendNumber: arguments["send"] as? Int,
+            destination: arguments["destination"] as? String
+        ) else {
+            throw LogicianError.trackNotExposed(
+                requested: "send removal via the control surface",
+                exposed: "the MCU bridge is unavailable"
+            )
+        }
+        removed["track"] = track
+        removed["track_name"] = track
+        return removed
+    }
+
     func handleMcuSends(_ arguments: [String: Any]) throws -> Any {
         // Selection routes itself: a track through Accessibility, an
         // output/aux/bus strip through the control surface (the send view

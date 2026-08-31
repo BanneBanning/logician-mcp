@@ -1,13 +1,13 @@
 import Foundation
 
 /// A named slice of the tool surface, so a session can advertise the tools it
-/// will actually use instead of all 83.
+/// will actually use instead of all 84.
 ///
 /// WHY THIS EXISTS. A typed per-operation schema is the thing this server has
 /// that a dispatcher-style MCP does not: the model sees `start_bar` with its
 /// minimum and its exclusivity rule, and the client sees a per-tool
 /// `destructiveHint`, instead of one `operation: string` and a prose manual.
-/// That is worth paying for — but the whole 83-tool bill arrives before the
+/// That is worth paying for — but the whole 84-tool bill arrives before the
 /// first call, in every session, whether the user came to mix a chorus or to
 /// export stems. Toolsets keep the schemas and drop the tools that were never
 /// going to be called: the GitHub MCP server's answer to the same problem.
@@ -96,6 +96,7 @@ enum Toolset: String, CaseIterable {
         "logic_set_track_record_arm": [.core, .composition],
         "logic_set_mixer": [.core],
         "logic_add_send": [.core],
+        "logic_remove_send": [.core],
         "logic_mcu_sends": [.core],
         "logic_mcu_set_send": [.core],
 

@@ -137,19 +137,49 @@ extension MCUController {
 
     // MARK: - Reading the destination cell
 
-    /// The destination name showing at a send slot's field group, cut out of
-    /// one bottom row. Pure, so the cut can be exercised against captured rows.
+    /// The destination text at a send slot's field group, cut out of one PAIR
+    /// of rows. Pure, so both states below can be exercised against captured
+    /// rows.
     ///
-    /// The browse paints the name into the slot's own cell and lets it spill
-    /// into the next, so the cell boundary is not the name boundary: cut at the
-    /// first long gap instead, and take a neighbour's `--` back off (the same
-    /// contamination that used to defeat the plug-in browser's wrap test — see
-    /// `normalizedBrowseEntry`).
-    static func sendDestinationCell(_ bottom: String, destIndex: Int) -> String {
-        let start = bottom.index(bottom.startIndex, offsetBy: min(destIndex * 7, bottom.count))
-        let raw = String(bottom[start...])
-        let cut = raw.range(of: "    ").map { String(raw[..<$0.lowerBound]) } ?? raw
-        return normalizedBrowseEntry(cut)
+    /// Two states share this read, and that is the whole difficulty. While a
+    /// destination is being BROWSED, Logic covers the slot's labels with a
+    /// banner (`Send 1  Destination`) and lets the name spill past its own
+    /// cell — `Output 3-4` needs ten characters and a cell holds six. Once the
+    /// send is SETTLED, the neighbouring cells hold the slot's other fields,
+    /// and a read that spilled returns `Bus 90 -oodB  PosPan active`.
+    ///
+    /// Measured live 2026-08-31, that second reading is not hypothetical: it is
+    /// what `logic_remove_send` refused on
+    /// (*"the field reads 'Bus 90 -oodB  PosPan active'"*), because the cut it
+    /// inherited ran forward to the first four-space gap and a settled row has
+    /// no such gap until the field group ends.
+    ///
+    /// The TOP row is what tells the two apart. A settled field group labels
+    /// every cell (`Sen1In Send 1 Sen1Po Sen1Mu`); the browse banner does not.
+    /// So the name is allowed to run on only while the cell it would run into
+    /// is unlabelled and holds something that is not a placeholder — and it is
+    /// then sliced out of the raw row rather than rejoined from trimmed cells,
+    /// so a name that spills mid-word comes back as Logic spelled it.
+    static func sendDestinationCell(top: String, bottom: String, destIndex: Int) -> String {
+        guard (0..<MCULCDRow.cellCount).contains(destIndex) else { return "" }
+        let topCells = lcdFields(top)
+        let bottomCells = lcdFields(bottom)
+        var lastCell = destIndex
+        while lastCell + 1 < MCULCDRow.cellCount {
+            let next = lastCell + 1
+            // A labelled cell is the slot's next FIELD, not more of this name.
+            if topCells[next].hasPrefix(MCULCDStrings.sendFieldLabelPrefix) { break }
+            let cell = bottomCells[next]
+            if cell.isEmpty || cell == MCULCDStrings.clearingCell
+                || cell == MCULCDStrings.emptySlot { break }
+            lastCell = next
+        }
+        let padded = Array(bottom.padding(
+            toLength: MCULCDRow.length, withPad: " ", startingAt: 0
+        ))
+        let start = destIndex * MCULCDRow.cellWidth
+        let end = min((lastCell + 1) * MCULCDRow.cellWidth, MCULCDRow.length)
+        return String(padded[start..<end]).trimmingCharacters(in: .whitespaces)
     }
 
     // MARK: - The arithmetic
@@ -223,44 +253,47 @@ extension MCUController {
         return plan
     }
 
-    /// Whether the SEND LIST's destination cell names the destination that was
-    /// asked for.
-    ///
-    /// The browse cell shows a destination's full name, because the browse
-    /// banner lets it spill across the row. The settled send list does not: its
-    /// destination cell is six characters of Logic's own abbreviation, so a
-    /// send to `Output 3-4` reads back as `Out3-4`. An exact compare therefore
-    /// calls a perfectly good write a failure — measured live 2026-08-31, it
-    /// did exactly that: the send was created, the tool reported
-    /// `verification_failed` with `restored: false`, and the send was sitting
-    /// in the project all along.
-    ///
-    /// Abbreviation-tolerant, and deliberately NOT tolerant of the one
-    /// confusion that matters here. `Bus 1` is an ordered subsequence of
-    /// `Bus 12`, so a bare subsequence test would accept a send to the wrong
-    /// bus; the trailing NUMBER has to agree as well. Logic abbreviates by
-    /// dropping characters from the middle and keeps the tail (`Lofi Pad` →
-    /// `LofPad`, `Output 3-4` → `Out3-4`), so requiring the tail costs nothing.
-    ///
-    /// This is a READBACK check, not the gate on the write: the press is gated
-    /// by an exact match against the browse cell, which is not truncated.
-    static func sendListDestinationMatches(_ cell: String, requested: String) -> Bool {
-        let shown = cell.trimmingCharacters(in: .whitespaces)
-        if shown.caseInsensitiveCompare(requested) == .orderedSame { return true }
-        guard lcdNameMatches(track: requested, lcd: shown) else { return false }
-        return sendDestinationTrailingNumber(shown)
-            == sendDestinationTrailingNumber(requested)
-    }
-
     /// The number a destination name ends in, or nil where it ends in a letter.
     /// Unlike `parseSendDestination` this asks nothing of what comes before it,
-    /// because its job is to tell `Out3-4` from `Out3-6`, not to place either in
-    /// a family.
+    /// because its job is to tell `Out3-4` from `Out3-6` — and `Bus 10` from
+    /// `Bus 100` — rather than to place either in a family. Read by
+    /// `sendDestinationMatches`, which is what stops an LCD abbreviation from
+    /// answering for a different destination that abbreviates into it.
     static func sendDestinationTrailingNumber(_ name: String) -> Int? {
         guard let digits = name.range(of: #"\d+$"#, options: .regularExpression) else {
             return nil
         }
         return Int(name[digits])
+    }
+
+    /// How many entries short of home a removal's jump deliberately stops, so
+    /// that the paced backward walk is always the thing that finds the
+    /// No-Send boundary.
+    static let sendRemovalHomeMargin = 8
+
+    /// Carries a destination browse `entries` entries from where it is now, in
+    /// clamp-sized messages with a silence proof between them.
+    ///
+    /// The proof is not optional: a 63-entry repaint is still arriving when the
+    /// next message would go out, and a message sent into it is swallowed — so
+    /// the landing would be neither where it was asked for nor reversible
+    /// (measured on the plug-in browser, same surface, same failure).
+    ///
+    /// Shared by the two browses, which use it in opposite directions: the add
+    /// jumps FORWARD to a destination, the removal jumps BACK toward the
+    /// No-Send entry. Neither writes anything by jumping — a browse is
+    /// uncommitted until the vpot press — so a jump that lands in the wrong
+    /// place costs steps and nothing else.
+    static func sendBrowseJump(destIndex: Int, entries: Int) throws -> Bool {
+        for chunk in sendBrowseJumpPlan(entries: entries) {
+            let before = freshStatus()?["received_events"] as? Int ?? -1
+            guard try MCUBridge.send(.vpot(index: destIndex, delta: chunk)).ok else {
+                return false
+            }
+            _ = awaitEvents(since: before, timeoutMs: 400)
+            waitForSurfaceQuiet(seconds: 1.5)
+        }
+        return true
     }
 
     // MARK: - Saying what the browse saw
