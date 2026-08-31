@@ -820,11 +820,16 @@ extension MCUController {
             // still what finds the boundary, and a jump that lands wrong (or
             // overshoots into a wrap) costs steps, which the raised cap now has
             // room for.
-            if let ordinal = sendDestinationOrdinal(listedDestination),
-               ordinal > sendRemovalHomeMargin {
-                guard try sendBrowseJump(
-                    destIndex: destIndex, entries: -(ordinal - sendRemovalHomeMargin)
-                ) else { return nil }
+            //
+            // Which SPELLING of the name that arithmetic is given decides
+            // whether the jump happens at all — the send list abbreviates, the
+            // caller does not — so `sendRemovalHomeJump` owns that choice and
+            // carries the reasoning.
+            if let entries = sendRemovalHomeJump(
+                requested: destination, listed: listedDestination
+            ) {
+                guard try sendBrowseJump(destIndex: destIndex, entries: entries)
+                else { return nil }
             }
             var reached = false
             for _ in 0..<sendBrowseEntryCap {
