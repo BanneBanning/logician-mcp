@@ -44,8 +44,45 @@ import LogicMCUBridge
 ///    Logic's words and is therefore a cold-start shortcut only: an
 ///    unrecognized family simply walks to the first entry of its own family
 ///    (nine steps for a bus) and then jumps by (1). A wrong hint cannot
-///    produce a wrong send — a browse writes nothing until the vpot press, and
-///    the press is gated on an exact name match — it can only cost steps.
+///    produce a wrong send — while the send view is standing, a browse writes
+///    nothing until the vpot press, and the press is gated on an exact name
+///    match — it can only cost steps. "While the send view is standing" is
+///    load-bearing; see the next section.
+///
+/// # The send view does not stay standing (measured 2026-08-31)
+///
+/// The uncommitted-until-pressed contract was originally stated without a
+/// qualifier, and one live session paid for the difference with a pan driven
+/// to its stop, two spurious sends and a stray Aux. What the follow-up
+/// measurements established, hand-driving the browser on the sandbox project:
+///
+/// * An uncommitted destination BLINKS in its cell (~1 s cadence) and expires
+///   about 60 seconds after the last vpot tick. Expiry CANCELS the pending
+///   entry — the slot read back unchanged — and every tick RESETS the clock,
+///   so a browse that keeps moving never expires on its own.
+/// * Leaving the send view cancels a pending browse. Verified by readback on
+///   an empty slot (parked on `Output 2`, left to Pan, slot still empty) and
+///   on an occupied one (parked on `Bus 65` over a `Bus 2` send, left to Pan,
+///   `Bus 2` intact).
+/// * The hazard is the TEARDOWN, not the timeout. When the view expires — and
+///   when Logic tears it down for reasons of its own — the surface passes
+///   through a degraded SE frame (occupied slots repaint as `--`), then the
+///   MULTI-channel send views (`S_`, `S1` — where each vpot writes a
+///   destination or level DIRECTLY, no press involved), then Pan. The whole
+///   walk takes a few seconds, and any message still in flight lands on
+///   whatever control its index means in the view it arrives in. That is how
+///   a "browse" wrote a pan to −64, and the only mechanism found that puts a
+///   send on a strip WITHOUT a vpot press.
+/// * A freshly ENTERED send view has the same lying-frame problem from the
+///   other side: for a beat it can paint an occupied track's slots blank
+///   (observed twice — a send list read back `[]` moments before reading its
+///   real content).
+///
+/// So every message a browse sends is gated on the assignment display still
+/// reading `SE` (`sendViewStanding`), a read that shows no catalog entry is
+/// never answered with more blind ticks (`sendBrowseReadIsEntry`,
+/// `sendBrowseBlankReadCap`), and every abandoned browse PROVES it left no
+/// write behind before it reports (`sendAbandonVerdict` and its call sites).
 extension MCUController {
 
     /// One vpot tick per catalog entry in the SEND destination browser.
@@ -99,6 +136,60 @@ extension MCUController {
     /// 'Output 7-8'" is true and no use to someone who asked for `Bus 999`;
     /// "the highest bus in the list is 256" is the answer.
     static let sendBrowseTailEntries = 6
+
+    /// How many consecutive reads that show NO catalog entry a browse
+    /// tolerates before abandoning. A read can be legitimately entry-less for
+    /// a beat — the origin `--` before the first tick paints, a blink-off
+    /// frame of the pending entry, an unfinished repaint — but a browser that
+    /// answers this many times in a row with nothing is not a browser any
+    /// more: it is the degraded frame of a view being torn down, or a view
+    /// that never painted (both measured 2026-08-31). The old loop kept
+    /// ticking blindly into exactly that, for its whole 20 s budget, and the
+    /// ticks were landing on a pan.
+    static let sendBrowseBlankReadCap = 8
+
+    /// True when a destination-cell read names a catalog entry. Blank cells
+    /// and the `--` placeholder are the browse's ordinary non-answers; a BARE
+    /// NUMBER (`-64`, `0`, `-12,2`) is worse than a non-answer — no send
+    /// destination is ever spelled as one, and a numeric read means the cell
+    /// under this index belongs to some other view's parameter (a pan, a
+    /// level). Both classes mean "do not treat this as an entry, and do not
+    /// keep ticking on the strength of it".
+    static func sendBrowseReadIsEntry(_ shown: String) -> Bool {
+        let text = shown.trimmingCharacters(in: .whitespaces)
+        if text.isEmpty || text == MCULCDStrings.emptySlot { return false }
+        // Numeric: optional sign, then digits with at most separator
+        // punctuation — the shapes Logic paints for pans and dB values
+        // (`-64`, `+28`, `-12,2`, `-9.0`). Anything with a letter survives.
+        if text.range(of: #"^[+-]?[\d.,]*\d[\d.,]*$"#, options: .regularExpression) != nil {
+            return false
+        }
+        return true
+    }
+
+    /// The gate every destination-browse message passes before it is sent:
+    /// the assignment display must still read `SE`. Anything else means the
+    /// send view dropped out from under the browse and the message's index
+    /// now addresses a different control entirely (see the type comment).
+    /// Takes the status frame so a caller that already holds one pays no
+    /// extra round trip.
+    static func sendViewStanding(in status: [String: Any]?) -> Bool {
+        (status?["assignment"] as? String) == MCULCDStrings.Assignment.send
+    }
+
+    /// The error a browse abandons with when `sendViewStanding` says no.
+    /// `action` names the message that was about to be sent — and was not.
+    static func sendViewDroppedError(
+        _ status: [String: Any]?, before action: String
+    ) -> LogicianError {
+        let code = (status?["assignment"] as? String).map { "'\($0)'" } ?? "nothing readable"
+        return .preconditionUnmet(
+            "The send view dropped mid-browse: the assignment display reads \(code) where 'SE'"
+                + " stood. Logic tears an idle send view down through the multi-channel views to"
+                + " Pan, where vpot messages write destinations and pans directly (measured"
+                + " 2026-08-31), so \(action) was not sent and the browse was abandoned."
+        )
+    }
 
     /// How many jumps one browse may take before it falls back to walking.
     /// The safety valve for a pathological landing that keeps re-planning the
@@ -282,11 +373,20 @@ extension MCUController {
     /// Shared by the two browses, which use it in opposite directions: the add
     /// jumps FORWARD to a destination, the removal jumps BACK toward the
     /// No-Send entry. Neither writes anything by jumping — a browse is
-    /// uncommitted until the vpot press — so a jump that lands in the wrong
-    /// place costs steps and nothing else.
+    /// uncommitted until the vpot press — WHILE THE SEND VIEW IS STANDING,
+    /// which is why every chunk re-checks the assignment display before it
+    /// goes out: a 63-tick message that arrives after the view has dropped is
+    /// 63 writes on a pan or, worse, on the multi-channel send view's direct
+    /// destination vpots (the type comment has the measured teardown). The
+    /// check rides the same status read that anchors the event wait, so the
+    /// gate costs no extra round trip.
     static func sendBrowseJump(destIndex: Int, entries: Int) throws -> Bool {
         for chunk in sendBrowseJumpPlan(entries: entries) {
-            let before = freshStatus()?["received_events"] as? Int ?? -1
+            let status = freshStatus()
+            guard sendViewStanding(in: status) else {
+                throw sendViewDroppedError(status, before: "a \(chunk)-entry jump")
+            }
+            let before = status?["received_events"] as? Int ?? -1
             guard try MCUBridge.send(.vpot(index: destIndex, delta: chunk)).ok else {
                 return false
             }

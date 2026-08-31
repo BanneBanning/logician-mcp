@@ -101,19 +101,31 @@ extension MCUController {
         var restoreOnExit = true
         defer { if restoreOnExit { exitToPan() } }
         try sendViewLeftmost()
-        // find first empty slot across the pages
-        var slotNumber: Int?
-        for page in 0..<4 {
+        // Find the first empty slot across the pages. A slot counts as empty
+        // only when TWO frames around a quiescence window agree: a freshly
+        // entered send view can paint an occupied track's slots blank for a
+        // beat (measured 2026-08-31 — a send list read back `[]` moments
+        // before reading its real content), and a scan that trusts one frame
+        // aims the destination browser at an occupied slot. The browse's own
+        // empty-origin guard backstops this; the scan should still not pick
+        // the wrong slot in the first place.
+        func emptySlotShown(base: Int) -> Bool {
             guard let status = freshStatus(),
                   let top = status["lcd_top"] as? String,
-                  let bottom = status["lcd_bottom"] as? String else { break }
+                  let bottom = status["lcd_bottom"] as? String else { return false }
+            return lcdFields(top)[base].hasPrefix(MCULCDStrings.sendFieldLabelPrefix)
+                && ["", MCULCDStrings.emptySlot].contains(lcdFields(bottom)[base])
+        }
+        var slotNumber: Int?
+        for page in 0..<4 {
+            guard freshStatus() != nil else { break }
             for half in 0..<2 {
                 let base = half * 4
-                if lcdFields(top)[base].hasPrefix(MCULCDStrings.sendFieldLabelPrefix),
-                   ["", MCULCDStrings.emptySlot].contains(lcdFields(bottom)[base]) {
-                    slotNumber = page * 2 + half + 1
-                    break
-                }
+                guard emptySlotShown(base: base) else { continue }
+                _ = quiescentStatus()
+                guard emptySlotShown(base: base) else { continue }
+                slotNumber = page * 2 + half + 1
+                break
             }
             if slotNumber != nil { break }
             try pressNote(0x63)
@@ -126,20 +138,62 @@ extension MCUController {
             )
         }
         let destIndex = ((slot - 1) % 2) * 4
-        guard try browseToSendDestination(destIndex: destIndex, destination: destination) else {
-            return nil
-        }
-        Thread.sleep(forTimeInterval: 0.3)
-        _ = quiescentStatus()
-        let settled = shownSendDestination(destIndex: destIndex)
-        guard settled.caseInsensitiveCompare(destination) == .orderedSame else {
-            throw LogicianError.verificationFailed(
-                requested: "'\(destination)' shown at confirmation time",
-                actual: "the entry drifted to '\(settled)'; aborted",
-                restored: true
+        /// Every abandon of the browse funnels through here, whatever threw
+        /// it: leave the send view — which CANCELS a pending browse, measured
+        /// on empty and occupied slots alike — and then PROVE the slot is
+        /// still empty before letting the failure out. "Nothing was written"
+        /// used to be an assumption; since one abandoned browse left a send
+        /// behind (2026-08-31), it is a readback.
+        func abandonedBrowse(_ error: Error) throws -> Never {
+            exitToPan()
+            guard let after = (try? readSends(restoringView: false)) ?? nil else {
+                throw LogicianError.preconditionUnmet(
+                    "The destination browse was abandoned (\(error.localizedDescription)) AND the"
+                        + " send list could not be read back to prove slot \(slot) is still empty"
+                        + " — verify with logic_mcu_sends before trusting this strip."
+                )
+            }
+            let verdict = sendAbandonVerdict(
+                slot: slot, expected: nil, after: sendListEntries(after)
             )
+            guard verdict.clean else {
+                throw LogicianError.verificationFailed(
+                    requested: "nothing written by the abandoned destination browse",
+                    actual: verdict.detail
+                        + ". Original failure: \(error.localizedDescription)",
+                    restored: false
+                )
+            }
+            throw error
         }
-        let confirm = try MCUBridge.send(.vpotPress(index: destIndex))
+        let confirm: BridgeResponse
+        do {
+            guard try browseToSendDestination(destIndex: destIndex, destination: destination) else {
+                return nil
+            }
+            Thread.sleep(forTimeInterval: 0.3)
+            _ = quiescentStatus()
+            // Settle and view check from ONE frame: the entry that is about
+            // to be confirmed and the view that gives the press its meaning
+            // must be facts about the same instant.
+            let confirmationFrame = freshStatus()
+            guard let top = confirmationFrame?["lcd_top"] as? String,
+                  let bottom = confirmationFrame?["lcd_bottom"] as? String,
+                  sendViewStanding(in: confirmationFrame) else {
+                throw sendViewDroppedError(confirmationFrame, before: "the confirming press")
+            }
+            let settled = sendDestinationCell(top: top, bottom: bottom, destIndex: destIndex)
+            guard settled.caseInsensitiveCompare(destination) == .orderedSame else {
+                throw LogicianError.verificationFailed(
+                    requested: "'\(destination)' shown at confirmation time",
+                    actual: "the entry drifted to '\(settled)'; aborted",
+                    restored: true
+                )
+            }
+            confirm = try MCUBridge.send(.vpotPress(index: destIndex))
+        } catch {
+            try abandonedBrowse(error)
+        }
         guard confirm.ok else { return nil }
         // The press is answered by Logic REPAINTING the slot's field group:
         // the browse banner ("Send 3 / Destination") is replaced by the slot's
@@ -222,14 +276,28 @@ extension MCUController {
     /// refused with "the destination browser never showed 'Bus 90'" after 9.6 s
     /// of walking, which reads as *there is no such bus*.
     ///
-    /// The distance is now JUMPED, by the arithmetic in `MCUSendCatalog`. That
-    /// is safe here for the same reason it is safe in the plug-in browser: a
-    /// browse writes nothing until the vpot press, so a jump that lands in the
-    /// wrong place costs steps and nothing else — and the landing is read back,
-    /// then either matched or used to plan the next jump, so a wrong jump
-    /// corrects itself. What must never happen is a wrong DESTINATION, and that
-    /// is held by the exact name match here and by the caller's drift check
-    /// before the press.
+    /// The distance is now JUMPED, by the arithmetic in `MCUSendCatalog`. A
+    /// jump that lands in the wrong place costs steps and nothing else — and
+    /// the landing is read back, then either matched or used to plan the next
+    /// jump, so a wrong jump corrects itself. What must never happen is a
+    /// wrong DESTINATION, and that is held by the exact name match here and by
+    /// the caller's drift check before the press.
+    ///
+    /// # What "uncommitted until the press" actually covers
+    ///
+    /// This file used to reason "a browse writes nothing until the vpot press"
+    /// as though it held unconditionally. It holds ONLY while the send view is
+    /// standing, and the view does not stay standing on its own: Logic tears
+    /// an idle send view down through the multi-channel send views to Pan
+    /// (measured 2026-08-31 — `MCUSendCatalog`'s type comment has the whole
+    /// sequence), and a tick or press that arrives mid-teardown addresses
+    /// whatever control its index means in the view it lands in. One live
+    /// browse ended with a pan driven to −64 that way, and a no-press "commit"
+    /// traced back to the multi-channel view's direct-write vpots. So every
+    /// message below is gated on the assignment display still reading `SE`,
+    /// reads that show no entry are counted and capped instead of answered
+    /// with more blind ticks, and the caller proves an abandoned browse left
+    /// the slot untouched before it reports.
     static func browseToSendDestination(
         destIndex: Int, destination: String
     ) throws -> Bool {
@@ -256,9 +324,15 @@ extension MCUController {
             shown.caseInsensitiveCompare(destination) == .orderedSame
         }
 
-        /// One entry forward, event-paced.
+        /// One entry forward, event-paced. Gated like every other message: a
+        /// step sent after the view has dropped is a pan write, so the view is
+        /// re-checked on the same status read that anchors the event wait.
         func stepForward() throws -> Bool {
-            let before = freshStatus()?["received_events"] as? Int ?? -1
+            let status = freshStatus()
+            guard sendViewStanding(in: status) else {
+                throw sendViewDroppedError(status, before: "a 1-entry step")
+            }
+            let before = status?["received_events"] as? Int ?? -1
             guard try MCUBridge.send(
                 .vpot(index: destIndex, delta: sendBrowseTicksPerEntry)
             ).ok else { return false }
@@ -323,15 +397,18 @@ extension MCUController {
             var tail = [shownSendDestination(destIndex: destIndex)]
             if matches(tail[0]) { report.tail = tail; return true }
             for _ in 0..<sendBrowseTailEntries {
-                let before = freshStatus()?["received_events"] as? Int ?? -1
+                let status = freshStatus()
+                guard sendViewStanding(in: status) else {
+                    throw sendViewDroppedError(status, before: "a tail read-back step")
+                }
+                let before = status?["received_events"] as? Int ?? -1
                 guard let response = try? MCUBridge.send(
                     .vpot(index: destIndex, delta: -sendBrowseTicksPerEntry)
                 ), response.ok else { break }
                 _ = awaitEvents(since: before, timeoutMs: 300)
                 _ = quiescentStatus()
                 let name = shownSendDestination(destIndex: destIndex)
-                guard !name.isEmpty, name != MCULCDStrings.emptySlot,
-                      name != tail.first else { continue }
+                guard sendBrowseReadIsEntry(name), name != tail.first else { continue }
                 tail.insert(name, at: 0)
                 if matches(name) { report.tail = tail; return true }
             }
@@ -340,14 +417,48 @@ extension MCUController {
         }
 
         var stop: SendBrowseStop?
+        var blankReads = 0
         // The bound is on how far the browse WALKS. It deliberately is not on
         // `position`: a jump aimed at the end of the catalog leaves `position`
         // past the bound, and exiting there would throw away the landing —
         // which is the one read that says where the list really stops.
         while stepsTaken < sendBrowseEntryCap {
-            let shown = shownSendDestination(destIndex: destIndex)
-            let isEntry = !shown.isEmpty && shown != MCULCDStrings.emptySlot
+            // One status read serves the whole iteration, so the view check
+            // and the cell it vouches for cannot come from different frames.
+            guard let frame = freshStatus(),
+                  let top = frame["lcd_top"] as? String,
+                  let bottom = frame["lcd_bottom"] as? String else { return false }
+            guard sendViewStanding(in: frame) else {
+                throw sendViewDroppedError(frame, before: "the next browse message")
+            }
+            let shown = sendDestinationCell(top: top, bottom: bottom, destIndex: destIndex)
+            let isEntry = sendBrowseReadIsEntry(shown)
+            if isEntry, stepsTaken == 0, jumps == 0 {
+                // The origin of an empty slot is `--` (or a not-yet-painted
+                // blank). A real entry here before anything was sent means the
+                // slot is occupied and the empty-slot scan was fooled — one
+                // measured way is a stale frame painting occupied slots blank
+                // — and browsing on would stand a REWRITE of an existing send
+                // behind the confirming press.
+                throw LogicianError.currentValueMismatch(
+                    expected: "an empty destination field before the first tick",
+                    actual: "the field already shows '\(shown)'; nothing was sent"
+                )
+            }
+            if !isEntry {
+                blankReads += 1
+                if blankReads >= sendBrowseBlankReadCap {
+                    throw LogicianError.preconditionUnmet(
+                        "The destination browser stopped answering:"
+                            + " \(blankReads) consecutive reads showed no catalog entry"
+                            + " (last read '\(shown)') — the signature of a send view that"
+                            + " never painted or is being torn down (measured 2026-08-31)."
+                            + " The browse was abandoned with nothing confirmed."
+                    )
+                }
+            }
             if isEntry {
+                blankReads = 0
                 if matches(shown) { return true }
                 if shown == previous {
                     stalledReads += 1
@@ -473,32 +584,47 @@ extension MCUController {
     static func readSends(restoringView: Bool = true) throws -> [[String: Any]]? {
         guard try ensureSendView() else { return nil }
         defer { if restoringView { exitToPan() } }
-        try sendViewLeftmost()
-        var sends: [[String: Any]] = []
-        for page in 0..<4 {
-            guard let fields = parameterPage() else { break }
-            var pageHadSend = false
-            for half in 0..<2 {
-                let base = half * 4
-                let number = page * 2 + half + 1
-                guard fields[base].name.hasPrefix(MCULCDStrings.sendFieldLabelPrefix) else { continue }
-                let destination = fields[base].value
-                guard !destination.isEmpty, destination != MCULCDStrings.emptySlot else { continue }
-                pageHadSend = true
-                sends.append([
-                    "send": number,
-                    "destination": destination,
-                    "level": fields[base + 1].value,
-                    "position": fields[base + 2].value,
-                    "status": fields[base + 3].value
-                ])
+        func readOnce() throws -> [[String: Any]] {
+            try sendViewLeftmost()
+            var sends: [[String: Any]] = []
+            for page in 0..<4 {
+                guard let fields = parameterPage() else { break }
+                var pageHadSend = false
+                for half in 0..<2 {
+                    let base = half * 4
+                    let number = page * 2 + half + 1
+                    guard fields[base].name.hasPrefix(MCULCDStrings.sendFieldLabelPrefix) else { continue }
+                    let destination = fields[base].value
+                    guard !destination.isEmpty, destination != MCULCDStrings.emptySlot else { continue }
+                    pageHadSend = true
+                    sends.append([
+                        "send": number,
+                        "destination": destination,
+                        "level": fields[base + 1].value,
+                        "position": fields[base + 2].value,
+                        "status": fields[base + 3].value
+                    ])
+                }
+                if !pageHadSend { break }
+                try pressNote(0x63)
+                Thread.sleep(forTimeInterval: 0.2)
+                _ = quiescentStatus()
             }
-            if !pageHadSend { break }
-            try pressNote(0x63)
-            Thread.sleep(forTimeInterval: 0.2)
-            _ = quiescentStatus()
+            return sends
         }
-        return sends
+        let first = try readOnce()
+        if !first.isEmpty { return first }
+        // "No sends" is believed only on a second look. A freshly entered
+        // send view can hold a stale frame that paints an occupied track's
+        // slots blank (measured twice, 2026-08-31 — one such frame turned a
+        // strip with a send into `[]` for a beat), and this list is what the
+        // removal's addressing and the abandon verification decide from: a
+        // stale `[]` there turns a real removal into a false "already
+        // removed", or hides a write an abandoned browse left behind. A track
+        // that truly has no sends pays one settle and one re-read.
+        Thread.sleep(forTimeInterval: 0.4)
+        _ = quiescentStatus()
+        return try readOnce()
     }
 
     /// Sets one send's level in dB by converging its vpot against the LCD
@@ -763,6 +889,40 @@ extension MCUController {
                     : shown.prefix(1).uppercased() + String(shown.dropFirst()) + ".")
     }
 
+    /// The readback verdict on an ABANDONED destination browse — the proof
+    /// behind "nothing was written", which used to be asserted and is now
+    /// checked, because one abandoned browse left a send behind (2026-08-31,
+    /// `B 200` at −12.2 dB on a strip nothing had confirmed anything on).
+    /// Pure, so both promises can be pinned by tests: `expected: nil` is an
+    /// add browse — the slot it ran on must still be empty; `expected:` some
+    /// destination is a removal browse — the slot must still hold exactly what
+    /// the removal matched, as the send list spells it.
+    static func sendAbandonVerdict(
+        slot: Int, expected: String?, after: [(slot: Int, destination: String)]
+    ) -> (clean: Bool, detail: String) {
+        let occupant = after.first { $0.slot == slot }?.destination
+        switch (expected, occupant) {
+        case (nil, nil):
+            return (true, "send slot \(slot) is still empty")
+        case (nil, let materialized?):
+            return (false,
+                    "send slot \(slot) now holds '\(materialized)' although nothing was confirmed"
+                        + " — the abandoned browse left a write behind. Remove it with"
+                        + " logic_remove_send and treat this strip's sends as suspect")
+        case (let kept?, nil):
+            return (false,
+                    "send \(slot) -> '\(kept)' is gone although nothing was confirmed — the"
+                        + " abandoned browse left a write behind; re-read with logic_mcu_sends")
+        case (let kept?, let still?):
+            guard still.caseInsensitiveCompare(kept) == .orderedSame else {
+                return (false,
+                        "send \(slot) now goes to '\(still)' where '\(kept)' stood although"
+                            + " nothing was confirmed — the abandoned browse left a write behind")
+            }
+            return (true, "send \(slot) still goes to '\(kept)'")
+        }
+    }
+
     /// Removes a send by browsing its DESTINATION field back to the No-Send
     /// boundary entry ("--") and confirming — `removePluginViaBrowser`'s
     /// shape, in the browser `addSend` walks forward (1 entry per tick here,
@@ -806,6 +966,35 @@ extension MCUController {
                     restored: true
                 )
             }
+            /// Every abandon of the backward browse funnels through here:
+            /// leave the send view — which CANCELS a pending browse, measured
+            /// on an occupied slot exactly like this one (parked on 'Bus 65'
+            /// over a 'Bus 2' send, left to Pan, 'Bus 2' intact) — then PROVE
+            /// the send still stands as matched before letting the failure
+            /// out. "Send unchanged" used to be asserted; now it is read back.
+            func abandonedBrowse(_ error: Error) throws -> Never {
+                exitToPan()
+                guard let after = (try? readSends(restoringView: false)) ?? nil else {
+                    throw LogicianError.preconditionUnmet(
+                        "The removal browse was abandoned (\(error.localizedDescription)) AND the"
+                            + " send list could not be read back to prove send \(slot) ->"
+                            + " '\(listedDestination)' is untouched — verify with logic_mcu_sends."
+                    )
+                }
+                let verdict = sendAbandonVerdict(
+                    slot: slot, expected: listedDestination, after: sendListEntries(after)
+                )
+                guard verdict.clean else {
+                    throw LogicianError.verificationFailed(
+                        requested: "send \(slot) -> \(listedDestination) untouched by the"
+                            + " abandoned removal browse",
+                        actual: verdict.detail
+                            + ". Original failure: \(error.localizedDescription)",
+                        restored: false
+                    )
+                }
+                throw error
+            }
             // Browse backward toward the No-Send boundary.
             //
             // The 120-step cap this walk had was sound by construction: the add
@@ -820,51 +1009,92 @@ extension MCUController {
             // still what finds the boundary, and a jump that lands wrong (or
             // overshoots into a wrap) costs steps, which the raised cap now has
             // room for.
-            if let ordinal = sendDestinationOrdinal(listedDestination),
-               ordinal > sendRemovalHomeMargin {
-                guard try sendBrowseJump(
-                    destIndex: destIndex, entries: -(ordinal - sendRemovalHomeMargin)
-                ) else { return nil }
-            }
-            var reached = false
-            for _ in 0..<sendBrowseEntryCap {
-                let beforeEvents = freshStatus()?["received_events"] as? Int ?? -1
-                let response = try MCUBridge.send(.vpot(index: destIndex, delta: -1))
-                guard response.ok else { return nil }
-                _ = awaitEvents(since: beforeEvents, timeoutMs: 300)
+            let confirm: BridgeResponse
+            do {
+                if let ordinal = sendDestinationOrdinal(listedDestination),
+                   ordinal > sendRemovalHomeMargin {
+                    guard try sendBrowseJump(
+                        destIndex: destIndex, entries: -(ordinal - sendRemovalHomeMargin)
+                    ) else { return nil }
+                }
+                var reached = false
+                var blankReads = 0
+                for _ in 0..<sendBrowseEntryCap {
+                    // The view gate rides the same status read that anchors
+                    // the event wait — a step sent after the view has dropped
+                    // is a pan write (measured 2026-08-31, this exact walk).
+                    let status = freshStatus()
+                    guard sendViewStanding(in: status) else {
+                        throw sendViewDroppedError(status, before: "a backward step")
+                    }
+                    let beforeEvents = status?["received_events"] as? Int ?? -1
+                    let response = try MCUBridge.send(.vpot(index: destIndex, delta: -1))
+                    guard response.ok else { return nil }
+                    _ = awaitEvents(since: beforeEvents, timeoutMs: 300)
+                    _ = quiescentStatus()
+                    let name = shownName()
+                    if name == MCULCDStrings.emptySlot { reached = true; break }
+                    if sendBrowseReadIsEntry(name) {
+                        blankReads = 0
+                    } else {
+                        blankReads += 1
+                        if blankReads >= sendBrowseBlankReadCap {
+                            throw LogicianError.preconditionUnmet(
+                                "The destination browser stopped answering on the walk home:"
+                                    + " \(blankReads) consecutive reads showed no catalog entry"
+                                    + " (last read '\(name)') — the signature of a send view"
+                                    + " being torn down. The browse was abandoned with nothing"
+                                    + " confirmed."
+                            )
+                        }
+                    }
+                }
+                guard reached else {
+                    throw LogicianError.openVerificationFailed(
+                        "the destination browser never reached the No-Send entry within"
+                            + " \(sendBrowseEntryCap) steps; nothing was confirmed (browse"
+                            + " abandoned)"
+                    )
+                }
+                // Settle and re-verify the boundary is STILL shown before
+                // confirming — the same drift check the add makes on its
+                // destination, and here it is what stands between this call and
+                // REWRITING the send to whatever entry a repaint left showing.
+                // Corrections walk forward: past the boundary is the wrapped far
+                // end of the list, and forward from there comes back to it.
+                Thread.sleep(forTimeInterval: 0.3)
                 _ = quiescentStatus()
-                if shownName() == MCULCDStrings.emptySlot { reached = true; break }
+                var corrections = 0
+                while shownName() != MCULCDStrings.emptySlot, corrections < 4 {
+                    let status = freshStatus()
+                    guard sendViewStanding(in: status) else {
+                        throw sendViewDroppedError(status, before: "a forward correction")
+                    }
+                    _ = try? MCUBridge.send(.vpot(index: destIndex, delta: 1))
+                    Thread.sleep(forTimeInterval: 0.4)
+                    _ = quiescentStatus()
+                    corrections += 1
+                }
+                // Boundary and view from ONE frame, so the press's meaning and
+                // its target are facts about the same instant.
+                let confirmationFrame = freshStatus()
+                guard let top = confirmationFrame?["lcd_top"] as? String,
+                      let bottom = confirmationFrame?["lcd_bottom"] as? String,
+                      sendViewStanding(in: confirmationFrame) else {
+                    throw sendViewDroppedError(confirmationFrame, before: "the confirming press")
+                }
+                let boundary = sendDestinationCell(top: top, bottom: bottom, destIndex: destIndex)
+                guard boundary == MCULCDStrings.emptySlot else {
+                    throw LogicianError.verificationFailed(
+                        requested: "the No-Send entry shown at confirmation time",
+                        actual: "the entry drifted to '\(boundary)'; aborted without removing",
+                        restored: true
+                    )
+                }
+                confirm = try MCUBridge.send(.vpotPress(index: destIndex))
+            } catch {
+                try abandonedBrowse(error)
             }
-            guard reached else {
-                throw LogicianError.openVerificationFailed(
-                    "the destination browser never reached the No-Send entry within"
-                        + " \(sendBrowseEntryCap) steps; nothing was confirmed (browse"
-                        + " abandoned, send unchanged)"
-                )
-            }
-            // Settle and re-verify the boundary is STILL shown before
-            // confirming — the same drift check the add makes on its
-            // destination, and here it is what stands between this call and
-            // REWRITING the send to whatever entry a repaint left showing.
-            // Corrections walk forward: past the boundary is the wrapped far
-            // end of the list, and forward from there comes back to it.
-            Thread.sleep(forTimeInterval: 0.3)
-            _ = quiescentStatus()
-            var corrections = 0
-            while shownName() != MCULCDStrings.emptySlot, corrections < 4 {
-                _ = try? MCUBridge.send(.vpot(index: destIndex, delta: 1))
-                Thread.sleep(forTimeInterval: 0.4)
-                _ = quiescentStatus()
-                corrections += 1
-            }
-            guard shownName() == MCULCDStrings.emptySlot else {
-                throw LogicianError.verificationFailed(
-                    requested: "the No-Send entry shown at confirmation time",
-                    actual: "the entry drifted to '\(shownName())'; aborted without removing",
-                    restored: true
-                )
-            }
-            let confirm = try MCUBridge.send(.vpotPress(index: destIndex))
             guard confirm.ok else { return nil }
             // What the slot repaints to after a REMOVAL has not been captured
             // live the way the add's commit frame was, so there is no content
