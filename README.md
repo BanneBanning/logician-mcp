@@ -27,6 +27,7 @@ Logic Pro has no API, so every AI assistant could talk about your mix without be
 | *"The hats are too stiff — quantize them, but keep some feel."* | Sets the region's quantize with swing. The notes you played stay yours. |
 | *"A/B that compressor setting on the master."* | Prints the mix twice — before and after — and hands you both versions, so the call is made with ears. |
 | *"Fix the flubbed note in bar 3."* | Reads the region's MIDI, corrects the one note, leaves the take alone. |
+| *"Lay down drums, bass and keys from bar 9."* | Writes the MIDI and imports the whole arrangement in one pass — onto your existing tracks if you name them — then verifies it note for note. |
 | *"Ride the vocal up in the chorus."* | Records a volume automation pass over those bars and verifies the curve landed. |
 | *"Give me stems of the chorus."* | Solo-bounces every track over the same bars — aligned, same length, ready to send. |
 | *"Listen to the whole song. What would you change?"* | Bounces the mix and reads the whole project — levels, plugins, arrangement — then comes back with moves it can actually make. Say yes, and it makes them. |
@@ -125,7 +126,8 @@ I stopwatch everything against a live reference project (25 mixer strips, 19 tra
 | The same A/B via `method: "bounce"` (master output rather than a track freeze) | ~20 s |
 | A/B on tracks freeze refuses (stack subtracks, shared channels) via `method: "solo_bounce"` | 157 s measured; **est.** ~50 s since the bounce-position fix |
 | Set any plugin parameter, verified via LCD echo, incl. third-party | ~1.5–1.9 s warm (~3.8 s first call) |
-| Compose MIDI (notes, CC, pitch bend) recorded through the track's instrument, render-verified | real time + ~10 s |
+| Compose a MIDI arrangement by import — multi-track, note-diff verified | ~8 s, +~6 s per track routed onto an existing track |
+| Perform MIDI (notes, CC, pitch bend) through the track's instrument, render-verified | real time + ~10 s |
 | Automation curve (volume), recorded and playhead-chase verified | ~20 s |
 | Read the whole mixer in one call — every strip's dB, mute/solo/arm, pan (25 strips) | ~16–17 s |
 | The same read as part of a `mix`-scope project snapshot (adds the track/strip census) | ~23 s |
@@ -147,9 +149,9 @@ I stopwatch everything against a live reference project (25 mixer strips, 19 tra
 - **Mixing** — volume (dB-converged), pan, mute, solo, record-arm, sends, insert bypass, output/group routing; the master chain and buses address by name (`Stereo Out`, auxes)
 - **Plugins & instruments** — add/remove, read/write **any** parameter of any plugin (third-party included), browse and select presets by name, load instruments
 - **Regions** — select (multi too), move, copy, split (dialog-aware), nudge, rename, remove silence; region parameters: quantize, swing, transpose, velocity, loop, mute, gain, fades
-- **Composition & tempo** — MIDI (notes/CC/pitch bend) recorded through the track's real instrument, render-verified; tempo and meter maps are read, integrated into all bar math, and editable; the Smart Tempo mode is checked before recording so an Adapt-mode project is refused, never rewritten
+- **Composition & tempo** — compose whole multi-track arrangements by MIDI import (seconds, note-for-note verified, straight onto your own tracks), or perform MIDI (notes/CC/pitch bend) through the track's real instrument in real time; edit single notes in place; tempo and meter maps are read, integrated into all bar math, and editable; the Smart Tempo mode is checked before recording so an Adapt-mode project is refused, never rewritten
 - **Automation** — read existing curves; record new ones in any mode, playhead-chase verified
-- **Audio out** — bounce (with format/depth/dither options), bounce-in-place, stem export, freeze renders sliced to bars, A/B evaluation carrying both audio versions; audio comes back inline **and** as fetchable MCP resource links, so a client that can't take it inline can still pull it on demand
+- **Audio out** — bounce (with format/depth/dither options), bounce-in-place, stem export, freeze renders sliced to bars, A/B evaluation carrying both audio versions; audio comes back inline **and** as fetchable MCP resource links, so a client that can't take it inline can still pull it on demand. A listen-first mode (`blind: true`) holds the numbers back until the agent has actually listened — descriptions come from ears, then the metrics
 - **Key commands** — trigger any learned command; learn any of Logic's ~1400 by name, consent-recorded
 
 ## Under the hood
@@ -184,8 +186,8 @@ Safety model: read before write, abort on ambiguity, verify by readback, roll ba
 ## Known limitations & roadmap
 
 - The biggest limitation is the models themselves: today's multimodal agents are not yet the mixing engineers you might wish for. Half the reason I built this was to find out exactly how good they really are — sharp assistant, not yet a producer. The tool is ready for the day that changes.
-- English Logic UI assumed (Accessibility string matching; locale tables are future work)
-- Tempo and meter maps are read from Logic's own lists and integrated into all bar math; tempo *curves* are approximated as steps (the Tempo List does not expose them) with the uncertainty quantified. MIDI recording takes real time.
+- English Logic UI is the fully supported one for now. The server detects Logic's language and says plainly what degrades on others (the control-surface side barely cares); locale tables are in progress — French is measured, more languages land as they're captured
+- Tempo and meter maps are read from Logic's own lists and integrated into all bar math; tempo *curves* are approximated as steps (the Tempo List does not expose them) with the uncertainty quantified. MIDI *recording* takes real time — composing by import takes seconds.
 - Track stacks cannot be freeze-rendered (Logic limitation — `solo_bounce` covers their subtracks)
 - Recording automation needs a track header, so it cannot run on headerless strips — `Stereo Out`, auxes, buses. Setting the automation mode reads it off the track header's Accessibility label, and those strips have none. Their volume, pan, sends and plugin parameters are still writable; only recorded *curves* are out of reach.
 - Roadmap: Homebrew — or an even simpler one-click installer for musicians who've never met a terminal — as soon as the repo is public; tempo curves; note-level MIDI beyond the Event List; localization
