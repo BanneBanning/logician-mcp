@@ -6,6 +6,25 @@ import Foundation
 
 extension LogicAccessibility {
 
+    /// The strip's AUDIO-EFFECT inserts by display name, with the instrument
+    /// slot left out — the list the control surface's plug-in view can
+    /// actually be compared against.
+    ///
+    /// `listInserts` cannot make that distinction and never could: an occupied
+    /// instrument slot is an `AXGroup` with exactly the same bypass/open
+    /// children as an insert, so it comes back as one more `insert_index`
+    /// (verified live 2026-08-31 on `Bas` — `Trilian` arrived as insert_index 5
+    /// beside the four effects). The MCU plug-in list shows only the eight
+    /// audio-effect slots, so comparing the two lists by count made
+    /// `logic_add_plugin` and `logic_remove_plugin` refuse EVERY software
+    /// instrument track carrying an instrument, reporting the strip mismatch
+    /// "the PL view is pointed at another channel" for a strip that was
+    /// correctly selected. `ChannelStrip.read` already separates the two by
+    /// geometry, so the cross-checks ask it rather than guessing.
+    func insertPluginNames(trackName: String) throws -> [String] {
+        ChannelStrip.read(children: stripChildren(of: try inspectorStrip(named: trackName))).plugins
+    }
+
     /// The strip's children as `StripChild` values — the shape
     /// `ChannelStrip.read` parses.
     func stripChildren(of strip: AXUIElement) -> [StripChild] {

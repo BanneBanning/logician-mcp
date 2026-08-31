@@ -16,8 +16,7 @@ extension MCUController {
     static func verifyPluginListStrip(
         inserts: [String], logic: LogicAccessibility, trackName: String
     ) throws -> String {
-        let axNames = ((try? logic.listInserts(trackName: trackName))?["inserts"] as? [[String: Any]])?
-            .compactMap { $0["plugin_display_name"] as? String } ?? []
+        let axNames = (try? logic.insertPluginNames(trackName: trackName)) ?? []
         switch pluginListAgreesWithAX(mcuCells: inserts, axNames: axNames) {
         case true?:
             return "ax_insert_list"
@@ -152,37 +151,68 @@ extension MCUController {
         // Confirm: vpot press instantiates and drops into the edit view.
         let response = try MCUBridge.send(.vpotPress(index: emptyIndex))
         guard response.ok else { abortBrowse(); return nil }
-        Thread.sleep(forTimeInterval: 1.0)
+        // The press drops the surface into the plugin-edit view, and it gets
+        // there at once: measured 2026-08-31 over four live adds, the
+        // assignment already read `P<slot>` on the FIRST status read after the
+        // press returned (0-1 ms), while the blind `Thread.sleep(1.0)` this
+        // replaces went on waiting for another full second. Wait for the view
+        // POSITIVELY instead. What that second was really insuring against —
+        // a plugin that has not finished instantiating when its slot is read —
+        // is not dropped, it moves to the readback below, where it is spent
+        // only when it is actually needed.
+        _ = waitFor(seconds: 1.5) { status in
+            (status["assignment"] as? String).map(isPluginEditAssignment) ?? false
+        }
         _ = quiescentStatus()
         // Verify: back in the plugin list the slot is occupied.
         guard let after = try pluginInsertNames() else { return nil }
-        let slotName = after.indices.contains(emptyIndex)
-            ? after[emptyIndex].trimmingCharacters(
-                in: CharacterSet(charactersIn: MCULCDStrings.bypassMarker)
-            )
-            : ""
-        exitToPan()
+        func slotCell(_ cells: [String]) -> String {
+            cells.indices.contains(emptyIndex)
+                ? cells[emptyIndex].trimmingCharacters(
+                    in: CharacterSet(charactersIn: MCULCDStrings.bypassMarker)
+                )
+                : ""
+        }
+        var slotName = slotCell(after)
+        if slotName.isEmpty || slotName == MCULCDStrings.emptySlot {
+            // Waiting for the NAME to appear rather than for a duration to
+            // elapse: a slow plugin gets as long as it needs, a fast one
+            // costs nothing at all.
+            _ = waitFor(seconds: 2.0) { status in
+                guard let bottom = status["lcd_bottom"] as? String else { return false }
+                let cell = slotCell(lcdFields(bottom))
+                return !cell.isEmpty && cell != MCULCDStrings.emptySlot
+            }
+            if let bottom = freshStatus()?["lcd_bottom"] as? String {
+                slotName = slotCell(lcdFields(bottom))
+            }
+        }
         guard !slotName.isEmpty, slotName != MCULCDStrings.emptySlot else {
+            exitToPan()
             throw LogicianError.verificationFailed(
                 requested: "'\(pluginName)' instantiated in slot \(emptyIndex + 1)",
                 actual: "the slot still shows empty after confirmation",
                 restored: false
             )
         }
+        // The surface stays on the insert list, which `pluginInsertNames` just
+        // proved by content. Returning to Pan costs ~3.3 s — measured
+        // 2026-08-31 at 30% of this entire call — and the next plugin tool
+        // only has to leave again, so record the debt instead and let it be
+        // settled by whoever actually needs the Pan view. Same mechanism, and
+        // the same three ways of settling, as the read tools use.
+        deferSurfaceRestore(SurfaceDebt(strip: trackName, view: "plugin_list", slot: nil))
         // Cross-verify through Accessibility — an independent source that
         // names the strip, so a wrong-channel insertion cannot pass silently.
         var axConfirmed = false
         var axReachable = false
         for _ in 0..<10 {
-            if let axInserts = (try? logic.listInserts(trackName: trackName))?["inserts"]
-                as? [[String: Any]] {
+            // Readable-but-empty is REACHABLE and not confirmed: that is the
+            // strip saying the plugin is not there, which must fail the call,
+            // not degrade it to a warning.
+            if let names = try? logic.insertPluginNames(trackName: trackName) {
                 axReachable = true
-                let names = axInserts.compactMap { $0["plugin_display_name"] as? String }
-                if names.contains(where: {
-                    $0.lowercased().hasPrefix(pluginName.lowercased())
-                        || pluginName.lowercased().hasPrefix(
-                            $0.trimmingCharacters(in: .whitespaces).lowercased())
-                }) {
+                if names.contains(where: { axNamesPlugin($0, requested: pluginName) }) {
                     axConfirmed = true
                     break
                 }
@@ -190,6 +220,7 @@ extension MCUController {
             Thread.sleep(forTimeInterval: 0.4)
         }
         guard axConfirmed || !axReachable else {
+            exitToPan()
             throw LogicianError.verificationFailed(
                 requested: "'\(pluginName)' on '\(trackName)' (AX cross-check)",
                 actual: "the LCD claimed success but the strip's AX insert list never showed the plugin — it may have landed on another channel; check the mixer",
@@ -313,15 +344,9 @@ extension MCUController {
         var axGone = false
         var axReachable = false
         for _ in 0..<10 {
-            if let axInserts = (try? logic.listInserts(trackName: trackName))?["inserts"]
-                as? [[String: Any]] {
+            if let names = try? logic.insertPluginNames(trackName: trackName) {
                 axReachable = true
-                let names = axInserts.compactMap { $0["plugin_display_name"] as? String }
-                if !names.contains(where: {
-                    $0.lowercased().hasPrefix(pluginName.lowercased())
-                        || pluginName.lowercased().hasPrefix(
-                            $0.trimmingCharacters(in: .whitespaces).lowercased())
-                }) {
+                if !names.contains(where: { axNamesPlugin($0, requested: pluginName) }) {
                     axGone = true
                     break
                 }

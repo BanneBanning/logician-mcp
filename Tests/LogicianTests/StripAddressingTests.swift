@@ -398,6 +398,40 @@ final class StripAddressingTests: XCTestCase {
         )
     }
 
+    // MARK: - Naming a plugin across the two planes
+
+    /// Adding `Parametric EQ` worked and was then reported as a failure,
+    /// because Accessibility calls the result `ParEQ` and the cross-check was
+    /// a two-way `hasPrefix`: neither string is a prefix of the other, so a
+    /// correct write came back as "it may have landed on another channel" and
+    /// was left in place. Observed live on `Sweeps`, 2026-08-31.
+    func testAnAbbreviatedAXNameStillNamesThePlugin() {
+        XCTAssertTrue(MCUController.axNamesPlugin("ParEQ", requested: "Parametric EQ"))
+        XCTAssertTrue(MCUController.axNamesPlugin("Comprs", requested: "Compressor"))
+        XCTAssertTrue(MCUController.axNamesPlugin("Gain", requested: "Gain"))
+        XCTAssertTrue(MCUController.axNamesPlugin("Channel EQ", requested: "Channel EQ"))
+    }
+
+    func testTheChannelFormatSuffixIsNotPartOfTheName() {
+        // The browser entry carries Logic's channel format; the AX name never
+        // does, and `browser_entry` is what a caller is most likely to echo.
+        XCTAssertTrue(MCUController.axNamesPlugin("Gain", requested: "Gain (s/s)"))
+        XCTAssertTrue(
+            MCUController.axNamesPlugin("Abbey Road Saturator", requested: "Abbey Road Saturator (m)")
+        )
+    }
+
+    /// The loosening must not turn into a subsequence free-for-all: an
+    /// abbreviation keeps the opening characters, so unrelated plugins that
+    /// merely share letters stay unmatched.
+    func testAnUnrelatedPluginIsNotMistakenForTheRequestedOne() {
+        XCTAssertFalse(MCUController.axNamesPlugin("Gain", requested: "Guitar Amp Pro"))
+        XCTAssertFalse(MCUController.axNamesPlugin("Limiter", requested: "Compressor"))
+        XCTAssertFalse(MCUController.axNamesPlugin("Echo", requested: "Enveloper"))
+        XCTAssertFalse(MCUController.axNamesPlugin("", requested: "Gain"))
+        XCTAssertFalse(MCUController.axNamesPlugin("Gain", requested: ""))
+    }
+
     func testTwoCopiesOfOnePluginNeedTwoAXEntries() {
         // `Bas` really does have two Channel EQs; one AX entry must not
         // satisfy both cells.

@@ -149,6 +149,12 @@ extension MCUController {
                 )
             }
             .filter { !$0.isEmpty && $0 != MCULCDStrings.emptySlot }
+        // Counts must match EXACTLY, and the caller is responsible for handing
+        // in a comparable list: the AX channel strip publishes an occupied
+        // INSTRUMENT slot in the same shape as an insert, and the MCU plug-in
+        // list never shows it, so a raw `listInserts` reading of a software
+        // instrument track carries one entry the surface cannot have. Compare
+        // against `insertPluginNames`, which drops it.
         guard occupied.count == axNames.count else { return false }
         var remaining = axNames
         for cell in occupied {
@@ -158,6 +164,41 @@ extension MCUController {
             remaining.remove(at: index)
         }
         return true
+    }
+
+    /// Does an Accessibility insert name refer to the plugin that was asked
+    /// for? Separate from `lcdAbbreviationPlausible`, which is calibrated for
+    /// the surface's 6-character LCD grid and rejects anything shorter — a
+    /// rule that is right for an LCD cell and wrong here, because Logic's own
+    /// short names are not padded to any width.
+    ///
+    /// The case that forced this: adding `Parametric EQ` succeeded, and the
+    /// cross-check then failed it, because Accessibility calls the result
+    /// `ParEQ` and the old test was a two-way `hasPrefix` — neither
+    /// "pareq".hasPrefix("parametric eq") nor the reverse is true. The write
+    /// had landed correctly and the tool reported "it may have landed on
+    /// another channel" and left it in place (observed 2026-08-31 on `Sweeps`).
+    ///
+    /// Deliberately not a bare subsequence test, which would let `Gain` match
+    /// half the catalog: an abbreviation has to keep the first three
+    /// characters and at least four in total. Loosening this cannot make a
+    /// wrong-CHANNEL write pass — the strip is named by the caller and proven
+    /// by the SELECT LED; at worst a right-channel write is confirmed by a
+    /// sibling plugin with a confusingly similar name.
+    static func axNamesPlugin(_ axName: String, requested: String) -> Bool {
+        func normalize(_ raw: String) -> String {
+            raw.replacingOccurrences(
+                of: #"\s*\((?:[sm]/[sm]|[sm])\)\s*$"#, with: "", options: .regularExpression
+            )
+            .trimmingCharacters(in: CharacterSet(charactersIn: MCULCDStrings.bypassMarker + " "))
+            .lowercased()
+        }
+        let ax = normalize(axName), want = normalize(requested)
+        guard !ax.isEmpty, !want.isEmpty else { return false }
+        if ax == want || ax.hasPrefix(want) || want.hasPrefix(ax) { return true }
+        guard ax.count >= 4, want.count > ax.count else { return false }
+        guard ax.prefix(3) == want.prefix(3) else { return false }
+        return lcdNameMatches(track: want, lcd: ax)
     }
 
     /// Every non-empty cell in a bank map, for "not found" messages that name

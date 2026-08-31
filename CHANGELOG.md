@@ -59,6 +59,21 @@ with every render coming back as audio the agent can listen to.
   the encoder is matched against the live LCD before it turns, a disagreement drops the
   cache and walks the pages for real, and an ambiguous `plugin_name` or parameter is
   reported rather than guessed.
+- **Adding a plugin works on instrument tracks, and is 41% faster.** `logic_add_plugin`
+  used to refuse every software-instrument track carrying an instrument — it compared the
+  surface's plug-in list against an Accessibility reading that counts the INSTRUMENT slot
+  as one more insert, and reported the mismatch as "the PL view is pointed at another
+  channel" for a strip that was correctly selected. It also failed correct writes whenever
+  Logic abbreviates the name it publishes (`ParEQ` for `Parametric EQ`), leaving the plugin
+  in place while saying it may have landed elsewhere. Both are fixed at the source: the
+  comparison now reads the strip's audio-effect inserts with the instrument separated out
+  by geometry, and names are matched the way Logic actually abbreviates them. In the same
+  pass the surface stops walking home after an insertion (the deferred restore the read
+  tools already use) and the blind one-second wait after the confirming press became a
+  positive check — the surface reaches the edit view in under a millisecond, and what that
+  second really insured against, a plugin still instantiating, now waits for the slot to
+  name it rather than for a duration to elapse. 8.8 s → 5.2 s warm, with every readback,
+  LED proof and cross-check exactly where it was.
 
 ### Known limitations (honest by design)
 
