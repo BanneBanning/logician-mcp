@@ -28,16 +28,48 @@ enum StripPlane: String, Equatable {
 /// True when a failed track lookup is the signature of a HEADERLESS strip
 /// rather than of a typo or a stale name.
 ///
-/// Only `trackNotFound` qualifies — "this name is not a track header at all".
-/// `trackAmbiguous`, `trackMismatch` and every write/verification failure mean
-/// the name IS a track and something else went wrong, and rerouting those to
-/// the surface would paper over a real problem. A track NUMBER pins the request
-/// to the header plane too: numbers exist only there, so a caller that passed
-/// one is not talking about an output strip.
+/// Two signatures qualify. `trackNotFound` — "this name is not a track header
+/// at all". And the one `windowNotFound` that means the header COLUMN itself
+/// was unreadable: a non-English Logic publishes a localized description on
+/// it, so EVERY track name used to die at that gate before the surface was
+/// asked — while the surface, which is language-independent, could find the
+/// same track by its LCD name in the same session (measured 2026-08-30,
+/// French Logic). "The header column cannot be read" must fall through to the
+/// surface exactly as "this name is not a header" does, or language_note's
+/// promise that the surface plane survives any UI language is false.
+///
+/// Every other failure stays on the header plane. `trackAmbiguous`,
+/// `trackMismatch` and the write/verification failures mean the name IS a
+/// track and something else went wrong, and rerouting those to the surface
+/// would paper over a real problem. Other `windowNotFound` reasons mean the
+/// plane's own preconditions failed — a missing PROJECT window means the
+/// project-path check never ran, so a rerouted write could land in the wrong
+/// project. A track NUMBER pins the request to the header plane too: numbers
+/// exist only there, so a caller that passed one is not talking about an
+/// output strip.
 func isHeaderlessStripCandidate(_ error: LogicianError, trackNumberGiven: Bool) -> Bool {
     guard !trackNumberGiven else { return false }
-    guard case .trackNotFound = error else { return false }
-    return true
+    switch error {
+    case .trackNotFound:
+        return true
+    case .windowNotFound(let missing):
+        return missing == LogicAccessibility.tracksHeaderGroupMissing
+    default:
+        return false
+    }
+}
+
+/// The header-plane half of a two-plane error message: what the track lookup
+/// actually established. "It is not a track header" is only true when the
+/// header column was readable; on a non-English Logic the honest half is that
+/// the column could not be read at all.
+func headerPlaneMiss(_ trackMiss: LogicianError) -> String {
+    if case .windowNotFound = trackMiss {
+        return "the track-header column could not be read (a non-English Logic"
+            + " publishes a localized description on it), so the name could not"
+            + " be checked against track headers"
+    }
+    return "it is not a track header"
 }
 
 /// Turns a surface resolution that did not land into the right error, with the
@@ -60,7 +92,8 @@ func headerlessStripError(
     case .unavailable(let reason):
         return .trackNotExposed(
             requested: "'\(name)' as an output/aux/bus strip",
-            exposed: "it is not a track header, and the control surface could not be used to reach it: "
+            exposed: headerPlaneMiss(trackMiss)
+                + ", and the control surface could not be used to reach it: "
                 + reason + ". Nothing was written."
         )
     }
@@ -96,7 +129,8 @@ extension LogicAccessibility {
                 // and an agent that hears only that will retry the same name.
                 throw LogicianError.trackNotExposed(
                     requested: "'\(trackName)' as an output/aux/bus channel strip",
-                    exposed: "it is not a track header, and no inspector strip with that name is on screen."
+                    exposed: headerPlaneMiss(error)
+                        + ", and no inspector strip with that name is on screen."
                         + " Accessibility can only reach a headerless strip that an inspector is showing"
                         + " (select a track routed to it — opening the Mixer does NOT help, measured 2026-08-28)."
                         + " Use the logic_mcu_* tools for a strip no inspector shows. Nothing was written."

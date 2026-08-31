@@ -147,6 +147,13 @@ extension LogicAccessibility {
         return (number, name)
     }
 
+    /// The `windowNotFound` reason `trackHeaderGroup()` reports, verbatim.
+    /// `isHeaderlessStripCandidate` matches it to reroute the request to the
+    /// control surface, so the throw and the match must never drift apart —
+    /// this exact signature is what every track name dies with on a
+    /// non-English Logic (measured 2026-08-30, French).
+    static let tracksHeaderGroupMissing = "Tracks header group"
+
     func trackHeaderGroup() throws -> AXUIElement {
         let mainWindow = try projectWindow()
         let headerGroup = firstDescendant(of: mainWindow, maximumDepth: AXDepth.trackHeaderGroup) { element in
@@ -155,7 +162,7 @@ extension LogicAccessibility {
                     == LogicUIStrings.Element.tracksHeader
         }
         guard let group = headerGroup else {
-            throw LogicianError.windowNotFound("Tracks header group")
+            throw LogicianError.windowNotFound(Self.tracksHeaderGroupMissing)
         }
         return group
     }
