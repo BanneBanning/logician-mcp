@@ -790,6 +790,63 @@ func acquireInstanceLock() -> Bool {
     return true
 }
 
+/// One command in flight at a time, exactly as the old single-threaded loop
+/// guaranteed by construction. Handlers sleep and steer real MIDI (converge
+/// holds a vpot for seconds); two of them interleaving on the same surface
+/// would fight over it.
+private let commandHandlingLock = NSLock()
+
+/// How long a connected peer gets to deliver its whole command, and then to
+/// drain the reply. A healthy client does both in milliseconds (it writes,
+/// half-closes, and is already reading); ten seconds is pure slack. This is a
+/// deadline on the socket I/O only — command HANDLING time (converge can
+/// legitimately run 15 s) is not under it.
+let connectionIOTimeout: TimeInterval = 10
+
+/// Serves one accepted connection: read the frame, run the command, write the
+/// reply, close. Runs on its own thread with every socket wait deadlined, so
+/// the worst a stuck or dead peer can do is hold THIS thread for ~20 s —
+/// never the accept loop, and never another client's command.
+///
+/// This used to run inline in the accept loop with an unbounded read, and on
+/// 2026-08-31 a client that connected without ever completing its transaction
+/// wedged the daemon for good: every later connect() succeeded (the backlog
+/// accepted it) and then hung forever. The socket is owner-only (0600), so
+/// the peer is a buggy local client, not an adversary — but buggy is enough.
+func serveConnection(_ connection: Int32) {
+    defer { Darwin.close(connection) }
+    // Non-blocking so the deadlined read/write in Framing.swift are actually
+    // bounded: poll supplies the waiting, EAGAIN comes back instead of a stall.
+    let flags = fcntl(connection, F_GETFL)
+    _ = fcntl(connection, F_SETFL, flags | O_NONBLOCK)
+    // A peer that disconnects before its reply is written must cost the
+    // daemon an EPIPE on that one fd — not a process-wide SIGPIPE, which is
+    // fatal by default and was a second, latent way for the daemon to die.
+    var noSigpipe: Int32 = 1
+    setsockopt(connection, SOL_SOCKET, SO_NOSIGPIPE, &noSigpipe,
+               socklen_t(MemoryLayout<Int32>.size))
+    guard case .complete(let data) = readToEOF(
+        connection, deadline: Date().addingTimeInterval(connectionIOTimeout)
+    ), !data.isEmpty else {
+        return // timed out, errored, or empty: drop it without a reply
+    }
+    let response: BridgeResponse
+    if let object = try? bridgeJSONDecoder.decode(BridgeCommand.self, from: data) {
+        commandHandlingLock.lock()
+        response = handleCommand(object)
+        commandHandlingLock.unlock()
+    } else {
+        // Only a payload that is not a JSON object at all lands here:
+        // BridgeCommand decodes every field leniently, so a wrongly-typed or
+        // unknown key still reaches the handler and gets the handler's own
+        // error, exactly as before.
+        response = .failure("invalid JSON (\(data.count) bytes received)")
+    }
+    if let out = try? bridgeJSONEncoder.encode(response) {
+        _ = writeAll(connection, out, deadline: Date().addingTimeInterval(connectionIOTimeout))
+    }
+}
+
 func startSocketServer() {
     unlink(socketPath)
     let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
@@ -811,28 +868,18 @@ func startSocketServer() {
     // this makes the restriction explicit rather than inherited.
     chmod(socketPath, 0o600)
     Thread.detachNewThread {
+        // The accept loop does NOTHING but accept and hand off. All per-peer
+        // I/O lives in serveConnection on its own deadlined thread, so no
+        // single connection — however stuck — can stop the next accept().
         while true {
             let connection = Darwin.accept(fd, nil, nil)
-            guard connection >= 0 else { continue }
-            // Read the WHOLE command (the client half-closes when done), not
-            // just whatever fit in one socket buffer.
-            let data = readToEOF(connection)
-            if !data.isEmpty {
-                let response: BridgeResponse
-                if let object = try? bridgeJSONDecoder.decode(BridgeCommand.self, from: data) {
-                    response = handleCommand(object)
-                } else {
-                    // Only a payload that is not a JSON object at all lands
-                    // here: BridgeCommand decodes every field leniently, so a
-                    // wrongly-typed or unknown key still reaches the handler
-                    // and gets the handler's own error, exactly as before.
-                    response = .failure("invalid JSON (\(data.count) bytes received)")
-                }
-                if let out = try? bridgeJSONEncoder.encode(response) {
-                    writeAll(connection, out)
-                }
+            guard connection >= 0 else {
+                // EINTR is routine; anything persistent (EMFILE, say) must
+                // not spin this loop hot at 100% CPU.
+                if errno != EINTR { usleep(10_000) }
+                continue
             }
-            Darwin.close(connection)
+            Thread.detachNewThread { serveConnection(connection) }
         }
     }
 }

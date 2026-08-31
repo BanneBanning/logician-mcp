@@ -60,6 +60,15 @@ with every render coming back as audio the agent can listen to.
   cache and walks the pages for real, and an ambiguous `plugin_name` or parameter is
   reported rather than guessed.
 
+- **The bridge daemon shrugs off misbehaving clients.** Every connection to the
+  command socket is served on its own deadlined thread: a client that connects and
+  never finishes its command is dropped after ten seconds instead of wedging the
+  daemon for every later caller (the failure that silently took a long-running
+  daemon out mid-session on 2026-08-31), and a client that vanishes before its
+  reply arrives costs one closed connection rather than the whole process, which
+  previously died on the unhandled SIGPIPE. Commands still run one at a time, so
+  control-surface writes never interleave.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.
