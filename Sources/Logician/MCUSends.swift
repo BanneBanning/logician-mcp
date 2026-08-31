@@ -77,8 +77,8 @@ extension MCUController {
     }
 
     /// Creates a send by browsing the destination field of the first empty
-    /// send slot (1 entry per tick in THIS browser, unlike the plugin
-    /// browser's 1-per-2), settle-verifying the shown name, and confirming.
+    /// send slot to the named destination (see `browseToSendDestination`),
+    /// settle-verifying the shown name, and confirming.
     /// `restoringView: false` leaves the surface in the SEND VIEW for a
     /// caller that is about to use it again - which `logic_add_send` always
     /// is when it was given a `level_db`, because the level write runs in this
@@ -126,46 +126,16 @@ extension MCUController {
             )
         }
         let destIndex = ((slot - 1) % 2) * 4
-        func shownDestination() -> String {
-            guard let status = freshStatus(),
-                  let bottom = status["lcd_bottom"] as? String else { return "" }
-            let start = bottom.index(bottom.startIndex, offsetBy: min(destIndex * 7, bottom.count))
-            let raw = String(bottom[start...])
-            return (raw.range(of: "    ").map { String(raw[..<$0.lowerBound]) } ?? raw)
-                .trimmingCharacters(in: .whitespaces)
-        }
-        var entries: [String] = []
-        var found = false
-        for _ in 0..<80 {
-            let before = freshStatus()?["received_events"] as? Int ?? -1
-            let response = try MCUBridge.send(.vpot(index: destIndex, delta: 1))
-            guard response.ok else { return nil }
-            _ = awaitEvents(since: before, timeoutMs: 300)
-            _ = quiescentStatus()
-            let name = shownDestination()
-            guard !name.isEmpty, name != MCULCDStrings.emptySlot else { continue }
-            if name.caseInsensitiveCompare(destination) == .orderedSame { found = true; break }
-            if name == entries.last { continue }
-            if let firstEntry = entries.first, name == firstEntry, entries.count > 2 {
-                exitToPan()
-                throw LogicianError.trackNotExposed(
-                    requested: "destination '\(destination)'",
-                    exposed: "the browser wrapped; entries: " + entries.joined(separator: ", ")
-                )
-            }
-            entries.append(name)
-        }
-        guard found else {
-            throw LogicianError.openVerificationFailed(
-                "the destination browser never showed '\(destination)'"
-            )
+        guard try browseToSendDestination(destIndex: destIndex, destination: destination) else {
+            return nil
         }
         Thread.sleep(forTimeInterval: 0.3)
         _ = quiescentStatus()
-        guard shownDestination().caseInsensitiveCompare(destination) == .orderedSame else {
+        let settled = shownSendDestination(destIndex: destIndex)
+        guard settled.caseInsensitiveCompare(destination) == .orderedSame else {
             throw LogicianError.verificationFailed(
                 requested: "'\(destination)' shown at confirmation time",
-                actual: "the entry drifted to '\(shownDestination())'; aborted",
+                actual: "the entry drifted to '\(settled)'; aborted",
                 restored: true
             )
         }
@@ -184,14 +154,34 @@ extension MCUController {
             guard let top = status["lcd_top"] as? String else { return false }
             return sendSlotFieldsPainted(top: top, slot: slot, destIndex: destIndex)
         }
-        guard let sends = try readSends(restoringView: false),
-              sends.contains(where: {
-                  ($0["send"] as? Int) == slot
-                      && (($0["destination"] as? String) ?? "").caseInsensitiveCompare(destination) == .orderedSame
-              }) else {
+        // And the slot's own DESTINATION cell has to be painted before the send
+        // list is read. The top row repaints first: while the browse banner is
+        // still up, the bottom cell holds the first seven characters of the
+        // browsed name rather than Logic's settled abbreviation of it — for
+        // `Output 3-4` that is `Output `, which is a truncation of the request
+        // and not evidence of anything. Measured live 2026-08-31: it made a
+        // send that had been created perfectly report a readback mismatch with
+        // `restored: false`. So wait for the CONTENT, and let the readback below
+        // keep the last word on whether the send exists.
+        _ = waitFor(seconds: 1.5) { status in
+            guard let bottom = status["lcd_bottom"] as? String else { return false }
+            return sendListDestinationMatches(
+                lcdValueFields(bottom)[destIndex], requested: destination
+            )
+        }
+        let sends = try readSends(restoringView: false)
+        let listed = sends?.first { ($0["send"] as? Int) == slot }?["destination"] as? String
+        guard let listed, sendListDestinationMatches(listed, requested: destination) else {
             throw LogicianError.verificationFailed(
                 requested: "send \(slot) -> \(destination)",
-                actual: "the send list does not show it after confirmation",
+                // Name what the list DID show. "Does not show it" was true and
+                // unactionable; the cell is what tells a wrong destination from
+                // a slot that never took the press from a list that could not
+                // be read at all.
+                actual: sends == nil
+                    ? "the send list could not be read back after confirmation"
+                    : (listed.map { "the send list shows slot \(slot) as '\($0)'" }
+                        ?? "the send list shows no send in slot \(slot)"),
                 restored: false
             )
         }
@@ -202,6 +192,253 @@ extension MCUController {
             "level": "-oo dB (new sends start silent; set with logic_mcu_set_send)",
             "write_route": "mcu_send_destination_browser"
         ]
+    }
+
+    /// The destination name the browse is showing at a send slot's field
+    /// group right now.
+    static func shownSendDestination(destIndex: Int) -> String {
+        guard let status = freshStatus(),
+              let bottom = status["lcd_bottom"] as? String else { return "" }
+        return sendDestinationCell(bottom, destIndex: destIndex)
+    }
+
+    /// Browses an empty send slot's destination field to `destination` and
+    /// leaves the browse standing on it, UNCOMMITTED — the confirming press is
+    /// the caller's, after its own settle and drift check.
+    ///
+    /// Returns false when the bridge refuses a message (the caller's "the MCU
+    /// route is unavailable"); throws when the browser does not hold the
+    /// destination, saying what it did hold.
+    ///
+    /// # Why this is not a walk any more
+    ///
+    /// It was `for _ in 0..<80`, one entry per iteration, which put a ceiling
+    /// on the catalog at entry 80 — `Bus 72` — and refused everything past it
+    /// as though it did not exist. The browser does go on: the same session
+    /// browsed to `Bus 83` at entry 91 and kept going, so `Bus 90` was being
+    /// refused with "the destination browser never showed 'Bus 90'" after 9.6 s
+    /// of walking, which reads as *there is no such bus*.
+    ///
+    /// The distance is now JUMPED, by the arithmetic in `MCUSendCatalog`. That
+    /// is safe here for the same reason it is safe in the plug-in browser: a
+    /// browse writes nothing until the vpot press, so a jump that lands in the
+    /// wrong place costs steps and nothing else — and the landing is read back,
+    /// then either matched or used to plan the next jump, so a wrong jump
+    /// corrects itself. What must never happen is a wrong DESTINATION, and that
+    /// is held by the exact name match here and by the caller's drift check
+    /// before the press.
+    static func browseToSendDestination(
+        destIndex: Int, destination: String
+    ) throws -> Bool {
+        /// Entries advanced from the `--` origin an empty slot starts at.
+        /// Counted by name CHANGES while stepping — a message swallowed by an
+        /// unfinished repaint advances nothing — and by ticks while jumping.
+        var position = 0
+        var report = SendBrowseReport()
+        var previous = ""
+        var stalledReads = 0
+        var stepsTaken = 0
+        var jumps = 0
+        var lastActionWasJump = false
+        /// Set while the read being looked at is a jump's landing, whose
+        /// entries the jump itself already counted.
+        var landedByJump = false
+        let deadline = Date().addingTimeInterval(sendBrowseSearchBudget)
+
+        func matches(_ shown: String) -> Bool {
+            // EXACT, case-insensitively. Never prefix-tolerant, however
+            // truncated a cell may be: `Bus 1` is a prefix of `Bus 12`, so the
+            // tolerance the plug-in browser can afford would put a send on the
+            // wrong bus here.
+            shown.caseInsensitiveCompare(destination) == .orderedSame
+        }
+
+        /// One entry forward, event-paced.
+        func stepForward() throws -> Bool {
+            let before = freshStatus()?["received_events"] as? Int ?? -1
+            guard try MCUBridge.send(
+                .vpot(index: destIndex, delta: sendBrowseTicksPerEntry)
+            ).ok else { return false }
+            _ = awaitEvents(since: before, timeoutMs: 300)
+            _ = quiescentStatus()
+            stepsTaken += 1
+            return true
+        }
+
+        /// Carries the browse `entries` entries from where it is now, in
+        /// clamp-sized messages with a silence proof between them. The proof is
+        /// not optional: a 63-entry repaint is still arriving when the next
+        /// message would go out, and a message sent into it is swallowed — so
+        /// the landing would be neither where it was asked for nor reversible
+        /// (measured on the plug-in browser, same surface, same failure).
+        ///
+        /// `recording: false` is for the endgame jump, which runs after `seen`
+        /// is finished and therefore puts no holes in it.
+        func jump(entries entriesToJump: Int, recording: Bool = true) throws -> Bool {
+            for chunk in sendBrowseJumpPlan(entries: entriesToJump) {
+                let before = freshStatus()?["received_events"] as? Int ?? -1
+                guard try MCUBridge.send(.vpot(index: destIndex, delta: chunk)).ok
+                else { return false }
+                position += chunk
+                _ = awaitEvents(since: before, timeoutMs: 400)
+                waitForSurfaceQuiet(seconds: 1.5)
+            }
+            if recording { report.jumped = true }
+            jumps += 1
+            return true
+        }
+
+        /// The jump worth taking from this reading, if any.
+        func plannedJump(from shown: String) -> Int? {
+            guard jumps < sendBrowseJumpCap else { return nil }
+            if let delta = sendJumpDelta(from: shown, to: destination) {
+                return sendClampedJump(delta, from: position)
+            }
+            // The cold start, and ONLY there: `position` is exactly 1, because
+            // one step has been taken from an origin that was known by
+            // construction, so the measured ordinal becomes a distance without
+            // compounding any estimate. Everything after this is planned by the
+            // same-family arithmetic above, which needs no table and no locale.
+            guard position == 1, let ordinal = sendDestinationOrdinal(destination) else {
+                return nil
+            }
+            return sendClampedJump(ordinal - position, from: position)
+        }
+
+        /// The endgame, run once the search proper has given up: go to the far
+        /// end of the list and walk back through its last entries, matching
+        /// each and recording them all.
+        ///
+        /// It earns its place twice over. The catalog ENDS in entries no
+        /// arithmetic here can address — `Stereo Output`, `Output 3-4`,
+        /// `Output 5-6`, `Output 7-8`, which carry no family number to subtract
+        /// — and they sit at entries 265-268, far past anything a walk reaches
+        /// inside the search budget. Without this they would be permanently
+        /// unreachable while the tool invites their names. And when the
+        /// destination genuinely is not there, the tail is what turns "the list
+        /// ends at 'Output 7-8'" into "the highest bus in it is 256".
+        ///
+        /// Returns true standing ON the destination, uncommitted (the caller's
+        /// settle and drift check still gate the press), false having read the
+        /// tail without finding it, and nil when the bridge refused a message —
+        /// which is not the same answer as "not in the list" and must not be
+        /// reported as one.
+        func lookAtTheEnd() throws -> Bool? {
+            guard try jump(
+                entries: sendClampedJump(sendBrowseEntryCap, from: position), recording: false
+            ) else { return nil }
+            var tail = [shownSendDestination(destIndex: destIndex)]
+            if matches(tail[0]) { report.tail = tail; return true }
+            for _ in 0..<sendBrowseTailEntries {
+                let before = freshStatus()?["received_events"] as? Int ?? -1
+                guard let response = try? MCUBridge.send(
+                    .vpot(index: destIndex, delta: -sendBrowseTicksPerEntry)
+                ), response.ok else { break }
+                _ = awaitEvents(since: before, timeoutMs: 300)
+                _ = quiescentStatus()
+                let name = shownSendDestination(destIndex: destIndex)
+                guard !name.isEmpty, name != MCULCDStrings.emptySlot,
+                      name != tail.first else { continue }
+                tail.insert(name, at: 0)
+                if matches(name) { report.tail = tail; return true }
+            }
+            report.tail = tail
+            return false
+        }
+
+        var stop: SendBrowseStop?
+        // The bound is on how far the browse WALKS. It deliberately is not on
+        // `position`: a jump aimed at the end of the catalog leaves `position`
+        // past the bound, and exiting there would throw away the landing —
+        // which is the one read that says where the list really stops.
+        while stepsTaken < sendBrowseEntryCap {
+            let shown = shownSendDestination(destIndex: destIndex)
+            let isEntry = !shown.isEmpty && shown != MCULCDStrings.emptySlot
+            if isEntry {
+                if matches(shown) { return true }
+                if shown == previous {
+                    stalledReads += 1
+                } else {
+                    stalledReads = 0
+                    // A wrap is the FIRST entry coming round again after real
+                    // progress — and only a contiguous walk can say that: once
+                    // a jump has been taken the browse can revisit an entry by
+                    // going backwards, which is not a lap.
+                    if !report.jumped, let first = report.seen.first,
+                       shown == first, report.seen.count > 2 {
+                        stop = .wrapped
+                        break
+                    }
+                    if !landedByJump { position += 1 }
+                    // Re-anchor the coordinate on a landing this build can
+                    // place: a jump that Logic clamped at the end of the list
+                    // travelled less than it was sent, and an over-counted
+                    // `position` would then trim every later jump too hard.
+                    if landedByJump, let anchored = sendDestinationOrdinal(shown) {
+                        position = anchored
+                    }
+                    report.seen.append(shown)
+                }
+                previous = shown
+            }
+            landedByJump = false
+
+            // The list has stopped answering. Prove what that means before
+            // saying it: one probe jump, a distance a list with anything left
+            // in it could not fail to move on. A step that lands in an
+            // unfinished repaint reads its predecessor's name and is ordinary,
+            // so stepping gets several tries; a JUMP that moved nothing gets
+            // one, because a swallowed jump is exactly what the probe retries.
+            if stalledReads >= (lastActionWasJump ? 1 : sendBrowseStallSteps) {
+                guard try jump(entries: sendBrowseProbeEntries) else { return false }
+                guard shownSendDestination(destIndex: destIndex) != shown else {
+                    stop = .listEnded
+                    break
+                }
+                stalledReads = 0
+                landedByJump = true
+                lastActionWasJump = true
+                if Date() >= deadline { stop = .timeBudget; break }
+                continue
+            }
+
+            if isEntry, sendJumpDelta(from: shown, to: destination).map({ $0 > 0 }) == true,
+               plannedJump(from: shown) == 0 {
+                // The destination is real, further on, and past the far end of
+                // any catalog this build will look at.
+                stop = .entryCap
+                break
+            }
+            if isEntry, let delta = plannedJump(from: shown),
+               delta <= -1 || delta >= sendBrowseMinJumpEntries {
+                guard try jump(entries: delta) else { return false }
+                landedByJump = true
+                lastActionWasJump = true
+            } else {
+                guard try stepForward() else { return false }
+                lastActionWasJump = false
+            }
+            if Date() >= deadline { stop = .timeBudget; break }
+        }
+
+        // A contiguous walk that reached the end of the list has seen every
+        // entry there is; anything else has not, so look at the end before
+        // refusing.
+        if stop != .listEnded || report.jumped {
+            guard let foundAtTheEnd = try lookAtTheEnd() else { return false }
+            if foundAtTheEnd { return true }
+        }
+        throw LogicianError.trackNotExposed(
+            requested: "send destination '\(destination)'",
+            exposed: sendDestinationRefusalText(
+                requested: destination,
+                report: {
+                    var final = report
+                    final.stop = stop ?? .entryCap
+                    return final
+                }()
+            )
+        )
     }
 
     /// Pages the send channel view to the page holding the given send slot.
