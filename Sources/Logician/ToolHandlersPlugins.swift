@@ -60,7 +60,14 @@ extension MCPServer {
                 exposed: "the MCU bridge is unavailable or the insert list did not appear"
             )
         }
-        MCUController.exitToPan()
+        // The surface stays on the insert list. `pluginInsertNames` proved that
+        // view by content (`ensurePluginList` matches "Ins1Pl…" or gives up),
+        // so the debt below describes what is actually on the LCD — and the
+        // next plugin tool finds the list already showing instead of pressing
+        // its way back to it from Pan.
+        MCUController.deferSurfaceRestore(
+            MCUController.SurfaceDebt(strip: target.name, view: "plugin_list", slot: nil)
+        )
         var insertsPayload: [String: Any] = [
             "track": target.name,
             "track_name": target.name,
@@ -205,8 +212,12 @@ extension MCPServer {
     func handleSetPluginParameter(_ arguments: [String: Any]) throws -> Any {
         let route = try MCPServer.PluginRoute.parse(arguments)
         let windowTitle = arguments["window_title"] as? String
+        // Either way of naming the plugin makes the surface route usable:
+        // `plugin_name` is resolved against the insert list the write reads
+        // anyway, so it addresses a plugin exactly as well as a slot number.
         let canMCU = (arguments["track_name"] as? String) != nil
-            && (arguments["insert_slot"] as? Int) != nil
+            && ((arguments["insert_slot"] as? Int) != nil
+                || (arguments["plugin_name"] as? String) != nil)
         switch route {
         case .ax:
             return try axSetPluginParameter(arguments)
@@ -217,7 +228,8 @@ extension MCPServer {
                 guard canMCU else {
                     throw LogicianError.invalidArguments(
                         "give window_title + expected_current_value (Accessibility route) or"
-                            + " track_name + insert_slot (control-surface route)"
+                            + " track_name + plugin_name (control-surface route; insert_slot"
+                            + " names the plugin just as well)"
                     )
                 }
                 return try mcuSetPluginParameter(arguments)
@@ -553,15 +565,21 @@ extension MCPServer {
         }
         let target = try selectStripTarget(arguments)
         let pluginMaxPages = arguments["max_pages"] as? Int ?? 12
-        guard let listStatus = try MCUController.ensurePluginList(),
-              try MCUController.enterPluginEdit(slot: slot),
+        guard let listStatus = try MCUController.ensurePluginList() else {
+            MCUController.exitToPan()
+            throw LogicianError.trackNotExposed(
+                requested: "MCU parameter pages for slot \(slot)",
+                exposed: "could not enter the plugin edit mode"
+            )
+        }
+        let slotName = (listStatus["lcd_bottom"] as? String).flatMap { bottom -> String? in
+            let name = MCUController.lcdFields(bottom)[slot - 1]
+                .trimmingCharacters(in: CharacterSet(charactersIn: MCULCDStrings.bypassMarker))
+            return name.isEmpty || name == MCULCDStrings.emptySlot ? nil : name
+        }
+        guard try MCUController.enterPluginEdit(slot: slot),
               let capped = try MCUController.parameterPagesCapped(
-                  cacheKey: (listStatus["lcd_bottom"] as? String).flatMap { bottom -> String? in
-                      let name = MCUController.lcdFields(bottom)[slot - 1]
-                          .trimmingCharacters(in: CharacterSet(charactersIn: "*"))
-                      return name.isEmpty || name == MCULCDStrings.emptySlot ? nil : name
-                  },
-                  maxPages: pluginMaxPages
+                  cacheKey: slotName, maxPages: pluginMaxPages
               ) else {
             MCUController.exitToPan()
             throw LogicianError.trackNotExposed(
@@ -569,7 +587,17 @@ extension MCPServer {
                 exposed: "could not enter the plugin edit mode"
             )
         }
-        MCUController.exitToPan()
+        // The plugin-edit view stays up, and is handed to the next call as a
+        // HOT view rather than merely as a debt: reading a plugin's parameters
+        // is what an agent does immediately before writing one of them, and
+        // that write can now skip the whole insert-list + vpot-press
+        // choreography. `setPluginParameter` re-checks the live assignment code
+        // against this slot before it trusts any of it, so a surface that moved
+        // in between costs a re-entry, never a write to the wrong plugin.
+        MCUController.hotPluginView = (target.name, slot, slotName)
+        MCUController.deferSurfaceRestore(
+            MCUController.SurfaceDebt(strip: target.name, view: "plugin_edit", slot: slot)
+        )
         var pluginPayload: [String: Any] = [
             "track": target.name,
             "track_name": target.name,
@@ -590,12 +618,17 @@ extension MCPServer {
     }
 
     private func mcuSetPluginParameter(_ arguments: [String: Any]) throws -> [String: Any] {
-        guard let slot = arguments["insert_slot"] as? Int else {
-            throw LogicianError.invalidArguments("missing integer: insert_slot (1-8, MCU physical slot)")
+        let slot = arguments["insert_slot"] as? Int
+        let pluginName = arguments["plugin_name"] as? String
+        guard slot != nil || pluginName != nil else {
+            throw LogicianError.invalidArguments(
+                "name the plugin: plugin_name (the tool finds the slot) or insert_slot (1-8, MCU physical slot)"
+            )
         }
         let target = try selectStripTarget(arguments)
         guard var result = try MCUController.setPluginParameter(
             slot: slot,
+            pluginName: pluginName,
             parameter: requiredString("parameter", in: arguments),
             targetValue: requiredString("target_value", in: arguments),
             expectedCurrentValue: arguments["expected_current_value"] as? String,

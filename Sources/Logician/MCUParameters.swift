@@ -129,6 +129,160 @@ extension MCUController {
         return cached == live
     }
 
+    /// Where a parameter sits in a plugin's cached name rows: its page (1-based)
+    /// and the vpot index on that page.
+    struct CachedParameterLocation: Equatable {
+        let page: Int
+        let index: Int
+        let name: String
+    }
+
+    /// How many of the LAST page's entries are a repeat of the previous page's
+    /// tail. Logic END-ALIGNS the last parameter page, so a plugin whose count
+    /// is not a multiple of 8 shows its final parameters twice; `dedupedPages`
+    /// strips the repeat from what callers see, and the live search skips it by
+    /// comparing name AND value.
+    ///
+    /// Offline there are no values to compare, so the repeat is identified the
+    /// only other way it can be: as the longest run of names shared by the end
+    /// of one row and the start of the next. Anything outside that run is
+    /// treated as a genuine second parameter, which is the conservative reading
+    /// — it sends the caller back to the live walk instead of quietly picking
+    /// one of two candidates.
+    static func lastPageOverlap(_ cachedNames: [[String]]) -> Int {
+        guard cachedNames.count > 1, let last = cachedNames.last else { return 0 }
+        let previous = cachedNames[cachedNames.count - 2].filter { !$0.isEmpty }
+        let tail = last.filter { !$0.isEmpty }
+        for candidate in stride(from: min(previous.count, tail.count), through: 1, by: -1)
+        where Array(previous.suffix(candidate)) == Array(tail.prefix(candidate)) {
+            return candidate
+        }
+        return 0
+    }
+
+    /// The page and vpot index a parameter name resolves to in CACHED rows —
+    /// the whole page walk, answered offline.
+    ///
+    /// `searchAndSetParameter` used to walk every page forward to prove the
+    /// name unambiguous and then walk back; for a parameter on page 1 of a
+    /// six-page EQ that is ~1.4 s of paging to reach something already on
+    /// screen. The cached rows answer the same question with no surface
+    /// traffic at all — they are the same rows the read path already pairs
+    /// with live values.
+    ///
+    /// Deliberately all-or-nothing: nil means "zero matches, or more than one,
+    /// or rows this function will not reason about", and the caller answers nil
+    /// with the unchanged live walk. It never resolves an ambiguity, and the
+    /// page it names is still proved against the live LCD before a vpot moves
+    /// (`landOnCachedPage`). Pure, so the rule is tested without a surface.
+    static func locateParameter(_ parameter: String, in cachedNames: [[String]]) -> CachedParameterLocation? {
+        guard !cachedNames.isEmpty else { return nil }
+        let overlap = lastPageOverlap(cachedNames)
+        var found: CachedParameterLocation?
+        var matches = 0
+        for (pageIndex, row) in cachedNames.enumerated() {
+            guard row.count == 8 else { return nil }
+            var seen = 0
+            for (index, name) in row.enumerated() where !name.isEmpty {
+                seen += 1
+                // The end-aligned repeat is the same parameter shown again, not
+                // a second one; it was already counted on the previous page.
+                if pageIndex == cachedNames.count - 1, cachedNames.count > 1, seen <= overlap {
+                    continue
+                }
+                let hit = name.localizedCaseInsensitiveCompare(parameter) == .orderedSame
+                    || lcdNameMatches(track: parameter, lcd: name)
+                guard hit else { continue }
+                matches += 1
+                if found == nil {
+                    found = CachedParameterLocation(page: pageIndex + 1, index: index, name: name)
+                }
+            }
+        }
+        return matches == 1 ? found : nil
+    }
+
+    /// Steps from page 1 to a cached location's page and proves, against the
+    /// live LCD, that the vpot about to be turned carries the name the cache
+    /// promised. Returns that page's entries (cached names, live values), or
+    /// nil when the LCD disagrees — which the caller answers by dropping the
+    /// cache entry and walking the pages for real.
+    ///
+    /// The proof is tried cheap first and settled second, because the LCD only
+    /// shows half the row straight away. Fields 0-5 are repainted immediately,
+    /// so a 150 ms quiescence read confirms them; fields 6-7 hide behind the
+    /// transient "Page x/y" indicator until it fades (~2.1 s measured), so an
+    /// index up there goes straight to the settled read. Either way the cell
+    /// whose encoder is about to move is matched EXACTLY, with no indicator
+    /// exemption — stricter than the per-page check the cached read path uses,
+    /// and it is the cell that matters.
+    ///
+    /// A cheap check that DISAGREES is not evidence that the cache is wrong.
+    /// Measured 2026-08-31 on `Bas`'s Compressor: right after a write, Logic
+    /// paints the touched parameter's FULL name across the top row — cells 1-2
+    /// read `Thresho` / `ld` where the cache holds `Thrs` / `Ratio` — and it
+    /// stays that way until the page indicator fades. So a disagreement pays
+    /// the fade once and compares the whole row; only a settled row that STILL
+    /// disagrees means the plugin moved under the cache. Before this, a second
+    /// write on the same plugin dropped a perfectly good cache and re-walked
+    /// every page: 9.2 s instead of 0.5 s, for a display artefact.
+    static func landOnCachedPage(
+        _ hit: CachedParameterLocation, cachedRow: [String]
+    ) throws -> [(name: String, value: String)]? {
+        guard cachedRow.count == 8, (0..<8).contains(hit.index) else { return nil }
+        for _ in 0..<(hit.page - 1) { try pageRight() }
+        if hit.index < 6, let fast = fastLandingCheck(hit, cachedRow: cachedRow) {
+            return fast
+        }
+        guard let settled = settledParameterPage(),
+              cachedNameRowMatches(cached: cachedRow, live: settled.map(\.name)) else {
+            debugLog("landOnCachedPage: settled row disagrees with the cache for page \(hit.page)")
+            return nil
+        }
+        return settled
+    }
+
+    /// The 150 ms half of `landOnCachedPage`: cached names paired with live
+    /// values, or nil when the always-visible fields do not back them up.
+    private static func fastLandingCheck(
+        _ hit: CachedParameterLocation, cachedRow: [String]
+    ) -> [(name: String, value: String)]? {
+        _ = quiescentStatus()
+        guard let status = freshStatus(),
+              let top = status["lcd_top"] as? String,
+              let bottom = status["lcd_bottom"] as? String else { return nil }
+        let live = lcdFields(top)
+        guard live.count == 8, live[hit.index] == cachedRow[hit.index] else { return nil }
+        for index in 0..<6 where live[index] != cachedRow[index] {
+            guard live[index].range(
+                of: MCULCDStrings.pageIndicatorCellPattern, options: .regularExpression
+            ) != nil else { return nil }
+        }
+        return zip(cachedRow, lcdValueFields(bottom)).map { ($0, $1) }
+    }
+
+    /// The name rows a walk is allowed to write to the cache, or nil when it is
+    /// not allowed to write at all.
+    ///
+    /// Every row must be a full eight fields and free of the "Page x/y"
+    /// indicator. A row read while the indicator was still up was never fully
+    /// repainted — `settledParameterPage` gives up after 3.5 s and returns
+    /// whatever is on the LCD — and caching one would teach every later read a
+    /// layout Logic never actually showed.
+    static func cacheableNameRows(_ pages: [[(name: String, value: String)]]) -> [[String]]? {
+        guard !pages.isEmpty else { return nil }
+        var rows: [[String]] = []
+        for page in pages {
+            guard page.count == 8 else { return nil }
+            let names = page.map(\.name)
+            if names.contains(where: {
+                $0.range(of: MCULCDStrings.pageIndicatorCellPattern, options: .regularExpression) != nil
+            }) { return nil }
+            rows.append(names)
+        }
+        return rows
+    }
+
     /// One fade-waited read of page 1, compared against the cache before any
     /// cheap cached read is trusted - fields 6-7 sit behind the "Page x/y"
     /// indicator, so the per-page check in the fast walk can never see them.
@@ -197,9 +351,9 @@ extension MCUController {
                 try pageRight()
             }
         }
-        if limit >= max(total, 1), let key = cacheKey {
+        if limit >= max(total, 1), let key = cacheKey, let rows = cacheableNameRows(pages) {
             var cache = loadNameCache(projectPath: projectPath)
-            cache[key] = pages.map { $0.map(\.name) }
+            cache[key] = rows
             saveNameCache(cache, projectPath: projectPath)
         }
         return (dedupedPages(pages), max(total, 1), limit < max(total, 1))
@@ -308,12 +462,45 @@ extension MCUController {
         return Double(numeric.hasSuffix(".") ? String(numeric.dropLast()) : String(numeric))
     }
 
+    /// Which insert slot a `plugin_name` names, decided against the eight LCD
+    /// cells of the insert-list view.
+    ///
+    /// Logic paints each insert as a 6-character abbreviation (`Cha EQ`,
+    /// `*PitchS` for a bypassed one), so the match is the same abbreviation-
+    /// tolerant comparison every other name lookup on this plane uses: an exact
+    /// case-insensitive hit, or `lcdNameMatches` recovering "Channel EQ" from
+    /// "Cha EQ". Pure and static so the resolution rule can be tested without a
+    /// surface.
+    ///
+    /// Returns every match, in slot order. Zero and two are both answers the
+    /// caller has to report rather than resolve — a name that fits two inserts
+    /// is exactly the case where guessing writes to the wrong plugin.
+    static func insertSlotsMatching(pluginName: String, cells: [String]) -> [Int] {
+        cells.enumerated().compactMap { index, raw in
+            let cell = raw.trimmingCharacters(
+                in: CharacterSet(charactersIn: MCULCDStrings.bypassMarker)
+            ).trimmingCharacters(in: .whitespaces)
+            guard !cell.isEmpty, cell != MCULCDStrings.emptySlot else { return nil }
+            let hit = cell.localizedCaseInsensitiveCompare(pluginName) == .orderedSame
+                || lcdNameMatches(track: pluginName, lcd: cell)
+            return hit ? index + 1 : nil
+        }
+    }
+
     /// Sets one plugin parameter on the selected track by converging a vpot
     /// against the LCD value echo. Handles numeric values adaptively and
     /// steps text/enum values until exact match. The track must already be
-    /// selected and the caller provides the MCU (physical) insert slot.
+    /// selected.
+    ///
+    /// The plugin is addressed by `slot` (the MCU physical insert slot) OR by
+    /// `pluginName`, and naming it is the cheaper of the two for a caller: the
+    /// slot is resolved from the insert-list read this write already performs,
+    /// so it costs nothing on the wire and saves the agent a whole
+    /// `logic_list_inserts` round trip. When the surface is already hot on a
+    /// plugin whose name matches, even that read is skipped.
     static func setPluginParameter(
-        slot: Int,
+        slot: Int?,
+        pluginName: String? = nil,
         parameter: String,
         targetValue: String,
         expectedCurrentValue: String?,
@@ -323,36 +510,80 @@ extension MCUController {
         // Bounds-check BEFORE any lcdFields()[slot-1] indexing below — an
         // out-of-range slot (e.g. an AX ordinal like 9, or an off-by-one to
         // 0) would otherwise crash the whole server instead of erroring.
-        guard (1...8).contains(slot) else {
+        if let slot, !(1...8).contains(slot) {
             throw LogicianError.invalidArguments(
                 "insert_slot must be 1-8 (MCU physical slot); got \(slot)"
             )
         }
+        guard slot != nil || pluginName != nil else {
+            throw LogicianError.invalidArguments(
+                "give insert_slot or plugin_name to name the plugin on the control-surface route"
+            )
+        }
         guard freshStatus() != nil else { return nil }
         var slotName: String?
-        let isHot = trackName != nil && hotPluginView?.track == trackName
-            && hotPluginView?.slot == slot
-            && (freshStatus()?["assignment"] as? String) == MCULCDStrings.Assignment.insertSlot(slot)
-        if isHot {
-            slotName = hotPluginView?.cacheKey
+        var resolvedSlot = slot
+        var resolvedBy: String?
+
+        /// The hot view IS the (strip, slot) -> plugin-name cache this route
+        /// needs, held in memory and re-proved against the live assignment
+        /// code on every use. A caller who named the plugin the surface is
+        /// already showing therefore pays nothing at all to be pointed at it.
+        func hotMatchesRequest() -> Bool {
+            guard let trackName, let hot = hotPluginView, hot.track == trackName else { return false }
+            if let slot { return hot.slot == slot }
+            guard let pluginName, let key = hot.cacheKey else { return false }
+            return !insertSlotsMatching(pluginName: pluginName, cells: [key]).isEmpty
+        }
+        let isHot = hotMatchesRequest()
+            && (freshStatus()?["assignment"] as? String)
+                == MCULCDStrings.Assignment.insertSlot(hotPluginView?.slot ?? -1)
+        if isHot, let hot = hotPluginView {
+            slotName = hot.cacheKey
+            resolvedSlot = hot.slot
+            if slot == nil { resolvedBy = "hot_view" }
         } else {
             guard let listStatus = try ensurePluginList() else { return nil }
-            slotName = (listStatus["lcd_bottom"] as? String).map {
-                lcdFields($0)[slot - 1]
-                    .trimmingCharacters(in: CharacterSet(charactersIn: MCULCDStrings.bypassMarker))
+            let cells = (listStatus["lcd_bottom"] as? String).map { lcdFields($0) } ?? []
+            if resolvedSlot == nil, let pluginName {
+                let matches = insertSlotsMatching(pluginName: pluginName, cells: cells)
+                guard let only = matches.first, matches.count == 1 else {
+                    // Both answers are reported, never resolved by picking one:
+                    // the insert list is right there in the message, so the
+                    // agent's retry is informed rather than a second guess.
+                    let available = cells
+                        .map { $0.trimmingCharacters(in: .whitespaces) }
+                        .filter { !$0.isEmpty && $0 != MCULCDStrings.emptySlot }
+                    throw matches.isEmpty
+                        ? LogicianError.insertNotFound(
+                            track: trackName ?? "the selected strip",
+                            plugin: pluginName, available: available)
+                        : LogicianError.insertAmbiguous(
+                            track: trackName ?? "the selected strip",
+                            plugin: pluginName, slots: matches)
+                }
+                resolvedSlot = only
+                resolvedBy = "insert_list"
             }
-            guard try enterPluginEdit(slot: slot) else {
+            guard let target = resolvedSlot else { return nil }
+            slotName = cells.indices.contains(target - 1)
+                ? cells[target - 1].trimmingCharacters(
+                    in: CharacterSet(charactersIn: MCULCDStrings.bypassMarker))
+                : nil
+            guard try enterPluginEdit(slot: target) else {
                 exitToPan()
-                hotPluginView = nil
                 return nil
             }
         }
+        guard let finalSlot = resolvedSlot else { return nil }
         // The view is deliberately LEFT in plugin-edit mode afterwards:
         // consecutive writes on the same track+slot then skip all setup, and
-        // any other operation re-establishes its own view anyway.
+        // the debt is settled by the first operation that needs the names row
+        // (or at shutdown) rather than by this call.
         if let trackName {
-            hotPluginView = (trackName, slot,
+            hotPluginView = (trackName, finalSlot,
                              slotName.flatMap { $0.isEmpty || $0 == MCULCDStrings.emptySlot ? nil : $0 })
+            deferSurfaceRestore(SurfaceDebt(strip: trackName, view: "plugin_edit", slot: finalSlot))
         }
         guard var result = try searchAndSetParameter(
             parameter: parameter,
@@ -365,7 +596,14 @@ extension MCUController {
             exitToPan()
             return nil
         }
-        result["insert_slot"] = slot
+        result["insert_slot"] = finalSlot
+        if let resolvedBy {
+            result["resolved_slot"] = finalSlot
+            result["resolved_slot_from"] = resolvedBy
+            if let slotName, !slotName.isEmpty {
+                result["resolved_plugin"] = slotName
+            }
+        }
         return result
     }
 

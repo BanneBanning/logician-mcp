@@ -116,89 +116,165 @@ extension MCUController {
     ) throws -> [String: Any]? {
         // Search all parameter pages; remember where the match lives.
         let totalPages = try normalizeToPageOne()
-        // This function does not merely REPORT cached names, it picks a vpot
-        // index from them and turns it. Spot-check the cache against the live
-        // LCD once, up front, before a single cached row is trusted: page 1
-        // read the slow way and compared in full, including the two fields the
-        // per-page check inside pageForSearch can never see. On disagreement
-        // the entry is dropped and the whole search runs on live reads.
         let projectPath = currentProjectPath()
         var trustedKey = cacheKey
-        var verifiedPageOne: [(name: String, value: String)]?
+        var match: (page: Int, index: Int, name: String)?
+        var landedPage: [(name: String, value: String)]?
+
+        // FAST PATH — resolve the address from the cached name rows and go
+        // straight there.
+        //
+        // The walk this replaces existed to answer one question: is this name
+        // unambiguous across the plugin's pages? The cached rows answer it
+        // offline, and they are the same rows the read path already pairs with
+        // live values. So instead of six page-rights, six reads and a walk
+        // back, the surface steps once per page up to the match and stops.
+        //
+        // What is NOT skipped is the proof. `landOnCachedPage` matches the
+        // exact cell whose encoder is about to move against the live LCD —
+        // stricter than the per-page check the cached read path applies — and
+        // the converge that follows reads its own result back. `locateParameter`
+        // refuses to resolve an ambiguity, so anything it will not answer takes
+        // the unchanged live walk below, where duplicates are counted against
+        // live rows and reported as `parameterAmbiguous`.
         if let key = cacheKey, let cachedNames = loadNameCache(projectPath: projectPath)[key],
-           cachedNames.count == max(totalPages, 1) {
-            verifiedPageOne = verifiedFirstPage(cachedNames: cachedNames)
-            if verifiedPageOne == nil {
-                debugLog("param name cache contradicted by LCD for '\(key)'; rescanning live")
+           cachedNames.count == max(totalPages, 1),
+           let hit = locateParameter(parameter, in: cachedNames) {
+            if let landed = try landOnCachedPage(hit, cachedRow: cachedNames[hit.page - 1]) {
+                match = (hit.page, hit.index, hit.name)
+                landedPage = landed
+            } else {
+                // Delete-on-mismatch, then start over honestly: the surface may
+                // be on any page after a failed landing, so re-normalize before
+                // the live walk assumes page 1.
+                debugLog("param page cache contradicted by LCD for '\(key)'; walking live")
                 dropNameCache(key: key, projectPath: projectPath)
                 trustedKey = nil
+                _ = try normalizeToPageOne()
             }
         }
-        var found: (page: Int, index: Int, name: String, value: String)?
-        var duplicates = 0
-        var allNames: [String] = []
-        for pageNumber in 1...max(totalPages, 1) {
-            // Page 1 was already read (and verified) above - reuse it rather
-            // than paying the indicator fade a second time.
-            let reusable = pageNumber == 1 ? verifiedPageOne : nil
-            guard let raw = reusable ?? pageForSearch(
-                cacheKey: trustedKey, projectPath: projectPath,
-                pageNumber: pageNumber, totalPages: totalPages
-            ) else { return nil }
-            for (index, entry) in raw.enumerated() where !entry.name.isEmpty {
-                allNames.append(entry.name)
-                let hit = entry.name.localizedCaseInsensitiveCompare(parameter) == .orderedSame
-                    || lcdNameMatches(track: parameter, lcd: entry.name)
-                guard hit else { continue }
-                if let existing = found {
-                    // The end-aligned last page repeats the previous page's tail;
-                    // an identical name+value there is the same parameter.
-                    if pageNumber == totalPages
-                        && existing.name == entry.name && existing.value == entry.value {
-                        continue
-                    }
-                    duplicates += 1
+
+        if match == nil {
+            // This function does not merely REPORT cached names, it picks a
+            // vpot index from them and turns it. Spot-check the cache against
+            // the live LCD once, up front, before a single cached row is
+            // trusted: page 1 read the slow way and compared in full, including
+            // the two fields the per-page check inside pageForSearch can never
+            // see. On disagreement the entry is dropped and the whole search
+            // runs on live reads.
+            var verifiedPageOne: [(name: String, value: String)]?
+            // True while every page of this walk is being read the slow way —
+            // which is exactly the condition for the walk to be worth caching.
+            // Deliberately not `trustedKey == nil`: on a COLD plugin the key is
+            // perfectly good, there is simply nothing stored under it yet, and
+            // that is the case the cache population exists for.
+            var walkedLive = true
+            if let key = trustedKey, let cachedNames = loadNameCache(projectPath: projectPath)[key],
+               cachedNames.count == max(totalPages, 1) {
+                verifiedPageOne = verifiedFirstPage(cachedNames: cachedNames)
+                if verifiedPageOne == nil {
+                    debugLog("param name cache contradicted by LCD for '\(key)'; rescanning live")
+                    dropNameCache(key: key, projectPath: projectPath)
+                    trustedKey = nil
                 } else {
-                    found = (pageNumber, index, entry.name, entry.value)
+                    walkedLive = false
                 }
             }
-            if pageNumber < totalPages { try pageRight() }
+            var found: (page: Int, index: Int, name: String, value: String)?
+            var duplicates = 0
+            var allNames: [String] = []
+            // Every page this walk reads the slow way, kept for the cache. See
+            // the save below: the write path gathers exactly what the read path
+            // stores and used to throw it away.
+            var livePages: [[(name: String, value: String)]] = []
+            for pageNumber in 1...max(totalPages, 1) {
+                // Page 1 was already read (and verified) above - reuse it rather
+                // than paying the indicator fade a second time.
+                let reusable = pageNumber == 1 ? verifiedPageOne : nil
+                guard let raw = reusable ?? pageForSearch(
+                    cacheKey: trustedKey, projectPath: projectPath,
+                    pageNumber: pageNumber, totalPages: totalPages
+                ) else { return nil }
+                if walkedLive { livePages.append(raw) }
+                for (index, entry) in raw.enumerated() where !entry.name.isEmpty {
+                    allNames.append(entry.name)
+                    let hit = entry.name.localizedCaseInsensitiveCompare(parameter) == .orderedSame
+                        || lcdNameMatches(track: parameter, lcd: entry.name)
+                    guard hit else { continue }
+                    if let existing = found {
+                        // The end-aligned last page repeats the previous page's tail;
+                        // an identical name+value there is the same parameter.
+                        if pageNumber == totalPages
+                            && existing.name == entry.name && existing.value == entry.value {
+                            continue
+                        }
+                        duplicates += 1
+                    } else {
+                        found = (pageNumber, index, entry.name, entry.value)
+                    }
+                }
+                if pageNumber < totalPages { try pageRight() }
+            }
+            // The write path populates the name cache too. It just read every
+            // page the slow way, waiting out the indicator fade on each — the
+            // identical material `parameterPagesCapped` stores — and used to
+            // discard it, so an agent that goes straight to a write (which the
+            // schema allows, and which looks like the cheaper option) paid six
+            // fades on every write for ever. Measured 2026-08-31: two
+            // consecutive cold writes cost 16.6 s each and left
+            // param-names-cache.json absent. Same key, same project+build
+            // scope, same all-pages condition the read path uses.
+            if let key = cacheKey, walkedLive,
+               livePages.count == max(totalPages, 1),
+               let rows = cacheableNameRows(livePages) {
+                var cache = loadNameCache(projectPath: projectPath)
+                cache[key] = rows
+                saveNameCache(cache, projectPath: projectPath)
+            }
+            guard duplicates == 0, let hit = found else {
+                throw LogicianError.parameterAmbiguous(
+                    "\(parameter) (MCU parameters: \(allNames.joined(separator: ", ")))",
+                    found == nil ? 0 : duplicates + 1
+                )
+            }
+            // Navigate back to the match's page (we are on the last page now).
+            //
+            // Event-driven, exactly like the two other cursor-key walks in this
+            // codebase: `normalizeToPageOne` presses the SAME note (0x62) in the
+            // same kind of loop and waits on `awaitEvents`, and `pageRight` does
+            // the mirror press (0x63) the same way. This loop was the odd one out
+            // with a blind 250 ms sleep, and it is the only one of the three that
+            // is paid PER PAGE on every parameter write. Measured 2026-08-31 on
+            // Bas / Channel EQ (6 pages, match on page 1): the five sleeps cost
+            // 1.27 s of the 5.96 s call, while the identical wait in
+            // `normalizeToPageOne` returned in ~1 ms per press — Logic answers a
+            // cursor press immediately. The read that follows is still settle-
+            // gated (`pageForSearch` opens with `quiescentStatus`) and still
+            // verified (the `landed[match.index].name == match.name` guard below
+            // throws if the surface is not on the page we think it is), so
+            // nothing here rests on the wait alone.
+            for _ in 0..<(max(totalPages, 1) - hit.page) {
+                let events = freshStatus()?["received_events"] as? Int ?? -1
+                try pressNote(0x62)
+                _ = awaitEvents(since: events, timeoutMs: 250)
+            }
+            guard let landed = pageForSearch(
+                      cacheKey: trustedKey, projectPath: projectPath,
+                      pageNumber: hit.page, totalPages: totalPages
+                  ),
+                  landed.indices.contains(hit.index),
+                  landed[hit.index].name == hit.name else {
+                throw LogicianError.openVerificationFailed(
+                    "the parameter page shifted while navigating to '\(hit.name)'"
+                )
+            }
+            match = (hit.page, hit.index, hit.name)
+            landedPage = landed
         }
-        guard duplicates == 0, let match = found else {
-            throw LogicianError.parameterAmbiguous(
-                "\(parameter) (MCU parameters: \(allNames.joined(separator: ", ")))",
-                found == nil ? 0 : duplicates + 1
-            )
-        }
-        // Navigate back to the match's page (we are on the last page now).
-        //
-        // Event-driven, exactly like the two other cursor-key walks in this
-        // codebase: `normalizeToPageOne` presses the SAME note (0x62) in the
-        // same kind of loop and waits on `awaitEvents`, and `pageRight` does
-        // the mirror press (0x63) the same way. This loop was the odd one out
-        // with a blind 250 ms sleep, and it is the only one of the three that
-        // is paid PER PAGE on every parameter write. Measured 2026-08-31 on
-        // Bas / Channel EQ (6 pages, match on page 1): the five sleeps cost
-        // 1.27 s of the 5.96 s call, while the identical wait in
-        // `normalizeToPageOne` returned in ~1 ms per press — Logic answers a
-        // cursor press immediately. The read that follows is still settle-
-        // gated (`pageForSearch` opens with `quiescentStatus`) and still
-        // verified (the `landed[match.index].name == match.name` guard below
-        // throws if the surface is not on the page we think it is), so
-        // nothing here rests on the wait alone.
-        for _ in 0..<(max(totalPages, 1) - match.page) {
-            let events = freshStatus()?["received_events"] as? Int ?? -1
-            try pressNote(0x62)
-            _ = awaitEvents(since: events, timeoutMs: 250)
-        }
-        guard let landed = pageForSearch(
-                  cacheKey: trustedKey, projectPath: projectPath,
-                  pageNumber: match.page, totalPages: totalPages
-              ),
-              landed.indices.contains(match.index),
-              landed[match.index].name == match.name else {
+
+        guard let match, let landed = landedPage, landed.indices.contains(match.index) else {
             throw LogicianError.openVerificationFailed(
-                "the parameter page shifted while navigating to '\(match.name)'"
+                "the parameter page shifted while navigating to '\(parameter)'"
             )
         }
         let index = match.index
