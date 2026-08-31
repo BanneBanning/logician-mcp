@@ -35,6 +35,11 @@ extension MCUController {
     /// Selects the MCU channel found by findChannel and confirms via the
     /// select-echo Logic paints into that channel's LCD field.
     static func selectFoundChannel(_ channel: Int) throws -> Bool {
+        // Logic's focused channel is about to move to an INDEX; whether it
+        // lands, and on which strip by NAME, is only proven by callers that
+        // verify (selectChannelVerified re-records it). Until then the honest
+        // record is "unknown", never the name that was true a press ago.
+        forgetChannelFocus()
         let before = freshStatus()?["received_events"] as? Int ?? -1
         let response = try MCUBridge.send(.channel(.select, channel))
         guard response.ok else { return false }
@@ -93,6 +98,7 @@ extension MCUController {
             throw LogicianError.writeFailed("the MCU select for strip \(channel + 1) was refused by the bridge")
         }
         if waitFor(seconds: 2.0, { ledLit(0x18 + channel, in: $0) }) != nil {
+            noteChannelFocus(expectedName, projectPath: currentProjectPath())
             return "mcu_lcd_name_and_select_led"
         }
         var lit = freshStatus().map { selectedStrips(in: $0) } ?? []
@@ -102,6 +108,7 @@ extension MCUController {
             debugLog("selectChannelVerified: strip(s) \(lit.map { $0 + 1 }) lit instead of"
                 + " \(channel + 1); attempting a neighbour resync")
             if try resyncSelection(channel: channel, expectedName: expectedName) {
+                noteChannelFocus(expectedName, projectPath: currentProjectPath())
                 return "mcu_lcd_name_and_select_led_after_resync"
             }
             lit = freshStatus().map { selectedStrips(in: $0) } ?? []
@@ -116,6 +123,7 @@ extension MCUController {
             )
         }
         debugLog("selectChannelVerified: no SELECT LED echo for strip \(channel); LCD name evidence only")
+        noteChannelFocus(expectedName, projectPath: currentProjectPath())
         return "mcu_lcd_name_only"
     }
 

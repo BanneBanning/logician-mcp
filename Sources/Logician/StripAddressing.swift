@@ -99,6 +99,28 @@ func headerlessStripError(
     }
 }
 
+/// The error for a focus divergence that could not be repaired: the track
+/// header says one strip, the focused channel is another, and the realigning
+/// reselection was impossible or failed — so the disagreement is REPORTED
+/// with both halves and the manual fix, never read through.
+func focusRealignmentFailure(
+    name: String,
+    focusedOn: String,
+    reason: String
+) -> LogicianError {
+    .verificationFailed(
+        requested: "Logic's focused channel on '\(name)' before trusting a control-surface view",
+        actual: "the track header '\(name)' is selected, but Logic's focused channel is"
+            + " '\(focusedOn)' — the surface's plugin and send views follow the focused"
+            + " CHANNEL, not the header, so reading through it would return"
+            + " '\(focusedOn)''s data under '\(name)''s name. Realigning by reselection"
+            + " did not work: \(reason)."
+            + " Select a different track and then '\(name)' again in Logic to realign."
+            + " Nothing was read or written",
+        restored: true
+    )
+}
+
 extension LogicAccessibility {
     /// The inspector channel strip whose controls a mixing tool is about to
     /// read or write.
@@ -178,6 +200,58 @@ extension MCPServer {
             let selection = try logic.selectTrack(
                 trackName: name, trackNumber: number, expectedProjectPath: expectedProjectPath
             )
+            // The `already_selected` fast path proves the HEADER, not the
+            // focused CHANNEL — and the surface's follow-views (plugin list,
+            // plugin edit, sends) follow the channel. A surface select of a
+            // headerless strip moves the channel while the header stays put,
+            // which is how `logic_list_inserts {Bas, mcu}` once returned
+            // Stereo Out's chain as Bas's (observed live 2026-08-31). So the
+            // fast path is only trusted when neither the live mirror nor this
+            // process's own record says the focus is elsewhere; a divergence
+            // is realigned by a REAL track reselection, or reported — never
+            // read through.
+            //
+            // The realign is deliberately NOT a surface channel select. That
+            // select verifiably moves Logic's selection (the SELECT LED, the
+            // fader bank and the rec-arm echo all follow) and STILL leaves
+            // the plugin-list view latched to the strip it last showed —
+            // measured live 2026-08-31, LED lit on Bas while the PL row kept
+            // Stereo Out's chain. What provably resets the latch is a real
+            // track-HEADER selection change (the documented manual repair):
+            // select another track, then the requested one again.
+            if selection["state"] as? String == "already_selected",
+               case .diverged(let focusedOn) = MCUController.currentFocusVerdict(requested: name) {
+                let headers = (try? logic.parsedTrackHeaders()) ?? []
+                guard let partner = headers.first(where: { $0.name != name }) else {
+                    throw focusRealignmentFailure(
+                        name: name,
+                        focusedOn: focusedOn,
+                        reason: "no other track header exists to bounce the selection through"
+                    )
+                }
+                let realigned: [String: Any]
+                do {
+                    _ = try logic.selectTrack(
+                        trackName: partner.name, trackNumber: partner.number,
+                        expectedProjectPath: expectedProjectPath
+                    )
+                    realigned = try logic.selectTrack(
+                        trackName: name, trackNumber: number,
+                        expectedProjectPath: expectedProjectPath
+                    )
+                } catch let bounceError as LogicianError {
+                    throw focusRealignmentFailure(
+                        name: name,
+                        focusedOn: focusedOn,
+                        reason: "the reselection via '\(partner.name)' failed"
+                            + " (\(bounceError.errorDescription ?? bounceError.code))"
+                    )
+                }
+                return StripTarget(
+                    name: name, plane: .trackHeader, channel: nil,
+                    selection: realigned, evidence: "realigned_ax_reselect"
+                )
+            }
             return StripTarget(
                 name: name, plane: .trackHeader, channel: nil,
                 selection: selection, evidence: nil
