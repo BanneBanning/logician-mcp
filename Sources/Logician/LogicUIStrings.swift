@@ -724,9 +724,12 @@ enum LogicUIStrings {
         /// * The type words differ in case between kinds — `MIDI` uppercase,
         ///   `audio` lowercase — so a case-sensitive map would miss one.
         ///
-        /// This is also why `logic_list_regions` FAILS SILENTLY on a French
-        /// Logic today rather than erroring: the header walk finds nothing and
-        /// the tool answers `{"tracks": []}`, which reads as an empty project.
+        /// On a French Logic the row walk finds nothing at all (the row
+        /// descriptions are localized too), and `logic_list_regions` used to
+        /// answer `{"tracks": []}` — an empty project. It now cross-checks the
+        /// track header column and REFUSES when the walk came up empty while
+        /// the arrangement is unreadable or visibly has tracks; see
+        /// `LogicAccessibility.emptyArrangementVerdict`.
         enum RegionHelp {
             static let startPattern = #"starts at \d+ bars?\s*(\d+ beats?)?"#
             static let endPattern = #"ends at \d+ bars?\s*(\d+ beats?)?"#

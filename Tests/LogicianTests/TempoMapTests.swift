@@ -526,6 +526,65 @@ final class TempoMapTests: XCTestCase {
         XCTAssertFalse(ramp.couldProduceTempo(140))
     }
 
+    // MARK: - What serving the cache may claim (the R4 silent failure)
+
+    /// R4 regression (measured on a French Logic, 2026-08-30): the cache guard
+    /// was `live == nil || cached.couldProduceTempo(live ?? 0)`, so a control
+    /// bar that could not be read SKIPPED the cross-check and the cache was
+    /// served as a verified live read. The three outcomes must stay distinct:
+    /// "checked and passed" is not "could not check".
+    func testAnUnreadableControlBarIsNotACrossCheckThatPassed() {
+        let cached = map([TempoEvent(bar: 1, bpm: 120), TempoEvent(bar: 9, bpm: 121)])
+        XCTAssertEqual(
+            MCPServer.cachedTempoMapVerdict(cached, liveTempo: nil),
+            .serveUnverified,
+            "no live tempo means the check never ran — it must not count as passing"
+        )
+        XCTAssertEqual(
+            MCPServer.cachedTempoMapVerdict(cached, liveTempo: 121),
+            .serveCrossChecked
+        )
+        XCTAssertEqual(
+            MCPServer.cachedTempoMapVerdict(cached, liveTempo: 97),
+            .discard,
+            "a tempo the map cannot produce proves the cache stale"
+        )
+    }
+
+    /// The `logic_tempo_events {list}` payload must say when the map is a
+    /// cache nothing cross-checked: on the French Logic it reported
+    /// `success: true, verified: true, read_route: "tempo_list"` for exactly
+    /// that case.
+    func testTheTempoEventsListPayloadDisclosesAnUncheckedCache() throws {
+        let served = map([TempoEvent(bar: 1, bpm: 120), TempoEvent(bar: 9, bpm: 121)])
+
+        let checked = MCPServer.tempoEventsListPayload(map: served, liveCrossChecked: true)
+        XCTAssertEqual(checked["success"] as? Bool, true)
+        XCTAssertEqual(checked["verified"] as? Bool, true)
+        XCTAssertEqual(checked["read_route"] as? String, "tempo_list")
+        XCTAssertNil(checked["warning"], "a cross-checked read carries no cache caveat")
+
+        let unchecked = MCPServer.tempoEventsListPayload(map: served, liveCrossChecked: false)
+        XCTAssertEqual(unchecked["success"] as? Bool, true, "the cache is still the best answer")
+        XCTAssertEqual(
+            unchecked["verified"] as? Bool, false,
+            "nothing verified this map against the live project"
+        )
+        XCTAssertEqual(unchecked["read_route"] as? String, "tempo_list_cache")
+        let warning = try XCTUnwrap(unchecked["warning"] as? String)
+        XCTAssertTrue(warning.contains("CACHE"), "the warning must name the provenance")
+        XCTAssertTrue(
+            warning.contains("cross-check"),
+            "and say WHICH verification was unavailable"
+        )
+        // The events themselves are identical either way — provenance changes
+        // the claim, never the data.
+        XCTAssertEqual(
+            (checked["events"] as? [[String: Any]])?.count,
+            (unchecked["events"] as? [[String: Any]])?.count
+        )
+    }
+
     // MARK: - Codable (the per-project cache)
 
     func testTheMapSurvivesTheCacheRoundTrip() throws {

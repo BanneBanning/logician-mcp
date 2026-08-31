@@ -14,6 +14,37 @@ extension MCPServer {
         return payload
     }
 
+    /// The `list` result, shaped from what `resolveTempoMap()` actually knows.
+    /// Pure so the un-cross-checked cache shape can be pinned by tests: on a
+    /// French Logic (R4, 2026-08-30) the previous inline literal reported a
+    /// cache the control bar could not vouch for as `verified: true,
+    /// read_route: "tempo_list"` — a stale map served as a verified live read,
+    /// which is the one failure mode this server exists to prevent.
+    static func tempoEventsListPayload(
+        map: TempoMap, liveCrossChecked: Bool
+    ) -> [String: Any] {
+        var payload: [String: Any] = [
+            "success": true,
+            "verified": liveCrossChecked,
+            "state": "read",
+            "events": map.events.map { event in
+                ["bar": event.bar, "beat": event.beatInBar, "bpm": event.bpm] as [String: Any]
+            },
+            "constant": map.events.count <= 1,
+            "sub_beat_positions": map.subBeatPositions,
+            "read_route": liveCrossChecked ? "tempo_list" : "tempo_list_cache"
+        ]
+        if !liveCrossChecked {
+            payload["warning"] = "SERVED FROM CACHE, UNVERIFIED: these events are this server's"
+                + " cached read of the Tempo List, and the control bar's tempo could not be read"
+                + " to cross-check them against the live project (on a non-English Logic UI the"
+                + " control bar is unreadable — logic_health names the language). If the tempo"
+                + " track was edited in Logic since the cached read, this map is stale and"
+                + " nothing in this call could tell."
+        }
+        return payload
+    }
+
     func handleTempoEvents(_ arguments: [String: Any]) throws -> Any {
         let action = (arguments["action"] as? String) ?? "list"
         if action == "list" {
@@ -26,17 +57,9 @@ extension MCPServer {
                     "reason": resolved.failure?.reason ?? "the Tempo List did not answer"
                 ] as [String: Any]
             }
-            return [
-                "success": true,
-                "verified": true,
-                "state": "read",
-                "events": map.events.map { event in
-                    ["bar": event.bar, "beat": event.beatInBar, "bpm": event.bpm] as [String: Any]
-                },
-                "constant": map.events.count <= 1,
-                "sub_beat_positions": map.subBeatPositions,
-                "read_route": "tempo_list"
-            ] as [String: Any]
+            return MCPServer.tempoEventsListPayload(
+                map: map, liveCrossChecked: resolved.liveCrossChecked
+            )
         }
         guard let bar = arguments["bar"] as? Int else {
             throw LogicianError.invalidArguments("missing integer: bar")
