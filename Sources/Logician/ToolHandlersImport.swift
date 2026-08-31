@@ -275,13 +275,18 @@ extension MCPServer {
                 // only half reached would be a destructive guess.
                 result["restored"] = false
                 result["remaining"] = routed.remaining
-                result["error"] = "The import landed, but the move onto existing tracks did not"
-                    + " finish: " + routed.failures.joined(separator: "; ")
-                    + ". NOTHING was rolled back. What is still in the project: "
-                    + (routed.remaining.isEmpty
-                        ? "nothing unexpected"
-                        : routed.remaining.joined(separator: "; "))
-                    + ". Read logic_list_regions and finish or undo by hand."
+                // Built up in named pieces: the one-expression version made the
+                // CI toolchain's type-checker give up (an untyped dictionary on
+                // the left of a long `+` chain is inference quicksand).
+                let failureList: String = routed.failures.joined(separator: "; ")
+                let remainingList: String = routed.remaining.isEmpty
+                    ? "nothing unexpected"
+                    : routed.remaining.joined(separator: "; ")
+                var message = "The import landed, but the move onto existing tracks did not"
+                message += " finish: \(failureList)."
+                message += " NOTHING was rolled back. What is still in the project: \(remainingList)."
+                message += " Read logic_list_regions and finish or undo by hand."
+                result["error"] = message
                 return result
             }
         }
