@@ -276,9 +276,23 @@ extension MCUController {
         return nil
     }
 
+    /// Returns the surface to the neutral Pan-names view and forgets every
+    /// view this server was keeping. Unchanged in what it does; it is now also
+    /// the one place a deferred restore is paid, so the debt is cleared here
+    /// even if `ensurePanNames` fails — a failed restore is not a debt anyone
+    /// can settle by trying again from the same call, and `ensurePanNames`
+    /// itself clears the record on success.
     static func exitToPan() {
-        hotPluginView = nil
+        forgetSurfaceViews()
         _ = try? ensurePanNames()
+    }
+
+    /// Drops every view this server was keeping a note of. Separate from
+    /// `exitToPan` only so the rule can be asserted without a surface: a debt
+    /// that survived a restore would make the next tool skip a restore it needs.
+    static func forgetSurfaceViews() {
+        hotPluginView = nil
+        surfaceDebt = nil
     }
 
 }
