@@ -354,7 +354,7 @@ extension MCPServer {
             Tool(
                 name: "logic_mcu_set_send",
                 title: "Set a send level",
-                description: "Set the LEVEL in dB of a send that ALREADY EXISTS, verified through the MCU LCD echo (compare-and-set with expected_current_value, readback, same discipline as plugin parameters). Only the level vpot is touched — never the destination, and no send is created: to make a new send, use logic_add_send (which can set the level in the same call). List sends first with logic_mcu_sends."
+                description: "Set the LEVEL in dB of a send that ALREADY EXISTS, verified through the MCU LCD echo (compare-and-set with expected_current_value, readback, same discipline as plugin parameters). Only the level vpot is touched — never the destination, and no send is created or removed: to make a new send, use logic_add_send (which can set the level in the same call); to take one out, logic_remove_send. List sends first with logic_mcu_sends."
                     + Tool.stripAddressingNote,
                 inputSchema: [
                     "type": "object",
@@ -715,7 +715,7 @@ extension MCPServer {
             Tool(
                 name: "logic_add_send",
                 title: "Create a send",
-                description: "CREATE a send on a track to a bus/output — this is the tool that makes a send that was not there; to change the LEVEL of one that already exists, use logic_mcu_set_send instead. Mouse-free via the control surface's send-destination browser (first empty slot, browsed to the named destination, settle-verified, confirmed). Destination names as Logic shows them, e.g. 'Bus 1', 'Bus 2'. LEVEL: a new send lands at -oo dB and is INAUDIBLE, so pass level_db to set it in the same call (the same converge-and-read-back write logic_mcu_set_send does, on the strip already selected). Without level_db the send is created silent and the result says so; if the level write fails the send still exists and the result carries a warning naming the follow-up call. TWO VERIFICATIONS, TWO KEYS: top-level `verified` is about the SEND being created, while the level write is reported separately as `level_verified` (with `level`, `level_db_requested` and `level_write_route`) - read that one before assuming the send is audible."
+                description: "CREATE a send on a track to a bus/output — this is the tool that makes a send that was not there; to change the LEVEL of one that already exists, use logic_mcu_set_send instead. Mouse-free via the control surface's send-destination browser (first empty slot, browsed to the named destination, settle-verified, confirmed). Destination names as Logic shows them, e.g. 'Bus 1', 'Bus 2'. LEVEL: a new send lands at -oo dB and is INAUDIBLE, so pass level_db to set it in the same call (the same converge-and-read-back write logic_mcu_set_send does, on the strip already selected). Without level_db the send is created silent and the result says so; if the level write fails the send still exists and the result carries a warning naming the follow-up call. TWO VERIFICATIONS, TWO KEYS: top-level `verified` is about the SEND being created, while the level write is reported separately as `level_verified` (with `level`, `level_db_requested` and `level_write_route`) - read that one before assuming the send is audible. The way back is logic_remove_send, not Undo."
                     + Tool.stripAddressingNote,
                 inputSchema: [
                     "type": "object",
@@ -732,6 +732,29 @@ extension MCPServer {
                 safety: .write,
                 mayWarn: true,
                 handler: MCPServer.handleAddSend
+            ),
+            Tool(
+                name: "logic_remove_send",
+                title: "Remove a send",
+                description: "REMOVE a send that exists — the counterpart of logic_add_send, and the way a send is taken out without logic_trigger_key_command's blind Undo. Mouse-free via the control surface's send-destination browser: the send list is read FIRST, the slot's destination field is browsed back to the No-Send entry, settle-verified, confirmed, and the send list is read back to prove exactly that one send is gone. ADDRESS the send by slot (send: 1-8 as logic_mcu_sends numbers them), by destination name ('Bus 3'), or both — both is safest, because a slot holding a different destination than you named is REFUSED with the actual send list rather than removed. A destination two sends share, addressed by name alone, is refused too: pass send: to pick one. A send already gone is a verified no-op (state: 'already_removed') and nothing is pressed. AFTER A REMOVAL the remaining sends can renumber (Logic compacts them upward), so slot numbers held from before this call may be stale — the result carries sends_after, re-read from the surface, and renumbered: true when it happened; address the next send from that list."
+                    + Tool.stripAddressingNote,
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "track_name": ["type": "string"],
+                        "send": ["type": "integer", "minimum": 1, "maximum": 8, "description": "Send slot 1-8, as logic_mcu_sends lists them. Optional when destination alone identifies the send."],
+                        "destination": ["type": "string", "description": "The send's destination as the send list shows it, e.g. 'Bus 3'. With send: also given it is a guard — the slot must hold this destination or nothing is removed."]
+                    ],
+                    "required": ["track_name"],
+                    "additionalProperties": false
+                ],
+                // Destructive: the send and its level go. Idempotent: the
+                // target state is 'absent', and a repeat is an
+                // already_removed no-op.
+                safety: .destructive,
+                idempotent: true,
+                changesSound: true,
+                handler: MCPServer.handleRemoveSend
             ),
             Tool(
                 name: "logic_create_track",

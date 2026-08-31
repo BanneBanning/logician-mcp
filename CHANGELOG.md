@@ -4,7 +4,7 @@
 
 The first public release, staged and waiting on the go-public decision.
 
-Logician gives any MCP client verified control of Logic Pro: 83 typed tools across
+Logician gives any MCP client verified control of Logic Pro: 84 typed tools across
 mixing, plugins (third-party parameters included), regions, MIDI composition and
 editing, tempo and meter maps, automation, markers, and dialog-free audio export —
 with every render coming back as audio the agent can listen to.
@@ -16,6 +16,10 @@ with every render coming back as audio the agent can listen to.
   carry `success` / `verified` / `state` / `warning` under one documented contract.
 - **The master chain is addressable.** `Stereo Out`, auxes and buses work by name for
   volume, mute/solo, sends, insert bypass, plugin parameters and preset browsing.
+- **Sends are a round trip.** `logic_add_send` creates and levels a send in one verified
+  call, and `logic_remove_send` takes one out the same way — the slot read first, a
+  mismatch with what the caller named refused before anything moves, the removal proven
+  by re-reading the send list — so undoing a send no longer means a blind `Undo`.
 - **Tempo and meter maps are read, integrated and editable** — bar math follows the
   project's actual tempo track and signature list; Smart Tempo mode is checked before
   recording so an Adapt-mode project is refused rather than rewritten.
@@ -41,7 +45,7 @@ with every render coming back as audio the agent can listen to.
   descriptions and argument text) and answers with the full typed definitions — schemas and
   safety annotations included — naming the toolset that holds any match this session does
   not offer. In every toolset, never touches Logic.
-- **`--toolsets`** launch flag for clients with hard tool caps (`core` = 41 tools);
+- **`--toolsets`** launch flag for clients with hard tool caps (`core` = 42 tools);
   the full surface is designed for client-side tool search.
 - **Plugin writes at human speed.** "More bass around 500 Hz" is now ONE call —
   `logic_set_plugin_parameter {track_name, plugin_name, parameter, target_value}` finds
