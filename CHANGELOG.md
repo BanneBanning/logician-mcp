@@ -43,6 +43,22 @@ with every render coming back as audio the agent can listen to.
   not offer. In every toolset, never touches Logic.
 - **`--toolsets`** launch flag for clients with hard tool caps (`core` = 41 tools);
   the full surface is designed for client-side tool search.
+- **Plugin writes at human speed.** "More bass around 500 Hz" is now ONE call —
+  `logic_set_plugin_parameter {track_name, plugin_name, parameter, target_value}` finds
+  the insert itself and reports it as `resolved_slot` — and the call lands in well under a
+  second warm instead of the three calls and 15.8 s it used to take (measured on the
+  reference project: 15 773 ms → 4 785 ms for the old three-call chain, 4 651 ms → 934 ms
+  for a standalone write, 3 866 ms → 474 ms for a second write on the same plugin). The
+  time came out of WAITING, not out of checking: the surface is no longer walked back to
+  its neutral view between plugin calls (the restore is deferred and settled before the
+  first thing that needs it, or at shutdown), the parameter's page and encoder are
+  resolved from the cached name rows instead of by paging through the plugin twice, the
+  Pan-view wait exits early when the display already shows what it is waiting for, and the
+  write path now saves the parameter names it reads — so a cold write stops costing six
+  indicator fades every single time. Every verification is where it was: the cell under
+  the encoder is matched against the live LCD before it turns, a disagreement drops the
+  cache and walks the pages for real, and an ambiguous `plugin_name` or parameter is
+  reported rather than guessed.
 
 ### Known limitations (honest by design)
 
