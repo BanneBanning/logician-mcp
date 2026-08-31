@@ -171,9 +171,25 @@ extension MCUController {
             )
         }
         // Navigate back to the match's page (we are on the last page now).
+        //
+        // Event-driven, exactly like the two other cursor-key walks in this
+        // codebase: `normalizeToPageOne` presses the SAME note (0x62) in the
+        // same kind of loop and waits on `awaitEvents`, and `pageRight` does
+        // the mirror press (0x63) the same way. This loop was the odd one out
+        // with a blind 250 ms sleep, and it is the only one of the three that
+        // is paid PER PAGE on every parameter write. Measured 2026-08-31 on
+        // Bas / Channel EQ (6 pages, match on page 1): the five sleeps cost
+        // 1.27 s of the 5.96 s call, while the identical wait in
+        // `normalizeToPageOne` returned in ~1 ms per press — Logic answers a
+        // cursor press immediately. The read that follows is still settle-
+        // gated (`pageForSearch` opens with `quiescentStatus`) and still
+        // verified (the `landed[match.index].name == match.name` guard below
+        // throws if the surface is not on the page we think it is), so
+        // nothing here rests on the wait alone.
         for _ in 0..<(max(totalPages, 1) - match.page) {
+            let events = freshStatus()?["received_events"] as? Int ?? -1
             try pressNote(0x62)
-            Thread.sleep(forTimeInterval: 0.25)
+            _ = awaitEvents(since: events, timeoutMs: 250)
         }
         guard let landed = pageForSearch(
                   cacheKey: trustedKey, projectPath: projectPath,
