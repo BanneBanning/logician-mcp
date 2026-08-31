@@ -136,6 +136,18 @@ extension LogicAccessibility {
             )
         }
 
+        // The selection is about to MOVE. That is the one moment a deferred
+        // control-surface restore has to be paid before anything else happens:
+        // a plugin-edit view left standing on the surface makes Logic auto-open
+        // plugin windows on the next track selection (the hazard recorded on
+        // MCUController.hotPluginView). Unconditional rather than
+        // strip-matched, because "which strip the leaked view belongs to" is
+        // not what decides whether Logic opens the windows — that a selection
+        // changed at all is. Free on the path this deferral exists for: a
+        // plugin tool re-addressing the strip it just wrote returns
+        // `already_selected` above and never reaches this line.
+        MCUController.settleSurfaceDebt(before: nil)
+
         var writeRoute = "ax_selected_children"
         let setStatus = AXUIElementSetAttributeValue(
             group,

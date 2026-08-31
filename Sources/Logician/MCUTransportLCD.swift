@@ -156,10 +156,46 @@ extension MCUController {
                 && !top.contains(MCULCDStrings.parameterBannerMarker)
                 && lcdFields(top).filter({ $0 == MCULCDStrings.clearingCell }).count < 4
         }
+        /// FAST PATH — the positive check, tried before the silence proof.
+        ///
+        /// `stableState` costs ~1230 ms because it will not classify anything
+        /// until the display has been quiet (or motionless) for a full second,
+        /// and it is called at least twice per `ensurePanNames`. But a full
+        /// second of proof is what you need when you do not know WHAT you are
+        /// looking at. Here we do: this function has exactly one target state,
+        /// and the LCD either already shows it or it does not.
+        ///
+        /// So: read the row, and only if it ALREADY passes `fullNames` spend
+        /// 100 ms confirming it. The confirmation is two proofs at once — the
+        /// top row must be byte-identical across the gap AND still classify as
+        /// the names view. That rules out the frame this function's whole
+        /// design is afraid of (the toggle into the single-channel view paints
+        /// names first and overwrites the right half a moment later): a row
+        /// caught mid-transition is not the same row 100 ms later.
+        ///
+        /// It is a fast path, not a weakened proof. Nothing is pressed on the
+        /// strength of it — it only ever returns "already there" — and when it
+        /// does not fire the full quiescence proof runs exactly as before, one
+        /// `freshStatus` (0.7 ms) later.
+        func confirmedFullNames() -> Bool {
+            guard let first = freshStatus(), fullNames(first) else { return false }
+            guard let top = first["lcd_top"] as? String else { return false }
+            let events = first["received_events"] as? Int ?? -1
+            _ = awaitEvents(since: events, timeoutMs: 100)
+            guard let second = freshStatus(), fullNames(second) else { return false }
+            return (second["lcd_top"] as? String) == top
+        }
         for iteration in 0..<6 {
+            if confirmedFullNames() {
+                surfaceDebt = nil
+                return true
+            }
             guard let state = stableState() else { debugLog("ensurePanNames[\(iteration)]: no stable state"); return false }
             debugLog("ensurePanNames[\(iteration)]: asgn='\(state.assignment)' top='\(state.top.prefix(48))'")
-            if fullNames(["lcd_top": state.top, "assignment": state.assignment]) { return true }
+            if fullNames(["lcd_top": state.top, "assignment": state.assignment]) {
+                surfaceDebt = nil
+                return true
+            }
             if state.top.contains(MCULCDStrings.parameterBannerMarker)
                 && state.assignment == MCULCDStrings.Assignment.pan {
                 // Names view with Logic's mode BANNER ("Pan/Surround
@@ -167,14 +203,27 @@ extension MCUController {
                 // on its own; pressing now would toggle AWAY from the
                 // correct view, so wait it out.
                 debugLog("ensurePanNames[\(iteration)]: waiting out mode banner")
-                if waitFor(seconds: 5.0, fullNames) != nil { return true }
+                if waitFor(seconds: 5.0, fullNames) != nil {
+                    surfaceDebt = nil
+                    return true
+                }
                 continue
             }
             // Any other stable state (single-channel pan, the channel-strip
             // overview, a plugin view, ...) - press toward the names view.
-            let before = freshStatus()?["received_events"] as? Int ?? -1
             try press("assign_pan")
-            _ = awaitEvents(since: before, timeoutMs: 800)
+            // Wait for the TARGET rather than for the display to go quiet.
+            // This used to be a bare `awaitEvents(800)` and the next iteration
+            // then paid another full second of silence proof plus, usually, a
+            // separate wait for the mode banner to fade — three sequential
+            // waits for one press. `fullNames` is the same predicate the
+            // banner branch above already trusts from `waitFor`, and the next
+            // iteration's `confirmedFullNames` still has to see the row hold
+            // still for 100 ms before this returns true, so the press is
+            // followed by a positive check and a stability check, not by a
+            // guess. A press that goes nowhere falls through to the unchanged
+            // `stableState` classification on the next iteration.
+            _ = waitFor(seconds: 5.0, fullNames)
         }
         return false
     }
