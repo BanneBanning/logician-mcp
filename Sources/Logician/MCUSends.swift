@@ -23,7 +23,52 @@ extension MCUController {
         return (freshStatus()?["assignment"] as? String) == MCULCDStrings.Assignment.send
     }
 
+    /// True when this top row is the send view's FIRST page (sends 1 and 2).
+    /// Pure so the classification can be exercised against captured rows.
+    ///
+    /// Cell 0 carries send 1's destination label - `Sen1In`, or `Sen1De`
+    /// mid-repaint. It is deliberately a PREFIX test on the measured label
+    /// stem plus the slot number, because the browse banner Logic paints over
+    /// a page it is editing spells the word out (`Send 1`, `Send 3`), which
+    /// must NOT read as "already there": `Send` and `Sen1` diverge at the
+    /// fourth character, so a banner frame falls through to the walk. The
+    /// error is one-sided by construction - "not first page" when it is costs
+    /// four harmless presses, and only `Sen1…`, which no other page paints,
+    /// can say "first page".
+    static func sendViewTopIsFirstPage(_ top: String) -> Bool {
+        lcdFields(top)[0].hasPrefix(MCULCDStrings.sendFieldLabelPrefix + "1")
+    }
+
+    /// True when the slot's own field labels are painted at its field group -
+    /// the positive proof that a destination press was taken and Logic has
+    /// left the browse banner. Pure, for the same reason as
+    /// `sendViewTopIsFirstPage`.
+    static func sendSlotFieldsPainted(top: String, slot: Int, destIndex: Int) -> Bool {
+        lcdFields(top)[min(destIndex + 3, 7)]
+            .hasPrefix(MCULCDStrings.sendFieldLabelPrefix + "\(slot)")
+    }
+
+    /// The positive check, taken twice around one quiescence window: the row
+    /// must say first-page AND still say it after the display goes quiet, so a
+    /// frame caught mid-repaint cannot skip the walk.
+    static func sendViewIsLeftmost() -> Bool {
+        func showsFirstPage() -> Bool {
+            guard let top = freshStatus()?["lcd_top"] as? String else { return false }
+            return sendViewTopIsFirstPage(top)
+        }
+        guard showsFirstPage() else { return false }
+        _ = quiescentStatus()
+        return showsFirstPage()
+    }
+
     static func sendViewLeftmost() throws {
+        // Four blind cursor-lefts cost ~990 ms and this function is called up
+        // to three times in one `logic_add_send`, which is ~3 s of walking to
+        // a page the surface is usually already on (measured 2026-08-31: the
+        // send view was ALREADY leftmost on every one of the six readback
+        // calls in that session). So ask the row first, and only walk when it
+        // does not answer with the first page.
+        if sendViewIsLeftmost() { return }
         for _ in 0..<4 {
             try pressNote(0x62)
             Thread.sleep(forTimeInterval: 0.15)
@@ -34,14 +79,27 @@ extension MCUController {
     /// Creates a send by browsing the destination field of the first empty
     /// send slot (1 entry per tick in THIS browser, unlike the plugin
     /// browser's 1-per-2), settle-verifying the shown name, and confirming.
+    /// `restoringView: false` leaves the surface in the SEND VIEW for a
+    /// caller that is about to use it again - which `logic_add_send` always
+    /// is when it was given a `level_db`, because the level write runs in this
+    /// same view on this same strip. Walking home and pressing straight back
+    /// in cost two full `ensurePanNames` silence proofs (3.3 s and 1.3-3.4 s,
+    /// measured 2026-08-31) for no change in end state. The caller that
+    /// suppresses the restore OWNS it: it must exit on every path, including
+    /// the one where its own write throws.
     static func addSend(
-        logic: LogicAccessibility, trackName: String, destination: String
+        logic: LogicAccessibility, trackName: String, destination: String,
+        restoringView: Bool = true
     ) throws -> [String: Any]? {
         guard freshStatus() != nil else { return nil }
         guard let channel = try findChannel(trackName: trackName) else { return nil }
         guard try selectFoundChannel(channel) else { return nil }
         guard try ensureSendView() else { return nil }
-        defer { exitToPan() }
+        // A FAILURE always walks home, whatever the caller asked for: the
+        // caller only takes over the restore for the path where it goes on to
+        // write, and this function's throws all abandon that.
+        var restoreOnExit = true
+        defer { if restoreOnExit { exitToPan() } }
         try sendViewLeftmost()
         // find first empty slot across the pages
         var slotNumber: Int?
@@ -113,8 +171,20 @@ extension MCUController {
         }
         let confirm = try MCUBridge.send(.vpotPress(index: destIndex))
         guard confirm.ok else { return nil }
-        Thread.sleep(forTimeInterval: 1.0)
-        guard let sends = try readSends(),
+        // The press is answered by Logic REPAINTING the slot's field group:
+        // the browse banner ("Send 3 / Destination") is replaced by the slot's
+        // own labels, so cell base+3 goes from a filler dash to `Sen3Mu`.
+        // Waiting a flat second for that was waiting for something that had
+        // already happened - measured across six live adds it was there after
+        // 0, 0, 7, 0, 0 and 2 ms. So wait for the CONTENT, with the same one
+        // second as the deadline: a Logic that is slower than this session's
+        // gets exactly as long as before, and a false pass is caught by the
+        // readback below, which is the verification and is untouched.
+        _ = waitFor(seconds: 1.0) { status in
+            guard let top = status["lcd_top"] as? String else { return false }
+            return sendSlotFieldsPainted(top: top, slot: slot, destIndex: destIndex)
+        }
+        guard let sends = try readSends(restoringView: false),
               sends.contains(where: {
                   ($0["send"] as? Int) == slot
                       && (($0["destination"] as? String) ?? "").caseInsensitiveCompare(destination) == .orderedSame
@@ -125,6 +195,7 @@ extension MCUController {
                 restored: false
             )
         }
+        restoreOnExit = restoringView
         return [
             "success": true, "verified": true, "state": "added",
             "send": slot, "destination": destination,
@@ -163,9 +234,15 @@ extension MCUController {
 
     /// Reads all sends of the selected track. Returns nil when the MCU route
     /// is unavailable; an empty array when the track simply has no sends.
-    static func readSends() throws -> [[String: Any]]? {
+    /// `restoringView: false` is for a caller that is ALREADY inside a
+    /// `defer { exitToPan() }` of its own - `addSend`, which reads the send
+    /// list back to verify its own write. Walking the surface home and then
+    /// having the caller's defer walk it home again cost 3.3 s of the 4.8 s
+    /// this readback took (measured 2026-08-31), for no change in end state:
+    /// whoever asked for the restore still gets it, once.
+    static func readSends(restoringView: Bool = true) throws -> [[String: Any]]? {
         guard try ensureSendView() else { return nil }
-        defer { exitToPan() }
+        defer { if restoringView { exitToPan() } }
         try sendViewLeftmost()
         var sends: [[String: Any]] = []
         for page in 0..<4 {

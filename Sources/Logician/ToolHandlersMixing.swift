@@ -134,10 +134,17 @@ extension MCPServer {
 
     func handleAddSend(_ arguments: [String: Any]) throws -> Any {
         let track = try requiredString("track_name", in: arguments)
+        let level = (arguments["level_db"] as? Double)
+            ?? (arguments["level_db"] as? Int).map(Double.init)
         guard let addedSend = try MCUController.addSend(
             logic: logic,
             trackName: track,
-            destination: requiredString("destination", in: arguments)
+            destination: requiredString("destination", in: arguments),
+            // The level write below runs in the send view this call is
+            // already in, so hand it the view instead of walking home and
+            // pressing straight back in. Everything after this point is
+            // responsible for the restore.
+            restoringView: level == nil
         ) else {
             throw LogicianError.trackNotExposed(
                 requested: "send creation via the control surface",
@@ -152,13 +159,16 @@ extension MCPServer {
         // inaudible send and reported success (COVERAGE U5). The level is set
         // through the same tool logic_mcu_set_send uses, on the strip this call
         // has already selected.
-        let level = (arguments["level_db"] as? Double)
-            ?? (arguments["level_db"] as? Int).map(Double.init)
         guard let level, let slot = addedSend["send"] as? Int else { return sendPayload }
         do {
             guard let levelled = try MCUController.setSendLevel(
                 sendNumber: slot, targetDb: level, expectedCurrentValue: nil
             ) else {
+                // `setSendLevel` restores the view from its own defer, but
+                // it can refuse before registering one. Exiting twice is a
+                // ~100 ms no-op on a surface already in Pan; not exiting at
+                // all leaves the send view standing for the next call.
+                MCUController.exitToPan()
                 throw LogicianError.trackNotExposed(
                     requested: "the send level vpot", exposed: "the send view did not answer"
                 )
@@ -173,6 +183,9 @@ extension MCPServer {
             // as a failure. What failed is the level, so the send is sitting at
             // -oo dB and the result says exactly that rather than letting an
             // agent assume the whole intent landed.
+            // Same reasoning as above: the add handed its restore to the
+            // level write, and the level write can throw before it owns one.
+            MCUController.exitToPan()
             sendPayload["level_verified"] = false
             sendPayload["level_db_requested"] = level
             sendPayload["level"] = "-oo dB (unchanged)"
