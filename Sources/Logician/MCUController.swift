@@ -95,11 +95,23 @@ enum MCUController {
     }
 
     /// The assignment codes that make Logic auto-open plugin windows on the
-    /// next track selection: the eight per-insert parameter banks and the
-    /// instrument edit view. Pure, so the rule is tested without a surface.
+    /// next track selection: the per-insert parameter family and the instrument
+    /// edit view. Pure, so the rule is tested without a surface.
+    ///
+    /// The whole `P…` family rather than an `P1`…`P8` allow-list, and that is
+    /// not laziness. The assignment display is two 7-segment characters decoded
+    /// straight to ASCII, and Logic paints codes there this project has not
+    /// enumerated: `P_` was observed live 2026-08-31 on a plugin-adjacent page,
+    /// slipped through an exact-match list, and a track selection taken on top
+    /// of it opened a plugin window — the exact failure the check exists to
+    /// stop. Every code Logic's own documented modes use is covered
+    /// (`PN` pan, `IN` instrument, `SE` send, `CS` channel strip, `EQ`), so
+    /// "starts with P and is not PN" cannot swallow a view another tool set on
+    /// purpose; it can only catch more of the family it is aimed at. Erring
+    /// toward one extra 3.3 s restore beats erring toward a leaked plugin view.
     static func isPluginEditAssignment(_ code: String) -> Bool {
         if code == MCULCDStrings.Assignment.instrument { return true }
-        return (1...8).contains { MCULCDStrings.Assignment.insertSlot($0) == code }
+        return code.hasPrefix("P") && code != MCULCDStrings.Assignment.pan
     }
 
     /// The open project's document path - the identity every on-disk cache is

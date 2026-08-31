@@ -55,10 +55,16 @@ final class SurfaceDeferralTests: XCTestCase {
             XCTAssertTrue(MCUController.isPluginEditAssignment("P\(slot)"))
         }
         XCTAssertTrue(MCUController.isPluginEditAssignment("IN"))
+        // Codes this project has not enumerated but Logic paints anyway. `P_`
+        // was observed live and a selection taken on top of it opened a plugin
+        // window, so the family is matched by its prefix rather than by a list.
+        for code in ["P_", "P0", "P9", "Pl"] {
+            XCTAssertTrue(MCUController.isPluginEditAssignment(code), code)
+        }
         // The neutral names view, the channel-strip overview, sends and the EQ
         // view are all views other tools set on purpose and none of them leaks
         // plugin windows.
-        for code in ["PN", "CS", "SE", "EQ", "P0", "P9", ""] {
+        for code in ["PN", "CS", "SE", "EQ", ""] {
             XCTAssertFalse(MCUController.isPluginEditAssignment(code), code)
         }
     }
