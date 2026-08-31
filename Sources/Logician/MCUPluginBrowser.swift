@@ -68,74 +68,218 @@ extension MCUController {
                 exposed: "all 8 MCU insert slots are occupied"
             )
         }
+        func browseCell(in bottom: String) -> String {
+            let start = bottom.index(bottom.startIndex, offsetBy: min(emptyIndex * 7, bottom.count))
+            // The name spills over several LCD fields; cut at the first long
+            // gap so trailing slot fields do not leak into it — and take the
+            // NEIGHBOUR'S "--" back off when the gap was too short to cut at
+            // (see normalizedBrowseEntry: this is what used to defeat the wrap
+            // test and what used to be reported as `browser_entry`).
+            let raw = String(bottom[start...])
+            let cut = raw.range(of: "    ").map { String(raw[..<$0.lowerBound]) } ?? raw
+            return normalizedBrowseEntry(cut)
+        }
         func browseName() -> String? {
             guard let status = freshStatus(),
                   let bottom = status["lcd_bottom"] as? String else { return nil }
-            let start = bottom.index(bottom.startIndex, offsetBy: min(emptyIndex * 7, bottom.count))
-            // The name spills over several LCD fields; cut at the first long
-            // gap so trailing slot fields do not leak into it.
-            let raw = String(bottom[start...])
-            let cut = raw.range(of: "    ").map { String(raw[..<$0.lowerBound]) } ?? raw
-            return cut.trimmingCharacters(in: .whitespaces)
+            return browseCell(in: bottom)
         }
         func matches(_ shown: String) -> Bool {
-            // LCD shows e.g. "Compressor (s/s)"; strip the channel suffix and
-            // compare prefixes both ways (either side may be truncated).
-            let cleaned = shown.replacingOccurrences(
-                of: #"\s*\([sm]/[sm]\)\s*$"#, with: "", options: .regularExpression
-            ).trimmingCharacters(in: .whitespaces)
-            guard !cleaned.isEmpty else { return false }
-            let target = pluginName.trimmingCharacters(in: .whitespaces)
-            return cleaned.lowercased() == target.lowercased()
-                || cleaned.lowercased().hasPrefix(target.lowercased())
-                || target.lowercased().hasPrefix(cleaned.lowercased())
+            browseEntryMatches(shown, requested: pluginName)
         }
         func abortBrowse() {
             exitToPan()
         }
-        // The LCD advances only every other vpot tick, so consecutive
-        // duplicate names mean "not moved yet", not a wrap. A wrap is the
+        // How many entries the browse has actually advanced from the No Plug-in
+        // origin an EMPTY slot always starts at — which is why this is a
+        // coordinate and not a guess: the slot was chosen for being empty two
+        // dozen lines up. Counted by NAME CHANGES rather than by messages sent,
+        // because a message sent into an unfinished repaint is swallowed (see
+        // PluginCatalogMap for the measurements that settled this).
+        var position = 0
+        // The catalog in the order this browse met it. A read that repeats its
+        // predecessor is the list not having moved, not a wrap; a wrap is the
         // FIRST entry reappearing after real progress.
         var entries: [String] = []
+        var observed: [PluginCatalogMap.Entry] = []
         var found = false
-        for step in 0..<500 {
-            let before = freshStatus()?["received_events"] as? Int ?? -1
-            // The list advances one entry per TWO vpot ticks — send both at once.
-            let response = try MCUBridge.send(.vpot(index: emptyIndex, delta: 2))
-            guard response.ok else { abortBrowse(); return nil }
-            _ = awaitEvents(since: before, timeoutMs: 250)
-            if step % 4 == 3 { _ = quiescentStatus() }
-            guard let name = browseName(), !name.isEmpty, name != MCULCDStrings.emptySlot else { continue }
-            if matches(name) { found = true; break }
-            if name == entries.last { continue }
-            if let first = entries.first, name == first, entries.count > 2 {
-                abortBrowse()
-                throw LogicianError.trackNotExposed(
-                    requested: "plugin '\(pluginName)' in the control-surface browser",
-                    exposed: "the browser wrapped around without a match; entries seen: \(entries.joined(separator: ", "))"
-                )
+        // Observations are only worth keeping while the walk is CONTIGUOUS
+        // from the origin: a map with a hole in it could answer "first match"
+        // with an entry that has an unseen earlier twin, and then this tool
+        // would quietly start choosing a different one of two same-named
+        // catalog entries than it used to.
+        var contiguous = true
+        var catalog = loadPluginCatalog()
+        /// The ordinal a cached hint sent this browse to, once it has been
+        /// consulted: nil = not yet, 0 = consulted and no usable hint.
+        var jumpedToward: Int?
+        var stepsSinceJump = 0
+        /// Set while the next read is a jump's landing, whose ordinal the jump
+        /// itself already accounted for — so it must not be counted twice.
+        var landedByJump = false
+        /// One entry forward, PACED: the next message is not sent until this
+        /// one has visibly landed.
+        ///
+        /// Pacing is the whole job. Firing 2-tick messages as fast as the
+        /// socket allows loses most of them — measured 2026-08-31, 46% of them
+        /// over 500 messages and 76% over 2500, so an unpaced walk gets slower
+        /// per ENTRY the deeper it goes (42 ms/entry early, 610 ms/entry at
+        /// depth) even though each message looks cheap. Waiting for the cell to
+        /// CHANGE spends exactly one repaint per entry and no more, which is
+        /// both the fastest and the only shape that scales: the old fixed
+        /// settle every fourth step held the loss to 18% and cost 66 ms/entry.
+        ///
+        /// A catalog holding the same display name at two adjacent positions
+        /// times out here instead of returning early. That costs one timeout
+        /// and undercounts the ordinal by one, which is the harmless direction
+        /// (see `PluginCatalogMap`).
+        func stepForward(from shown: String) throws -> Bool {
+            let response = try MCUBridge.send(.vpot(index: emptyIndex, delta: browseTicksPerEntry))
+            guard response.ok else { return false }
+            _ = waitFor(seconds: 0.25) { status in
+                (status["lcd_bottom"] as? String).map { browseCell(in: $0) != shown } ?? false
             }
-            entries.append(name)
+            return true
+        }
+        /// Carries the browse `entries` entries from where it is now. Nothing is
+        /// written by a browse — it is uncommitted until the vpot press — so a
+        /// jump that lands in the wrong place costs steps and nothing else.
+        func jump(entries entriesToJump: Int) throws -> Bool {
+            for chunk in browseJumpPlan(ticks: entriesToJump * browseTicksPerEntry) {
+                let before = freshStatus()?["received_events"] as? Int ?? -1
+                guard try MCUBridge.send(.vpot(index: emptyIndex, delta: chunk)).ok else {
+                    return false
+                }
+                position += chunk / browseTicksPerEntry
+                _ = awaitEvents(since: before, timeoutMs: 400)
+                // A 31-entry jump repaints far more of the row than a single
+                // step does, and Logic goes on advancing the list while it
+                // does: measured 2026-08-31, a second chunk sent into that
+                // repaint is swallowed, so the landing is neither where it was
+                // asked for nor reversible. Wait for real silence between
+                // chunks and before reading.
+                _ = waitForSurfaceQuiet(seconds: 2.0)
+            }
+            return true
+        }
+        let searchDeadline = Date().addingTimeInterval(browseSearchBudget)
+        while entries.count < browseEntryCap, Date() < searchDeadline {
+            let name = browseName() ?? ""
+            if !name.isEmpty, name != MCULCDStrings.emptySlot {
+                if matches(name) {
+                    // The target is one more entry advanced, same as any other
+                    // changed name — this is the ordinal that gets cached.
+                    if !landedByJump { position += 1 }
+                    found = true
+                    break
+                }
+                if name != entries.last {
+                    if let first = entries.first, name == first, entries.count > 2 {
+                        // A full lap with no match. The walk has now SEEN the
+                        // whole catalog, which is the one thing this failure is
+                        // good for: keep the map before reporting it.
+                        if contiguous {
+                            var learned = catalog ?? PluginCatalogMap()
+                            learned.merge(observed, coveredPositions: position)
+                            savePluginCatalog(learned)
+                        }
+                        abortBrowse()
+                        throw LogicianError.trackNotExposed(
+                            requested: "plugin '\(pluginName)' in the control-surface browser",
+                            exposed: "the browser wrapped around without a match; entries seen: \(entries.joined(separator: ", "))"
+                        )
+                    }
+                    // A name that CHANGED is one entry advanced — the only
+                    // trustworthy way to count them.
+                    if !landedByJump { position += 1 }
+                    entries.append(name)
+                    if contiguous {
+                        observed.append(PluginCatalogMap.Entry(name: name, position: position))
+                    }
+                }
+                // The catalog is a property of the Logic install, so a previous
+                // browse already knows where this plug-in lives. Take the jump
+                // once, and only once the format annotation is on screen — the
+                // mono and stereo catalogs are not the same list.
+                if jumpedToward == nil, let known = catalog,
+                   let hint = known.position(
+                       matching: pluginName, format: browseEntryFormat(name)
+                   ),
+                   hint - browseJumpUndershootEntries > position {
+                    jumpedToward = hint
+                    contiguous = false
+                    guard try jump(
+                        entries: hint - browseJumpUndershootEntries - position
+                    ) else { abortBrowse(); return nil }
+                    landedByJump = true
+                    continue
+                }
+                // No usable hint on the first real entry means there will not
+                // be one later either; stop asking.
+                if jumpedToward == nil { jumpedToward = 0 }
+            }
+            // A jump that has not paid off within a few steps was a wrong hint,
+            // and a map that has been caught out is deleted rather than trusted
+            // again — the walk carries on and still finds the plug-in, or still
+            // wraps, exactly as it would have from cold.
+            if let hint = jumpedToward, hint > 0 {
+                stepsSinceJump += 1
+                if catalog != nil, stepsSinceJump > browseJumpGraceSteps {
+                    discardPluginCatalog()
+                    catalog = nil
+                }
+            }
+            guard try stepForward(from: name) else { abortBrowse(); return nil }
+            landedByJump = false
         }
         guard found else {
+            // Cut short rather than wrapped, so the catalog may well go on past
+            // where this stopped. Say so — and keep what was enumerated, which
+            // is the only thing this failure produced worth having.
+            if contiguous {
+                var learned = catalog ?? PluginCatalogMap()
+                learned.merge(observed, coveredPositions: position)
+                savePluginCatalog(learned)
+            }
             abortBrowse()
             throw LogicianError.openVerificationFailed(
-                "the plugin browser never showed '\(pluginName)' within 250 steps"
+                "the plugin browser never showed '\(pluginName)' in the \(entries.count)"
+                    + " catalog entries it looked at"
+                    + (entries.count >= browseEntryCap
+                        ? " (the \(browseEntryCap)-entry limit)"
+                        : " in \(Int(browseSearchBudget)) s (the search budget)")
+                    + ", and never came back round to where it started — so the catalog may well"
+                    + " go on past there. Check the spelling, or name a plug-in nearer the top of"
+                    + " Logic's list. Nothing was written"
             )
         }
-        // The display can advance one more entry after the matching read
-        // (trailing sysex from the double-tick) — settle and re-verify that
-        // the shown entry is STILL the target before confirming anything.
-        _ = quiescentStatus()
-        Thread.sleep(forTimeInterval: 0.3)
-        // The double-tick stepping tends to drift one entry past the match —
-        // correct by stepping back until the target is shown again.
+        // The display could still advance one more entry after the matching
+        // read, so prove it has stopped before confirming anything — but prove
+        // it, rather than sleeping through it.
+        //
+        // The blind `Thread.sleep(0.3)` this replaces was insuring against a
+        // real effect: measured 2026-08-31 on the unpaced loop, the cell moved
+        // one entry past the match 33-47 ms after the matching read, on 3 of 3
+        // runs, and the back-step loop below then fired on every one of them.
+        // Pacing removed the cause — a change-driven step cannot leave ticks in
+        // flight to arrive late — and on the paced walk and the jump alike the
+        // surface was already silent (`timed_out` on the first ask) with zero
+        // corrections needed. The 150 ms silence proof is kept because it is a
+        // PROOF and it is nearly free; the correction loop is kept untouched
+        // because it is verification, not waiting.
+        waitForSurfaceQuiet(seconds: 0.6)
         var settledName = browseName()
         var corrections = 0
         while let drifted = settledName, !matches(drifted), corrections < 4 {
-            _ = try? MCUBridge.send(.vpot(index: emptyIndex, delta: -2))
-            Thread.sleep(forTimeInterval: 0.4)
-            _ = quiescentStatus()
+            _ = try? MCUBridge.send(.vpot(index: emptyIndex, delta: -browseTicksPerEntry))
+            // Positive check first: the back-step landed when the target is on
+            // screen (measured 47-57 ms), and only if it never shows up does
+            // this fall back to proving the surface has gone quiet — which is
+            // what the blind 0.4 s used to buy, more slowly and less honestly.
+            let recovered = waitFor(seconds: 0.5) { status in
+                (status["lcd_bottom"] as? String).map { matches(browseCell(in: $0)) } ?? false
+            }
+            if recovered == nil { waitForSurfaceQuiet(seconds: 0.5) }
             settledName = browseName()
             corrections += 1
         }
@@ -148,6 +292,20 @@ extension MCUController {
             )
         }
         let shownName = settled
+        // This coordinate is the good one: read after the settle, corrected for
+        // the drift, and proven by the name test that is about to gate the
+        // press. Keep it — and everything the walk passed on the way — so the
+        // next browse for any of them is a jump instead of a walk. Nothing is
+        // kept from a browse that jumped: see PluginCatalogMap.ticks(matching:)
+        // for why a map with a hole in it would be worse than no map.
+        if contiguous {
+            var learned = catalog ?? PluginCatalogMap()
+            learned.merge(
+                observed + [PluginCatalogMap.Entry(name: settled, position: position)],
+                coveredPositions: position
+            )
+            savePluginCatalog(learned)
+        }
         // Confirm: vpot press instantiates and drops into the edit view.
         let response = try MCUBridge.send(.vpotPress(index: emptyIndex))
         guard response.ok else { abortBrowse(); return nil }

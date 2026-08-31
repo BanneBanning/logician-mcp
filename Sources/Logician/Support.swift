@@ -36,11 +36,7 @@ struct ScopedCache<Payload: Codable>: Codable {
 func loadScopedCache<Payload: Codable>(
     _ url: URL, projectPath: String?, as: Payload.Type = Payload.self
 ) -> Payload? {
-    guard let projectPath,
-          let data = try? Data(contentsOf: url),
-          let decoded = try? JSONDecoder().decode(ScopedCache<Payload>.self, from: data),
-          decoded.scope == cacheScopeToken(projectPath: projectPath) else { return nil }
-    return decoded.payload
+    loadScopedCache(url, scope: projectPath.map { cacheScopeToken(projectPath: $0) })
 }
 
 /// Writes `payload` stamped with the current scope. A no-op without a project
@@ -49,10 +45,32 @@ func loadScopedCache<Payload: Codable>(
 func saveScopedCache<Payload: Codable>(
     _ payload: Payload, to url: URL, projectPath: String?
 ) {
-    guard let projectPath,
-          let data = try? JSONEncoder().encode(
-              ScopedCache(scope: cacheScopeToken(projectPath: projectPath), payload: payload)
-          ) else { return }
+    saveScopedCache(payload, to: url, scope: projectPath.map { cacheScopeToken(projectPath: $0) })
+}
+
+/// The same discipline for a cache whose identity is NOT the open project.
+/// The plug-in catalog, for instance, is a property of the Logic INSTALL: it
+/// must survive opening another project and must not survive installing a
+/// plug-in, which is the opposite of what `projectPath` scoping would do.
+/// `deleteOnMismatch` is for the caller who would rather retire a file it can
+/// never use again than leave it lying around to be re-read and re-rejected.
+func loadScopedCache<Payload: Codable>(
+    _ url: URL, scope: String?, as: Payload.Type = Payload.self,
+    deleteOnMismatch: Bool = false
+) -> Payload? {
+    guard let scope, let data = try? Data(contentsOf: url) else { return nil }
+    guard let decoded = try? JSONDecoder().decode(ScopedCache<Payload>.self, from: data),
+          decoded.scope == scope else {
+        if deleteOnMismatch { try? FileManager.default.removeItem(at: url) }
+        return nil
+    }
+    return decoded.payload
+}
+
+func saveScopedCache<Payload: Codable>(_ payload: Payload, to url: URL, scope: String?) {
+    guard let scope,
+          let data = try? JSONEncoder().encode(ScopedCache(scope: scope, payload: payload))
+    else { return }
     try? data.write(to: url)
 }
 
