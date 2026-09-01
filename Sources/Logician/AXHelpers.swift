@@ -117,7 +117,9 @@ extension LogicAccessibility {
             )
         }
         guard matches.count == 1, let slot = matches.first else {
-            throw LogicianError.insertAmbiguous(track: track, plugin: plugin, slots: matches.map(\.index))
+            throw LogicianError.insertAmbiguous(
+                track: track, plugin: plugin, slots: matches.map(\.index), parameter: "insert_index"
+            )
         }
         return slot
     }

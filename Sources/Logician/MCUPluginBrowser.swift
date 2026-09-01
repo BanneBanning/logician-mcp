@@ -416,21 +416,19 @@ extension MCUController {
         return result
     }
 
-    /// Removes a plugin mouse-free: browse the occupied slot to the "--"
-    /// (No Plug-in) entry at the list boundary and confirm. The boundary can
-    /// be up to a full list away (~100 entries), so this takes up to ~60 s —
-    /// still no pointer, no menus. Returns nil when MCU is unavailable.
-    static func removePluginViaBrowser(
-        pluginName: String, logic: LogicAccessibility, trackName: String
-    ) throws -> [String: Any]? {
-        guard freshStatus() != nil else { return nil }
-        guard let channel = try findChannel(trackName: trackName) else { return nil }
-        try selectChannelVerified(channel: channel, expectedName: trackName)
-        guard let inserts = try pluginInsertNames() else { return nil }
-        let listEvidence = try verifyPluginListStrip(
-            inserts: inserts, logic: logic, trackName: trackName
-        )
-        // Match the target slot by LCD name (truncated) against the request.
+    // MARK: Pure removal resolution (unit-tested without a surface)
+
+    /// Which slot (0-based offset into the 8 LCD cells) a removal should
+    /// browse to "--". Resolution is by the same abbreviation-tolerant name
+    /// match the browse verifies against, and it never guesses: a name that
+    /// occupies several slots (three `Gain` inserts, observed 2026-08-31) is
+    /// answered only by the caller's `insertSlot` — the Mackie physical slot
+    /// 1-8, NOT the Accessibility insert_index. The LCD name proof holds on
+    /// both paths: an `insertSlot` whose cell does not name the plugin is
+    /// refused rather than cleared.
+    static func resolveRemovalSlot(
+        inserts: [String], pluginName: String, trackName: String, insertSlot: Int?
+    ) throws -> Int {
         let matches = inserts.enumerated().filter { _, name in
             let cleaned = name.trimmingCharacters(
                 in: CharacterSet(charactersIn: MCULCDStrings.bypassMarker)
@@ -439,15 +437,103 @@ extension MCUController {
             return lcdNameMatches(track: pluginName, lcd: cleaned)
                 || pluginName.lowercased().hasPrefix(cleaned.lowercased())
         }
+        if let insertSlot {
+            guard (1...8).contains(insertSlot) else {
+                throw LogicianError.invalidArguments(
+                    "insert_slot is the Mackie physical slot 1-8; got \(insertSlot)"
+                )
+            }
+            guard matches.contains(where: { $0.offset == insertSlot - 1 }) else {
+                let shown = inserts.indices.contains(insertSlot - 1)
+                    && !inserts[insertSlot - 1].isEmpty
+                    ? inserts[insertSlot - 1] : MCULCDStrings.emptySlot
+                throw LogicianError.insertMismatch(
+                    slot: insertSlot, expected: pluginName, actual: shown
+                )
+            }
+            return insertSlot - 1
+        }
         guard matches.count == 1, let target = matches.first else {
-            exitToPan()
-            throw LogicianError.trackNotExposed(
-                requested: "exactly one insert matching '\(pluginName)'",
-                exposed: "MCU slots: " + inserts.enumerated()
-                    .map { "\($0 + 1): \($1.isEmpty ? MCULCDStrings.emptySlot : $1)" }.joined(separator: ", ")
+            guard !matches.isEmpty else {
+                throw LogicianError.insertNotFound(
+                    track: trackName, plugin: pluginName,
+                    available: inserts.enumerated()
+                        .filter { !$1.isEmpty && $1 != MCULCDStrings.emptySlot }
+                        .map { "\($0 + 1): \($1)" }
+                )
+            }
+            throw LogicianError.insertAmbiguous(
+                track: trackName, plugin: pluginName,
+                slots: matches.map { $0.offset + 1 }, parameter: "insert_slot"
             )
         }
-        let slotIndex = target.offset
+        return target.offset
+    }
+
+    /// Whether the LCD insert row read back after the confirming press shows
+    /// the removal. Two honest after-states exist: the slot reads empty, or
+    /// Logic closed the gap and the later inserts slid up one — the old row
+    /// with the cleared cell dropped and an empty cell appended. Anything
+    /// else (the name still in place, a reshuffle) is a failed removal.
+    static func lcdRowShowsRemoval(before: [String], after: [String], slotIndex: Int) -> Bool {
+        guard after.indices.contains(slotIndex) else { return true }
+        func empty(_ cell: String) -> Bool { cell.isEmpty || cell == MCULCDStrings.emptySlot }
+        if empty(after[slotIndex]) { return true }
+        guard before.indices.contains(slotIndex) else { return false }
+        var compacted = Array(before[(slotIndex + 1)...])
+        compacted.append("")
+        return zip(after[slotIndex...], compacted).allSatisfy { shown, expected in
+            (empty(shown) && empty(expected)) || shown == expected
+        }
+    }
+
+    /// The duplicate-aware reading of the removal's AX cross-check. With one
+    /// instance on the strip, "the name is gone" is the proof — but one of
+    /// three `Gain` inserts removed still leaves `Gain` listed, so when the
+    /// strip held several instances the honest signal is the COUNT dropping.
+    /// `beforeCount` is nil when the strip's AX list was unreadable before
+    /// the press; absence is then the only bar left.
+    static func axConfirmsRemoval(
+        beforeCount: Int?, afterNames: [String], pluginName: String
+    ) -> Bool {
+        let after = afterNames.filter { axNamesPlugin($0, requested: pluginName) }.count
+        guard let beforeCount, beforeCount > 0 else { return after == 0 }
+        return after < beforeCount
+    }
+
+    /// Removes a plugin mouse-free: browse the occupied slot to the "--"
+    /// (No Plug-in) entry at the list boundary and confirm. The boundary can
+    /// be up to a full list away (~100 entries), so this takes up to ~60 s —
+    /// still no pointer, no menus. Returns nil when MCU is unavailable.
+    /// `insertSlot` (Mackie physical 1-8) names the slot when the same
+    /// display name occupies several of them.
+    static func removePluginViaBrowser(
+        pluginName: String, logic: LogicAccessibility, trackName: String,
+        insertSlot: Int? = nil
+    ) throws -> [String: Any]? {
+        guard freshStatus() != nil else { return nil }
+        guard let channel = try findChannel(trackName: trackName) else { return nil }
+        try selectChannelVerified(channel: channel, expectedName: trackName)
+        guard let inserts = try pluginInsertNames() else { return nil }
+        let listEvidence = try verifyPluginListStrip(
+            inserts: inserts, logic: logic, trackName: trackName
+        )
+        // Resolve WHICH slot to clear before anything is pressed — by LCD
+        // name while it is unique, by the caller's insert_slot when it is not.
+        let slotIndex: Int
+        do {
+            slotIndex = try resolveRemovalSlot(
+                inserts: inserts, pluginName: pluginName,
+                trackName: trackName, insertSlot: insertSlot
+            )
+        } catch {
+            exitToPan()
+            throw error
+        }
+        // The instance count AX sees BEFORE the press, so the cross-check
+        // afterwards can tell "one of three removed" from "nothing happened".
+        let axCountBefore = (try? logic.insertPluginNames(trackName: trackName))
+            .map { names in names.filter { axNamesPlugin($0, requested: pluginName) }.count }
         func browseName() -> String? {
             guard let status = freshStatus(),
                   let bottom = status["lcd_bottom"] as? String else { return nil }
@@ -496,27 +582,30 @@ extension MCUController {
         _ = quiescentStatus()
         guard let after = try pluginInsertNames() else { return nil }
         exitToPan()
-        let nowEmpty = !after.indices.contains(slotIndex)
-            || after[slotIndex].isEmpty || after[slotIndex] == MCULCDStrings.emptySlot
-        // AX cross-check: the plugin must be gone from the strip's inserts.
+        let rowShowsRemoval = lcdRowShowsRemoval(before: inserts, after: after, slotIndex: slotIndex)
+        // AX cross-check: with a single instance the plugin must be gone from
+        // the strip's inserts; with duplicates, one fewer must be listed.
         var axGone = false
         var axReachable = false
         for _ in 0..<10 {
             if let names = try? logic.insertPluginNames(trackName: trackName) {
                 axReachable = true
-                if !names.contains(where: { axNamesPlugin($0, requested: pluginName) }) {
+                if axConfirmsRemoval(
+                    beforeCount: axCountBefore, afterNames: names, pluginName: pluginName
+                ) {
                     axGone = true
                     break
                 }
             }
             Thread.sleep(forTimeInterval: 0.4)
         }
-        guard nowEmpty, axGone || !axReachable else {
+        guard rowShowsRemoval, axGone || !axReachable else {
             throw LogicianError.verificationFailed(
                 requested: "'\(pluginName)' removed from '\(trackName)'",
-                actual: nowEmpty
-                    ? "the LCD slot cleared but AX still lists the plugin"
-                    : "the LCD slot still shows '\(after[slotIndex])'",
+                actual: rowShowsRemoval
+                    ? "the LCD row shows the removal but AX still lists "
+                        + "\(axCountBefore.map { "all \($0) instance(s) of" } ?? "") the plugin"
+                    : "the LCD row still shows '\(after[slotIndex])' in slot \(slotIndex + 1)",
                 restored: false
             )
         }
@@ -526,6 +615,7 @@ extension MCUController {
             "state": "removed",
             "plugin": pluginName,
             "mcu_slot": slotIndex + 1,
+            "slot_resolved_by": insertSlot == nil ? "unique_name_match" : "insert_slot",
             "write_route": "mcu_plugin_browser",
             "cross_check": axGone ? "ax_insert_list" : "unavailable",
             "pl_view_check": listEvidence,

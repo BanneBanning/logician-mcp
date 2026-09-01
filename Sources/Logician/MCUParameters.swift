@@ -560,7 +560,7 @@ extension MCUController {
                             plugin: pluginName, available: available)
                         : LogicianError.insertAmbiguous(
                             track: trackName ?? "the selected strip",
-                            plugin: pluginName, slots: matches)
+                            plugin: pluginName, slots: matches, parameter: "insert_slot")
                 }
                 resolvedSlot = only
                 resolvedBy = "insert_list"
