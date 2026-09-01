@@ -194,6 +194,39 @@ with every render coming back as audio the agent can listen to.
   because they are `AXStandardWindow`. All three now say that, and the refusal
   names the subrole it found.
 
+- **A duplicate proves it opened the COPY, and proves it by path.** `logic_duplicate_project`
+  verified its open by document NAME against the destination's basename, so duplicating into
+  another folder — `destination_path: "~/Desktop/Sandbox/Song.logicx"`, which is exactly what
+  that parameter is for — matched the still-open ORIGINAL on the first poll tick and answered
+  `verified: true` about a copy Logic had not opened, sending the agent's destructive
+  experiments into the user's own project. The shared open now matches Logic's document list
+  by PATH, so `logic_open_project`, `logic_new_project` and `logic_reset_to` are fixed by the
+  same two lines. That poll also stopped spawning an AppleScript document-list read every
+  500 ms while WAITING for the save-changes modal: AppleScript is the one plane that blocks
+  while Logic is modal (~120 s, far past the loop's own 30 s deadline) and the loop that
+  answers the modal was stuck inside the read. It now looks on the Accessibility plane first
+  (one window walk plus one document path, 1–2 ms) and spends the round trip only once those
+  cheap signals allow it — the rule `logic_close_project` was rebuilt around — which also
+  retires the blind 500 ms sleep that ran BEFORE the loop's first look, in favour of the
+  close's measured 200 ms pacing.
+
+- **Duplicating a project stops writing the user's project behind them.** `if_current_modified`
+  defaulted to `"save"` here, so duplicating a modified project committed the in-progress edits
+  to the original — while the same result said the original was untouched — on the one tool the
+  guide tells an agent to reach for BEFORE making changes nobody approved. The default is now
+  `"fail"`, as `logic_open_project` and `logic_new_project` have always been, and the refusal is
+  made from the document list the tool has already read, BEFORE the copy is written: it used to
+  be made inside the open, after the copy was on disk, and the throw discarded the result
+  carrying the copy's path, so the obvious retry hit `'…' already exists` on a file nobody had
+  been told about. The result now says what actually happened to the original —
+  `original_written_to_disk`, `original_unsaved_changes_discarded`, and the `dialogs_answered`
+  receipt the open builds and the duplicate used to drop, which is how a caller learns Logic
+  asked and what was answered. A `destination_path` whose folder does not exist yet is created,
+  as the new-project path already did; an open that fails with the copy already on disk names
+  the copy's path and says the copy was made and the open was not. Unit-tested (35 new pure
+  tests for a tool that had none) and NOT live-verified: it writes a project copy to disk and
+  changes which project is open, so it is never run against the sandbox.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

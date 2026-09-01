@@ -228,6 +228,25 @@ extension LogicAccessibility {
         return found
     }
 
+    /// Is Logic showing an alert whose grammar this server RECOGNISES — the
+    /// save-changes prompt or the auto-save recovery prompt?
+    ///
+    /// Read-only, AppleScript-free, ~1–2 ms, and it is a MODALITY test rather
+    /// than a permission to press: `discardingChanges: true` deliberately
+    /// widens recognition to both grammars, because the question is "would an
+    /// Apple Event block right now", not "may this button be clicked". The
+    /// open poll asks it before every document-list read
+    /// (`ProjectOpen.mayAskDocumentList`) — Logic's AppleScript suite blocks
+    /// while a modal is up, and a poll stuck inside that read cannot answer
+    /// the prompt it is waiting for.
+    func recognisedAlertOnScreen() -> Bool {
+        visibleDialogs().contains { dialog in
+            ProjectReset.answer(
+                forTexts: dialog.texts, buttons: dialog.buttons, discardingChanges: true
+            ) != nil
+        }
+    }
+
     /// One line per dialog on screen, for an error message. Empty string when
     /// there is none — a timeout with no dialog is a different diagnosis from
     /// a timeout with one, and the message has to be able to say so.

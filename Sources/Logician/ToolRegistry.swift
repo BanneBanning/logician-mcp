@@ -1131,19 +1131,17 @@ extension MCPServer {
             Tool(
                 name: "logic_duplicate_project",
                 title: "Duplicate the project",
-                description: "Duplicate the OPEN project on disk and (by default) open the copy — the safe sandbox for destructive experiments: the original stays untouched. The copy is the on-disk state; pass save_first: true to save unsaved changes into it first. Default destination: '<name> Copy.logicx' next to the original. Opening the copy closes the current project (single-project mode; if_current_modified defaults to 'save' here since the original is the project being closed).",
+                description: "Duplicate the OPEN project on disk and (by default) open the copy — the safe sandbox for destructive experiments. Default destination: '<name> Copy.logicx' next to the original; a destination_path whose folder does not exist yet is created. The copy is a same-volume APFS clone, so a 174 MB project costs ~20 ms and no extra disk space (measured); a destination on ANOTHER volume copies real bytes. WHAT HAPPENS TO THE ORIGINAL, in words, because this tool is sold on the answer: the copy is the project's ON-DISK state, so unsaved changes are not in it unless you pass save_first: true — which SAVES THE ORIGINAL to get them there. Opening the copy closes the original (single-project mode), and Logic then asks what to do with any unsaved changes: if_current_modified defaults to 'fail', so a modified original is REFUSED with nothing copied and nothing closed rather than written to disk behind you — 'save' writes the original and leaves those changes OUT of the copy, 'dont_save' throws them away, save_first: true puts them in both, and open_copy: false leaves the original open and untouched. Note that Logic marks a project modified as soon as it is opened, so 'dont_save' is the honest answer for a project you have not actually edited. The result says which happened: `saved_before_copy`, `original_written_to_disk`, `original_unsaved_changes_discarded` and `dialogs_answered`. The open is verified by PATH against Logic's own document list — never by the project's name, which cannot tell two projects with the same basename apart. If the copy is made and the open then fails, the error names the copy's path and says so, so the retry does not hit 'already exists'.",
                 inputSchema: [
                     "type": "object",
                     "properties": [
-                        "destination_path": ["type": "string", "description": "Optional .logicx path for the copy."],
-                        "save_first": ["type": "boolean", "description": "Save the open project before copying so the copy includes unsaved changes. Default false."],
-                        "open_copy": ["type": "boolean", "description": "Open the copy after duplicating. Default true."],
-                        // 'fail' is listed because the shared openProject
-                        // guard still honours it; the DEFAULT differs here.
+                        "destination_path": ["type": "string", "description": "Optional .logicx path for the copy. Missing parent folders are created. Default: '<name> Copy.logicx' beside the original."],
+                        "save_first": ["type": "boolean", "description": "Save the open project before copying so the copy includes unsaved changes — this WRITES THE ORIGINAL to disk. Default false."],
+                        "open_copy": ["type": "boolean", "description": "Open the copy after duplicating, which closes the original. Default true. False leaves the original open and makes this a pure disk copy."],
                         "if_current_modified": [
                             "type": "string",
                             "enum": ["fail", "save", "dont_save"],
-                            "description": "'save' (default here) or 'dont_save' for closing the original when opening the copy."
+                            "description": "What happens to the ORIGINAL's unsaved changes when the copy is opened: 'fail' (default) refuses before anything is copied, 'save' writes them to the original (they will NOT be in the copy), 'dont_save' discards them. Same values and same default as logic_open_project."
                         ]
                     ],
                     "additionalProperties": false
