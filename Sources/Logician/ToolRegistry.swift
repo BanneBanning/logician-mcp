@@ -681,7 +681,7 @@ extension MCPServer {
             Tool(
                 name: "logic_duplicate_track",
                 title: "Duplicate a track",
-                description: "Duplicate a track via Logic's Duplicate Track key command (learned automatically). Verified by the track count increasing.",
+                description: "Duplicate a track, with its settings and its regions, via Logic's Duplicate Track key command (learned automatically). THE RESULT NAMES THE COPY: `duplicate {track_number, track_name}`, read off the row Logic selects - address the copy by BOTH of those fields. You cannot derive them: the copy lands directly BELOW the source and renumbers every track under it, and Logic gives it either the source's own name (which then matches two rows, and every track tool refuses an ambiguous name) or an auto-incremented one ('Audio 9' duplicates to 'Audio 10', so the name you passed in now belongs to a different track). Verified by a named row appearing rather than by a count, because only rendered track rows can be read: on a project scrolled away from the insertion point the copy may be off-screen, which comes back state 'duplicated_not_visible' with verified:false and a warning to scroll and re-read - it is NOT a claim that nothing happened, and firing again would leave a second copy carrying a second set of the source's regions. To delete the copy afterwards, pass `duplicate`'s track_number AND track_name to logic_delete_track.",
                 inputSchema: [
                     "type": "object",
                     "properties": [

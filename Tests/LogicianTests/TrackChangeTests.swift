@@ -34,6 +34,20 @@ final class TrackChangeTests: XCTestCase {
         XCTAssertEqual(parsed.map(\.selected), [true, false])
     }
 
+    /// The rows `selectTrack` hands over come straight off the AX walk, so the
+    /// drop-rule for an unusable name has to hold on that side too.
+    func testRowsFromParsedHeadersDropsEntriesWithNoUsableName() {
+        let parsed = TrackChange.rows(headers: [
+            (number: 1, name: "Crash", selected: false),
+            (number: 2, name: "", selected: false),
+            (number: 3, name: "Audio 9", selected: true)
+        ])
+        XCTAssertEqual(parsed, [
+            TrackChange.Row(number: 1, name: "Crash", selected: false),
+            TrackChange.Row(number: 3, name: "Audio 9", selected: true)
+        ])
+    }
+
     // MARK: A track appeared
 
     func testCountRisingIsAnAppearance() {
@@ -161,6 +175,59 @@ final class TrackChangeTests: XCTestCase {
         )
     }
 
+    // MARK: Which row is the COPY
+
+    /// Live 2026-09-01: `Crash` (track 26) duplicated to a second `Crash` at
+    /// 27, selected, and `logic_delete_track {track_name: "Crash"}` was then
+    /// refused as ambiguous. The number is the whole answer, and only the
+    /// selection carries it.
+    func testDuplicateKeepingTheSourceNameIsFoundByTheSelection() {
+        let before = [
+            TrackChange.Row(number: 25, name: "808", selected: false),
+            TrackChange.Row(number: 26, name: "Crash", selected: true),
+            TrackChange.Row(number: 27, name: "Vinyl", selected: false)
+        ]
+        let after = [
+            TrackChange.Row(number: 25, name: "808", selected: false),
+            TrackChange.Row(number: 26, name: "Crash", selected: false),
+            TrackChange.Row(number: 27, name: "Crash", selected: true),
+            TrackChange.Row(number: 28, name: "Vinyl", selected: false)
+        ]
+        XCTAssertTrue(TrackChange.trackAppeared(before: before, after: after))
+        let copy = TrackChange.createdRow(before: before, after: after)
+        XCTAssertEqual(copy?.number, 27)
+        XCTAssertEqual(copy?.name, "Crash")
+    }
+
+    /// Live 2026-09-01: `Audio 9` duplicated to `Audio 10`. The caller's own
+    /// `track_name` now addresses a DIFFERENT track, so a result that echoed
+    /// it back would be worse than silence.
+    func testDuplicateOfAnAutoNamedTrackIsFoundUnderLogicsNewName() {
+        let before = [
+            TrackChange.Row(number: 28, name: "Audio 8", selected: false),
+            TrackChange.Row(number: 29, name: "Audio 9", selected: true)
+        ]
+        let after = [
+            TrackChange.Row(number: 28, name: "Audio 8", selected: false),
+            TrackChange.Row(number: 29, name: "Audio 9", selected: false),
+            TrackChange.Row(number: 30, name: "Audio 10", selected: true)
+        ]
+        let copy = TrackChange.createdRow(before: before, after: after)
+        XCTAssertEqual(copy?.number, 30)
+        XCTAssertEqual(copy?.name, "Audio 10")
+    }
+
+    /// A duplicate whose row is off-screen: the visible count did not rise and
+    /// no name is new, but the listing has proved itself partial. Reporting
+    /// "failed" invites a second call, and a second copy carries a second set
+    /// of the source's regions.
+    func testACopyOffScreenIsNotVisibleRatherThanFailed() {
+        let before = rows(["Kick", "Snare", "Crash"])
+        let after = rows(["Kick", "Snare", "Crash"])
+        XCTAssertFalse(TrackChange.trackAppeared(before: before, after: after))
+        XCTAssertEqual(TrackChange.unseenVerdict(partial: true), .notVisible)
+    }
+
     // MARK: What an unseen create may say
 
     /// D2. A listing that has proved itself incomplete cannot say "nothing
@@ -244,8 +311,10 @@ final class TrackChangeTests: XCTestCase {
     /// that a genuine miss costs a tick rather than a tenth of a second.
     func testPollIntervalsAreTicksNotSleeps() {
         XCTAssertLessThanOrEqual(TrackChange.createPollInterval, 0.05)
+        XCTAssertLessThanOrEqual(TrackChange.duplicatePollInterval, 0.05)
         XCTAssertLessThanOrEqual(TrackChange.deletePollInterval, 0.05)
         XCTAssertGreaterThan(TrackChange.createPollDeadline, 1.0)
+        XCTAssertGreaterThan(TrackChange.duplicatePollDeadline, 1.0)
         XCTAssertGreaterThan(TrackChange.deletePollDeadline, 1.0)
     }
 }

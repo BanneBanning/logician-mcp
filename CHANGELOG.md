@@ -309,6 +309,38 @@ with every render coming back as audio the agent can listen to.
   other region's selection. One count now, the tested value in the message, and a
   `restored` flag that matches what the call actually left behind.
 
+- **A duplicated track tells you which row is the copy.** `logic_duplicate_track` used
+  to report only the name you passed in, and that name does not address the copy in
+  either direction: keep it and the project has two rows answering to it, so the very
+  next call comes back *"Track name 'Crash' is ambiguous; it matches track numbers 26,
+  27"*; let Logic auto-increment it — `Audio 9` copies to **`Audio 10`** — and the name
+  you passed in now belongs to a different track. `duplicate {track_number,
+  track_name}` now comes back, read off the row Logic selects, along with the before and
+  after counts. Proved live: duplicating `Crash` and then `Audio 9`, the copy was deleted
+  again using nothing but the two fields the result had just reported, first try, both
+  times.
+
+- **A copy that lands off-screen is no longer reported as a failure.** Success was the
+  visible row count rising, and this project renders 19 of its 29 rows — so a duplicate
+  inserted outside the viewport came back `success: false` on a track that exists and
+  carries a full copy of the source's regions. It is judged on the named row set now,
+  the same way `logic_create_track` is, and the honest answer when the listing has proved
+  itself partial is state `duplicated_not_visible` with a warning to scroll and re-read,
+  never "nothing happened".
+
+- **Duplicating a track takes three quarters of a second, not one and a bit.** The
+  verification slept 300 ms before its first look, then found the copy on that first look
+  every single time, and a full track-list walk was made purely to count rows that the
+  selection one line earlier had already read. Both are gone: it looks first, and reuses
+  the walk. Measured live, same machine, same track, old shape against new: **1 036–1 187
+  ms → 703–816 ms** (mean 1 088 → 753, −31%), with the verify loop down from 445–458 ms
+  to 253–270 ms and still exiting on its first look, 6 runs out of 6.
+
+- **`logic_delete_track`'s pre-fire guard checks the number too.** It re-read the
+  selection and compared its NAME to the requested one — which decides nothing on the
+  state a duplicate creates, where two rows share a name. It now also compares the track
+  number the selection just resolved, so "the right row is selected" means the right row.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.
