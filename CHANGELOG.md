@@ -194,6 +194,40 @@ with every render coming back as audio the agent can listen to.
   because they are `AXStandardWindow`. All three now say that, and the refusal
   names the subrole it found.
 
+- **Region edits establish the keyboard focus they need, so a copy is a copy.** Logic's
+  Cut/Copy/Paste/Nudge/Delete/Select-All act on whichever area holds the keyboard focus,
+  and with the focus off the Tracks area they do nothing at all — silently. Measured:
+  three copies in a row fired Copy and Paste, changed nothing, and refused after 5.7 s
+  blaming a modal dialog that was not open. `logic_copy_region`, `logic_move_region`,
+  `logic_split_region`, `logic_select_regions` and `logic_delete_region` now prove the
+  Tracks area holds the focus before the command goes out — a probe of Logic's focused
+  element first, and only when it is elsewhere a track-header write to bring it back
+  (the result says which, under `key_focus`). When a command still does nothing, the
+  refusal names what the focus actually was and reads Logic's window list, so "check
+  for a modal" is an observation instead of a guess.
+
+- **A copied region lands on the bar line, not a third of a beat past it.** Paste lands
+  at the playhead exactly, while the control bar's position display publishes whole bars
+  and beats — so a park that reported `verified: true` sat at `N 1 3 81` in 8 of 8
+  measured calls, and a marker created at that playhead came out a whole beat late.
+  `logic_copy_region` now parks with the same rewind-and-step routine
+  `logic_split_region` and `logic_import_midi` use, reads the sub-beat position back off
+  the control surface, and refuses BEFORE Paste when it cannot prove the playhead is on
+  the grid. The park costs stepping from the project start (~126 ms per bar); two blind
+  waits paid part of that back — the 0.4 s sleep after Copy is gone (the 0.9-5 s of
+  Accessibility work that follows it was always the real wait), and both the paste and
+  the delete verification now look before they sleep instead of after: the pasted region
+  was already in the arrangement map on the first look in 5 of 5 runs, the deleted one
+  gone on the first look in 3 of 3, and a command that really did nothing is refused in
+  ~2 s instead of 5.7. Measured live after the change: a cross-track copy onto the bar
+  line in 2.8 s, a delete in 0.8-0.9 s.
+
+- **`logic_delete_region`'s refusal stopped over-promising.** Its "more than one region
+  selected" guard counted the selection twice — quoting a number that had never gated
+  anything — and claimed `restored: true` although the call had already cleared every
+  other region's selection. One count now, the tested value in the message, and a
+  `restored` flag that matches what the call actually left behind.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

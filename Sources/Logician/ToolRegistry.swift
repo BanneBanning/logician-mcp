@@ -812,7 +812,7 @@ extension MCPServer {
             Tool(
                 name: "logic_delete_region",
                 title: "Delete a region",
-                description: "DESTRUCTIVE: delete one region (selected exclusively first; refuses unless exactly ONE region is selected project-wide right before Delete fires). Verified against the arrangement map; Undo restores.",
+                description: "DESTRUCTIVE: delete one region (selected exclusively first; refuses unless exactly ONE region is selected project-wide right before Delete fires). Logic's Tracks-area keyboard focus is established before Delete goes out - the command acts on the focused area, and fired without it does nothing at all, silently - and a delete that does not take names the focus and Logic's open dialogs rather than just repeating that the region is still there. Verified against the arrangement map; Undo restores.",
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -932,7 +932,7 @@ extension MCPServer {
             Tool(
                 name: "logic_copy_region",
                 title: "Copy a region",
-                description: "Copy (or move, with move: true = Cut) one region to a target bar, optionally onto another track: exclusive select, Copy/Cut, select destination track, park playhead, Paste. Verified by the region appearing at the target bar in the arrangement map. DESTRUCTIVE: the paste can land ON TOP of a region already at the target bar, and Logic trims what it overlays; move: true CUTS the source instead of copying it, so the original is gone from where it was. Only Undo puts either back - read logic_list_regions first.",
+                description: "Copy (or move, with move: true = Cut) one region to a target bar, optionally onto another track: exclusive select, Copy/Cut, select destination track, park the playhead, Paste. Verified by the region appearing at the target bar in the arrangement map. IT LANDS ON THE BAR LINE, and that is not free: Paste lands at the playhead EXACTLY, while the control bar's position display publishes whole bars and beats only - measured, a 'verified' park sat a third of a beat late every time and a marker fired there came out a beat off. So the playhead is rewound and stepped onto the grid, and the sub-beat position is read back off the control surface; a park that cannot be proven exact refuses BEFORE Paste rather than pasting inside the beat. It also establishes Logic's Tracks-area keyboard focus first, because Cut/Copy/Paste act on the focused area and a copy fired without it does nothing at all, silently - and when nothing lands the refusal names what the focus actually was and reads Logic's window list, instead of sending you hunting for a modal that is not open. DESTRUCTIVE: the paste can land ON TOP of a region already at the target bar, and Logic trims what it overlays; move: true CUTS the source instead of copying it, so the original is gone from where it was. Only Undo puts either back - read logic_list_regions first.",
                 inputSchema: [
                     "type": "object",
                     "properties": [
