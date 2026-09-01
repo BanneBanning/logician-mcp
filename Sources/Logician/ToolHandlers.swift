@@ -48,10 +48,18 @@ extension MCPServer {
     /// `tools/call` refusing a name, and `logic_find_tool` returning a hit the
     /// session cannot call. One sentence, one place, no way for the two to
     /// give different accounts of the same configuration.
+    ///
+    /// Guard order is deliberate and measured: the two dictionary/set tests
+    /// come FIRST and the registry scan last, because the scan is the only
+    /// expensive one and it answers a question the cheap tests have almost
+    /// always already settled. `logic_find_tool` calls this once per match, so
+    /// with the old order a `limit: 10` answer walked the registry ten extra
+    /// times (2026-09-01: 1.7 ms of a 22 ms call, back when each walk also
+    /// rebuilt it).
     func toolsetExclusionNote(name: String) -> String? {
         guard let sets = Toolset.membership[name],
-              toolRegistry().contains(where: { $0.name == name }),
-              sets.isDisjoint(with: MCPServer.activeToolsets) else { return nil }
+              sets.isDisjoint(with: MCPServer.activeToolsets),
+              toolRegistry().contains(where: { $0.name == name }) else { return nil }
         return "That tool exists but is not in this session's active toolsets"
             + " (\(MCPServer.activeToolsets.map(\.rawValue).sorted().joined(separator: ", ")))."
             + " It is in \(sets.map(\.rawValue).sorted().joined(separator: ", ")):"

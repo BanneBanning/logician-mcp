@@ -330,9 +330,11 @@ extension MCPServer {
 
     // MARK: - Finding a tool
 
-    /// The most tools `logic_find_tool` will return in one answer. Ten full
-    /// typed definitions is already ~15 KB of the ~145 KB surface; past that
-    /// the search stops being cheaper than the list it exists to replace.
+    /// The most tools `logic_find_tool` will return in one answer. Measured
+    /// 2026-09-01: ten full typed definitions is 26.7-52.6 KB on the wire
+    /// (6.7-13.2k tokens) against a whole `tools/list` of 171.6 KB, so a
+    /// limit-10 answer already costs 15-31% of the surface it exists to spare
+    /// you. Past that the search stops being cheaper than the list.
     static let findToolLimit = 10
     static let findToolDefaultLimit = 5
 
@@ -359,9 +361,11 @@ extension MCPServer {
         let limit = try findToolRequestedLimit(arguments)
 
         let registry = toolRegistry()
-        let index = ToolSearch.Index(
-            documents: registry.map { ToolSearch.corpusText(for: $0.definition) }
-        )
+        // The index is built once per process, not once per call: the corpus
+        // is `toolRegistry()`, which is a constant (see
+        // `ToolSearch.advertisedSurface` for the measurement that made this a
+        // cache rather than a rebuild).
+        let index = ToolSearch.advertisedSurface
         let position = Dictionary(uniqueKeysWithValues: registry.enumerated().map { ($1.name, $0) })
         let ranked = index.ranking(for: query)
         let score = Dictionary(uniqueKeysWithValues: ranked.map { ($0.document, $0.score) })

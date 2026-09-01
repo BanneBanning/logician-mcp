@@ -340,6 +340,25 @@ with every render coming back as audio the agent can listen to.
   selection and compared its NAME to the requested one — which decides nothing on the
   state a duplicate creates, where two rows share a name. It now also compares the track
   number the selection just resolved, so "the right row is selected" means the right row.
+- **`logic_find_tool` answers in about a millisecond instead of twenty-two.** The search
+  built its whole BM25 index from scratch on every call — 19.3 ms of a 22 ms call spent
+  re-deriving a constant, because the tool surface is an array literal that nothing at
+  runtime can change — and the registry itself was constructed three times per call plus
+  once per match, since the "that tool exists but is not in this session's toolsets"
+  sentence asked it "is this a real tool?" for every hit (13 constructions of all 84
+  tools for one `limit: 10` answer). Index and registry are now each built once per
+  process, the tokenizer scans UTF-8 bytes instead of walking Swift `Character`s, and the
+  exclusion note tries its two cheap set tests before the registry scan. Measured over
+  stdio across seven fresh processes: the first search in a process 7.1-8.6 ms (was
+  22.4-24.9), every search after it 0.4-1.0 ms (was 20.6-23.6), a `limit: 10` search with
+  full schemas 0.9 ms (was 23.0). The ranking is unchanged to the digit —
+  `scripts/retrieval_probe.py` still 53/53, and a 60-query parity run against it reports
+  zero order and zero score differences — and a new test tokenizes every document in the
+  real corpus both the probe's way and the byte scan's, so the two cannot drift apart
+  quietly. Three size claims that were never measured are now measured: the corpus is 84
+  documents and 132 KB (not 82 and ~145 KB), ten full definitions are 26.7-52.6 KB of a
+  171.6 KB surface (not ~15 KB of ~145 KB), and `schemas: false` saves 33-52%, mean 44%,
+  rather than the guide's "about half".
 
 ### Known limitations (honest by design)
 

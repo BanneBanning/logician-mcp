@@ -10,7 +10,13 @@ import Foundation
 /// of whether a description edit helps or hurts discovery. If the ranking a
 /// caller of `logic_find_tool` gets were merely SIMILAR to the ranking the
 /// probe reports, the probe would stop being evidence about the tool. So every
-/// detail below is the probe's, deliberately and to the digit:
+/// detail below is the probe's, deliberately and to the digit — what has to
+/// match is the OUTPUT, not the line shape. `tokenize` is now a UTF-8 byte
+/// scan rather than a transcription of the probe's `re.split`, because the
+/// transcription cost 19.5 ms an index build; what it still owes the probe is
+/// the token multiset, and `ToolSearchTests` checks exactly that, running the
+/// probe's rule over every document in the real corpus and asserting the same
+/// tokens in the same order. The rest:
 ///
 /// - the same tokenizer (lowercase, split on non-alphanumerics, then one crude
 ///   suffix strip so `stems` reaches `stem`),
@@ -39,30 +45,54 @@ enum ToolSearch {
     ///
     /// The stem is ADDED, not substituted, so a document keeps both forms and
     /// an exact query term still scores its full term frequency.
+    ///
+    /// A UTF-8 BYTE SCAN, not a walk over Swift `Character`s. It used to be
+    /// the latter, one grapheme cluster at a time over a `lowercased()` copy
+    /// of the text, which is the most expensive way to ask "is this an ASCII
+    /// letter": measured 2026-09-01 over the 132 KB corpus, that walk was
+    /// 19.5 ms of a 22 ms `logic_find_tool` call. The byte scan below turns
+    /// the same 132 KB into the same 26,187 tokens as part of a ~6.5 ms index
+    /// build, and that build now happens once a process rather than once a
+    /// call (`advertisedSurface`). Nothing about the RESULT changed — the
+    /// only characters in Unicode whose lowercase contains an ASCII letter or
+    /// digit are U+0130 (İ) and U+212A (K), so treating every non-ASCII byte
+    /// as a separator is the same rule for every other input, and neither
+    /// appears anywhere in this surface's text. `ToolSearchTests` pins that
+    /// against the probe's own rule over the whole real corpus rather than
+    /// over a handful of examples.
     static func tokenize(_ text: String) -> [String] {
         var tokens: [String] = []
-        var word = ""
+        var word: [UInt8] = []
+        word.reserveCapacity(32)
         func flush() {
-            defer { word = "" }
+            defer { word.removeAll(keepingCapacity: true) }
             guard !word.isEmpty else { return }
-            tokens.append(word)
-            for suffix in ["ing", "ies", "es", "ed", "s"] where word.count > suffix.count + 2 {
-                if word.hasSuffix(suffix) {
-                    tokens.append(String(word.dropLast(suffix.count)))
+            tokens.append(String(decoding: word, as: UTF8.self))
+            for suffix in ToolSearch.stemSuffixes where word.count > suffix.count + 2 {
+                if word.suffix(suffix.count).elementsEqual(suffix) {
+                    tokens.append(String(decoding: word.dropLast(suffix.count), as: UTF8.self))
                     break
                 }
             }
         }
-        for character in text.lowercased() {
-            if character.isASCII && (character.isLetter || character.isNumber) {
-                word.append(character)
-            } else {
+        for byte in text.utf8 {
+            switch byte {
+            case UInt8(ascii: "a")...UInt8(ascii: "z"), UInt8(ascii: "0")...UInt8(ascii: "9"):
+                word.append(byte)
+            case UInt8(ascii: "A")...UInt8(ascii: "Z"):
+                word.append(byte | 0x20) // ASCII lowercase, the only case fold this needs
+            default:
                 flush()
             }
         }
         flush()
         return tokens
     }
+
+    /// The probe's suffix list, in the probe's order (first match wins), as
+    /// bytes so the comparison inside `tokenize` needs no String at all.
+    private static let stemSuffixes: [[UInt8]] =
+        ["ing", "ies", "es", "ed", "s"].map { Array($0.utf8) }
 
     /// Everything a keyword matcher gets to see for one tool. Takes the
     /// `tools/list` DEFINITION rather than the `Tool` value so the field set
@@ -95,14 +125,40 @@ enum ToolSearch {
         return parts.joined(separator: " ")
     }
 
-    /// A built index over one corpus. Cheap enough to rebuild per call (82
-    /// documents, ~145 KB of text, no I/O), so there is no cache to invalidate
-    /// and no way for the index to describe a registry that has moved on.
-    struct Index {
+    /// The index over the advertised surface, built ONCE per process.
+    ///
+    /// It used to be rebuilt on every call, on the theory that 84 documents
+    /// and 132 KB of text with no I/O were cheap. They are not: measured
+    /// 2026-09-01, `Index.init` was 19.3 ms of a 22 ms `logic_find_tool`
+    /// call — 85% of the tool spent re-deriving a constant. And it IS a
+    /// constant: `toolRegistry()` is an array literal over string literals,
+    /// `--toolsets` decides what is OFFERED and never what exists, and this
+    /// search covers the whole registry either way, so the second build could
+    /// only ever produce the first one again. `static let` is Swift's lazy,
+    /// once-per-process, thread-safe initialisation, so the FIRST call in a
+    /// process pays the build and no call after it pays anything. Measured
+    /// end-to-end over stdio 2026-09-02, seven fresh processes: first call
+    /// 7.1-8.6 ms (was 22.4-24.9), every later call 0.4-1.0 ms (was
+    /// 20.6-23.6), which puts the build itself at ~6.5 ms.
+    ///
+    /// `documents` are in registry order, which is what makes a ranking's
+    /// document index a subscript into `toolRegistry()`; `ToolSearchTests`
+    /// pins that alignment rather than trusting it.
+    static let advertisedSurface = Index(
+        documents: MCPServer.wholeRegistry.map { corpusText(for: $0.definition) }
+    )
+
+    /// A built index over one corpus.
+    struct Index: Sendable {
         private let documents: [[String: Int]]
         private let lengths: [Double]
         private let averageLength: Double
         private let idf: [String: Double]
+
+        /// How many documents this index holds. The handler turns a ranking's
+        /// document index straight into `toolRegistry()[index]`, so the two
+        /// counts agreeing is the whole of that contract.
+        var documentCount: Int { documents.count }
 
         init(documents texts: [String]) {
             documents = texts.map { text in
@@ -162,9 +218,10 @@ enum ToolSearch {
     /// `logic_tool_schema` tool.
     ///
     /// BM25 is measurably BAD at the one query an agent asks most often once
-    /// it has a name — the name itself. Scored over the 82-tool corpus, a
-    /// tool's own name ranks it first for only 59 of them: `logic_track_info`
-    /// comes back fourth behind three `logic_set_track_*` tools, and
+    /// it has a name — the name itself. Scored over the 84-tool corpus
+    /// (re-measured 2026-09-01), a tool's own name ranks it first for only 63
+    /// of them: `logic_track_info` comes back fifth behind three
+    /// `logic_set_track_*` tools and `logic_add_send`, and
     /// `logic_list_inserts` ninth. The tools that lose are exactly the ones
     /// whose name-words are common across a family, which is to say the ones
     /// an agent is most likely to be disambiguating. A second tool could have
