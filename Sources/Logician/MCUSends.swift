@@ -1083,11 +1083,16 @@ extension MCUController {
             // room for.
             let confirm: BridgeResponse
             do {
-                if let ordinal = sendDestinationOrdinal(listedDestination),
-                   ordinal > sendRemovalHomeMargin {
-                    guard try sendBrowseJump(
-                        destIndex: destIndex, entries: -(ordinal - sendRemovalHomeMargin)
-                    ) else { return nil }
+                // Which SPELLING of the name the jump arithmetic is given
+                // decides whether the jump happens at all — the send list
+                // abbreviates (`B 200`), the caller does not — so
+                // `sendRemovalHomeJump` owns that choice and carries the
+                // reasoning.
+                if let entries = sendRemovalHomeJump(
+                    requested: destination, listed: listedDestination
+                ) {
+                    guard try sendBrowseJump(destIndex: destIndex, entries: entries)
+                    else { return nil }
                 }
                 var reached = false
                 var blankReads = 0

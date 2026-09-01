@@ -362,6 +362,38 @@ extension MCUController {
     /// No-Send boundary.
     static let sendRemovalHomeMargin = 8
 
+    /// How far back a removal jumps before it starts walking, or nil where it
+    /// should just walk. Negative, because home is behind the browse.
+    ///
+    /// The whole of the decision is WHICH spelling of the destination gets to
+    /// answer `sendDestinationOrdinal`. `listed` is the send LIST's name, and
+    /// Logic abbreviates that to six characters: a send to `Bus 200` is listed
+    /// `B 200`, whose family parses as `b` — not a family this build has
+    /// measured — so the ordinal is nil and the removal walks all 208 entries
+    /// home (~24 s, measured live 2026-08-31 on `Testlåt Copy`). The
+    /// caller's `requested` spelling carries no such truncation, and by the
+    /// time a removal has a slot to browse, `resolveSendRemoval` has already
+    /// matched that spelling against this slot's occupant — so where it exists
+    /// it is exact AND about the right send. Prefer it; fall back to the
+    /// listed name; and where a removal was addressed by slot alone there is
+    /// no spelling to prefer, so the walk is the whole route home.
+    ///
+    /// A destination near the top of the catalog is walked rather than jumped,
+    /// on the same `sendBrowseMinJumpEntries` arithmetic the add browse uses:
+    /// a jump buys its distance with a message and a silence proof, which
+    /// costs more than the two or three steps it would have saved.
+    ///
+    /// Nothing here can produce a wrong removal, only a slow one: a browse
+    /// writes nothing until the vpot press, and the press is gated on the
+    /// No-Send boundary being SHOWN, never on this arithmetic being right.
+    static func sendRemovalHomeJump(requested: String?, listed: String) -> Int? {
+        guard let ordinal = requested.flatMap(sendDestinationOrdinal)
+                ?? sendDestinationOrdinal(listed) else { return nil }
+        let entries = ordinal - sendRemovalHomeMargin
+        guard entries >= sendBrowseMinJumpEntries else { return nil }
+        return -entries
+    }
+
     /// Carries a destination browse `entries` entries from where it is now, in
     /// clamp-sized messages with a silence proof between them.
     ///

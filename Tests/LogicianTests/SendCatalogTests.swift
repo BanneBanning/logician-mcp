@@ -204,6 +204,73 @@ final class SendCatalogTests: XCTestCase {
         XCTAssertNil(MCUController.sendDestinationOrdinal("Bus 0"))
     }
 
+    // MARK: - How far back a removal jumps before it walks
+
+    /// The bug this pins. The send LIST abbreviates to six characters, so a
+    /// send to `Bus 200` is listed `B 200` — family `b`, unmeasured, no
+    /// ordinal. Asked with only that name the removal had no jump to make and
+    /// walked all 208 entries home, which measured ~24 s live.
+    func testTheListedNameAloneCannotPlaceAnAbbreviatedBus() {
+        XCTAssertNil(MCUController.sendDestinationOrdinal("B 200"))
+        XCTAssertNil(MCUController.sendRemovalHomeJump(requested: nil, listed: "B 200"))
+    }
+
+    /// The caller's own spelling is not truncated, so it places the same send
+    /// the listed name could not — and by the time a removal browses, that
+    /// spelling has already been matched against this slot's occupant.
+    func testTheCallersSpellingPlacesTheSendTheListedNameCannot() {
+        XCTAssertEqual(
+            MCUController.sendRemovalHomeJump(requested: "Bus 200", listed: "B 200"),
+            -(208 - MCUController.sendRemovalHomeMargin)
+        )
+    }
+
+    /// The jump stops deliberately short of home: the paced walk, not the
+    /// jump, is what finds the No-Send boundary.
+    func testTheJumpStopsShortOfHomeSoTheWalkFindsTheBoundary() {
+        let entries = MCUController.sendRemovalHomeJump(requested: "Bus 200", listed: "B 200")!
+        XCTAssertEqual(208 + entries, MCUController.sendRemovalHomeMargin)
+        XCTAssertLessThan(entries, 0, "home is behind the browse")
+    }
+
+    /// The listed name still answers when it survived abbreviation, and when
+    /// the caller gave no spelling at all.
+    func testTheListedNameStillAnswersWhenItSurvivedAbbreviation() {
+        XCTAssertEqual(
+            MCUController.sendRemovalHomeJump(requested: nil, listed: "Bus 90"),
+            -(98 - MCUController.sendRemovalHomeMargin)
+        )
+        XCTAssertEqual(
+            MCUController.sendRemovalHomeJump(requested: "Bus 90", listed: "Bus 90"),
+            -(98 - MCUController.sendRemovalHomeMargin)
+        )
+    }
+
+    /// Addressed by slot alone there is no spelling to prefer, and a
+    /// destination near the top of the catalog is walked rather than jumped —
+    /// `Bus 1` sits one entry outside the margin, and buying that one entry
+    /// with a message and a silence proof costs more than stepping it. Both
+    /// are "just walk", which is always correct and never the slow case.
+    func testNothingToPlaceAndNothingWorthJumpingBothWalk() {
+        XCTAssertNil(MCUController.sendRemovalHomeJump(requested: nil, listed: "Stereo Out"))
+        XCTAssertNil(MCUController.sendRemovalHomeJump(requested: "Bus 1", listed: "Bus 1"))
+        XCTAssertNil(MCUController.sendRemovalHomeJump(requested: "Output 8", listed: "Out 8"))
+        // The first destination far enough out to be worth a jump.
+        XCTAssertEqual(
+            MCUController.sendRemovalHomeJump(requested: "Bus 3", listed: "Bus 3"),
+            -MCUController.sendBrowseMinJumpEntries
+        )
+    }
+
+    /// An unmeasured spelling from the caller does not poison the fallback:
+    /// the listed name still gets its turn.
+    func testAnUnmeasuredCallerSpellingFallsBackToTheListedName() {
+        XCTAssertEqual(
+            MCUController.sendRemovalHomeJump(requested: "Buss 90", listed: "Bus 90"),
+            -(98 - MCUController.sendRemovalHomeMargin)
+        )
+    }
+
     // MARK: - Planning the jump from what is on screen
 
     func testTheDeltaBetweenTwoMembersOfOneFamilyIsTheDifferenceOfTheirNumbers() {
