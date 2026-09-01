@@ -1115,7 +1115,7 @@ extension MCPServer {
             Tool(
                 name: "logic_new_project",
                 title: "New project",
-                description: "Create a NEW Logic project at the given .logicx path — dialog-free, from a bundled empty project template — and open it. Logic runs single-project: if the current project has unsaved changes the call fails unless if_current_modified explicitly chooses 'save' or 'dont_save'. The created project is already saved on disk.",
+                description: "Create a NEW Logic project at the given .logicx path — dialog-free, from a bundled empty project template — and open it. Logic runs single-project: if the current project has unsaved changes the call fails unless if_current_modified explicitly chooses 'save' or 'dont_save'. That refusal happens BEFORE the template is written, so a refused call leaves NOTHING at `path` and the retry carrying your decision uses the same path — it does not collide with a half-made project. The created project is already saved on disk.",
                 inputSchema: [
                     "type": "object",
                     "properties": [

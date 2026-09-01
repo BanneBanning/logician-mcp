@@ -42,6 +42,48 @@ enum ProjectOpen {
         return nil
     }
 
+    // MARK: - The decision that must be made before anything is written
+
+    /// The refusal for a modified current project that the open would close
+    /// without being told what to do with it — or nil when the open may go
+    /// ahead. Nothing has been written when this returns a refusal.
+    ///
+    /// It is a function, and it runs where it does, because of what the order
+    /// used to be. `logic_new_project` copies the bundled template to the
+    /// caller's path and then opens it, and the copy ran BEFORE this decision:
+    /// a bare `logic_new_project {path: X}` against a modified project created
+    /// an empty project at X, refused with *"'Y' has unsaved changes; pass
+    /// if_current_modified"*, and never mentioned the package it had just
+    /// written. Measured live 2026-09-02: the retry carrying the very decision
+    /// the refusal demanded was then refused again — *"'X' already exists; use
+    /// logic_open_project"* — pointing the caller at a project it did not know
+    /// it owned. `ProjectDuplicate.openDecisionRefusal` had already learned
+    /// this on the copy; the template create is the same shape and was missed.
+    ///
+    /// Reopening the SAME path is never refused: there is no other project to
+    /// decide about, which is exactly what an eval reset does.
+    static func currentModifiedRefusal(
+        current: [(name: String, path: String?, modified: Bool)],
+        targetPath: String,
+        targetName: String,
+        ifCurrentModified: String,
+        creating: Bool,
+        normalize: (String) -> String
+    ) -> LogicianError? {
+        guard let open = current.first, open.modified else { return nil }
+        guard normalize(open.path ?? "") != normalize(targetPath) else { return nil }
+        guard ifCurrentModified != "save", ifCurrentModified != "dont_save" else { return nil }
+        return LogicianError.trackNotExposed(
+            requested: (creating ? "creating and opening '" : "opening '") + targetName + "'",
+            exposed: "'\(open.name)' has unsaved changes; pass if_current_modified: 'save' or"
+                + " 'dont_save' (explicit decision required), or call logic_save_project first."
+                + (creating
+                    ? " NOTHING was created — the template is copied only once this decision is made,"
+                        + " so the path you asked for is still free."
+                    : " NOTHING was closed.")
+        )
+    }
+
     // MARK: - When the expensive read may be spent
 
     /// Whether this poll tick may ask Logic's document list.

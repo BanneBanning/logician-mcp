@@ -181,6 +181,16 @@ extension LogicAccessibility {
                 dialogsOnScreen: describeVisibleDialogs()
             )
         }
+        return try saveProject(documents: documents, expectedProjectPath: expectedProjectPath)
+    }
+
+    /// The same save, against a document list the caller has already read.
+    /// `logic_duplicate_project`'s `save_first` path holds one and used to
+    /// throw it away and spend a second Apple Event on the identical read.
+    func saveProject(
+        documents: [(name: String, path: String?, modified: Bool)],
+        expectedProjectPath: String?
+    ) throws -> [String: Any] {
         guard documents.count == 1, let document = documents.first else {
             throw LogicianError.trackNotExposed(
                 requested: "exactly one open project to save",
@@ -213,8 +223,15 @@ extension LogicAccessibility {
             .flatMap { $0 }
         let save = try MCUController.resolveKeyCommand(named: KeyCommandRegistry.Name.save, logic: self)
         _ = try MCUController.triggerKeyCommand(note: save.note, channel: save.channel)
-        for _ in 0..<40 {
-            Thread.sleep(forTimeInterval: 0.25)
+        // LOOK FIRST, then pace. This loop used to sleep 250 ms before its
+        // first look, and the save is already provable when the key command
+        // returns: measured live 2026-09-02, a zero-wait probe found the
+        // modified flag CLEARED and the ProjectData mtime ADVANCED on the
+        // first look, and the loop then completed on iteration 1 every time.
+        // The 250 ms was ~34% of a ~725 ms call, bought nothing, and is gone —
+        // the verification is untouched, only the wait in front of it.
+        let deadline = Date().addingTimeInterval(ProjectSave.pollBudgetSeconds)
+        while true {
             // A read that fails here is not a save that failed — the poll
             // simply has nothing to judge yet and looks again.
             if let fresh = readOpenDocuments()?.first, !fresh.modified {
@@ -234,10 +251,13 @@ extension LogicAccessibility {
                     "note": "Verified via the project file being rewritten; Logic kept the modified flag (view-only state does that)."
                 ]
             }
+            guard Date() < deadline else { break }
+            Thread.sleep(forTimeInterval: ProjectSave.pollIntervalSeconds)
         }
         throw LogicianError.verificationFailed(
             requested: "save of '\(document.name)'",
-            actual: "neither the modified flag cleared nor the project file changed within 10 s. "
+            actual: "neither the modified flag cleared nor the project file changed within "
+                + "\(Int(ProjectSave.pollBudgetSeconds)) s. "
                 + "If saves keep failing, the key-command MIDI binding may be orphaned "
                 + "(happens when the MIDI ports are recreated) - run logic_setup_key_commands "
                 + "with relearn: true to repair all bindings",
@@ -272,6 +292,19 @@ extension LogicAccessibility {
         path: String, createFromTemplate: Bool, ifCurrentModified: String
     ) throws -> [String: Any] {
         let target = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        // Every check that can be made without writing anything, first. The
+        // template COPY used to sit up here, above the document-list guard, so
+        // `logic_new_project` on a modified project created the project and
+        // then refused to open it — measured live 2026-09-02, and the caller
+        // was told only "'X' has unsaved changes", never that a package now
+        // existed at the path it asked for. The obvious retry, with the
+        // decision the refusal asked for, then hit "'…' already exists; use
+        // logic_open_project" for a project it had never knowingly made. Two
+        // contradictory refusals and an orphan on disk, from one call that did
+        // nothing wrong. This is `ProjectDuplicate.openDecisionRefusal`'s rule
+        // (refuse before the copy, not after it) applied to the other tool
+        // that writes before it opens.
+        var template: URL?
         if createFromTemplate {
             guard target.pathExtension == "logicx" else {
                 throw LogicianError.invalidArguments("path must end in .logicx")
@@ -279,7 +312,7 @@ extension LogicAccessibility {
             guard !FileManager.default.fileExists(atPath: target.path) else {
                 throw LogicianError.invalidArguments("'\(target.path)' already exists; use logic_open_project")
             }
-            guard let template = Bundle.module.url(
+            guard let bundled = Bundle.module.url(
                 forResource: "EmptyProject", withExtension: "logicx"
             ) else {
                 throw LogicianError.trackNotExposed(
@@ -287,10 +320,7 @@ extension LogicAccessibility {
                     exposed: "EmptyProject.logicx missing from the resource bundle"
                 )
             }
-            try? FileManager.default.createDirectory(
-                at: target.deletingLastPathComponent(), withIntermediateDirectories: true
-            )
-            try FileManager.default.copyItem(at: template, to: target)
+            template = bundled
         } else {
             guard FileManager.default.fileExists(atPath: target.path) else {
                 throw LogicianError.trackNotExposed(
@@ -307,16 +337,22 @@ extension LogicAccessibility {
                 dialogsOnScreen: describeVisibleDialogs()
             )
         }
-        if let open = current.first, open.modified, normalizedPath(open.path ?? "") != normalizedPath(target.path) {
-            switch ifCurrentModified {
-            case "save", "dont_save":
-                break // answered below once Logic asks
-            default:
-                throw LogicianError.trackNotExposed(
-                    requested: "opening '\(target.lastPathComponent)'",
-                    exposed: "'\(open.name)' has unsaved changes; pass if_current_modified: 'save' or 'dont_save' (explicit decision required), or call logic_save_project first"
-                )
-            }
+        if let refusal = ProjectOpen.currentModifiedRefusal(
+            current: current,
+            targetPath: target.path,
+            targetName: target.lastPathComponent,
+            ifCurrentModified: ifCurrentModified,
+            creating: createFromTemplate,
+            normalize: normalizedPath
+        ) {
+            throw refusal
+        }
+        // Refusals are behind us; now the write.
+        if let template {
+            try? FileManager.default.createDirectory(
+                at: target.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            try FileManager.default.copyItem(at: template, to: target)
         }
         let openProcess = Process()
         openProcess.executableURL = URL(fileURLWithPath: "/usr/bin/open")
@@ -438,12 +474,29 @@ extension LogicAccessibility {
         }
         let document = try ProjectDuplicate.source(in: documents)
         let sourcePath = document.path
+        // Where the copy goes, and whether that path is free — decided here,
+        // above `save_first`, because both refusals are pure filesystem facts
+        // and `save_first` WRITES THE USER'S PROJECT. A malformed
+        // `destination_path`, or one already occupied, used to be discovered
+        // only after the save had committed the original to disk: the call
+        // refused, having changed the one thing it promises not to.
+        let source = URL(fileURLWithPath: sourcePath)
+        let destination = try ProjectDuplicate.destination(
+            forSource: sourcePath, requested: destinationPath
+        )
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            throw ProjectDuplicate.destinationExistsRefusal(path: destination.path)
+        }
         var savedBeforeCopy = false
         var saveWarning: String?
         var saveFailure: String?
         if saveFirst, document.modified {
             do {
-                _ = try saveProject(expectedProjectPath: sourcePath)
+                // The document list this function already read, handed on
+                // rather than re-fetched: `saveProject` opens with the same
+                // read, and one Apple Event to Logic costs 208-353 ms in this
+                // process (measured live 2026-09-02).
+                _ = try saveProject(documents: documents, expectedProjectPath: sourcePath)
                 savedBeforeCopy = true
             } catch {
                 // Copy the disk state anyway — a failed save must not block
@@ -465,13 +518,6 @@ extension LogicAccessibility {
             saveFailure: saveFailure
         ) {
             throw refusal
-        }
-        let source = URL(fileURLWithPath: sourcePath)
-        let destination = try ProjectDuplicate.destination(
-            forSource: sourcePath, requested: destinationPath
-        )
-        guard !FileManager.default.fileExists(atPath: destination.path) else {
-            throw ProjectDuplicate.destinationExistsRefusal(path: destination.path)
         }
         // Create the destination's folder, as the template open does for its
         // own path: `destination_path: "~/Desktop/Sandbox/Copy.logicx"` with no
