@@ -248,6 +248,26 @@ extension LogicAccessibility {
     /// Opens a project (or creates one from the bundled empty template when
     /// creating). Logic runs single-project: an open modified project blocks
     /// unless the caller explicitly chose to save or discard it.
+    ///
+    /// THE open: `logic_open_project`, `logic_new_project`,
+    /// `logic_duplicate_project` and `logic_reset_to` all come here, so the
+    /// poll below is four tools' verification. Until 2026-09-01 it was wrong
+    /// twice over, and both halves are `ProjectOpen`'s to decide now:
+    ///
+    /// - it matched Logic's document list by document NAME against the
+    ///   destination's basename, so a destination in another directory with
+    ///   the same basename matched the still-open ORIGINAL and returned
+    ///   `verified: true` for a project Logic had not opened
+    ///   (`ProjectOpen.openedDocument` matches by path);
+    /// - it spawned that AppleScript read every 500 ms while *expecting* the
+    ///   save-changes modal, under which Logic's AppleScript blocks for
+    ///   ~120 s — far past this loop's own 30 s deadline — with the loop that
+    ///   answers the modal stuck inside the read
+    ///   (`ProjectOpen.mayAskDocumentList` gates it behind two 1–2 ms
+    ///   Accessibility signals, as `closeOpenDocument` does).
+    ///
+    /// The same edit retires the `Thread.sleep(0.5)` that ran before the first
+    /// look: the loop looks first and paces at the close's measured 200 ms.
     func openProject(
         path: String, createFromTemplate: Bool, ifCurrentModified: String
     ) throws -> [String: Any] {
@@ -305,6 +325,7 @@ extension LogicAccessibility {
         openProcess.waitUntilExit()
         // Answer the save-changes prompt per the caller's explicit choice.
         let expectedName = target.deletingPathExtension().lastPathComponent
+        let expectedPath = normalizedPath(target.path)
         // Which prompts actually appeared, in order. This used to be silent —
         // the two answerers return a Bool that nobody read — so a project that
         // opened after discarding someone's changes looked identical to one
@@ -313,7 +334,6 @@ extension LogicAccessibility {
         var dialogsAnswered: [[String: Any]] = []
         let deadline = Date().addingTimeInterval(30)
         while Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.5)
             if ifCurrentModified == "save" || ifCurrentModified == "dont_save" {
                 let save = ifCurrentModified == "save"
                 if answerSaveChangesDialog(save: save) {
@@ -338,28 +358,52 @@ extension LogicAccessibility {
                     "effect": "opened the last SAVED version rather than the auto-saved one"
                 ])
             }
-            // A read that fails while Logic is opening is not "nothing is
-            // open" — it is no answer yet, so the loop looks again rather
-            // than concluding anything from an empty list.
-            if let docs = readOpenDocuments(), docs.contains(where: { $0.name == expectedName }) {
-                var payload: [String: Any] = [
-                    "success": true, "verified": true,
-                    "state": createFromTemplate ? "created" : "opened",
-                    "project": expectedName, "path": target.path,
-                    "note": createFromTemplate
-                        ? "Created from the bundled empty template and opened; already saved on disk."
-                        : "Opened."
-                ]
-                if !dialogsAnswered.isEmpty { payload["dialogs_answered"] = dialogsAnswered }
-                return payload
+            // The cheap identity read: one window walk plus one AXDocument,
+            // 1–2 ms, and it answers with a PATH. It keeps answering while
+            // Logic is modal, which is the whole reason the expensive read
+            // hangs off it.
+            let frontmost = (try? projectDocumentPath()).map(normalizedPath)
+            if ProjectOpen.mayAskDocumentList(
+                frontmostDocumentPath: frontmost,
+                targetPath: expectedPath,
+                recognisedAlertOnScreen: recognisedAlertOnScreen(),
+                normalize: normalizedPath
+            ) {
+                // A read that fails while Logic is opening is not "nothing is
+                // open" — it is no answer yet, so the loop looks again rather
+                // than concluding anything from an empty list.
+                if let docs = readOpenDocuments(),
+                   let opened = ProjectOpen.openedDocument(
+                       in: docs, targetPath: expectedPath, normalize: normalizedPath
+                   ) {
+                    var payload: [String: Any] = [
+                        "success": true, "verified": true,
+                        "state": createFromTemplate ? "created" : "opened",
+                        "project": opened.name, "path": target.path,
+                        // Which plane proved it. The document list is the
+                        // proof (it carries the path); the AX document path
+                        // SETTLES afterwards, so it is reported and never
+                        // required.
+                        "verified_by": "document_list_path",
+                        "frontmost_document": frontmost ?? NSNull(),
+                        "note": createFromTemplate
+                            ? "Created from the bundled empty template and opened; already saved on disk."
+                            : "Opened."
+                    ]
+                    if !dialogsAnswered.isEmpty { payload["dialogs_answered"] = dialogsAnswered }
+                    return payload
+                }
             }
+            Thread.sleep(forTimeInterval: ProjectOpen.pollIntervalSeconds)
         }
         // A timeout with a dialog on screen and a timeout without one are
         // different diagnoses ("a dialog needs attention" was a guess at one
         // of them), so the message names whatever Logic is actually showing.
         let onScreen = describeVisibleDialogs()
         throw LogicianError.verificationFailed(
-            requested: "'\(expectedName)' appearing in Logic's document list",
+            requested: "'\(expectedName)' appearing in Logic's document list at '\(expectedPath)'"
+                + " (the PATH, not the name — a project with the same basename in another"
+                + " directory is a different project)",
             actual: "not there within 30 s"
                 + (onScreen.isEmpty
                     ? " and no dialog is on screen"
@@ -375,6 +419,13 @@ extension LogicAccessibility {
     /// Duplicates the OPEN project on disk (Autosave data stripped from the
     /// copy so it opens without a recovery prompt) and optionally opens the
     /// copy — the safe way to let an agent experiment destructively.
+    ///
+    /// The order of operations IS the safety here, and it used to be the other
+    /// way round: every refusal that can be made from the document list this
+    /// function already read is made BEFORE a byte is written, so a call that
+    /// is going to be refused leaves nothing on disk. What cannot be refused
+    /// in advance — an open that times out — no longer throws the copy's path
+    /// away with the error (`ProjectDuplicate.copyMadeButNotOpened`).
     func duplicateProject(
         destinationPath: String?, saveFirst: Bool,
         openCopy: Bool, ifCurrentModified: String
@@ -385,15 +436,11 @@ extension LogicAccessibility {
                 dialogsOnScreen: describeVisibleDialogs()
             )
         }
-        guard documents.count == 1, let document = documents.first,
-              let sourcePath = document.path else {
-            throw LogicianError.trackNotExposed(
-                requested: "exactly one open project with a file path",
-                exposed: "open documents: " + documents.map(\.name).joined(separator: ", ")
-            )
-        }
+        let document = try ProjectDuplicate.source(in: documents)
+        let sourcePath = document.path
         var savedBeforeCopy = false
         var saveWarning: String?
+        var saveFailure: String?
         if saveFirst, document.modified {
             do {
                 _ = try saveProject(expectedProjectPath: sourcePath)
@@ -401,24 +448,37 @@ extension LogicAccessibility {
             } catch {
                 // Copy the disk state anyway — a failed save must not block
                 // the duplication; the caller is told what the copy contains.
+                saveFailure = "failed (\(error.localizedDescription))"
                 saveWarning = "save_first failed (\(error.localizedDescription)); the copy is the last saved disk state"
             }
         }
+        // The decision the OPEN would refuse on, made before the copy exists.
+        // `openProject` makes the same call at the far end of this function —
+        // after the copy is on disk — which is how a schema-legal
+        // `if_current_modified: 'fail'` used to leave an orphaned copy on a
+        // path the caller was never told about.
+        if let refusal = ProjectDuplicate.openDecisionRefusal(
+            openCopy: openCopy,
+            ifCurrentModified: ifCurrentModified,
+            sourceName: document.name,
+            modifiedAtOpen: document.modified && !savedBeforeCopy,
+            saveFailure: saveFailure
+        ) {
+            throw refusal
+        }
         let source = URL(fileURLWithPath: sourcePath)
-        let destination: URL
-        if let given = destinationPath {
-            destination = URL(fileURLWithPath: (given as NSString).expandingTildeInPath)
-            guard destination.pathExtension == "logicx" else {
-                throw LogicianError.invalidArguments("destination_path must end in .logicx")
-            }
-        } else {
-            destination = source.deletingLastPathComponent().appendingPathComponent(
-                source.deletingPathExtension().lastPathComponent + " Copy.logicx"
-            )
-        }
+        let destination = try ProjectDuplicate.destination(
+            forSource: sourcePath, requested: destinationPath
+        )
         guard !FileManager.default.fileExists(atPath: destination.path) else {
-            throw LogicianError.invalidArguments("'\(destination.path)' already exists")
+            throw ProjectDuplicate.destinationExistsRefusal(path: destination.path)
         }
+        // Create the destination's folder, as the template open does for its
+        // own path: `destination_path: "~/Desktop/Sandbox/Copy.logicx"` with no
+        // Sandbox folder used to fail on a raw Cocoa error from the copy.
+        try? FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
         try FileManager.default.copyItem(at: source, to: destination)
         // Strip autosave data or the copy greets its first open with a
         // "Saved or Auto-saved?" recovery prompt.
@@ -437,26 +497,58 @@ extension LogicAccessibility {
             "state": "duplicated",
             "source": sourcePath,
             "copy": destination.path,
+            // Did `save_first` write the original before the copy was taken —
+            // i.e. does the copy contain what was on screen? It answers that
+            // and nothing else; `original_written_to_disk` below answers the
+            // question an agent actually has about the user's project.
             "saved_before_copy": savedBeforeCopy
         ]
         // Both of these can be true at once (a save that did not land AND a
         // modified document), and the second used to OVERWRITE the first —
         // losing the more alarming of the two. `appendWarning` joins them.
         appendWarning(saveWarning, to: &result)
-        if document.modified && !saveFirst {
-            appendWarning(
-                "the open project has unsaved changes that are NOT in the copy (disk state was copied); pass save_first: true to include them",
-                to: &result
-            )
-        }
+        appendWarning(
+            ProjectDuplicate.staleCopyWarning(modified: document.modified, saveFirst: saveFirst),
+            to: &result
+        )
+        var saveChangesAnswer: ProjectDuplicate.SaveChangesAnswer?
         if openCopy {
-            let opened = try openProject(
-                path: destination.path, createFromTemplate: false,
-                ifCurrentModified: ifCurrentModified
-            )
+            let opened: [String: Any]
+            do {
+                opened = try openProject(
+                    path: destination.path, createFromTemplate: false,
+                    ifCurrentModified: ifCurrentModified
+                )
+            } catch {
+                // The copy is on disk. Throwing the bare open error would take
+                // its path with it and burn the destination for the retry.
+                throw ProjectDuplicate.copyMadeButNotOpened(
+                    copyPath: destination.path, savedBeforeCopy: savedBeforeCopy, underlying: error
+                )
+            }
             result["opened"] = opened["state"] ?? "opened"
-            result["note"] = "The COPY is now the open project - experiment freely; the original is untouched on disk."
+            result["copy_frontmost_document"] = opened["frontmost_document"] ?? NSNull()
+            // The receipt for the prompts the open answered. `openProject`
+            // builds it precisely so a project that opened after discarding
+            // someone's changes does not look identical to one that opened
+            // clean — and this is the tool whose default ANSWERS that prompt,
+            // so dropping it lost the one fact the caller most needs.
+            if let answered = opened["dialogs_answered"] as? [[String: Any]] {
+                result["dialogs_answered"] = answered
+                if answered.contains(where: { $0["dialog"] as? String == "save_changes" }) {
+                    saveChangesAnswer = ifCurrentModified == "save" ? .saved : .discarded
+                }
+            }
         }
+        let outcome = ProjectDuplicate.originalOutcome(
+            openedCopy: openCopy,
+            savedBeforeCopy: savedBeforeCopy,
+            saveChangesAnswer: saveChangesAnswer
+        )
+        result["original_written_to_disk"] = outcome.writtenToDisk
+        result["original_unsaved_changes_discarded"] = outcome.unsavedChangesDiscarded
+        result["note"] = outcome.note
+        appendWarning(outcome.warning, to: &result)
         return result
     }
 

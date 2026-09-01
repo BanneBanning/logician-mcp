@@ -33,7 +33,21 @@ extension MCPServer {
             destinationPath: arguments["destination_path"] as? String,
             saveFirst: arguments["save_first"] as? Bool ?? false,
             openCopy: arguments["open_copy"] as? Bool ?? true,
-            ifCurrentModified: (arguments["if_current_modified"] as? String) ?? "save"
+            // 'fail', as logic_open_project and logic_new_project default —
+            // one guard, one default, one refusal, across every tool that
+            // closes the current project.
+            //
+            // It used to default to 'save' "since the original is the project
+            // being closed", which meant duplicating a MODIFIED project
+            // committed the user's in-progress edits to their own file while
+            // the same result said the original was untouched. That is a
+            // silent, unrepeatable write on the tool an agent is told to reach
+            // for BEFORE making changes nobody approved (AGENT-GUIDE,
+            // "Experiment safely on a copy") — failing toward writing, on the
+            // one tool whose entire purpose is not to. A default cannot be
+            // asked whether it meant it; a refusal can, and it costs one round
+            // trip and names four ways forward.
+            ifCurrentModified: (arguments["if_current_modified"] as? String) ?? "fail"
         )
     }
 
