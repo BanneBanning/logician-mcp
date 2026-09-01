@@ -167,6 +167,77 @@ final class ToolSearchTests: XCTestCase {
         XCTAssertEqual(ToolSearch.tokenize("  "), [])
     }
 
+    /// `scripts/retrieval_probe.py`'s tokenizer, written out the way Python
+    /// writes it: lowercase the whole string (Unicode, `str.lower()`), then
+    /// keep the a-z0-9 CODE POINTS and treat everything else as a separator.
+    ///
+    /// The shipped `ToolSearch.tokenize` is a UTF-8 byte scan instead, for the
+    /// 10 ms an index build costs when it walks Swift `Character`s. What it
+    /// owes the probe is the token multiset, not the line shape, so the rule
+    /// is written here once and checked against the real corpus below.
+    private static func probeTokenize(_ text: String) -> [String] {
+        var tokens: [String] = []
+        var word = ""
+        func flush() {
+            defer { word = "" }
+            guard !word.isEmpty else { return }
+            tokens.append(word)
+            for suffix in ["ing", "ies", "es", "ed", "s"] where word.count > suffix.count + 2 {
+                if word.hasSuffix(suffix) {
+                    tokens.append(String(word.dropLast(suffix.count)))
+                    break
+                }
+            }
+        }
+        for scalar in text.lowercased().unicodeScalars {
+            if (97...122).contains(scalar.value) || (48...57).contains(scalar.value) {
+                word.unicodeScalars.append(scalar)
+            } else {
+                flush()
+            }
+        }
+        flush()
+        return tokens
+    }
+
+    /// Every document in the REAL corpus, plus every probe query, tokenized
+    /// both ways and asserted identical — the same tokens, in the same order,
+    /// with the same repeats, which is everything BM25 reads. This is the
+    /// promise the header makes in place of "it is a line-by-line port".
+    func testTheByteTokenizerAgreesWithTheProbesRuleOverTheWholeCorpus() {
+        for tool in server.toolRegistry() {
+            let text = ToolSearch.corpusText(for: tool.definition)
+            XCTAssertEqual(ToolSearch.tokenize(text), Self.probeTokenize(text), tool.name)
+        }
+        for (query, _, _) in ToolSearchTests.probeQueries {
+            XCTAssertEqual(ToolSearch.tokenize(query), Self.probeTokenize(query), query)
+        }
+        // Non-ASCII is in the corpus (em dashes, ×, ø) and has to fall out as a
+        // separator on both sides.
+        for text in ["bounce — in — place", "0 dB × 2", "Sørensen's aux"] {
+            XCTAssertEqual(ToolSearch.tokenize(text), Self.probeTokenize(text), text)
+        }
+    }
+
+    /// The one deliberate divergence, pinned so it is a known edge rather than
+    /// a surprise: U+0130 (İ) and U+212A (K) are the only two characters in
+    /// Unicode whose lowercase contains an ASCII letter, and a byte scan
+    /// cannot see that. Neither appears anywhere in this surface's text, so
+    /// nothing the probe measures can reach it.
+    func testTheTwoCharactersTheByteScanDeliberatelyDropsAreKnownAndAbsent() {
+        XCTAssertEqual(ToolSearch.tokenize("\u{0130}"), [])
+        XCTAssertEqual(Self.probeTokenize("\u{0130}"), ["i"])
+        XCTAssertEqual(ToolSearch.tokenize("\u{212A}"), [])
+        XCTAssertEqual(Self.probeTokenize("\u{212A}"), ["k"])
+        for tool in server.toolRegistry() {
+            // By SCALAR, not `String.contains`: U+212A is canonically
+            // equivalent to plain "K", so a string comparison finds it in
+            // every description that mentions kHz.
+            let scalars = ToolSearch.corpusText(for: tool.definition).unicodeScalars
+            XCTAssertFalse(scalars.contains { $0.value == 0x130 || $0.value == 0x212A }, tool.name)
+        }
+    }
+
     /// The corpus is name + description + argument names + argument
     /// descriptions + enum values, at every nesting depth — and NOT the
     /// annotations, which are client display metadata rather than definition
@@ -437,6 +508,53 @@ final class ToolSearchTests: XCTestCase {
             MCPServer.activeToolsets = [set]
             XCTAssertNil(server.unknownToolMessage(name: "logic_find_tool"), set.rawValue)
         }
+    }
+
+    // MARK: - Built once, over the registry it claims to describe
+
+    /// The index is a process-wide `static let`, so the ONLY thing that could
+    /// make it wrong is describing a different registry from the one the
+    /// handler subscripts with its document indices. Same count, and every
+    /// tool's own name scores its own document — which no shifted alignment
+    /// could satisfy for all 84.
+    func testTheSharedIndexStaysAlignedWithTheRegistry() {
+        let registry = server.toolRegistry()
+        XCTAssertEqual(ToolSearch.advertisedSurface.documentCount, registry.count)
+        for (position, tool) in registry.enumerated() {
+            let scores = ToolSearch.advertisedSurface.scores(for: tool.name)
+            XCTAssertGreaterThan(scores[position], 0, tool.name)
+        }
+    }
+
+    /// The registry is an array literal over string literals, so it is built
+    /// once per process however many searches run and however many matches
+    /// each one returns. It used to be built 3 times per call PLUS once per
+    /// match, because `toolsetExclusionNote` asked it "is this a real tool"
+    /// for every hit — 13 constructions of all 84 tools for one `limit: 10`
+    /// answer.
+    func testTheRegistryIsBuiltOncePerProcessNotOncePerMatch() throws {
+        MCPServer.activeToolsets = [.core]
+        for _ in 0..<3 {
+            XCTAssertEqual(try names("track", limit: 10).count, 10)
+            _ = try names("export stems bounce region plugin send marker tempo", limit: 10)
+        }
+        XCTAssertEqual(MCPServer.toolRegistryBuilds, 1)
+    }
+
+    /// Reordering that guard must not change WHO gets the sentence: exactly
+    /// the matches this session cannot call, and no one else.
+    func testANarrowedSessionMarksExactlyTheMatchesItCannotCall() throws {
+        MCPServer.activeToolsets = [.core]
+        var sawBoth = (offered: false, withheld: false)
+        for query in ["export stems", "track", "region", "bounce a bar range", "plugin"] {
+            for hit in try matches(query, limit: 10, schemas: false) {
+                let name = try XCTUnwrap(hit["name"] as? String)
+                let active = try XCTUnwrap(hit["active"] as? Bool)
+                XCTAssertEqual(active, hit["not_offered"] == nil, name)
+                if active { sawBoth.offered = true } else { sawBoth.withheld = true }
+            }
+        }
+        XCTAssertTrue(sawBoth.offered && sawBoth.withheld, "\(sawBoth)")
     }
 
     // MARK: - Determinism
