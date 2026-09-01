@@ -38,9 +38,25 @@ extension MCPServer {
     }
 
     func handleCloseProject(_ arguments: [String: Any]) throws -> Any {
-        return try logic.closeProject(
+        var result = try logic.closeProject(
             saving: requiredString("saving", in: arguments),
-            expectedProjectPath: arguments["expected_project_path"] as? String
+            expectedProjectPath: arguments["expected_project_path"] as? String,
+            timeoutSeconds: ProjectReset.closeTimeoutSeconds(arguments)
         )
+        // The same four caches `logic_reset_to` clears between its close and
+        // its open, for the same reason (ProjectReset.invalidateAllProjectCaches):
+        // they are stamped with `cacheScopeToken(projectPath:)`, which catches
+        // a switch to a DIFFERENT project but is IDENTICAL across a close and
+        // reopen of the SAME path — and close-then-open of the same path is
+        // exactly what an agent does with this tool. A bank map measured
+        // against tracks that only existed unsaved would otherwise survive and
+        // be trusted: a cache that is not stale but WRONG.
+        //
+        // Cleared on any close that returned, verified or not: a close that
+        // could not be confirmed may well have happened, and a cleared cache
+        // costs one rescan while a wrong one costs correctness. A close that
+        // was REFUSED throws before this line and clears nothing.
+        result["caches_cleared"] = invalidateAllProjectCaches()
+        return result
     }
 }

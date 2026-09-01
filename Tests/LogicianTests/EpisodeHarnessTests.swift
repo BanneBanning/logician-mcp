@@ -18,7 +18,8 @@ final class EpisodeHarnessTests: XCTestCase {
         let answer = ProjectReset.answer(
             forTexts: ["Do you want to save the changes made to the document “Testlåt Copy”?",
                        "Your changes will be lost if you don’t save them."],
-            buttons: ["Save", "Cancel", "Don’t Save"]
+            buttons: ["Save", "Cancel", "Don’t Save"],
+            discardingChanges: true
         )
         XCTAssertEqual(answer?.button, "Don’t Save")
         XCTAssertTrue(answer?.effect.contains("discarded") == true)
@@ -31,7 +32,8 @@ final class EpisodeHarnessTests: XCTestCase {
     func testSaveChangesPromptAcceptsAStraightApostrophe() {
         let answer = ProjectReset.answer(
             forTexts: ["Do you want to save the changes made to this document?"],
-            buttons: ["Save", "Cancel", "Don't Save"]
+            buttons: ["Save", "Cancel", "Don't Save"],
+            discardingChanges: true
         )
         XCTAssertEqual(answer?.button, "Don't Save")
     }
@@ -39,7 +41,8 @@ final class EpisodeHarnessTests: XCTestCase {
     func testRecoveryPromptIsAnsweredWithSaved() {
         let answer = ProjectReset.answer(
             forTexts: ["There is an auto-saved version of this project.", "Which one do you want to open?"],
-            buttons: ["Auto-saved", "Saved", "Cancel"]
+            buttons: ["Auto-saved", "Saved", "Cancel"],
+            discardingChanges: true
         )
         XCTAssertEqual(answer?.button, "Saved")
     }
@@ -47,7 +50,8 @@ final class EpisodeHarnessTests: XCTestCase {
     func testMatchingIsCaseInsensitive() {
         XCTAssertEqual(
             ProjectReset.answer(
-                forTexts: ["DO YOU WANT TO SAVE THE CHANGES?"], buttons: ["Don’t Save"]
+                forTexts: ["DO YOU WANT TO SAVE THE CHANGES?"], buttons: ["Don’t Save"],
+                discardingChanges: true
             )?.button,
             "Don’t Save"
         )
@@ -56,7 +60,8 @@ final class EpisodeHarnessTests: XCTestCase {
     func testUnknownDialogIsNotAnswered() {
         XCTAssertNil(ProjectReset.answer(
             forTexts: ["Delete Track and Regions?"],
-            buttons: ["Delete", "Keep", "Cancel"]
+            buttons: ["Delete", "Keep", "Cancel"],
+            discardingChanges: true
         ))
     }
 
@@ -67,12 +72,13 @@ final class EpisodeHarnessTests: XCTestCase {
     func testKnownDialogWithoutItsButtonIsNotAnswered() {
         XCTAssertNil(ProjectReset.answer(
             forTexts: ["Do you want to save the changes?"],
-            buttons: ["Save", "Cancel"]
+            buttons: ["Save", "Cancel"],
+            discardingChanges: true
         ))
     }
 
     func testEmptyDialogIsNotAnswered() {
-        XCTAssertNil(ProjectReset.answer(forTexts: [], buttons: []))
+        XCTAssertNil(ProjectReset.answer(forTexts: [], buttons: [], discardingChanges: true))
     }
 
     // MARK: - The target path

@@ -132,7 +132,8 @@ final class LocaleSurfaceTests: XCTestCase {
         // this is the assertion that moving them changed nothing.
         let saveChanges = ProjectReset.answer(
             forTexts: ["Do you want to save the changes made to the document “X”?"],
-            buttons: [LogicUIStrings.Button.save, LogicUIStrings.Button.dontSave, "Cancel"]
+            buttons: [LogicUIStrings.Button.save, LogicUIStrings.Button.dontSave, "Cancel"],
+            discardingChanges: true
         )
         XCTAssertEqual(saveChanges?.button, LogicUIStrings.Button.dontSave)
 
@@ -140,7 +141,8 @@ final class LocaleSurfaceTests: XCTestCase {
         // cannot turn a known dialog into an unknown one.
         let straight = ProjectReset.answer(
             forTexts: ["Do you want to save the changes made to the document “X”?"],
-            buttons: ["Save", LogicUIStrings.Button.dontSaveStraightQuote, "Cancel"]
+            buttons: ["Save", LogicUIStrings.Button.dontSaveStraightQuote, "Cancel"],
+            discardingChanges: true
         )
         XCTAssertEqual(straight?.button, LogicUIStrings.Button.dontSaveStraightQuote)
         XCTAssertNotEqual(

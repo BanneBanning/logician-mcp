@@ -131,6 +131,34 @@ with every render coming back as audio the agent can listen to.
   frame-identical output, and `logic_export_stems`/`logic_evaluate_change`
   inherit the same jump on every bounce they make.
 
+- **Closing the project stops vouching for a close it could not read back.**
+  `logic_close_project` computed `verified` from Logic's document list coming back
+  empty — and an AppleScript read that FAILED returned the same empty list as a
+  project that had really gone, under a `success: true` that no failure path could
+  change. A close attempted while Logic was modal, wedged, or merely too busy to
+  answer an Apple Event therefore reported `verified: true, remaining_documents: []`
+  for a project that was still open. The reader now says which of the two it hit, and
+  every project tool that shares it — save, open, duplicate, reset — refuses instead
+  of reading silence as an empty Logic. The close itself is now `logic_reset_to`'s
+  close rather than a second, dialog-blind copy of it: issued off-thread while an
+  Accessibility loop walks whatever Logic puts on screen, so a dialog is either
+  answered from the measured table (**Don't Save**, and only when you asked for
+  `saving: 'no'` — with `saving: 'yes'` that alert is reported and never pressed) or
+  reported verbatim, inside a `timeout_seconds` budget (5-300, default 30) instead of
+  a deadlock that used to end at osascript's own ~120 s timeout with the dialog still
+  up and every later tool locked out. The blind 1 s sleep goes with it: the reset's
+  200 ms poll on the same signals replaces it, so a close slower than a second is
+  waited out instead of reported unverified. `expected_project_path` is now honoured
+  for a never-saved project, which used to skip the guard silently — precisely the
+  project `saving: 'no'` destroys most — and the four per-project caches are cleared
+  and listed in `caches_cleared` exactly as the reset does, because a close and
+  reopen of the same path keeps the cache scope token identical and a bank map
+  measured against tracks that only existed unsaved would otherwise survive and be
+  trusted. The description now sends close-then-reopen to `logic_reset_to` or
+  `logic_open_project`, which fold the close in and save a round-trip. Unit-tested
+  (21 new pure tests for a tool that had none) and NOT live-verified: closing the
+  only open project has no verified inverse, so it is never run against the sandbox.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

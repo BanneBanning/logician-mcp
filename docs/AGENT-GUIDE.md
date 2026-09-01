@@ -752,12 +752,13 @@ Parameters:
 
 #### `logic_close_project`
 
-Close the open project via AppleScript. 'saving' must be an explicit 'yes' or 'no' — there is no default, because discarding versus persisting changes is always the caller's decision.
+Close the open project and prove it closed. 'saving' must be an explicit 'yes' or 'no' — there is no default, because discarding versus persisting changes is always the caller's decision. **If you mean to close one project and open another, call logic_reset_to (clean slate, same path or a different one) or logic_open_project instead — both fold the close in, so closing first is a wasted round-trip.** This tool is for leaving Logic with nothing open. It shares logic_reset_to's close: the AppleScript runs off-thread (Logic's AppleScript suite blocks while a modal is up) while an Accessibility loop walks whatever Logic puts on screen, and every dialog it saw is reported in `dialogs`. With saving:'no' it answers 'Do you want to save the changes…?' with **Don't Save** — that is the contract you chose. With saving:'yes' that same alert is REPORTED AND NEVER PRESSED, along with any dialog whose grammar it does not know, and the call then fails on its timeout with the alert's own text and buttons rather than clicking a button whose consequence was never measured. The close is polled, not slept on, and `verified` comes from Logic's document list actually answering that the project is gone — a readback that could not be read is never reported as a successful close. All four per-project caches (bank map, tempo map, meter map, plugin parameter names) are cleared, listed in `caches_cleared`: they are scoped by project path, which cannot tell a reopened SAME path from state measured against tracks that only existed unsaved. expected_project_path is checked BEFORE anything closes, and a never-saved project (no path to compare) is refused rather than closed unguarded. MAY RETURN `warning` — read it before the rest of the result (RESULT CONTRACT in the server instructions).
 
 Parameters:
 
-  - `expected_project_path` (string)
+  - `expected_project_path` (string): Absolute path of the project you believe is open. Checked against Logic's own document path before anything closes, and the close is refused on a mismatch — the guard against closing the wrong project after Logic switched under you. A project that has never been saved has no path to compare, so passing this refuses that close instead of skipping the check.
   - `saving` (string) **(required)**: 'yes' saves before closing; 'no' discards unsaved changes. One of: `yes`, `no`.
+  - `timeout_seconds` (number): How long to wait for the close, polling Logic while it happens (5-300, default 30).
 
 #### `logic_reset_to`
 

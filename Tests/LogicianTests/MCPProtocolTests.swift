@@ -644,14 +644,15 @@ final class MCPProtocolTests: XCTestCase {
         }
     }
 
-    /// The census the result-key inventory produced: 29 tools can put a
+    /// The census the result-key inventory produced: 30 tools can put a
     /// top-level `warning` in their result. A new emitter that forgets the flag
     /// (or a flag on a tool that cannot warn) fails here rather than shipping a
     /// key no description mentions.
     func testEveryToolThatCanWarnIsFlagged() {
         let expected: Set<String> = [
             "logic_add_plugin", "logic_add_send", "logic_bounce_in_place", "logic_bounce_range",
-            "logic_duplicate_project", "logic_edit_event", "logic_evaluate_change",
+            "logic_close_project", "logic_duplicate_project", "logic_edit_event",
+            "logic_evaluate_change",
             "logic_export_stems", "logic_import_midi", "logic_learn_key_command",
             "logic_list_events",
             "logic_load_instrument", "logic_markers", "logic_mixer_snapshot", "logic_plugin_preset",
