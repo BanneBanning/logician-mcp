@@ -40,8 +40,18 @@ extension LogicAccessibility {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Open documents as (name, path?, modified) via the standard suite.
-    func openDocuments() -> [(name: String, path: String?, modified: Bool)] {
+    /// Open documents as (name, path?, modified) via the standard suite — or
+    /// `nil` when the READ ITSELF failed.
+    ///
+    /// The optional is the whole point. Until 2026-09-01 this returned `[]`
+    /// both for "Logic has nothing open" and for "the AppleScript did not
+    /// answer" (Logic modal, wedged, or too busy to service an Apple Event),
+    /// and every caller treated the two as the same fact. The worst of them
+    /// was `closeProject`, which turned a failed readback into
+    /// `verified: true, remaining_documents: []` for a project that was still
+    /// open. No caller may read silence as emptiness: each one either refuses
+    /// (`ProjectClose.unreadableDocumentList`) or keeps polling.
+    func readOpenDocuments() -> [(name: String, path: String?, modified: Bool)]? {
         guard let raw = runAppleScript("""
         set out to ""
         tell application "Logic Pro"
@@ -55,7 +65,7 @@ extension LogicAccessibility {
             end repeat
         end tell
         return out
-        """) else { return [] }
+        """) else { return nil }
         return raw.split(separator: "\u{1E}").compactMap { entry in
             let parts = entry.components(separatedBy: "\u{1F}")
             guard parts.count == 3 else { return nil }
@@ -165,7 +175,12 @@ extension LogicAccessibility {
     /// open document does not match expectedProjectPath (when given) or has
     /// no path yet.
     func saveProject(expectedProjectPath: String?) throws -> [String: Any] {
-        let documents = openDocuments()
+        guard let documents = readOpenDocuments() else {
+            throw ProjectClose.unreadableDocumentList(
+                whileTryingTo: "the open project, to save it",
+                dialogsOnScreen: describeVisibleDialogs()
+            )
+        }
         guard documents.count == 1, let document = documents.first else {
             throw LogicianError.trackNotExposed(
                 requested: "exactly one open project to save",
@@ -200,7 +215,9 @@ extension LogicAccessibility {
         _ = try MCUController.triggerKeyCommand(note: save.note, channel: save.channel)
         for _ in 0..<40 {
             Thread.sleep(forTimeInterval: 0.25)
-            if let fresh = openDocuments().first, !fresh.modified {
+            // A read that fails here is not a save that failed — the poll
+            // simply has nothing to judge yet and looks again.
+            if let fresh = readOpenDocuments()?.first, !fresh.modified {
                 return [
                     "success": true, "verified": true, "state": "saved",
                     "project": document.name, "path": path,
@@ -261,8 +278,15 @@ extension LogicAccessibility {
                 )
             }
         }
-        // Single-project guard: a modified current project needs an explicit decision.
-        let current = openDocuments()
+        // Single-project guard: a modified current project needs an explicit
+        // decision — so a document list that will not answer must refuse
+        // rather than sail past the guard on an empty list it never read.
+        guard let current = readOpenDocuments() else {
+            throw ProjectClose.unreadableDocumentList(
+                whileTryingTo: "the open-document list, before opening '\(target.lastPathComponent)'",
+                dialogsOnScreen: describeVisibleDialogs()
+            )
+        }
         if let open = current.first, open.modified, normalizedPath(open.path ?? "") != normalizedPath(target.path) {
             switch ifCurrentModified {
             case "save", "dont_save":
@@ -314,8 +338,10 @@ extension LogicAccessibility {
                     "effect": "opened the last SAVED version rather than the auto-saved one"
                 ])
             }
-            let docs = openDocuments()
-            if docs.contains(where: { $0.name == expectedName }) {
+            // A read that fails while Logic is opening is not "nothing is
+            // open" — it is no answer yet, so the loop looks again rather
+            // than concluding anything from an empty list.
+            if let docs = readOpenDocuments(), docs.contains(where: { $0.name == expectedName }) {
                 var payload: [String: Any] = [
                     "success": true, "verified": true,
                     "state": createFromTemplate ? "created" : "opened",
@@ -353,7 +379,12 @@ extension LogicAccessibility {
         destinationPath: String?, saveFirst: Bool,
         openCopy: Bool, ifCurrentModified: String
     ) throws -> [String: Any] {
-        let documents = openDocuments()
+        guard let documents = readOpenDocuments() else {
+            throw ProjectClose.unreadableDocumentList(
+                whileTryingTo: "the open project, to duplicate it",
+                dialogsOnScreen: describeVisibleDialogs()
+            )
+        }
         guard documents.count == 1, let document = documents.first,
               let sourcePath = document.path else {
             throw LogicianError.trackNotExposed(
@@ -430,47 +461,66 @@ extension LogicAccessibility {
     }
 
     /// Closes the open project. `saving` must be an explicit 'yes' or 'no'.
-    func closeProject(saving: String, expectedProjectPath: String?) throws -> [String: Any] {
-        guard saving == "yes" || saving == "no" else {
-            throw LogicianError.invalidArguments("saving must be 'yes' or 'no' (explicit decision)")
-        }
-        let documents = openDocuments()
-        guard documents.count == 1, let document = documents.first else {
-            throw LogicianError.trackNotExposed(
-                requested: "exactly one open project",
-                exposed: "open documents: \(documents.map(\.name).joined(separator: ", "))"
+    ///
+    /// The close is `logic_reset_to`'s close (`closeOpenDocument`), not a
+    /// second implementation: issued off-thread while an Accessibility loop
+    /// walks whatever Logic puts on screen, because Logic's AppleScript suite
+    /// BLOCKS while a modal is up. Until 2026-09-01 this function ran the
+    /// script synchronously on the calling thread with no dialog handling and
+    /// no timeout, so a modal raised during the close deadlocked the call
+    /// until osascript's own ~120 s AppleScript timeout and then threw
+    /// "AppleScript close failed" — naming nothing, with the dialog still on
+    /// screen locking out every later tool. Sharing the reset's loop also
+    /// retires the blind `Thread.sleep(1.0)` that followed the close: the
+    /// reset's 200 ms poll on two independent signals replaces it, so a close
+    /// slower than a second is waited out instead of reported unverified, and
+    /// a faster one costs what it costs.
+    ///
+    /// One difference from the reset, and it matters: the reset's contract IS
+    /// discarding, so it answers "Do you want to save the changes…?" with
+    /// Don't Save. Here that answer is only correct for `saving: "no"`. With
+    /// `saving: "yes"` the same alert is treated as an unknown grammar —
+    /// reported, never pressed — because pressing Don't Save would throw away
+    /// the changes the caller just asked to keep.
+    func closeProject(
+        saving: String, expectedProjectPath: String?, timeoutSeconds: Double
+    ) throws -> [String: Any] {
+        // Cheapest guard first: no process is spawned for a malformed decision.
+        let savingBool = try ProjectClose.validateSaving(saving)
+        guard let documents = readOpenDocuments() else {
+            throw ProjectClose.unreadableDocumentList(
+                whileTryingTo: "the open project, to close it",
+                dialogsOnScreen: describeVisibleDialogs()
             )
         }
-        if let expected = expectedProjectPath, let path = document.path {
-            guard normalizedPath(path) == normalizedPath(expected) else {
-                throw LogicianError.currentValueMismatch(expected: expected, actual: path)
-            }
-        }
-        // The document name is agent-controlled (it is just the .logicx
-        // filename the agent chose) and MUST NOT be interpolated into the
-        // script — it goes through argv so it can never become code. `saving`
-        // is already constrained to the two literals above.
-        let savingBool = saving == "yes"
-        guard runAppleScript(
-            """
-            on run argv
-                tell application "Logic Pro" to close document (item 1 of argv) saving \(savingBool ? "yes" : "no")
-            end run
-            """,
-            arguments: [document.name]
-        ) != nil else {
-            throw LogicianError.writeFailed("AppleScript close failed")
-        }
-        Thread.sleep(forTimeInterval: 1.0)
-        let remaining = openDocuments()
-        return [
-            "success": true,
-            "verified": !remaining.contains(where: { $0.name == document.name }),
-            "state": "closed",
-            "project": document.name,
-            "saved": saving == "yes",
-            "remaining_documents": remaining.map(\.name)
+        let target = try ProjectClose.target(
+            in: documents,
+            expectedProjectPath: expectedProjectPath,
+            normalize: normalizedPath
+        )
+        let outcome = try closeOpenDocument(
+            documentName: target.name, saving: savingBool, timeoutSeconds: timeoutSeconds
+        )
+        // `remaining` comes from a read that ACTUALLY ANSWERED — the poll has
+        // no other way out, and a poll that never got an answer throws above
+        // with what is on screen. The optional-taking verdict is still what
+        // computes this, so an unreadable list can never become a `true`.
+        let verdict = ProjectClose.closeVerified(
+            documentName: target.name, remaining: outcome.remaining
+        )
+        var result: [String: Any] = [
+            "success": verdict.verified,
+            "verified": verdict.verified,
+            "state": verdict.verified ? "closed" : "close_unverified",
+            "project": target.name,
+            "path": target.path ?? NSNull(),
+            "saved": savingBool,
+            "remaining_documents": outcome.remaining,
+            "dialogs": outcome.dialogs,
+            "dialog_count": outcome.dialogs.count
         ]
+        appendWarning(verdict.reason, to: &result)
+        return result
     }
 
 }

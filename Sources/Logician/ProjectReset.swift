@@ -14,12 +14,14 @@ import LogicMCUBridge
 //
 // 1. Nobody owned the dialogs. `openProject` answers two of them blind (it
 //    presses every 0.5 s and never reports whether anything was there), and
-//    `closeProject` runs an AppleScript that BLOCKS while a modal is up — so
+//    `closeProject` ran an AppleScript that BLOCKS while a modal is up — so
 //    a third dialog would have hung the close with no way to see it. The
 //    close now runs off-thread while an Accessibility loop walks whatever
-//    Logic puts on screen, answers the two known grammars from a table, and
+//    Logic puts on screen, answers the known grammars from a table, and
 //    reports the rest verbatim instead of pressing a button it does not
-//    understand.
+//    understand. `closeOpenDocument` is THE close since 2026-09-01:
+//    `logic_close_project` calls it too rather than keeping a second,
+//    dialog-blind implementation of the same Apple Event.
 // 2. Nobody invalidated the caches. They are project-scoped
 //    (`cacheScopeToken`), which handles a switch to ANOTHER project — but the
 //    eval case reopens the SAME path, where the scope token is identical and
@@ -49,6 +51,16 @@ enum ProjectReset {
         let answers: [String]
         /// What the answer DOES, for the log the tool returns.
         let effect: String
+        /// True when this answer is only correct for a close whose contract is
+        /// DISCARDING changes.
+        ///
+        /// The save-changes prompt is answered with Don't Save, which is right
+        /// for `logic_reset_to` (discarding is what it is for) and for
+        /// `logic_close_project` with `saving: "no"` — and flatly wrong for
+        /// `saving: "yes"`, where pressing it would throw away the changes the
+        /// caller just asked to keep. For that close the alert is an unknown
+        /// grammar: reported, never pressed.
+        let requiresDiscardContract: Bool
     }
 
     /// Every dialog this tool knows how to answer. Anything else is reported,
@@ -58,20 +70,30 @@ enum ProjectReset {
         DialogGrammar(
             marker: LogicUIStrings.AlertMarker.saveChanges,
             answers: LogicUIStrings.Button.dontSaveSpellings,
-            effect: "discarded the open project's unsaved changes (the contract of this tool)"
+            effect: "discarded the open project's unsaved changes (the contract of this tool)",
+            requiresDiscardContract: true
         ),
         DialogGrammar(
             marker: LogicUIStrings.AlertMarker.autoSaved,
             answers: [LogicUIStrings.Button.saved],
-            effect: "opened the last SAVED version rather than the auto-saved one"
+            effect: "opened the last SAVED version rather than the auto-saved one",
+            requiresDiscardContract: false
         )
     ]
 
-    /// Which button answers this alert, or nil when the grammar is unknown.
-    /// `texts` are the alert's static texts, `buttons` its button titles.
-    static func answer(forTexts texts: [String], buttons: [String]) -> (button: String, effect: String)? {
+    /// Which button answers this alert, or nil when the grammar is unknown —
+    /// or known but not ours to answer. `texts` are the alert's static texts,
+    /// `buttons` its button titles; `discardingChanges` says whether the
+    /// operation asking is one that throws unsaved work away (every reset, and
+    /// a close with `saving: "no"`). It has no default on purpose: getting it
+    /// wrong presses Don't Save on someone's changes.
+    static func answer(
+        forTexts texts: [String], buttons: [String], discardingChanges: Bool
+    ) -> (button: String, effect: String)? {
         let haystack = texts.joined(separator: " ").lowercased()
-        for grammar in knownDialogs where haystack.contains(grammar.marker) {
+        for grammar in knownDialogs
+        where haystack.contains(grammar.marker)
+            && (discardingChanges || !grammar.requiresDiscardContract) {
             guard let button = grammar.answers.first(where: buttons.contains) else { continue }
             return (button, grammar.effect)
         }
@@ -89,6 +111,19 @@ enum ProjectReset {
             .precomposedStringWithCanonicalMapping
         while path.count > 1 && path.hasSuffix("/") { path.removeLast() }
         return path
+    }
+
+    // MARK: - The close budget
+
+    /// How long the close may take, from the caller's arguments: 30 s by
+    /// default, clamped to 5–300, and accepted whichever way a JSON client
+    /// spells the number. Shared by `logic_reset_to` and
+    /// `logic_close_project`, which run the same close.
+    static func closeTimeoutSeconds(_ arguments: [String: Any]) -> Double {
+        let requested = (arguments["timeout_seconds"] as? Double)
+            ?? (arguments["timeout_seconds"] as? Int).map(Double.init)
+            ?? 30
+        return min(max(requested, 5), 300)
     }
 
     // MARK: - The verdict
@@ -120,7 +155,8 @@ enum ProjectReset {
     }
 }
 
-/// "Has the detached close returned yet?", crossing one thread boundary.
+/// "Has the detached close returned yet, and did the script itself answer?",
+/// crossing one thread boundary.
 ///
 /// A lock-guarded box rather than a captured `var` because the close runs on a
 /// global queue while the dialog loop runs here, and a plain captured Bool is
@@ -128,14 +164,25 @@ enum ProjectReset {
 private final class CloseCompletionFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var done = false
+    private var failed = false
 
-    func finish() {
-        lock.lock(); done = true; lock.unlock()
+    /// `scriptFailed` is `runAppleScript` having returned nil — osascript did
+    /// not run, or Logic refused the event. Worth carrying across the thread
+    /// boundary because it is the difference between "the close is taking a
+    /// while" and "the close never happened", and the old synchronous code
+    /// said the second one out loud (`writeFailed("AppleScript close failed")`).
+    func finish(scriptFailed: Bool) {
+        lock.lock(); done = true; failed = scriptFailed; lock.unlock()
     }
 
     var isFinished: Bool {
         lock.lock(); defer { lock.unlock() }
         return done
+    }
+
+    var didScriptFail: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return done && failed
     }
 }
 
@@ -206,39 +253,48 @@ extension LogicAccessibility {
         return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
     }
 
-    /// Closes the open document without saving, walking whatever Logic puts on
-    /// screen while it happens.
+    /// Closes the open document, walking whatever Logic puts on screen while
+    /// it happens. THE close: `logic_reset_to` and `logic_close_project` both
+    /// come here, so there is one dialog loop in the server, not two.
     ///
     /// The AppleScript runs on a background queue for one reason: it BLOCKS
     /// while Logic is modal, and answering the modal is this function's job.
-    /// `closeProject` (the tool) cannot do that — it issues the same script
-    /// synchronously and then sleeps a second — which is why the reset owns
-    /// its own close instead of calling it.
+    /// `closeProject` used to issue the same script synchronously and then
+    /// sleep a second, which is why it could neither see a dialog nor survive
+    /// one; it now shares this loop.
     ///
-    /// Returns the dialogs seen (answered or not); throws when the document is
-    /// still open at the deadline.
-    func closeOpenDocumentDiscarding(
-        documentName: String, timeoutSeconds: Double
-    ) throws -> [[String: Any]] {
+    /// `saving: false` is the discard contract — it is what lets the loop
+    /// answer "Do you want to save the changes…?" with Don't Save. With
+    /// `saving: true` that alert is reported and NEVER pressed, because the
+    /// caller asked for the opposite of what the button does.
+    ///
+    /// Returns the dialogs seen (answered or not) and the document list from
+    /// the read that PROVED the close; throws when the document is still open
+    /// at the deadline, when the list never answered, or when the close script
+    /// itself failed.
+    func closeOpenDocument(
+        documentName: String, saving: Bool, timeoutSeconds: Double
+    ) throws -> (dialogs: [[String: Any]], remaining: [String]) {
         // The document name is agent-adjacent (it is the .logicx filename) and
-        // goes through argv, never into the script source — same rule as
-        // `closeProject`.
-        let script = """
-        on run argv
-            tell application "Logic Pro" to close document (item 1 of argv) saving no
-        end run
-        """
+        // goes through argv, never into the script source; the source is one
+        // of two constants picked by `saving`.
+        let script = ProjectClose.closeScript(saving: saving)
         let finished = CloseCompletionFlag()
         DispatchQueue.global(qos: .userInitiated).async {
             // Static on purpose: this class is not Sendable, so the detached
             // close must not capture one.
-            _ = LogicAccessibility.runAppleScript(script, arguments: [documentName])
-            finished.finish()
+            let answer = LogicAccessibility.runAppleScript(script, arguments: [documentName])
+            finished.finish(scriptFailed: answer == nil)
         }
 
         var log: [[String: Any]] = []
         var answeredElements: [AXUIElement] = []
-        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        // Which of the two failure stories the deadline gets to tell: a list
+        // that kept saying "still open" is a different diagnosis from a list
+        // that never answered at all.
+        var lastReadAnswered = false
+        let started = Date()
+        let deadline = started.addingTimeInterval(timeoutSeconds)
         while Date() < deadline {
             for dialog in visibleDialogs() {
                 // Do not answer the same alert twice: pressing a button that
@@ -250,7 +306,9 @@ extension LogicAccessibility {
                     "texts": dialog.texts,
                     "buttons": dialog.buttons
                 ]
-                if let answer = ProjectReset.answer(forTexts: dialog.texts, buttons: dialog.buttons) {
+                if let answer = ProjectReset.answer(
+                    forTexts: dialog.texts, buttons: dialog.buttons, discardingChanges: !saving
+                ) {
                     let pressed = pressDialogButton(answer.button, in: dialog.element)
                     entry["answered_with"] = answer.button
                     entry["effect"] = answer.effect
@@ -267,21 +325,49 @@ extension LogicAccessibility {
                 }
                 log.append(entry)
             }
-            let done = finished.isFinished
             // The document window is gone from Accessibility AND the script
-            // has returned: two independent signals, because the script can
-            // return while Logic is still tearing the window down, and the
-            // window can vanish while a sheet still owns the event loop.
-            if done, (try? projectDocumentPath()) == nil, !openDocuments().contains(where: {
-                $0.name == documentName
-            }) {
-                return log
+            // has returned AND the document list ANSWERED and no longer names
+            // it: three signals, because the script can return while Logic is
+            // still tearing the window down, the window can vanish while a
+            // sheet still owns the event loop, and a document list that could
+            // not be read is not an empty one.
+            //
+            // The list is asked ONLY once the two cheap signals agree. It is
+            // an AppleScript round trip, and AppleScript is exactly what
+            // blocks while Logic is modal — asking it every 200 ms would hang
+            // the loop whose job is to answer the modal.
+            if finished.isFinished, (try? projectDocumentPath()) == nil {
+                let documents = readOpenDocuments()
+                lastReadAnswered = documents != nil
+                if let documents, !documents.contains(where: { $0.name == documentName }) {
+                    return (log, documents.map(\.name))
+                }
+            }
+            // A close script that FAILED will not close anything however long
+            // we wait, so stop now rather than at the deadline — but only
+            // once the document window is still demonstrably there half a
+            // second later, so a script that errored while Logic was already
+            // tearing the project down is not called a failure.
+            if finished.didScriptFail, Date().timeIntervalSince(started) > 0.5,
+               (try? projectDocumentPath()) != nil {
+                throw LogicianError.writeFailed(
+                    "the close AppleScript returned nothing and '\(documentName)' is still open"
+                        + (describeVisibleDialogs().isEmpty
+                            ? " with no dialog on screen"
+                            : "; Logic is showing: \(describeVisibleDialogs())")
+                )
             }
             Thread.sleep(forTimeInterval: 0.2)
         }
         throw LogicianError.verificationFailed(
-            requested: "'\(documentName)' closing without saving",
-            actual: "it was still open after \(Int(timeoutSeconds)) s"
+            requested: "'\(documentName)' closing" + (saving ? " and saving" : " without saving"),
+            actual: (lastReadAnswered
+                        ? "it was still open after \(Int(timeoutSeconds)) s"
+                        : "the close was NOT confirmed within \(Int(timeoutSeconds)) s — the"
+                            + " document window was still on the Accessibility plane, the close"
+                            + " script had not returned, or the document list would not answer,"
+                            + " so the project may or may not still be open")
+                + (finished.didScriptFail ? ". The close AppleScript itself returned nothing" : "")
                 + (describeVisibleDialogs().isEmpty
                     ? " with no dialog on screen"
                     : "; dialogs on screen: \(describeVisibleDialogs())")
@@ -349,8 +435,7 @@ extension MCPServer {
                     + " this check runs before the reset touches Logic."
             )
         }
-        let closeTimeout = min(max((arguments["timeout_seconds"] as? Double)
-            ?? (arguments["timeout_seconds"] as? Int).map(Double.init) ?? 30, 5), 300)
+        let closeTimeout = ProjectReset.closeTimeoutSeconds(arguments)
 
         let started = Date()
         var dialogLog: [[String: Any]] = []
@@ -360,7 +445,15 @@ extension MCPServer {
         ]
 
         // MARK: Phase 1 — what is open now
-        let before = openDocumentsSnapshot()
+        // A document list that will not answer is NOT an empty one: reading
+        // the silence as "nothing is open" would skip the close and then open
+        // the target on top of whatever is actually there.
+        guard let before = openDocumentsSnapshot() else {
+            throw ProjectClose.unreadableDocumentList(
+                whileTryingTo: "the open-document list, before resetting to '\(target)'",
+                dialogsOnScreen: logic.describeVisibleDialogs()
+            )
+        }
         result["closed"] = before.map { document -> [String: Any] in
             [
                 "project": document.name,
@@ -385,9 +478,9 @@ extension MCPServer {
         // MARK: Phase 2 — close without saving
         let closeStarted = Date()
         if let open = before.first {
-            dialogLog += try logic.closeOpenDocumentDiscarding(
-                documentName: open.name, timeoutSeconds: closeTimeout
-            )
+            dialogLog += try logic.closeOpenDocument(
+                documentName: open.name, saving: false, timeoutSeconds: closeTimeout
+            ).dialogs
             result["close_state"] = dirtyFlag ? "closed_discarding_changes" : "closed_clean"
         } else {
             result["close_state"] = "nothing_was_open"
@@ -455,9 +548,11 @@ extension MCPServer {
         let after = openDocumentsSnapshot()
         checks.append(ProjectReset.Check(
             name: "exactly_one_document_open",
-            passed: after.count == 1,
-            detail: "open documents: "
-                + (after.isEmpty ? "none" : after.map(\.name).joined(separator: ", "))
+            passed: after?.count == 1,
+            detail: after.map { documents in
+                "open documents: "
+                    + (documents.isEmpty ? "none" : documents.map(\.name).joined(separator: ", "))
+            } ?? "Logic's document list did not answer, so the count is unknown"
         ))
         // NOT a check. Logic reports a freshly opened project as `modified`
         // immediately — measured live 2026-08-28 on two back-to-back resets of
@@ -466,7 +561,7 @@ extension MCPServer {
         // from the other side since v0.29). Gating `verified` on it would fail
         // every reset that worked, so it is reported as an observation with
         // the reason, and never as evidence of unsaved user work.
-        result["modified_flag_after_open"] = after.first?.modified ?? NSNull()
+        result["modified_flag_after_open"] = after?.first?.modified ?? NSNull()
         let health = logic.health()
         checks.append(ProjectReset.Check(
             name: "accessibility_trusted",
@@ -527,9 +622,10 @@ extension MCPServer {
         return result
     }
 
-    /// The open-document list as the reset reads it. A thin wrapper so the
-    /// phases above read as one story instead of repeating the tuple type.
-    private func openDocumentsSnapshot() -> [(name: String, path: String?, modified: Bool)] {
-        logic.openDocuments()
+    /// The open-document list as the reset reads it — nil when the read
+    /// itself failed. A thin wrapper so the phases above read as one story
+    /// instead of repeating the tuple type.
+    private func openDocumentsSnapshot() -> [(name: String, path: String?, modified: Bool)]? {
+        logic.readOpenDocuments()
     }
 }
