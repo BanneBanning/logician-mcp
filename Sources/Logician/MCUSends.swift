@@ -39,6 +39,24 @@ extension MCUController {
         lcdFields(top)[0].hasPrefix(MCULCDStrings.sendFieldLabelPrefix + "1")
     }
 
+    /// The send slot number a send-view field label names, or nil for
+    /// anything that is not a settled slot label. Pure, like its neighbours,
+    /// and refusing the banner for the same reason they do: the browse banner
+    /// spells the word out (`Send 1`), whose fourth character is not a digit,
+    /// so a banner frame can never name a page. This is what proves a page
+    /// ADVANCE landed: after a cursor-right, only a frame whose first cell
+    /// reads `Sen3…` is the second page. The old walk had no such proof and
+    /// a swallowed page press left it re-reading one page under three
+    /// numbers — its two cells reported as sends 1, 3 and 5 (observed live
+    /// 2026-08-31).
+    static func sendSlotNumber(inFieldLabel label: String) -> Int? {
+        let prefix = MCULCDStrings.sendFieldLabelPrefix
+        guard label.hasPrefix(prefix),
+              let digit = label.dropFirst(prefix.count).first?.wholeNumberValue,
+              (1...8).contains(digit) else { return nil }
+        return digit
+    }
+
     /// True when the slot's own field labels are painted at its field group -
     /// the positive proof that a destination press was taken and Logic has
     /// left the browse banner. Pure, for the same reason as
@@ -117,6 +135,50 @@ extension MCUController {
             if first == second { return second }
         }
         return rows()
+    }
+
+    /// The send view's fields once `settledSendViewRows` agrees AND the first
+    /// cell's label names the expected slot. The label check is what defeats
+    /// the stale mirror: after a swallowed page press the mirror holds the OLD
+    /// page perfectly stably, so two agreeing frames alone prove nothing —
+    /// only the new page's own slot number says the page is the one the
+    /// caller thinks it is reading. Returns nil when the view is not
+    /// standing, the mirror is unreadable, or that page never shows.
+    static func settledSendPage(
+        expectingFirstSlot slot: Int
+    ) -> [(name: String, value: String)]? {
+        for _ in 0..<3 {
+            guard sendViewStanding(in: freshStatus()) else { return nil }
+            guard let rows = settledSendViewRows() else { return nil }
+            let fields = zip(lcdFields(rows.top), lcdValueFields(rows.bottom))
+                .map { ($0, $1) }
+            if sendSlotNumber(inFieldLabel: fields[0].0) == slot { return fields }
+            _ = quiescentStatus()
+        }
+        return nil
+    }
+
+    /// Advances the send view one page and PROVES the landing: the next
+    /// page's first slot label must appear in a settled frame. A press that
+    /// changed nothing is retried once — the mirror cannot distinguish a
+    /// swallowed press from slow repainting, and a second cursor-right is
+    /// harmless because the press is a no-op past the last page. Returns the
+    /// new page's fields, or nil when the page provably did not change, so
+    /// the caller stops instead of reading the old page under new numbers.
+    static func advanceSendPage(
+        toShowFirstSlot slot: Int
+    ) throws -> [(name: String, value: String)]? {
+        for _ in 0..<2 {
+            let status = freshStatus()
+            guard sendViewStanding(in: status) else {
+                throw sendViewDroppedError(status, before: "a page advance")
+            }
+            let events = status?["received_events"] as? Int ?? -1
+            try pressNote(0x63)
+            _ = awaitEvents(since: events, timeoutMs: 300)
+            if let fields = settledSendPage(expectingFirstSlot: slot) { return fields }
+        }
+        return nil
     }
 
     /// Creates a send by browsing the destination field of the first empty
@@ -617,13 +679,23 @@ extension MCUController {
         )
     }
 
-    /// Pages the send channel view to the page holding the given send slot.
+    /// Pages the send channel view to the page holding the given send slot,
+    /// proving every advance landed (`advanceSendPage`) — the blind press it
+    /// replaces left a caller reading, or writing, on whatever page a
+    /// swallowed press had really left the surface on.
     static func sendViewToPage(forSend send: Int) throws {
         try sendViewLeftmost()
-        for _ in 0..<((send - 1) / 2) {
-            try pressNote(0x63)
-            Thread.sleep(forTimeInterval: 0.2)
-            _ = quiescentStatus()
+        var page = 0
+        while page < (send - 1) / 2 {
+            page += 1
+            guard try advanceSendPage(toShowFirstSlot: page * 2 + 1) != nil else {
+                throw LogicianError.preconditionUnmet(
+                    "The send view would not advance to the page holding send"
+                        + " \(send): the page press changed nothing twice — the"
+                        + " view never painted slot \(page * 2 + 1)'s labels."
+                        + " Nothing was read or written on the wrong page."
+                )
+            }
         }
     }
 
@@ -656,11 +728,31 @@ extension MCUController {
     static func readSends(restoringView: Bool = true) throws -> [[String: Any]]? {
         guard try ensureSendView() else { return nil }
         defer { if restoringView { exitToPan() } }
-        func readOnce() throws -> [[String: Any]] {
+        func readOnce() throws -> [[String: Any]]? {
             try sendViewLeftmost()
             var sends: [[String: Any]] = []
             for page in 0..<4 {
-                guard let fields = parameterPage() else { break }
+                let firstSlot = page * 2 + 1
+                // Every page is read settled AND proven to BE that page by
+                // its own slot label. The walk this replaces read one raw
+                // frame and pressed the page advance blind, which failed both
+                // ways in one live session (2026-08-31): a swallowed press
+                // re-read the same page as sends 1, 3 and 5, and a
+                // mid-repaint frame hid an occupied slot 1 behind a blank —
+                // and the removal that compared that garbage `before` against
+                // a good `after` reported verification_failed on a removal
+                // that had succeeded.
+                let fields = page == 0
+                    ? settledSendPage(expectingFirstSlot: firstSlot)
+                    : try advanceSendPage(toShowFirstSlot: firstSlot)
+                guard let fields else {
+                    // The first page never readable means there is no send
+                    // view to read; a later page that provably never arrived
+                    // stops the walk with what is proven so far rather than
+                    // reading the old page under new numbers.
+                    if page == 0 { return nil }
+                    break
+                }
                 var pageHadSend = false
                 for half in 0..<2 {
                     let base = half * 4
@@ -678,14 +770,10 @@ extension MCUController {
                     ])
                 }
                 if !pageHadSend { break }
-                try pressNote(0x63)
-                Thread.sleep(forTimeInterval: 0.2)
-                _ = quiescentStatus()
             }
             return sends
         }
-        let first = try readOnce()
-        if !first.isEmpty { return first }
+        if let first = try readOnce(), !first.isEmpty { return first }
         // "No sends" is believed only on a second look. A freshly entered
         // send view can hold a stale frame that paints an occupied track's
         // slots blank (measured twice, 2026-08-31 — one such frame turned a
@@ -710,14 +798,10 @@ extension MCUController {
         }
         guard try ensureSendView() else { return nil }
         defer { exitToPan() }
-        try sendViewLeftmost()
-        let page = (sendNumber - 1) / 2
-        for _ in 0..<page {
-            try pressNote(0x63)
-            Thread.sleep(forTimeInterval: 0.2)
-            _ = quiescentStatus()
-        }
-        guard let fields = parameterPage() else { return nil }
+        try sendViewToPage(forSend: sendNumber)
+        guard let fields = settledSendPage(
+            expectingFirstSlot: ((sendNumber - 1) / 2) * 2 + 1
+        ) else { return nil }
         let base = ((sendNumber - 1) % 2) * 4
         let levelIndex = base + 1
         let destination = fields[base].value

@@ -108,6 +108,16 @@ with every render coming back as audio the agent can listen to.
   costs one clearly-reported failed call — not the whole MCP server, which
   previously died on the unhandled signal.
 
+- **The send list proves which page it is reading.** `readSends` walked the send
+  view's pages by pressing page-right blind, so a press Logic swallowed left it
+  re-reading one page under three different numbers (sends 1, 3, 5) — and a
+  mid-repaint frame could hide an occupied slot 1 entirely. Removals compared that
+  garbage `before` list against a good `after` and reported `verification_failed`
+  on removals that had succeeded. Every page read is now settled and must name its
+  own first slot (`Sen3In` is the second page, and nothing else is) before it is
+  believed, a swallowed press is retried once and then reported, and the same
+  proven advance drives paging for send levels and the surface view tool.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.
