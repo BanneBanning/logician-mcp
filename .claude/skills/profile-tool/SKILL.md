@@ -23,6 +23,26 @@ instrumentation, which you fully revert. No commits. Target: well under
 - **Cut WAITS, not VERIFICATION.** Silent wrongness stays forbidden.
 - **Constants shrink only via measured distributions**, never by guess.
 
+## The live lock (one Logic, many sessions)
+
+Other sessions and subagents profile other tools concurrently. Every action that
+touches Logic, the Accessibility tree, the bridge daemon socket or the control
+surface — including running the server binary against Logic — requires holding
+the shared lock, and must never happen without it:
+
+    LOCK="/private/tmp/claude-501/logician-live.lock"
+    n=0; until mkdir "$LOCK" 2>/dev/null; do n=$((n+1)); [ $n -gt 150 ] && { echo "LOCK TIMEOUT"; exit 1; }; sleep 20; done
+    echo "<tool> $(date +%s)" > "$LOCK/holder"
+    ...live work...
+    rm -rf "$LOCK"      # ALWAYS, also on failure, after the surface is back in PN
+
+Hold it as briefly as possible: do steps 1–2 (triage, instrumentation, build)
+before acquiring; acquire once for the whole live matrix; release right after
+restoring baseline. Re-acquire briefly for the single ledger edit (two sessions
+must not read-modify-write TOOL-OPTIMIZATION-LEDGER.md at once). If you are the
+only session and find a lock whose `holder` timestamp is older than 50 minutes
+with no live session running, it is stale — remove it and say so in your report.
+
 ## Procedure
 
 1. **Pattern triage first (code reading, no Logic).** Read the tool's handler
@@ -42,7 +62,7 @@ instrumentation, which you fully revert. No commits. Target: well under
 2. **Instrument temporarily**: Date()-bracket the phases behind the usual env
    guard. The tree must be byte-identical afterwards — verify with `git status`
    / `git diff` yourself.
-3. **Run a LIGHT matrix live** (sandbox project "Testlåt Copy"; standing
+3. **Run a LIGHT matrix live, holding the lock** (sandbox project "Testlåt Copy"; standing
    rules: never save, no blind Undo, no second `logician --bridge`, probe for
    modals, unknown dialog → Cancel, leave the surface in PN view and the project
    at baseline, restore anything you write; Bash with AX/socket needs
