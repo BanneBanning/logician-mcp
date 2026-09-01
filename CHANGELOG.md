@@ -102,6 +102,12 @@ with every render coming back as audio the agent can listen to.
   previously died on the unhandled SIGPIPE. Commands still run one at a time, so
   control-surface writes never interleave.
 
+- **The MCP server survives a vanishing bridge daemon.** The server's side of the
+  command socket now suppresses SIGPIPE on the connection itself, so a daemon that
+  restarts, crashes, or cuts the connection while a command is still being written
+  costs one clearly-reported failed call — not the whole MCP server, which
+  previously died on the unhandled signal.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

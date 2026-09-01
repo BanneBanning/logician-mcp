@@ -75,6 +75,26 @@ final class FramingTests: XCTestCase {
         XCTAssertTrue(readToEOF(reader).isEmpty)
     }
 
+    func testWriteAllFailsCleanlyOnANoSigpipeSocketWithoutIgnoringTheSignal() throws {
+        let (writer, reader) = try makeSocketPair()
+        defer { close(writer) }
+        // SO_NOSIGPIPE on the fd, exactly as MCUBridgeClient.sendOnce sets it
+        // on the command socket. Deliberately NO signal(SIGPIPE,
+        // SIG_IGN) here: the whole point of the socket option is that neither
+        // side needs to own the process's signal dispositions. This test runs
+        // before testWriteAllReportsFailureWhenThePeerIsGone (XCTest order is
+        // alphabetical within a class), so the default — fatal — disposition
+        // is still in force: if the option ever stopped suppressing the
+        // signal, this test would kill the test process, not merely fail.
+        var noSigpipe: Int32 = 1
+        setsockopt(writer, SOL_SOCKET, SO_NOSIGPIPE, &noSigpipe,
+                   socklen_t(MemoryLayout<Int32>.size))
+        close(reader)
+        // Large enough that it cannot all disappear into the send buffer.
+        let payload = Data(repeating: 0x41, count: 4 * 1024 * 1024)
+        XCTAssertFalse(writeAll(writer, payload))
+    }
+
     func testWriteAllReportsFailureWhenThePeerIsGone() throws {
         let (writer, reader) = try makeSocketPair()
         defer { close(writer) }

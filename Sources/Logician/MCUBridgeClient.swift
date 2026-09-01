@@ -208,6 +208,15 @@ enum MCUBridge {
             throw LogicianError.writeFailed("could not create a socket")
         }
         defer { Darwin.close(fd) }
+        // A daemon that closes the connection mid-command (a restart, a
+        // crash, its own receive deadline) must cost THIS call an EPIPE —
+        // surfaced below as LogicianError.writeFailed — not a process-wide
+        // SIGPIPE, which is fatal by default and would take the entire MCP
+        // server down with it. Set on the fd, not via signal(): the server
+        // does not own the process's signal dispositions.
+        var noSigpipe: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigpipe,
+                   socklen_t(MemoryLayout<Int32>.size))
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         path.withCString { source in
