@@ -66,6 +66,12 @@ struct ListEditorTable {
     /// Event`, `Additional Info`) and pop-ups (`Tempo Set:`) that sit beside
     /// the table rather than in it.
     let group: AXUIElement
+    /// The `AXTable` itself. Stable for as long as the pane is open, which is
+    /// what lets a write loop ask it for `AXSelectedRows` instead of walking
+    /// the window down to the table again and parsing every row to find the
+    /// one that is selected (measured 2026-09-01: 164 ms of the 268 ms each
+    /// Event List stepper write cost, and it grew with the region's size).
+    let element: AXUIElement
 }
 
 extension LogicAccessibility {
@@ -193,7 +199,7 @@ extension LogicAccessibility {
         return (
             ListEditorTable(
                 tab: tab, columns: columns, rows: rows,
-                declaredCount: declaredCount, group: group
+                declaredCount: declaredCount, group: group, element: table
             ),
             nil
         )

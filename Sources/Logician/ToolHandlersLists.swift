@@ -71,93 +71,31 @@ extension MCPServer {
     // MARK: - logic_edit_event (G18)
 
     func handleEditEvent(_ arguments: [String: Any]) throws -> Any {
-        let action = try requiredString("action", in: arguments)
-        // Point the list at a region first, exactly as logic_list_events does:
+        // ARGUMENTS FIRST, all of them. `selectRegion` below clears every other
+        // region's selection and moves keyboard focus, so a refusal that ran
+        // after it has already changed the user's project in order to say no.
+        // `EventEditRequest` cannot reach the UI, which is what keeps the order
+        // right (see its doc comment).
+        let request = try EventEditRequest(arguments: arguments)
+        let action = request.action
+        let address = request.address
+        let change = request.change
+        // Now point the list at a region, exactly as logic_list_events does:
         // the Event List edits what it is SHOWING, so "fix this note in that
         // region" is two steps and the tool does both.
         var selection: [String: Any]?
-        if let trackName = arguments["track_name"] as? String {
+        if let trackName = request.trackName {
             selection = try logic.selectRegion(
                 trackName: trackName,
-                regionName: arguments["region_name"] as? String,
-                startBar: arguments["start_bar"] as? Int,
+                regionName: request.regionName,
+                startBar: request.startBar,
                 exclusive: true
             )
         }
-        guard let bar = arguments["bar"] as? Int, bar >= 1 else {
-            throw LogicianError.invalidArguments("bar is required and must be 1 or greater")
-        }
-        func segment(_ key: String) throws -> Int? {
-            guard let value = arguments[key] else { return nil }
-            guard let number = value as? Int, number >= 1 else {
-                throw LogicianError.invalidArguments("\(key) must be a whole number, 1 or greater")
-            }
-            return number
-        }
-        func pitch(_ key: String) throws -> Int? {
-            guard let value = arguments[key] else { return nil }
-            guard let parsed = EventListWrite.parsePitchArgument(value) else {
-                throw LogicianError.invalidArguments(
-                    "\(key) must be a MIDI note number 0-127 or a note name in Logic's own"
-                        + " spelling, where C3 is middle C (60): 'D#2', 'A♯2', 'C3'"
-                )
-            }
-            return parsed
-        }
-        var velocity: Int?
-        if let value = arguments["velocity"] {
-            guard let number = value as? Int, (1...127).contains(number) else {
-                throw LogicianError.invalidArguments(
-                    "velocity must be 1-127 (0 is a note-off, not a quiet note)"
-                )
-            }
-            velocity = number
-        }
-        var length: [Int]?
-        if let value = arguments["length"] {
-            guard let text = value as? String,
-                  let parsed = EventListWrite.parse(segments: text),
-                  parsed.allSatisfy({ $0 >= 0 }) else {
-                throw LogicianError.invalidArguments(
-                    "length must be Logic's own four-field spelling, 'bars beats divisions ticks'"
-                        + " — the same text logic_list_events prints in the Length/Info column."
-                        + " A quarter note is '0 1 0 0'."
-                )
-            }
-            length = parsed
-        }
-        var expectedLength: [Int]?
-        if let value = arguments["expected_current_length"] {
-            guard let text = value as? String, let parsed = EventListWrite.parse(segments: text) else {
-                throw LogicianError.invalidArguments(
-                    "expected_current_length must be Logic's 'bars beats divisions ticks' spelling"
-                )
-            }
-            expectedLength = parsed
-        }
-        let address = EventAddress(
-            bar: bar,
-            beat: try segment("beat"),
-            division: try segment("division"),
-            tick: try segment("tick"),
-            pitch: try pitch("pitch")
-        )
-        let change = EventChange(
-            pitch: try pitch("new_pitch"),
-            velocity: velocity,
-            bar: try segment("to_bar"),
-            beat: try segment("to_beat"),
-            division: try segment("to_division"),
-            tick: try segment("to_tick"),
-            length: length,
-            expectedVelocity: arguments["expected_current_velocity"] as? Int,
-            expectedLength: expectedLength
-        )
         if action == "create" {
-            guard address.pitch != nil || change.pitch != nil else {
-                throw LogicianError.invalidArguments("action 'create' requires a pitch")
-            }
-            try refuseCreateOutsideRegion(bar: bar)
+            // This one reads the SELECTED region's bounds, so it belongs after
+            // the selection and nowhere earlier.
+            try refuseCreateOutsideRegion(bar: address.bar)
         }
         var payload = try logic.editEvent(action: action, address: address, change: change)
         if let selection { payload["selection"] = selection }

@@ -309,6 +309,31 @@ with every render coming back as audio the agent can listen to.
   other region's selection. One count now, the tested value in the message, and a
   `restored` flag that matches what the call actually left behind.
 
+- **`logic_edit_event` counts the Event List once, and cleans up after itself.** Adding
+  or deleting one note used to come back `verification_failed` on a write that had
+  LANDED — and a failed `create` left the note it had just made sitting in the region
+  while telling the agent nothing had happened. The cause was two counts of one list:
+  when the list grows, Logic publishes the new size straight away and leaves the newest
+  row undrawn, with every cell but its Status empty, so the row count and the parsed
+  rows disagreed by exactly one. There is one count now — Logic's own `Number of Items`,
+  cross-checked against the rows it published — an undrawn row is counted and reported
+  as unreadable rather than silently dropped, and a `create` that cannot be verified
+  deletes the note it made (found by its own content, never "whatever is selected") and
+  says so in `restored`. In the same pass the tool got **twice as fast**: five blind
+  sleeps became positive checks against the things they were insuring against (a
+  stepper's effect is readable in 0-4 ms, not 90; a row's selection in 0 ms, not 350),
+  and the write loop asks the table for the one row it is editing instead of re-reading
+  all of them — which is also what makes the cost of a note edit independent of how many
+  notes the region holds. Measured live on the same 25-note region as before:
+  a velocity move 4 256 ms → 1 908 ms, a transpose 2 580 ms → 1 763 ms, a delete
+  2 646 ms → 2 129 ms, and an add 7 752 ms → 4 898 ms — the last two of which used to
+  report failure on work that had landed. A note can also be moved anywhere in Logic's
+  own 1-240 tick range now: the position steppers turn out to take the same ten-unit
+  coarse gear pitch and velocity do (100 ticks in 10 writes), and the step budget is the
+  distance to travel, where a flat 80 used to spend ~21 s stepping before refusing a
+  legitimate move. And a call with a bad argument is refused before the tool selects
+  anything, instead of changing the user's region selection on its way to saying no.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.
