@@ -48,6 +48,25 @@ extension MCUController {
             .hasPrefix(MCULCDStrings.sendFieldLabelPrefix + "\(slot)")
     }
 
+    /// True when this send-view PAIR of rows says the selected strip has no
+    /// send slots at all. Pure, against captured rows, like its neighbours.
+    ///
+    /// Measured live 2026-08-31 on `Testlåt Copy`: a strip WITH send
+    /// machinery paints something under every slot label it raises — a
+    /// destination name, or the No-Send entry `--` for an empty slot
+    /// (`Sweeps`, zero sends, painted `--` under both `Sen1In` and `Sen2In`).
+    /// `Vocals`, a folder-stack main track whose reduced strip publishes no
+    /// sends, painted the SAME top row over a completely blank bottom — and
+    /// its destination vpot moved nothing, turned or pressed, in any send
+    /// view. So a labelled slot-1 destination cell with NOTHING in it is the
+    /// signature of a strip that cannot take a send, not of an empty slot.
+    ///
+    /// One frame is not proof — a repaint can blank the cell for a moment —
+    /// which is why the caller reads this twice around a quiescence window.
+    static func sendViewShowsSendlessStrip(top: String, bottom: String) -> Bool {
+        sendViewTopIsFirstPage(top) && lcdFields(bottom)[0].isEmpty
+    }
+
     /// The positive check, taken twice around one quiescence window: the row
     /// must say first-page AND still say it after the display goes quiet, so a
     /// frame caught mid-repaint cannot skip the walk.
@@ -76,6 +95,30 @@ extension MCUController {
         _ = quiescentStatus()
     }
 
+    /// The send view's rows once two reads around a quiescence window agree —
+    /// the read the empty-slot scan classifies from. One frame is not enough
+    /// there: the view opens on whatever page the surface remembered, the
+    /// leftmost walk repaints all 16 cells, and a frame caught mid-repaint
+    /// shows a blank where the slot's real cell has not landed yet. Measured
+    /// live 2026-08-31 on 'Drum Synth Kit': the scan read slot 1 as blank
+    /// while slot 2 already showed `--`, and put the send in slot 2 of a
+    /// strip whose slot 1 was empty.
+    static func settledSendViewRows() -> (top: String, bottom: String)? {
+        func rows() -> (top: String, bottom: String)? {
+            guard let status = freshStatus(),
+                  let top = status["lcd_top"] as? String,
+                  let bottom = status["lcd_bottom"] as? String else { return nil }
+            return (top, bottom)
+        }
+        for _ in 0..<4 {
+            guard let first = rows() else { return nil }
+            _ = quiescentStatus()
+            guard let second = rows() else { return nil }
+            if first == second { return second }
+        }
+        return rows()
+    }
+
     /// Creates a send by browsing the destination field of the first empty
     /// send slot to the named destination (see `browseToSendDestination`),
     /// settle-verifying the shown name, and confirming.
@@ -101,21 +144,51 @@ extension MCUController {
         var restoreOnExit = true
         defer { if restoreOnExit { exitToPan() } }
         try sendViewLeftmost()
-        // find first empty slot across the pages
+        // Find the first empty slot across the pages. Empty means the cell
+        // holds the No-Send entry `--`, and ONLY that: a blank cell used to
+        // count too, and on a strip with no send slots at all — a
+        // folder-stack main track, whose send view labels the slots over a
+        // bottom row it leaves entirely blank — that read the dead cell as
+        // "slot 1 is free" and spent the whole browse budget turning a vpot
+        // Logic had given no parameter (~27 s to a refusal that said the
+        // catalog was missing a bus, measured live 2026-08-31 on 'Vocals').
         var slotNumber: Int?
         for page in 0..<4 {
-            guard let status = freshStatus(),
-                  let top = status["lcd_top"] as? String,
-                  let bottom = status["lcd_bottom"] as? String else { break }
+            guard let (top, bottom) = settledSendViewRows() else { break }
             for half in 0..<2 {
                 let base = half * 4
                 if lcdFields(top)[base].hasPrefix(MCULCDStrings.sendFieldLabelPrefix),
-                   ["", MCULCDStrings.emptySlot].contains(lcdFields(bottom)[base]) {
+                   lcdFields(bottom)[base] == MCULCDStrings.emptySlot {
                     slotNumber = page * 2 + half + 1
                     break
                 }
             }
             if slotNumber != nil { break }
+            // The sendless-strip signature, and it can only show on the first
+            // page: slot 1 is labelled on every strip that is in the send
+            // view at all, and a strip that has sends to give always paints
+            // slot 1's cell. Confirmed on a second read across a quiescence
+            // window so a mid-repaint blank cannot fail a track that merely
+            // repainted slowly.
+            if page == 0, sendViewShowsSendlessStrip(top: top, bottom: bottom) {
+                _ = quiescentStatus()
+                if let settled = freshStatus(),
+                   let settledTop = settled["lcd_top"] as? String,
+                   let settledBottom = settled["lcd_bottom"] as? String,
+                   sendViewShowsSendlessStrip(top: settledTop, bottom: settledBottom) {
+                    throw LogicianError.trackNotExposed(
+                        requested: "a send slot on '\(trackName)'",
+                        exposed: "the send view raises the slot labels but paints no"
+                            + " destination cell — not even the No-Send entry ('--') a"
+                            + " browsable empty slot always shows. That is a strip with"
+                            + " no send machinery: a folder-stack main track is the"
+                            + " common case (logic_track_info reports it as kind"
+                            + " 'reduced'); put the send on the stack's subtracks, or"
+                            + " make it a summing stack, whose main track is a real aux."
+                            + " Nothing was browsed"
+                    )
+                }
+            }
             try pressNote(0x63)
             Thread.sleep(forTimeInterval: 0.2)
             _ = quiescentStatus()
@@ -373,6 +446,15 @@ extension MCUController {
                     report.seen.append(shown)
                 }
                 previous = shown
+            } else if shown.isEmpty, previous.isEmpty {
+                // A cell that paints NOTHING, read after read, is as stalled
+                // as one that repeats a name — it is what a vpot Logic gave no
+                // parameter looks like, and without this the walk would spend
+                // the whole search budget stepping a control that moves
+                // nothing. `previous` starts empty, so a dead cell stalls from
+                // its first read; a single blank frame mid-repaint does not,
+                // because the entry before it set `previous`.
+                stalledReads += 1
             }
             landedByJump = false
 
@@ -416,8 +498,10 @@ extension MCUController {
 
         // A contiguous walk that reached the end of the list has seen every
         // entry there is; anything else has not, so look at the end before
-        // refusing.
-        if stop != .listEnded || report.jumped {
+        // refusing. Unless the browse never painted a single entry — then
+        // there is no list to have an end, the vpot is not editing anything,
+        // and the endgame would only spend seconds jumping a dead control.
+        if stop != .listEnded || report.jumped, !report.seen.isEmpty {
             guard let foundAtTheEnd = try lookAtTheEnd() else { return false }
             if foundAtTheEnd { return true }
         }

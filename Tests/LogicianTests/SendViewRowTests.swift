@@ -132,6 +132,61 @@ final class SendViewRowTests: XCTestCase {
             top: browsingSlot1, slot: 2, destIndex: 0))
     }
 
+    // MARK: - "This strip has no send slots at all"
+
+    /// Captured live 2026-08-31 on `Testlåt Copy`. `Vocals` is a
+    /// folder-stack main track: its reduced strip publishes no sends, and its
+    /// send view raises the slot labels over a bottom row it leaves entirely
+    /// blank. `Sweeps` has zero sends on a REAL strip, and the same top row
+    /// sits over the No-Send entry `--` in both destination cells — that pair
+    /// browses fine, and the add tool proved it by creating and removing a
+    /// send there the same day. The blank cell, not the empty slot, is what
+    /// broke: it used to read as "slot 1 is free" and sent the browse to turn
+    /// a vpot Logic had given no parameter.
+    private let sendlessBottom =
+        "                                                        "
+    private let zeroSendsBottom =
+        "--                          --                          "
+    private let occupiedBottom =
+        "Bus 2  -9,0dB PosPan active Out 3                       "
+
+    func testAFolderStackMainTrackReadsAsSendless() {
+        XCTAssertEqual(sendlessBottom.count, MCULCDRow.length)
+        XCTAssertTrue(MCUController.sendViewShowsSendlessStrip(
+            top: firstPageEmpty, bottom: sendlessBottom))
+    }
+
+    func testARealStripNeverReadsAsSendless() {
+        XCTAssertEqual(zeroSendsBottom.count, MCULCDRow.length)
+        XCTAssertEqual(occupiedBottom.count, MCULCDRow.length)
+        // Zero sends on a real strip: the No-Send entry is painted, so the
+        // slot is empty and browsable, not missing.
+        XCTAssertFalse(MCUController.sendViewShowsSendlessStrip(
+            top: firstPageEmpty, bottom: zeroSendsBottom))
+        // Occupied: the cell holds a destination.
+        XCTAssertFalse(MCUController.sendViewShowsSendlessStrip(
+            top: firstPageOneSend, bottom: occupiedBottom))
+    }
+
+    /// The signature is confined to the FIRST page and to rows whose slot-1
+    /// label is up: a later page, or a browse banner covering the labels, says
+    /// nothing about whether the strip has sends.
+    func testOtherPagesAndBannersDoNotReadAsSendless() {
+        XCTAssertFalse(MCUController.sendViewShowsSendlessStrip(
+            top: secondPageEmpty, bottom: sendlessBottom))
+        XCTAssertFalse(MCUController.sendViewShowsSendlessStrip(
+            top: browsingSlot1, bottom: sendlessBottom))
+    }
+
+    /// A single frame CAN lie: mid-repaint the label is up while the cell is
+    /// still blank. That reading passes here on purpose — the check is cheap
+    /// and one-frame — and the caller is what makes it safe, by requiring the
+    /// signature twice around a quiescence window before refusing.
+    func testAMidRepaintFrameCanShowTheSignatureWhichIsWhyTheCallerReadsTwice() {
+        XCTAssertTrue(MCUController.sendViewShowsSendlessStrip(
+            top: firstPageRepainting, bottom: sendlessBottom))
+    }
+
     /// Slot 8 sits at field group 4-7, so its status cell is the last one;
     /// the index clamp must not let the read wander off the row.
     func testTheLastFieldGroupStaysInsideTheRow() {

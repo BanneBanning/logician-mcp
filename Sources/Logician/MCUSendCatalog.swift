@@ -366,6 +366,16 @@ extension MCUController {
     static func sendDestinationRefusalText(
         requested: String, report: SendBrowseReport
     ) -> String {
+        // A browse that never painted one entry is its own diagnosis: the
+        // vpot was moving nothing, which is what a strip without send slots
+        // shows (a folder-stack main track publishes none). Every sentence
+        // below this reads the catalog back, and there is no catalog here.
+        guard !report.seen.isEmpty || !report.tail.isEmpty else {
+            return "the destination cell never painted a single entry however the vpot"
+                + " turned — a browse that moves nothing is what a strip WITHOUT send"
+                + " slots shows (a folder-stack main track publishes none; logic_track_info"
+                + " reports it as kind 'reduced'). Nothing was written"
+        }
         let read = report.seen.count == 1 ? "1 entry" : "\(report.seen.count) entries"
         let holes = report.jumped
             ? " (the browse jumped ahead, so the entries between the ones it names are unread)"

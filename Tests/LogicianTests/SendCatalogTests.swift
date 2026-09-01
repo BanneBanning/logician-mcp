@@ -441,6 +441,23 @@ final class SendCatalogTests: XCTestCase {
         XCTAssertNil(MCUController.sendDestinationOrdinal("Output 7-8"))
     }
 
+    /// A browse that never painted one entry is not a search that came up
+    /// empty — it is a vpot that was editing nothing, which is what a strip
+    /// without send slots shows (measured live 2026-08-31 on 'Vocals', a
+    /// folder-stack main track). The refusal must say that, not read a
+    /// catalog back that was never there: "the list ends at 'nothing'" was
+    /// what the general endings would have produced.
+    func testABrowseThatSawNothingSaysTheVpotMovedNothing() {
+        for stop in [MCUController.SendBrowseStop.listEnded, .timeBudget] {
+            let text = MCUController.sendDestinationRefusalText(
+                requested: "Bus 5", report: report(seen: [], stop: stop)
+            )
+            XCTAssertTrue(text.contains("never painted a single entry"), "\(stop): \(text)")
+            XCTAssertTrue(text.contains("Nothing was written"), "\(stop): \(text)")
+            XCTAssertFalse(text.contains("ends at"), "\(stop): \(text)")
+        }
+    }
+
     /// A browse that jumped has holes in what it saw, and the refusal must not
     /// present its list as an enumeration.
     func testAJumpedBrowseAdmitsTheEntriesItSkipped() {
