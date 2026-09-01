@@ -119,21 +119,49 @@ extension LogicAccessibility {
         trackNumber: Int?,
         expectedProjectPath: String?
     ) throws -> [String: Any] {
+        try selectTrackReportingRows(
+            trackName: trackName,
+            trackNumber: trackNumber,
+            expectedProjectPath: expectedProjectPath
+        ).result
+    }
+
+    /// `selectTrack`, plus the header rows it walked to resolve the target.
+    ///
+    /// A tool that selects a track and then CHANGES the track list —
+    /// `logic_duplicate_track` — needs a "before" listing to tell the new row
+    /// from the rows that were already there, and this walk is exactly that
+    /// listing, one line before it was thrown away. Re-reading it cost 53–88 ms
+    /// of an 807 ms call (measured 2026-09-01, `logic_duplicate_track` profile
+    /// §3, candidate #2). The rows are read BEFORE the selection is written,
+    /// which is sound for that use: a selection creates and removes no rows,
+    /// and the target was resolved OUT of these very rows, so it is already
+    /// rendered and there is nothing for Logic to scroll into view. Only the
+    /// `selected` flags may be stale afterwards, and the "before" side of a
+    /// create/duplicate verdict does not read them.
+    func selectTrackReportingRows(
+        trackName: String,
+        trackNumber: Int?,
+        expectedProjectPath: String?
+    ) throws -> (result: [String: Any], rows: [TrackChange.Row]) {
         try verifyProjectPath(expectedProjectPath)
 
         let group = try trackHeaderGroup()
         let parsed = try parsedTrackHeaders()
+        let rows = TrackChange.rows(
+            headers: parsed.map { (number: $0.number, name: $0.name, selected: $0.selected) }
+        )
         let target = try resolveTrack(parsed, name: trackName, number: trackNumber)
         let previous = parsed.first(where: \.selected)
         let previousDescription = previous.map { "\($0.number): \($0.name)" } ?? "unknown"
 
         if target.selected, trackSelectionVerified(target.item, name: target.name) {
-            return selectionResult(
+            return (selectionResult(
                 state: "already_selected",
                 target: target,
                 previous: previousDescription,
                 writeRoute: "none"
-            )
+            ), rows)
         }
 
         // The selection is about to MOVE. That is the one moment a deferred
@@ -188,12 +216,12 @@ extension LogicAccessibility {
         // proves nothing about the focused channel, which is the silent
         // wrong-strip bug of 2026-08-31.
         MCUController.noteChannelFocus(target.name, projectPath: try? projectDocumentPath())
-        return selectionResult(
+        return (selectionResult(
             state: "selected",
             target: target,
             previous: previousDescription,
             writeRoute: writeRoute
-        )
+        ), rows)
     }
 
     func pollTrackSelected(_ item: AXUIElement, name: String) -> Bool {

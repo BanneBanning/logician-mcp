@@ -45,6 +45,20 @@ enum TrackChange {
         }
     }
 
+    /// The same reduction, for rows that have already been parsed off the AX
+    /// tree. `selectTrack` walks the track headers to resolve its target and
+    /// then throws the walk away; `logic_duplicate_track` needs exactly that
+    /// listing as its "before" and used to pay a second walk for it (53–88 ms
+    /// of an 807 ms call, measured 2026-09-01). The drop-rule for an unusable
+    /// name stays here rather than being written out a second time at the AX
+    /// call site.
+    static func rows(headers: [(number: Int, name: String, selected: Bool)]) -> [Row] {
+        headers.compactMap { header in
+            guard !header.name.isEmpty else { return nil }
+            return Row(number: header.number, name: header.name, selected: header.selected)
+        }
+    }
+
     // MARK: Creating
 
     /// The names `after` carries that `before` did not, counting OCCURRENCES:
@@ -80,7 +94,15 @@ enum TrackChange {
         after.count > before.count || !addedNames(before: before, after: after).isEmpty
     }
 
-    /// Which row is the new one, for the result's `created_track`.
+    /// Which row is the new one, for the result's `created_track` /
+    /// `duplicate`.
+    ///
+    /// A duplicate is the case this has to get right and a create is the easy
+    /// one: Logic hands a copy either the source's own name — so the added
+    /// name is carried by TWO rows and only the selection tells them apart —
+    /// or an auto-incremented successor of it (`Audio 9` → `Audio 10`,
+    /// measured 2026-09-01). Neither is derivable by the caller, which is why
+    /// this answer is returned rather than left to a follow-up listing.
     ///
     /// Logic SELECTS a track it just created, and the verifying read already
     /// carries `selected`, so the selection is the primary answer — but only
@@ -160,6 +182,24 @@ enum TrackChange {
     /// not pays nothing for the question. Prototype: 9.1–9.4 s → 253–356 ms.
     static let createPollDeadline: TimeInterval = 4.0
     static let createPollInterval: TimeInterval = 0.02
+
+    /// MEASURED 2026-09-01 (`logic_duplicate_track` profile §3.1–§3.2). The
+    /// duplicate path slept 0.3 s and THEN looked, up to fifteen times over —
+    /// and exited on the first look on 10 runs out of 10, so every call paid
+    /// 300 ms for nothing. A probe read fired at 0 ms after the key command
+    /// already saw the new row (2 of 2): the copy is in the header column
+    /// before the first post-command AX read returns. Looking first buys the
+    /// identical verification for less. A/B'd live the same day, same machine
+    /// and same track, old shape against new: call **1 036–1 187 ms → 703–816
+    /// ms** (mean 1 088 → 753), verify loop 445–458 ms → 253–270 ms, still
+    /// `iterations = 1` on 6 runs out of 6. That first post-command read is the
+    /// expensive one (253–270 ms here, against 136–148 ms for the same read
+    /// taken after the old shape's sleep, because Logic blocks it while it
+    /// builds the track) and it IS the verification, so it is the part that is
+    /// never cut — paying it immediately still beats sleeping through the wait
+    /// and then paying a cheap one.
+    static let duplicatePollDeadline: TimeInterval = 4.0
+    static let duplicatePollInterval: TimeInterval = 0.02
 
     /// MEASURED 2026-09-01 (same profile, restore path, 7 runs). Deleting a
     /// track cost 3.2–3.4 s, of which 2.57–2.64 s was `trackDeletionAlert()`

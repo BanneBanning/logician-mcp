@@ -124,39 +124,132 @@ extension MCPServer {
 
     func handleDuplicateTrack(_ arguments: [String: Any]) throws -> Any {
         let dupTrack = try requiredString("track_name", in: arguments)
-        _ = try logic.selectTrack(trackName: dupTrack, trackNumber: arguments["track_number"] as? Int, expectedProjectPath: nil)
-        let dupBefore = ((try? logic.listTracks())?["tracks"] as? [[String: Any]])?.count ?? 0
+        // Selecting the source resolves it AND hands back the header rows it
+        // walked to do so — this call used to re-read the same tree one line
+        // later purely to count it (53–88 ms of an 807 ms call, measured
+        // 2026-09-01). Read-before-write still holds: these ARE the rows the
+        // key command is about to change, and a selection that cannot be made
+        // throws before anything is fired.
+        let selection = try logic.selectTrackReportingRows(
+            trackName: dupTrack,
+            trackNumber: arguments["track_number"] as? Int,
+            expectedProjectPath: nil
+        )
+        let before = selection.rows
         let dupCommand = try MCUController.resolveKeyCommand(
             named: KeyCommandRegistry.Name.duplicateTrack, logic: logic
         )
         _ = try MCUController.triggerKeyCommand(note: dupCommand.note, channel: dupCommand.channel)
-        var dupAfter: [[String: Any]] = []
+
+        // One poll over the thing this verifies, looking BEFORE it sleeps —
+        // see `TrackChange.duplicatePollDeadline`. The old loop slept 300 ms
+        // first and then found the row on its first look, 10 times out of 10.
+        var after: [TrackChange.Row] = []
+        var partial = false
         var duplicated = false
-        for _ in 0..<15 {
-            Thread.sleep(forTimeInterval: 0.3)
-            dupAfter = ((try? logic.listTracks())?["tracks"] as? [[String: Any]]) ?? []
-            if dupAfter.count > dupBefore { duplicated = true; break }
+        let deadline = Date().addingTimeInterval(TrackChange.duplicatePollDeadline)
+        while true {
+            let payload = (try? logic.listTracks()) ?? [:]
+            after = TrackChange.rows((payload["tracks"] as? [[String: Any]]) ?? [])
+            partial = payload["partial"] as? Bool == true
+            if TrackChange.trackAppeared(before: before, after: after) { duplicated = true; break }
+            if Date() >= deadline { break }
+            Thread.sleep(forTimeInterval: TrackChange.duplicatePollInterval)
         }
-        if duplicated { invalidateBankMap() }
-        return [
+
+        var result: [String: Any] = [
             "success": duplicated, "verified": duplicated,
-            "state": duplicated ? "duplicated" : "failed",
             "track": dupTrack,
-            "tracks_after": dupAfter.map { ["track_number": $0["track_number"] ?? 0, "track_name": $0["track_name"] ?? ""] }
+            "source_track": [
+                "track_number": selection.result["track_number"] ?? 0,
+                "track_name": selection.result["track_name"] ?? dupTrack
+            ],
+            "tracks_before": before.count,
+            "tracks_after": after.count,
+            "tracks_partial": partial,
+            "tracks": after.map { ["track_number": $0.number, "track_name": $0.name] }
         ]
+        if duplicated {
+            result["state"] = "duplicated"
+            // The copy is not addressable from the source's name, in EITHER
+            // direction: keep the name and it now matches two rows, so every
+            // track tool refuses it as ambiguous; let Logic auto-increment it
+            // and the name the caller passed in belongs to a different track.
+            // Both were measured live 2026-09-01. Logic selects the copy and
+            // the verifying read already carries `selected`, so the answer is
+            // free — it is only the saying of it that was missing.
+            if let row = TrackChange.createdRow(before: before, after: after) {
+                result["duplicate"] = ["track_number": row.number, "track_name": row.name]
+                result["note"] = "The COPY is `duplicate` - address it by both of those fields,"
+                    + " not by the source's name. Logic gives a copy either the source's own name"
+                    + " (which then matches two rows, and every track tool refuses an ambiguous"
+                    + " name) or an auto-incremented one (`Audio 9` copies to `Audio 10`)."
+            } else {
+                result["note"] = "The copy was made, but the listing moved in more than one place,"
+                    + " so which row is the copy cannot be said from here. Re-read"
+                    + " logic_list_tracks before addressing it - the source's name may now match"
+                    + " two rows."
+            }
+        } else {
+            switch TrackChange.unseenVerdict(partial: partial) {
+            case .notVisible:
+                result["state"] = "duplicated_not_visible"
+                result["warning"] = "This project renders only part of its track list"
+                    + " (`partial: true`), so the visible rows not changing does NOT mean no copy"
+                    + " was made."
+                result["note"] = "The key command fired and the rendered rows did not change, but"
+                    + " they are not all the rows. Scroll the Tracks area and re-read"
+                    + " logic_list_tracks before firing this again - a repeat of a duplicate that"
+                    + " already worked leaves a second copy, carrying a second set of the"
+                    + " source's regions, and Undo is a blind instrument."
+            case .nothing:
+                result["state"] = "failed"
+                result["note"] = "No copy appeared. Nothing here left a dialog up; if Logic is"
+                    + " showing one, answer it and call again."
+            }
+        }
+        // The bank map describes this project's track ORDER, and this tool
+        // inserts a row in the middle of it and renumbers everything below.
+        // A duplicate that may have landed invalidates it as surely as one
+        // that provably did.
+        if duplicated || result["state"] as? String == "duplicated_not_visible" {
+            invalidateBankMap()
+        }
+        return result
     }
 
     func handleDeleteTrack(_ arguments: [String: Any]) throws -> Any {
         let delTrack = try requiredString("track_name", in: arguments)
-        _ = try logic.selectTrack(trackName: delTrack, trackNumber: arguments["track_number"] as? Int, expectedProjectPath: nil)
+        let selection = try logic.selectTrack(
+            trackName: delTrack,
+            trackNumber: arguments["track_number"] as? Int,
+            expectedProjectPath: nil
+        )
         // DESTRUCTIVE: re-verify that the selected track really is the
-        // requested one right before firing.
+        // requested one right before firing — by NUMBER as well as by name.
+        //
+        // The name on its own is not a safety net on the state
+        // `logic_duplicate_track` manufactures: a copy that kept the source's
+        // name leaves two rows answering to it, and "the selected row is
+        // called Crash" is then true of whichever one is selected. What
+        // actually protected the ten duplicate-restores of 2026-09-01 was
+        // `resolveTrack`'s number/name cross-check (AXTracks.swift:91), and
+        // that is only reached when the caller passes `track_number`. So the
+        // number `selectTrack` just resolved is carried down here and compared
+        // too: it costs a dictionary read and it makes the guard mean what its
+        // comment always claimed.
         let delList = ((try? logic.listTracks())?["tracks"] as? [[String: Any]]) ?? []
-        guard let selected = delList.first(where: { $0["selected"] as? Bool == true }),
-              (selected["track_name"] as? String)?.caseInsensitiveCompare(delTrack) == .orderedSame else {
+        let selectedDescription = delList
+            .filter { $0["selected"] as? Bool == true }
+            .map { "\($0["track_number"] ?? "?"): \($0["track_name"] ?? "?")" }
+            .joined(separator: ", ")
+        guard let targetNumber = selection["track_number"] as? Int,
+              let selected = delList.first(where: { $0["selected"] as? Bool == true }),
+              (selected["track_name"] as? String)?.caseInsensitiveCompare(delTrack) == .orderedSame,
+              selected["track_number"] as? Int == targetNumber else {
             throw LogicianError.verificationFailed(
-                requested: "'\(delTrack)' selected before Delete Track",
-                actual: "the selection shows a different track; refusing",
+                requested: "track \(selection["track_number"] ?? "?") '\(delTrack)' selected before Delete Track",
+                actual: "the selection reads '\(selectedDescription.isEmpty ? "none" : selectedDescription)'; refusing",
                 restored: true
             )
         }
