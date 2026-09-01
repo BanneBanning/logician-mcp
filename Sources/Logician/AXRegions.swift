@@ -417,73 +417,305 @@ extension LogicAccessibility {
         return row.regions.map(parseRegion)
     }
 
-    /// Counts selected regions across ALL visible rows — the guard that must
-    /// pass (exactly 1) immediately before any destructive key command fires.
+    /// Counts selected regions across ALL RENDERED rows.
+    ///
+    /// Read what this cannot do: `regionRows()` publishes the track rows Logic
+    /// has rendered and nothing about the ones it has not, so a region selected
+    /// on a scrolled-out or folder-stacked row is not in this number. It is a
+    /// necessary condition for exclusivity, never a project-wide proof — see
+    /// `RegionDeleteGuard` for the receipt that is, and for the tool that used
+    /// to advertise this count as one.
     func selectedRegionCount() throws -> Int {
         try regionRows().reduce(0) { sum, row in
             sum + row.regions.filter { stringAttribute($0, "AXSelected") == "1" }.count
         }
     }
 
+    /// The whole arrangement in ONE walk: which rows are rendered, how many
+    /// regions they hold between them, how many of those are selected, and the
+    /// parsed regions of one target row.
+    ///
+    /// It exists because the destructive region path used to take three walks to
+    /// learn these (`regionSnapshot` + `selectedRegionCount` + a second snapshot)
+    /// and STILL could not answer the only question that mattered — whether the
+    /// count it had was the project's. The totals are the after-check's real
+    /// yardstick: the target track's own count is satisfied by a Delete that
+    /// also emptied three other rows.
+    ///
+    /// `parseRegion` runs on the target row only. The totals need no help text,
+    /// so they cost one `AXSelected` read per region and no regex at all.
+    struct ArrangementCensus {
+        let rowNumbers: [Int]
+        let totalRegions: Int
+        let selectedRegions: Int
+        let targetRegions: [[String: Any]]
+    }
+
+    func arrangementCensus(trackName: String, trackNumber: Int? = nil) throws -> ArrangementCensus {
+        let rows = try regionRows()
+        guard let target = rows.first(where: {
+            if let trackNumber { return $0.number == trackNumber }
+            return $0.track.caseInsensitiveCompare(trackName) == .orderedSame
+        }) else {
+            throw LogicianError.trackNotExposed(
+                requested: trackNumber.map { "track row \($0) ('\(trackName)')" }
+                    ?? "regions on '\(trackName)'",
+                exposed: "visible track rows: " + rows.map(\.track).joined(separator: ", ")
+            )
+        }
+        var total = 0
+        var selected = 0
+        for row in rows {
+            total += row.regions.count
+            selected += row.regions.filter { stringAttribute($0, "AXSelected") == "1" }.count
+        }
+        return ArrangementCensus(
+            rowNumbers: rows.map(\.number),
+            totalRegions: total,
+            selectedRegions: selected,
+            targetRegions: target.regions.map(parseRegion)
+        )
+    }
+
+    /// Can this walk see every row a Delete would act on? Reads the track HEADER
+    /// column and Logic's scroll bar, because the region walk publishes neither
+    /// a collapsed stack nor a viewport.
+    func regionRowCoverage(regionRowNumbers: [Int]) -> RegionDeleteGuard.Coverage {
+        let headers = (try? parsedTrackHeaders()) ?? []
+        let verdict = TrackListCompleteness.evaluate(
+            rows: headers.map {
+                TrackListCompleteness.Row(
+                    number: $0.number, name: $0.name,
+                    isStack: $0.disclosure != nil, expanded: $0.expanded
+                )
+            },
+            scrollable: tracksAreaScrollable().scrollable
+        )
+        return RegionDeleteGuard.coverage(
+            trackVerdict: verdict,
+            headerNumbers: headers.map(\.number),
+            regionRowNumbers: regionRowNumbers
+        )
+    }
+
+    /// Clears the region selection ACROSS THE WHOLE PROJECT with Logic's own
+    /// `Deselect All`, and returns the rendered selection count it left behind.
+    ///
+    /// The receipt is the transition, not the command: the caller has just made
+    /// exactly one region selected, so a rendered count that falls to 0 proves
+    /// the command reached Logic, is bound to something real, and had effect —
+    /// which is also, incidentally, a live proof that the Tracks area holds the
+    /// keyboard focus these commands need. Logic's semantics carry that effect
+    /// to the rows the walk cannot see; the proof carries the claim that it
+    /// fired at all.
+    ///
+    /// Positive check first, then 50 ms polling: the same shape as every other
+    /// key-command wait here, and for the same measured reason (2026-09-01 — a
+    /// region key command's effect is readable on the FIRST look in 3 of 3).
+    func clearProjectWideRegionSelection(
+        budget: TimeInterval = 1.5
+    ) throws -> Int {
+        try fireKeyCommand(KeyCommandRegistry.Name.deselectAll)
+        let deadline = Date().addingTimeInterval(budget)
+        var remaining = try selectedRegionCount()
+        while remaining != 0 && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+            remaining = try selectedRegionCount()
+        }
+        return remaining
+    }
+
+    /// Deletes ONE region — and is allowed to say so.
+    ///
+    /// Logic's `Delete` takes every selected region in the project. This tool
+    /// used to promise "exactly ONE region selected project-wide" on the
+    /// strength of a count taken over `regionRows()`, which sees only RENDERED
+    /// track rows; `selectRegion(exclusive:)` cleared the same rendered-only
+    /// set, and the after-check compared region counts on the TARGET TRACK
+    /// alone. On the sandbox project — ten hidden subtracks under a collapsed
+    /// stack, `logic_list_tracks` saying `partial: true` — a Delete that also
+    /// removed regions from those rows passed every one of those tests and came
+    /// back `success: true, verified: true`.
+    ///
+    /// So the exclusivity is now ESTABLISHED rather than inferred: Logic's own
+    /// project-wide `Deselect All` fires first and is proven by the rendered
+    /// selection collapsing to zero, then the one target region is selected
+    /// back. Where that command is missing from the registry, the tool refuses
+    /// if rows are provably hidden and says what it checked if they are not —
+    /// see `RegionDeleteGuard`. The after-check compares the region total across
+    /// EVERY rendered row, so collateral damage on a rendered row is a loud
+    /// failure instead of an invisible one.
     func deleteRegion(
         trackName: String, regionName: String?, startBar: Int?
     ) throws -> [String: Any] {
-        let before = try regionSnapshot(trackName: trackName)
+        // The census and the coverage read come BEFORE any write, so a refusal
+        // can honestly say the project is untouched — selection included. The
+        // census doubles as the before-picture: selecting a region changes no
+        // region counts.
+        let before = try arrangementCensus(trackName: trackName)
+        let coverage = regionRowCoverage(regionRowNumbers: before.rowNumbers)
+        let plan = RegionDeleteGuard.plan(
+            coverage: coverage,
+            deselectAllRegistered: KeyCommandRegistry.note(
+                named: KeyCommandRegistry.Name.deselectAll
+            ) != nil
+        )
+        if case .refuse(let reason) = plan {
+            throw LogicianError.verificationFailed(
+                requested: "exactly one region selected across the WHOLE project before Delete",
+                actual: reason,
+                restored: true // nothing has been written at this point
+            )
+        }
         let selection = try selectRegion(
             trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true,
             forKeyCommand: true
         )
-        // ONE count, not two. The value the guard TESTED is the value the
-        // refusal quotes: reading it a second time to interpolate a string
-        // cost a fifth full tree walk (~110 ms measured 2026-09-01) and could
-        // legitimately print a number that never refused anything.
-        let selectedCount = try selectedRegionCount()
-        guard selectedCount == 1 else {
-            throw LogicianError.verificationFailed(
-                requested: "exactly one selected region before Delete",
-                actual: "\(selectedCount) regions selected; refusing to fire Delete. Nothing was "
-                    + "deleted - but the SELECTION was not put back either: this call had already "
-                    + "selected '\(selection["name"] ?? "?")' exclusively, which cleared every "
-                    + "other region's selection",
-                // `restored: true` here was a fiction: selectRegion has by now
-                // changed the project-wide region selection and written
-                // AXFocused. The arrangement is untouched; the selection is not.
-                restored: false
+        var clearReceipt: [String: Any]?
+        var reselected = selection
+        if case .projectWideClear = plan {
+            let remaining = try clearProjectWideRegionSelection()
+            guard remaining == 0 else {
+                throw LogicianError.verificationFailed(
+                    requested: "the project-wide region selection cleared before Delete",
+                    actual: "'\(KeyCommandRegistry.Name.deselectAll)' fired and \(remaining) "
+                        + "region(s) are still selected, so it did not reach Logic or is bound to "
+                        + "something else - and without it the selection cannot be proven "
+                        + "exclusive beyond the rendered rows. Refusing to fire Delete. Nothing "
+                        + "was deleted; the SELECTION was changed (this call selected "
+                        + "'\(selection["name"] ?? "?")' exclusively across the rendered rows). "
+                        + TracksAreaFocus.summary(inSelectionResult: selection) + " "
+                        + TracksAreaFocus.dialogSentence(modalWindowTitles())
+                        + " Relearn the key commands with logic_setup_key_commands "
+                        + "{relearn: true} if the binding is stale.",
+                    restored: false
+                )
+            }
+            // Select the target BACK, by the identity the first selection
+            // resolved - not by the caller's possibly looser arguments, so the
+            // second pass cannot land on a different region than the first.
+            reselected = try selectRegion(
+                trackName: trackName,
+                regionName: selection["name"] as? String,
+                startBar: selection["start_bar"] as? Int,
+                exclusive: true,
+                // The focus was established above, and `Deselect All` landing
+                // just proved it is live. A second header write buys nothing.
+                forKeyCommand: false
             )
+            let selectedNow = try selectedRegionCount()
+            guard selectedNow == 1 else {
+                throw LogicianError.verificationFailed(
+                    requested: "exactly one selected region before Delete",
+                    actual: "\(selectedNow) regions selected after a proven project-wide clear; "
+                        + "refusing to fire Delete. Nothing was deleted; the selection was "
+                        + "cleared and then reselected",
+                    restored: false
+                )
+            }
+            clearReceipt = [
+                "command": KeyCommandRegistry.Name.deselectAll,
+                "selected_after_clear": 0,
+                "selected_before_delete": selectedNow,
+                "verified": true,
+                "means": "Logic's own Deselect All is project-wide; the rendered selection was"
+                    + " watched falling to zero, which proves the command landed."
+            ]
+        } else {
+            // ONE count, not two. The value the guard TESTED is the value the
+            // refusal quotes: reading it a second time to interpolate a string
+            // cost a fifth full tree walk (~110 ms measured 2026-09-01) and
+            // could legitimately print a number that never refused anything.
+            let selectedCount = try selectedRegionCount()
+            guard selectedCount == 1 else {
+                throw LogicianError.verificationFailed(
+                    requested: "exactly one selected region before Delete",
+                    actual: "\(selectedCount) regions selected; refusing to fire Delete. Nothing "
+                        + "was deleted - but the SELECTION was not put back either: this call had "
+                        + "already selected '\(selection["name"] ?? "?")' exclusively, which "
+                        + "cleared every other region's selection",
+                    // `restored: true` here was a fiction: selectRegion has by
+                    // now changed the region selection and written AXFocused.
+                    // The arrangement is untouched; the selection is not.
+                    restored: false
+                )
+            }
         }
+        let targetName = reselected["name"] as? String
+        let targetBar = reselected["start_bar"] as? Int
         try fireKeyCommand(KeyCommandRegistry.Name.delete)
         // Look BEFORE sleeping: measured 2026-09-01, the region was already
         // gone from the arrangement map on the FIRST read in 3 of 3 successful
         // deletes, so the old loop's opening 0.4 s sleep was pure waiting on
         // every success and its ten iterations cost 5.2 s to say "it is still
         // there" - the answer a focus-dead Logic gives every time.
-        var gone = false
+        var verdict = RegionDeleteGuard.Verification.unchanged
+        var after = before
         let deadline = Date().addingTimeInterval(2.0)
         repeat {
-            let after = try regionSnapshot(trackName: trackName)
-            let stillThere = after.contains {
-                $0["start_bar"] as? Int == selection["start_bar"] as? Int
-                    && ($0["name"] as? String) == (selection["name"] as? String)
-            }
-            if after.count == before.count - 1 && !stillThere { gone = true; break }
+            after = try arrangementCensus(trackName: trackName)
+            verdict = RegionDeleteGuard.verify(
+                targetStillPresent: after.targetRegions.contains {
+                    ($0["start_bar"] as? Int) == targetBar && ($0["name"] as? String) == targetName
+                },
+                regionsBefore: before.totalRegions,
+                regionsAfter: after.totalRegions
+            )
+            if verdict != .unchanged { break }
             Thread.sleep(forTimeInterval: 0.05)
         } while Date() < deadline
-        guard gone else {
+        switch verdict {
+        case .deleted:
+            break
+        case .unchanged:
             throw LogicianError.verificationFailed(
-                requested: "region '\(selection["name"] ?? "?")' deleted",
+                requested: "region '\(targetName ?? "?")' deleted",
                 actual: "the region is still in the arrangement map (undo history unaffected). "
                     + TracksAreaFocus.summary(inSelectionResult: selection) + " "
                     + TracksAreaFocus.dialogSentence(modalWindowTitles()),
+                restored: false
+            )
+        case .wrongRegion(let removed):
+            throw LogicianError.verificationFailed(
+                requested: "region '\(targetName ?? "?")' deleted",
+                actual: "it is STILL in the arrangement map while \(removed) other region(s) left "
+                    + "it - Delete took something else. Undo restores them; check the arrangement "
+                    + "with logic_list_regions before doing anything else",
+                restored: false
+            )
+        case .collateral(let alsoRemoved):
+            throw LogicianError.verificationFailed(
+                requested: "exactly one region deleted",
+                actual: "'\(targetName ?? "?")' is gone AND so are \(alsoRemoved) other region(s) "
+                    + "on rendered rows - Delete acted on a selection wider than this call made. "
+                    + "Undo restores them; check the arrangement with logic_list_regions",
                 restored: false
             )
         }
         var result: [String: Any] = [
             "success": true, "verified": true, "state": "deleted",
             "track": trackName, "track_name": trackName,
-            "region": selection["name"] ?? "?",
-            "start_bar": selection["start_bar"] ?? NSNull(),
-            "note": "Removable mistake? Undo restores it."
+            "region": targetName ?? "?",
+            "start_bar": targetBar ?? NSNull(),
+            "selection_scope": clearReceipt == nil ? "rendered_rows" : "project",
+            "regions_before": before.totalRegions,
+            "regions_after": after.totalRegions,
+            "note": "Exactly one region left the arrangement: the region totals across every "
+                + "rendered row fell by exactly 1, not just the target track's. "
+                + (clearReceipt == nil
+                    ? "Exclusivity was checked across the RENDERED rows only. "
+                    : "Before the target was selected back, the selection was cleared with "
+                        + "Logic's own Deselect All - a project-wide command, proven to have "
+                        + "landed by the rendered selection falling to zero - so nothing on an "
+                        + "unrendered row was still selected when Delete fired. ")
+                + "Removable mistake? Undo restores it."
         ]
+        if let clearReceipt { result["project_wide_clear"] = clearReceipt }
+        if case .renderedRowsOnly(let warning) = plan { result["warning"] = warning }
+        if coverage.partial {
+            result["rows_not_rendered"] = coverage.unseenTrackNumbers
+            result["coverage_evidence"] = coverage.reasons
+        }
         if let keyFocus = selection["key_focus"] { result["key_focus"] = keyFocus }
         return result
     }

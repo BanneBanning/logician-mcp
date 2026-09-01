@@ -359,6 +359,26 @@ with every render coming back as audio the agent can listen to.
   documents and 132 KB (not 82 and ~145 KB), ten full definitions are 26.7-52.6 KB of a
   171.6 KB surface (not ~15 KB of ~145 KB), and `schemas: false` saves 33-52%, mean 44%,
   rather than the guide's "about half".
+- **`logic_delete_region` now makes the selection exclusive instead of hoping it is.**
+  Logic's Delete takes every selected region in the PROJECT, and this server's
+  arrangement map holds only the track rows Logic has RENDERED — on the reference
+  project that is ten hidden subtracks under a collapsed stack. The old guard counted
+  the selection over those rendered rows and called the answer "project-wide", the
+  exclusive-clear reached no further, and the after-check compared region counts on the
+  target track alone, so a Delete that also took regions off hidden rows passed all
+  three and came back `success: true, verified: true`. Now Logic's own project-wide
+  `Deselect All` fires first and has to be PROVEN — the rendered selection is watched
+  falling to zero — before the one named region is selected back, and the result carries
+  `selection_scope: "project"` with that receipt. Without that command in the key
+  command registry the tool refuses when any row is provably hidden, naming the rows and
+  both ways to fix it, and says `selection_scope: "rendered_rows"` with a warning when
+  nothing proved a row hidden. The after-check now compares the region total across
+  EVERY rendered row, so collateral damage is a loud failure instead of an invisible
+  one. Measured live after the change (sandbox project, 19 rendered rows, 54 regions, ten
+  rows hidden): a delete of a region copied in for the purpose took 2.78 s cold and
+  2.87 s warm — ~0.8 s more than before, all of it the clear, its receipt and the
+  re-selection — and the refusal, taken before any write, came back in 0.39-0.42 s
+  naming rows 10-19.
 
 ### Known limitations (honest by design)
 
