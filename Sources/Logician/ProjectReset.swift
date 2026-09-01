@@ -126,6 +126,28 @@ enum ProjectReset {
         return min(max(requested, 5), 300)
     }
 
+    // MARK: - What counts as a dialog
+
+    /// The title of a button an alert would actually offer, or nil for one it
+    /// would not — pressed by its EXACT title, so the original string is
+    /// returned rather than the trimmed one.
+    ///
+    /// The test used to be `!title.isEmpty`, which a single space passes.
+    /// Measured live 2026-09-02: closing the sandbox project reported
+    /// `dialog_count: 1` for a window publishing `texts: ["Sweeps"]` — a track
+    /// name — and `buttons: [" "]`, logged as an "UNKNOWN dialog grammar" on a
+    /// close that was entirely clean. An ordinary Logic utility window, read
+    /// as an alert nobody could answer.
+    static func alertButtonTitle(_ raw: String) -> String? {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : raw
+    }
+
+    /// Is a window with these texts and these offered buttons alert-shaped?
+    /// Both halves are required: an alert says something and offers a way out.
+    static func isAlertShaped(texts: [String], buttons: [String]) -> Bool {
+        !texts.isEmpty && !buttons.isEmpty
+    }
+
     // MARK: - The verdict
 
     /// One thing the reset claims to have established, and whether it did.
@@ -216,13 +238,22 @@ extension LogicAccessibility {
                     let value = stringAttribute(element, kAXValueAttribute as String)
                     if !value.isEmpty { texts.append(value) }
                 case "AXButton":
-                    let title = stringAttribute(element, kAXTitleAttribute as String)
-                    if !title.isEmpty { buttons.append(title) }
+                    // A BLANK title is not a button an alert would offer, and
+                    // counting one turned an ordinary Logic window into a
+                    // phantom dialog in `dialogs`, in every message built by
+                    // `describeVisibleDialogs`, and in `logic_reset_to`'s
+                    // `no_dialog_left_on_screen` check — which would fail a
+                    // reset that had worked. See `ProjectReset.alertButtonTitle`.
+                    if let title = ProjectReset.alertButtonTitle(
+                        stringAttribute(element, kAXTitleAttribute as String)
+                    ) {
+                        buttons.append(title)
+                    }
                 default:
                     break
                 }
             }
-            guard !buttons.isEmpty, !texts.isEmpty else { continue }
+            guard ProjectReset.isAlertShaped(texts: texts, buttons: buttons) else { continue }
             found.append((window, texts, buttons))
         }
         return found

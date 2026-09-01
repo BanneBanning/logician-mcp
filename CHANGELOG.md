@@ -309,6 +309,28 @@ with every render coming back as audio the agent can listen to.
   other region's selection. One count now, the tested value in the message, and a
   `restored` flag that matches what the call actually left behind.
 
+- **A refused new project no longer leaves one behind.** `logic_new_project` copied its
+  template to your path and only then noticed the open project had unsaved changes — so
+  the call refused, and the empty project was already sitting where you asked for one.
+  The obvious retry, carrying the very decision the refusal asked for, then bounced off
+  "already exists". The decision now happens before a byte is written: a refused call
+  leaves the path free and the retry just works. `logic_duplicate_project` learned the
+  same lesson for its copy, and gained it for `save_first` too — a bad or occupied
+  `destination_path` is refused before the original is written to disk, not after.
+
+- **Saving a project is a third faster.** The save verified itself on a 250 ms timer that
+  started before it had looked even once, and the save is already provable the moment the
+  key command returns — measured live, both success signals (Logic's modified flag and the
+  project file's mtime) were true at zero wait, on every run. The loop looks first now:
+  ~725 ms down to ~475 ms, with the verification untouched. Duplicating with
+  `save_first: true` also stopped asking Logic for the same document list twice.
+
+- **A close stopped reporting dialogs that were not dialogs.** Any Logic window with a
+  blank-titled control counted as an unknown alert, so a perfectly clean close of a real
+  project came back saying it had walked past a dialog it did not understand — and a
+  verified reset could have failed its "no dialog left on screen" check on the strength of
+  it. A blank title is not a button an alert offers.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.
