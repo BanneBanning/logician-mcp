@@ -131,6 +131,42 @@ with every render coming back as audio the agent can listen to.
   frame-identical output, and `logic_export_stems`/`logic_evaluate_change`
   inherit the same jump on every bounce they make.
 
+- **Closing a plugin window proves that THAT window closed.** Both close tools
+  verified a press by asking whether *any* window from a before-snapshot had gone
+  away, so a press that silently failed while some unrelated Logic window closed
+  inside the same 2 s poll returned `verified: true, state: "closed"` about a
+  window still on screen. `logic_close_plugin_window` now checks the exact window
+  it pressed — by element identity and by title — and a window still up afterwards
+  comes back `success: false, verified: false` naming the window, never as closed;
+  `logic_close_plugin`, which presses a toggle and can only name the window by the
+  track's title, checks that one of THOSE windows went away. Both look before they
+  wait: the close press already blocks until Logic has torn the window down (the
+  window was gone on the first look 7 out of 7 profiled runs), so the 0.1 s sleep
+  that ran before the first look is gone and a retry now costs 25 ms instead of
+  100 ms, with the same 2 s deadline. `logic_close_plugin_window` measured
+  125 ms → 27-32 ms warm against the live project, the honest floor being the
+  one window enumeration that IS the verification.
+
+- **`logic_close_plugin` no longer opens a plugin to tell you it was closed.** The
+  insert's open button is a toggle, so calling it on an already-closed plugin used
+  to open the window, leave it on screen for ~2.3 s and close it again before
+  refusing — 2.63-2.79 s of visible side-effects from a tool that advertises itself
+  as idempotent. It now reads the window list first (1 ms, a read it was already
+  making) and returns a verified `already_closed` no-op without pressing anything:
+  2.63-2.79 s → 98 ms measured live, all of what is left being the inspector walk
+  the tool needs to name the insert at all, and no window appears on screen. When
+  a press IS needed, one poll now watches for both of its possible outcomes
+  instead of waiting out a full 2 s disappearance before asking whether a window
+  appeared, and a real close measured 261 ms → 125 ms.
+
+- **The refusal rule for `logic_close_plugin_window` is the rule it applies.** The
+  tool description, the agent guide and the error all said it refuses "any window
+  with a document", while the code has only ever tested the window's Accessibility
+  subrole: a plugin window is closable even when it carries the project document
+  (Drum Machine Designer does), and the project window and Mixer are refused
+  because they are `AXStandardWindow`. All three now say that, and the refusal
+  names the subrole it found.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

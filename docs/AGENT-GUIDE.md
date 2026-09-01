@@ -1031,7 +1031,7 @@ Parameters:
 
 #### `logic_close_plugin`
 
-Close the plugin window of one insert on the named (selected) track by toggling the insert's open button, verifying that a window disappeared. Precise even when several plugin windows share the same title. If the plugin was not open, the accidentally opened window is closed again and precondition_failed is returned.
+Close the plugin window of one insert on the named (selected) track by toggling the insert's open button, verifying that a window titled after the track disappeared. Precise even when several plugin windows share the same title. Reads the window list BEFORE pressing: with no window open for that track it returns state already_closed in ~10 ms without pressing anything, because the open button is a toggle and pressing it would OPEN the plugin. In the rare case where the press opens a window instead of closing one (another plugin on the same track had the only window with that title), that window is closed again and precondition_failed is returned.
 
 Parameters:
 
@@ -1041,7 +1041,7 @@ Parameters:
 
 #### `logic_close_plugin_window`
 
-Close one plugin window by pressing its close button and verifying it disappeared. Refuses to close project windows (any window with a document) and fails with ambiguous when several windows share the title.
+Close one plugin window by pressing its close button and verifying that THAT window is gone (its element and its title, not merely some window). Closes only windows whose Accessibility subrole is AXDialog: plugin and auxiliary windows, INCLUDING document-carrying ones such as Drum Machine Designer. Any other subrole is refused - the project window and the Mixer are AXStandardWindow - and the refusal names the subrole it found. Fails with ambiguous when several windows share the title; use logic_close_plugin there. A window still on screen after the press is reported success: false, verified: false, never as closed.
 
 Parameters:
 

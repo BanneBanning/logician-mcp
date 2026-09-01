@@ -290,15 +290,63 @@ extension LogicAccessibility {
         return before.first { !currentKeys.contains($0) }
     }
 
-    func pollWindowDisappeared(before: Set<WindowKey>) throws -> Bool {
-        for _ in 0..<20 {
-            Thread.sleep(forTimeInterval: 0.1)
-            let currentKeys = Set(try logicWindows().map(WindowKey.init))
-            if before.subtracting(currentKeys).isEmpty == false {
-                return true
-            }
+    /// How long a window-close poll waits in total, and how long it waits
+    /// between looks.
+    ///
+    /// MEASURED 2026-09-01 (`logic_close_plugin_window` §3.1,
+    /// `logic_close_plugin` §3.1): `AXUIElementPerformAction` on a close
+    /// button BLOCKS until Logic has torn the window down, so the window is
+    /// already missing from the list by the time the press returns — a look
+    /// taken with no wait at all found it gone on 3/3 runs of one profile and
+    /// 4/4 of the other, and the loop answered on its first look 7/7. The old
+    /// shape slept 0.1 s BEFORE that first look and so paid ~100 ms of a
+    /// 125 ms call for a state that was already true. Look first, sleep only
+    /// after a miss, and make the retry 25 ms so a genuine miss costs a tick
+    /// instead of a tenth of a second. The 2 s deadline is unchanged.
+    ///
+    /// The honest floor is not zero: the FIRST window enumeration after a
+    /// teardown costs 12–15 ms where a steady-state one costs 0–1 ms. That
+    /// read is the verification, and it is the part that is never cut.
+    static let windowPollDeadline: TimeInterval = 2.0
+    static let windowPollInterval: TimeInterval = 0.025
+
+    /// Look FIRST, then re-look every `windowPollInterval` until
+    /// `windowPollDeadline`. `verdict` returns nil to keep waiting, and nil
+    /// comes back when the deadline passed without an answer.
+    func pollWindowList<Verdict>(_ verdict: ([AXUIElement]) throws -> Verdict?) throws -> Verdict? {
+        let deadline = Date().addingTimeInterval(Self.windowPollDeadline)
+        while true {
+            if let answer = try verdict(try logicWindows()) { return answer }
+            if Date() >= deadline { return nil }
+            Thread.sleep(forTimeInterval: Self.windowPollInterval)
         }
-        return false
+    }
+
+    /// Has the window we pressed gone away — that window, not merely some
+    /// window? Identity and title both, see `pressedWindowIsGone`.
+    func pollPressedWindowGone(_ window: AXUIElement, title: String) throws -> Bool {
+        let target = WindowKey(element: window)
+        let gone: Bool? = try pollWindowList { windows in
+            let current = windows.map {
+                (key: WindowKey(element: $0), title: stringAttribute($0, kAXTitleAttribute as String))
+            }
+            return pressedWindowIsGone(target: target, title: title, current: current) ? true : nil
+        }
+        return gone ?? false
+    }
+
+    /// Both outcomes of a toggle press, polled together — see
+    /// `windowToggleVerdict`. `targets` are the windows the press was aimed
+    /// at; `before` is the whole window list it was pressed against, which is
+    /// what makes an appearance recognisable. nil means neither happened
+    /// inside the deadline.
+    func pollWindowToggle(
+        targets: Set<WindowKey>,
+        before: Set<WindowKey>
+    ) throws -> WindowToggleVerdict<WindowKey>? {
+        try pollWindowList { windows in
+            windowToggleVerdict(targets: targets, before: before, current: windows.map(WindowKey.init))
+        }
     }
 
     func closeWindowElement(_ window: AXUIElement) -> Bool {
