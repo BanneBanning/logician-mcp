@@ -101,6 +101,59 @@ extension LogicAccessibility {
         return state
     }
 
+    /// The project's audio-files folder, or nil when neither project shape is
+    /// on disk. One `projectDocumentPath()` read (which is one AX window walk)
+    /// and one `fileExists` per candidate; see `PrintedFile` for why the
+    /// folder is needed at all.
+    func printedAudioFolder() -> String? {
+        guard let project = try? projectDocumentPath() else { return nil }
+        return PrintedFile.audioFolderCandidates(projectPath: project).first {
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: $0, isDirectory: &isDirectory)
+                && isDirectory.boolValue
+        }
+    }
+
+    /// The folder's visible entries. Dotfiles are dropped so a `.DS_Store`
+    /// written during a render never reads as the print.
+    func printedAudioFolderEntries(_ folder: String) -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? [])
+            .filter { !$0.hasPrefix(".") }
+    }
+
+    /// What the print left behind, as a result block. `namesBefore` is the
+    /// listing taken immediately before the OK press; nil means the folder
+    /// could not be resolved, which is reported as "not identified" rather
+    /// than as an empty `files` list that would read like "nothing written".
+    func printedFileReport(folder: String?, namesBefore: Set<String>?) -> [String: Any] {
+        guard let folder, let namesBefore else {
+            return [
+                "directory": folder ?? NSNull(),
+                "files": [] as [[String: Any]],
+                "note": PrintedFile.folderUnreadable
+            ]
+        }
+        let arrivals = PrintedFile.arrivals(
+            before: namesBefore, after: printedAudioFolderEntries(folder)
+        )
+        let files: [[String: Any]] = arrivals.map { name in
+            let path = (folder as NSString).appendingPathComponent(name)
+            var entry: [String: Any] = ["name": name, "path": path]
+            if let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size]
+                as? NSNumber {
+                entry["bytes"] = size.intValue
+            }
+            return entry
+        }
+        return [
+            "directory": folder,
+            "files": files,
+            "note": files.isEmpty
+                ? PrintedFile.noArrival
+                : PrintedFile.undoCaveat + " Delete it yourself if the print was a mistake."
+        ]
+    }
+
     /// Every region in the project's visible rows, as comparable tuples.
     func flatRegionMap() throws -> [(track: String, name: String, start: Int, end: Int)] {
         try regionRows().flatMap { row in
@@ -153,6 +206,10 @@ extension LogicAccessibility {
             _ = try selectTrack(trackName: trackName, trackNumber: nil, expectedProjectPath: nil)
         }
         let before = try flatRegionMap()
+        // Resolved BEFORE the modal goes up, because the diff around the OK
+        // press is what identifies the file this print writes - and Logic
+        // leaves that file behind even when the region is undone.
+        let audioFolder = printedAudioFolder()
 
         try ensureLogicFrontmost(for: "the bounce-in-place sheet")
         try pressMenuItem(containing: menuItem, underMenu: LogicUIStrings.Menu.bounce)
@@ -236,6 +293,10 @@ extension LogicAccessibility {
             ?? sheetButton(sheet, LogicUIStrings.Button.ok) else {
             throw LogicianError.windowNotFound("the OK button in the bounce-in-place sheet")
         }
+        // As late as possible so the diff names only THIS print. A filesystem
+        // listing, not an AX read: it costs well under a millisecond and the
+        // OK press that follows blocks for Logic's whole render anyway.
+        let audioNamesBefore = audioFolder.map { Set(printedAudioFolderEntries($0)) }
         _ = AXUIElementPerformAction(okButton, kAXPressAction as CFString)
         committed = true
 
@@ -262,7 +323,9 @@ extension LogicAccessibility {
                 requested: "a new region printed into the arrangement",
                 actual: "no new region appeared within 90 s. The sheet was answered with OK, so a "
                     + "render may still be running, or the print landed on a track whose row is not "
-                    + "rendered (logic_list_regions only sees visible rows)",
+                    + "rendered (logic_list_regions only sees visible rows). Either way an audio "
+                    + "FILE may already be in the project's Media/Audio Files, and Undo does not "
+                    + "remove those",
                 restored: false
             )
         }
@@ -277,9 +340,13 @@ extension LogicAccessibility {
             "regions_after": after.count,
             "sheet": sheetState,
             "changed": changed,
-            "note": "The audio is now a REGION in the project (not a file on disk - that is "
-                + "logic_render_track). Undo removes it and restores the source region's state. The "
-                + "sheet's settings are the user's own and Logic keeps them for next time."
+            "printed_file": printedFileReport(folder: audioFolder, namesBefore: audioNamesBefore),
+            "note": "The audio is now a REGION in the arrangement - that is the deliverable here, "
+                + "not a file you hand over (that is logic_render_track). WHAT UNDO REVERSES: the "
+                + "printed region and the source region's state. WHAT IT DOES NOT: the audio FILE "
+                + "this print wrote into the project's Media/Audio Files, which stays on disk - it "
+                + "is named in printed_file, and deleting it is yours to do. The sheet's settings "
+                + "are the user's own and Logic keeps them for next time."
         ]
         if let anchor { result["source_region"] = anchor["name"] ?? NSNull() }
         if (sheetState[LogicUIStrings.Value.bypassEffectPlugIns] as? Bool) == true {

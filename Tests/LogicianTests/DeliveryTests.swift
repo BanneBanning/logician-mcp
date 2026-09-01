@@ -251,6 +251,44 @@ final class DeliveryTests: XCTestCase {
         XCTAssertEqual(PrintedRegion.canonicalName("muted, Crash"), "muted, Crash")
     }
 
+    // MARK: - Which FILE a bounce-in-place printed
+
+    func testThePackageMediaFolderIsTheFirstCandidate() {
+        // The measured shape: a .logicx PACKAGE, audio inside it.
+        XCTAssertEqual(
+            PrintedFile.audioFolderCandidates(
+                projectPath: "/Users/x/Music/Logic/Testlåt Copy.logicx"
+            ),
+            [
+                "/Users/x/Music/Logic/Testlåt Copy.logicx/Media/Audio Files",
+                // A FOLDER project keeps `Audio Files` beside the document.
+                "/Users/x/Music/Logic/Audio Files"
+            ]
+        )
+    }
+
+    func testTheArrivalsAreTheDiffAndNothingElse() {
+        // Logic suffixes a taken name rather than overwriting it, so the
+        // arrival is `Crash_bip_12` and NOT the `Crash_bip` already there.
+        let before: Set<String> = ["Crash_bip.aif", "Crash_bip_11.aif", "Fills.wav"]
+        XCTAssertEqual(
+            PrintedFile.arrivals(
+                before: before,
+                after: ["Crash_bip.aif", "Crash_bip_11.aif", "Fills.wav", "Crash_bip_12.aif"]
+            ),
+            ["Crash_bip_12.aif"]
+        )
+        // A track bounce split per file adds several, sorted.
+        XCTAssertEqual(
+            PrintedFile.arrivals(
+                before: before, after: Array(before) + ["Bas_bip.aif", "Ann_bip.wav"]
+            ),
+            ["Ann_bip.wav", "Bas_bip.aif"]
+        )
+        // Nothing new is nothing claimed.
+        XCTAssertEqual(PrintedFile.arrivals(before: before, after: Array(before)), [])
+    }
+
     // MARK: - The delete-track confirmation
 
     func testTheKnownAlertIsAnsweredWithDeleteWhenTheSelectionHolds() {
