@@ -168,9 +168,18 @@ extension LogicAccessibility {
     /// loaded and a project can already hold a `Studio Grand`. Addressing the
     /// row by number is what keeps `logic_import_midi`'s routing cutting from
     /// the track it just created rather than from a namesake.
+    ///
+    /// `forKeyCommand` is the one-word difference between "select this region"
+    /// and "select this region because a key command is about to act on it":
+    /// it establishes Logic's Tracks-area keyboard focus first (see
+    /// `TracksAreaFocus`, measured 2026-09-01 — without it Cut/Copy/Paste/
+    /// Nudge/Delete/Select-All fire and do nothing at all, silently). It is
+    /// off by default because the repair WRITES to the track header column,
+    /// which the read-only region paths (the Region inspector, the Event List)
+    /// have no reason to pay for.
     func selectRegion(
         trackName: String, regionName: String?, startBar: Int?, exclusive: Bool,
-        trackNumber: Int? = nil
+        trackNumber: Int? = nil, forKeyCommand: Bool = false
     ) throws -> [String: Any] {
         guard regionName != nil || startBar != nil else {
             throw LogicianError.invalidArguments("pass region_name and/or start_bar")
@@ -203,6 +212,14 @@ extension LogicAccessibility {
                 hits.count
             )
         }
+        // Focus BEFORE the region selection, never after: the repair writes to
+        // the track header column, and the region's own AXSelected has to be
+        // the last write standing when the command fires. Same doctrine as
+        // `splitRegion`'s park-first-select-last ordering, for the same
+        // reason.
+        let keyFocus = forKeyCommand
+            ? ensureTracksAreaKeyFocus(trackName: row.track, trackNumber: row.number)
+            : nil
         if exclusive {
             for otherRow in rows {
                 for region in otherRow.regions
@@ -230,8 +247,10 @@ extension LogicAccessibility {
                 restored: false
             )
         }
-        // Key commands like Delete act on the FOCUSED area's selection —
-        // hand the region keyboard focus so they cannot miss (best effort).
+        // Hand the region keyboard focus (best effort). This is NOT what makes
+        // the key commands work — measured 2026-09-01, this write ran on every
+        // one of three copies that fired Copy/Paste and changed nothing — so
+        // it is a cheap extra, and `forKeyCommand` above is the real guard.
         _ = AXUIElementSetAttributeValue(hit.0, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         var result = parseRegion(hit.0)
         result["success"] = true
@@ -239,6 +258,7 @@ extension LogicAccessibility {
         result["track"] = row.track
         result["track_name"] = row.track
         result["exclusive"] = exclusive
+        if let keyFocus { result["key_focus"] = keyFocus.dictionary }
         return result
     }
 
@@ -410,40 +430,62 @@ extension LogicAccessibility {
     ) throws -> [String: Any] {
         let before = try regionSnapshot(trackName: trackName)
         let selection = try selectRegion(
-            trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true
+            trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true,
+            forKeyCommand: true
         )
-        guard try selectedRegionCount() == 1 else {
+        // ONE count, not two. The value the guard TESTED is the value the
+        // refusal quotes: reading it a second time to interpolate a string
+        // cost a fifth full tree walk (~110 ms measured 2026-09-01) and could
+        // legitimately print a number that never refused anything.
+        let selectedCount = try selectedRegionCount()
+        guard selectedCount == 1 else {
             throw LogicianError.verificationFailed(
                 requested: "exactly one selected region before Delete",
-                actual: "\(try selectedRegionCount()) regions selected; refusing to fire Delete",
-                restored: true
+                actual: "\(selectedCount) regions selected; refusing to fire Delete. Nothing was "
+                    + "deleted - but the SELECTION was not put back either: this call had already "
+                    + "selected '\(selection["name"] ?? "?")' exclusively, which cleared every "
+                    + "other region's selection",
+                // `restored: true` here was a fiction: selectRegion has by now
+                // changed the project-wide region selection and written
+                // AXFocused. The arrangement is untouched; the selection is not.
+                restored: false
             )
         }
         try fireKeyCommand(KeyCommandRegistry.Name.delete)
+        // Look BEFORE sleeping: measured 2026-09-01, the region was already
+        // gone from the arrangement map on the FIRST read in 3 of 3 successful
+        // deletes, so the old loop's opening 0.4 s sleep was pure waiting on
+        // every success and its ten iterations cost 5.2 s to say "it is still
+        // there" - the answer a focus-dead Logic gives every time.
         var gone = false
-        for _ in 0..<10 {
-            Thread.sleep(forTimeInterval: 0.4)
+        let deadline = Date().addingTimeInterval(2.0)
+        repeat {
             let after = try regionSnapshot(trackName: trackName)
             let stillThere = after.contains {
                 $0["start_bar"] as? Int == selection["start_bar"] as? Int
                     && ($0["name"] as? String) == (selection["name"] as? String)
             }
             if after.count == before.count - 1 && !stillThere { gone = true; break }
-        }
+            Thread.sleep(forTimeInterval: 0.05)
+        } while Date() < deadline
         guard gone else {
             throw LogicianError.verificationFailed(
                 requested: "region '\(selection["name"] ?? "?")' deleted",
-                actual: "the region is still in the arrangement map (undo history unaffected)",
+                actual: "the region is still in the arrangement map (undo history unaffected). "
+                    + TracksAreaFocus.summary(inSelectionResult: selection) + " "
+                    + TracksAreaFocus.dialogSentence(modalWindowTitles()),
                 restored: false
             )
         }
-        return [
+        var result: [String: Any] = [
             "success": true, "verified": true, "state": "deleted",
             "track": trackName, "track_name": trackName,
             "region": selection["name"] ?? "?",
             "start_bar": selection["start_bar"] ?? NSNull(),
             "note": "Removable mistake? Undo restores it."
         ]
+        if let keyFocus = selection["key_focus"] { result["key_focus"] = keyFocus }
+        return result
     }
 
     // MARK: - The split confirmation modal
@@ -603,9 +645,10 @@ extension LogicAccessibility {
         // parked first (see below), and parking touches the control bar, which
         // takes the keyboard focus away from the Tracks area — a Split fired
         // in that state does nothing at all (measured 2026-08-28: select,
-        // park, split left the arrangement map unchanged). `selectRegion`
-        // hands the region the focus, so it has to be the LAST thing before
-        // the command fires.
+        // park, split left the arrangement map unchanged). The selection stays
+        // LAST for that reason, and since 2026-09-01 it also carries
+        // `forKeyCommand: true`, which PROVES the Tracks area holds the focus
+        // instead of hoping the ordering implied it (see `TracksAreaFocus`).
         let candidates = before.filter { entry in
             if let regionName,
                (entry["name"] as? String)?.caseInsensitiveCompare(regionName) != .orderedSame {
@@ -654,9 +697,10 @@ extension LogicAccessibility {
         }
         // Selection LAST, for the focus reason above, and exclusive so Split
         // cannot cut a region the caller never named.
-        _ = try selectRegion(
+        let anchor = try selectRegion(
             trackName: trackName, regionName: selection["name"] as? String,
-            startBar: selection["start_bar"] as? Int, exclusive: true
+            startBar: selection["start_bar"] as? Int, exclusive: true,
+            forKeyCommand: true
         )
         guard try selectedRegionCount() == 1 else {
             throw LogicianError.verificationFailed(
@@ -717,6 +761,7 @@ extension LogicAccessibility {
                 + "Undo restores the single region. The two halves are new regions: their names and start bars are what logic_list_regions reports now, so re-read the map before addressing either of them."
         ]
         result["playhead"] = parked
+        if let keyFocus = anchor["key_focus"] { result["key_focus"] = keyFocus }
         // An honest caveat rather than a silent wrong cut.
         switch parked["on_grid"] as? Bool {
         case true:
@@ -817,12 +862,13 @@ extension LogicAccessibility {
             if regionName == nil && startBar == nil && regions.count == 1 {
                 anchor = try selectRegion(
                     trackName: trackName, regionName: regions[0]["name"] as? String,
-                    startBar: regions[0]["start_bar"] as? Int, exclusive: true
+                    startBar: regions[0]["start_bar"] as? Int, exclusive: true,
+                    forKeyCommand: true
                 )
             } else {
                 anchor = try selectRegion(
                     trackName: trackName, regionName: regionName,
-                    startBar: startBar, exclusive: true
+                    startBar: startBar, exclusive: true, forKeyCommand: true
                 )
             }
         }
@@ -866,11 +912,13 @@ extension LogicAccessibility {
                 "start_bar": anchor["start_bar"] ?? NSNull()
             ]
         }
+        if let anchor, let keyFocus = anchor["key_focus"] { result["key_focus"] = keyFocus }
         if !expectedChange {
             result["note"] = "The selection count did not move (\(before) -> \(after)). Either the "
-                + "command is not bound in this Logic (check logic_list_key_commands), or it needs a "
-                + "focus this call did not have, or there genuinely was nothing more to select. "
-                + "Nothing was edited."
+                + "command is not bound in this Logic (check logic_list_key_commands), or there "
+                + "genuinely was nothing more to select"
+                + (anchor.map { " - " + TracksAreaFocus.summary(inSelectionResult: $0) } ?? "")
+                + " Nothing was edited."
         }
         return result
     }
@@ -892,7 +940,8 @@ extension LogicAccessibility {
             throw LogicianError.invalidArguments("pass a non-zero by_bars and/or by_beats")
         }
         let selection = try selectRegion(
-            trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true
+            trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true,
+            forKeyCommand: true
         )
         guard try selectedRegionCount() == 1 else {
             throw LogicianError.verificationFailed(
@@ -931,11 +980,20 @@ extension LogicAccessibility {
         if byBeats == 0, let newBar = moved["start_bar"] as? Int, newBar != oldStart + byBars {
             throw LogicianError.verificationFailed(
                 requested: "region at bar \(oldStart + byBars)",
-                actual: "region at bar \(newBar)",
+                actual: "region at bar \(newBar)"
+                    + (newBar == oldStart
+                        // The region did not move AT ALL, which is what a Nudge
+                        // fired without Tracks-area keyboard focus looks like
+                        // (measured 2026-09-01: by_bars: 1 reported "requested
+                        // bar 42, found bar 41" three times in a row while the
+                        // focus sat on the control bar).
+                        ? " - it did not move at all. "
+                            + TracksAreaFocus.summary(inSelectionResult: selection)
+                        : ""),
                 restored: false
             )
         }
-        return [
+        var result: [String: Any] = [
             "success": true, "verified": true, "state": "moved",
             "track": trackName, "track_name": trackName,
             "region": selection["name"] ?? "?",
@@ -943,6 +1001,8 @@ extension LogicAccessibility {
             "to_bar": moved["start_bar"] ?? NSNull(),
             "to_beat": moved["start_beat"] ?? 1
         ]
+        if let keyFocus = selection["key_focus"] { result["key_focus"] = keyFocus }
+        return result
     }
 
     /// - Parameters:
@@ -956,7 +1016,7 @@ extension LogicAccessibility {
     ) throws -> [String: Any] {
         let selection = try selectRegion(
             trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true,
-            trackNumber: fromTrackNumber
+            trackNumber: fromTrackNumber, forKeyCommand: true
         )
         guard try selectedRegionCount() == 1 else {
             throw LogicianError.verificationFailed(
@@ -965,7 +1025,14 @@ extension LogicAccessibility {
             )
         }
         try fireKeyCommand(move ? KeyCommandRegistry.Name.cut : KeyCommandRegistry.Name.copy)
-        Thread.sleep(forTimeInterval: 0.4)
+        // No sleep here. The clipboard is not readable, so a wait for it can
+        // never be verified — but it does not need one either: measured
+        // 2026-09-01, between this command and the Paste below there is ALWAYS
+        // 0.9-5 s of unrelated Accessibility work (the destination track
+        // selection 205-294 ms, the playhead park 251-4 901 ms, the pre-Paste
+        // snapshot 103-683 ms). The 0.4 s blind sleep that used to sit here
+        // was 16% of every call and bought nothing the park does not already
+        // buy.
         let destinationTrack = toTrack ?? trackName
         let destinationNumber = toTrack == nil ? fromTrackNumber : toTrackNumber
         // ALWAYS select the destination — including the same-track case.
@@ -979,9 +1046,44 @@ extension LogicAccessibility {
         _ = try selectTrack(
             trackName: destinationTrack, trackNumber: destinationNumber, expectedProjectPath: nil
         )
-        // beat 1 explicitly: the bar converge alone leaves the beat wherever
-        // the playhead last stood, and Paste lands at the playhead exactly.
-        _ = try setPlayhead(barNumber: toBar, beat: 1)
+        // beat 1 explicitly, and `parkPlayheadOnGrid` rather than
+        // `setPlayhead`, because PASTE LANDS AT THE PLAYHEAD EXACTLY and
+        // `setPlayhead` only ever verifies whole bars and beats. Measured
+        // 2026-09-01: after eight `setPlayhead(bar: N, beat: 1)` calls that
+        // all reported `verified: true`, the MCU's own position display read
+        // `N 1 3 81` every single time — bar N beat 1 division 3 tick 81,
+        // roughly half a beat past the bar line — and a marker created at that
+        // playhead landed at bar N BEAT 2. The region map reports whole bars,
+        // so an off-grid paste read back as `verified: true` at the requested
+        // bar: exactly the displaced-copy failure this tool's own note warns
+        // agents about. `parkPlayheadOnGrid` rewinds to `1 1 1 1` first and
+        // reads the sub-beat fields off the control surface afterwards, the
+        // same mechanism `logic_split_region` and `logic_import_midi` already
+        // use. It costs bar stepping from the project start (~126 ms per bar
+        // until `convergeSlider` stops sleeping between writes) and it buys a
+        // copy that lands where it says it does.
+        let parked = try parkPlayheadOnGrid(bar: toBar, beat: 1)
+        guard (parked["bar"] as? Int) == toBar, (parked["beat"] as? Int) == 1 else {
+            throw LogicianError.verificationFailed(
+                requested: "the playhead at bar \(toBar) beat 1",
+                actual: "bar \(parked["bar"] ?? "?") beat \(parked["beat"] ?? "?"); nothing was "
+                    + "pasted and the clipboard still holds the region",
+                restored: false
+            )
+        }
+        // REFUSE rather than paste off the grid. Nothing has been written to
+        // the arrangement yet, so this costs the caller a retry; a paste half
+        // a beat late costs them a displaced region they have to find first.
+        if parked["on_grid"] as? Bool == false {
+            throw LogicianError.verificationFailed(
+                requested: "the playhead exactly on bar \(toBar) beat 1 before Paste",
+                actual: "the position display still reads division "
+                    + "\(parked["timecode_division"] ?? "?"), tick \(parked["timecode_ticks"] ?? "?"), "
+                    + "so Paste would land inside the beat and the region map — which reports whole "
+                    + "bars only — would call it bar \(toBar) anyway. Nothing was pasted",
+                restored: false
+            )
+        }
         // The destination as it stands the instant BEFORE Paste — taken after
         // the Cut, so a same-track move already shows the source gone.
         //
@@ -992,44 +1094,80 @@ extension LogicAccessibility {
         // modal swallows the key command and nothing happens — so the proof
         // has to be that the destination gained a region, not that one is
         // present.
+        //
+        // The park just drove the control bar, so the keyboard focus is asked
+        // for a SECOND time here, on the destination track: Paste acts on the
+        // focused area exactly like Copy does. The probe costs a handful of
+        // attribute reads when the focus is already right, and its verdict is
+        // what the refusal below leads with when nothing lands.
+        let pasteFocus = ensureTracksAreaKeyFocus(
+            trackName: destinationTrack, trackNumber: destinationNumber
+        )
         let destinationBefore = (try? regionSnapshot(
             trackName: destinationTrack, trackNumber: destinationNumber
         )) ?? []
         let atBarBefore = destinationBefore.filter { $0["start_bar"] as? Int == toBar }
         try fireKeyCommand(KeyCommandRegistry.Name.paste)
+        // Look BEFORE sleeping. Measured 2026-09-01 with a probe taken
+        // immediately after the key command: the pasted region was already in
+        // the arrangement map on the FIRST read in 5 of 5 successful calls,
+        // i.e. the old loop's opening 0.4 s sleep was pure waiting on every
+        // success. Polling at 50 ms after that keeps the failure path honest
+        // and short: ten 0.4 s iterations cost 5.7 s to say "it did not land",
+        // and nine of them only ever ran when the answer was already no.
         var pasted: [String: Any]?
-        for _ in 0..<10 {
-            Thread.sleep(forTimeInterval: 0.4)
+        let deadline = Date().addingTimeInterval(2.0)
+        repeat {
             let after = try regionSnapshot(
                 trackName: destinationTrack, trackNumber: destinationNumber
             )
             let atBar = after.filter { $0["start_bar"] as? Int == toBar }
-            guard after.count > destinationBefore.count || atBar.count > atBarBefore.count
-            else { continue }
-            // Prefer a region at toBar that was not there before; fall back to
-            // any region at toBar once the count has proven something landed.
-            pasted = atBar.first { hit in !atBarBefore.contains { isSame($0, hit) } } ?? atBar.first
-            break
-        }
+            if after.count > destinationBefore.count || atBar.count > atBarBefore.count {
+                // Prefer a region at toBar that was not there before; fall
+                // back to any region at toBar once the count has proven
+                // something landed.
+                pasted = atBar.first { hit in !atBarBefore.contains { isSame($0, hit) } }
+                    ?? atBar.first
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        } while Date() < deadline
         guard let landed = pasted else {
             throw LogicianError.verificationFailed(
                 requested: "a NEW region at bar \(toBar) on '\(destinationTrack)'",
-                actual: destinationBefore.count == atBarBefore.count && !atBarBefore.isEmpty
-                    ? "bar \(toBar) already held a region before this call and the track gained"
-                        + " none, so Paste did nothing (a modal dialog swallows key commands —"
-                        + " check Logic for one). Clipboard state uncertain"
-                    : "the track gained no region after Paste (clipboard state uncertain)",
+                actual: TracksAreaFocus.pasteFailedReason(
+                    toBar: toBar,
+                    barAlreadyOccupied: destinationBefore.count == atBarBefore.count
+                        && !atBarBefore.isEmpty,
+                    focus: pasteFocus,
+                    dialogTitles: modalWindowTitles()
+                ),
                 restored: false
             )
         }
-        return [
+        var result: [String: Any] = [
             "success": true, "verified": true,
             "state": move ? "moved_via_clipboard" : "copied",
             "region": selection["name"] ?? "?",
             "from": ["track": trackName, "track_name": trackName, "start_bar": selection["start_bar"] ?? NSNull()],
             "to": ["track": destinationTrack, "start_bar": landed["start_bar"] ?? toBar],
-            "note": "Paste lands at the playhead on the selected track."
+            "playhead": parked,
+            "key_focus": pasteFocus.dictionary,
+            "note": "Paste lands at the playhead on the selected track, and the playhead was parked on bar \(toBar) beat 1 with its sub-beat fields zeroed as well - `playhead.on_grid` is the control surface's own confirmation of that, and a false one refuses before Paste rather than pasting inside the beat."
         ]
+        // BOTH focus verdicts, because they answer different questions: the
+        // first says what state the call INHERITED (and whether the caller's
+        // previous tool left the Tracks area focused), the second what Paste
+        // actually fired into after the park had driven the control bar.
+        if let focusAtCopy = selection["key_focus"] { result["key_focus_at_copy"] = focusAtCopy }
+        if parked["on_grid"] as? Bool == nil {
+            result["warning"] = "Whether the paste landed exactly on the bar line is UNVERIFIED: "
+                + "the MCU position display could not be read, and the control bar publishes bars "
+                + "and beats only - it cannot see a sub-beat offset, and neither can the region "
+                + "map this result was verified against. "
+                + ((parked["on_grid_note"] as? String) ?? "")
+        }
+        return result
     }
 
 }
