@@ -427,60 +427,90 @@ extension MCPServer {
         }
         let clipStart = (arguments["start_seconds"] as? Double)
             ?? (arguments["start_seconds"] as? Int).map(Double.init) ?? 0
-        let clipDuration = min(
-            (arguments["duration_seconds"] as? Double)
-                ?? (arguments["duration_seconds"] as? Int).map(Double.init) ?? 8.0,
-            20.0
-        )
-        let scratchBase = FileManager.default.temporaryDirectory
-            .appendingPathComponent("logician-clip-\(UUID().uuidString)")
-        let trimmed = scratchBase.appendingPathExtension("wav")
+        let requestedDuration = (arguments["duration_seconds"] as? Double)
+            ?? (arguments["duration_seconds"] as? Int).map(Double.init) ?? 8.0
+        let clipDuration = min(requestedDuration, 20.0)
         // The encoded clip is kept on disk: clients that drop MCP
-        // audio blocks need a FILE their viewer can hand to the model.
+        // audio blocks need a FILE their viewer can hand to the model. The
+        // name carries milliseconds and a random suffix, so two calls inside
+        // one second cannot write the same path (they used to, and the second
+        // overwrote the first).
         let clipsDirectory = Captures.ensureRoot()
         let scratch = clipsDirectory.appendingPathComponent(
-            "clip-\(Int(Date().timeIntervalSince1970))-\(URL(fileURLWithPath: clipPath).deletingPathExtension().lastPathComponent.suffix(24)).m4a"
+            AudioClip.clipFileName(sourcePath: clipPath)
         )
+        // Every failure below leaves the captures directory as it found it:
+        // an orphaned .m4a from a refused call used to survive in the user's
+        // own render folder, which nothing prunes.
+        var delivered = false
         defer {
-            try? FileManager.default.removeItem(at: trimmed)
+            if !delivered { try? FileManager.default.removeItem(at: scratch) }
         }
-        // Trim with our own slicer (afconvert has no offset support),
-        // then compress: mono AAC 64 kbps keeps a clip tiny.
-        var convertSource = clipPath
-        if LogicAccessibility.sliceAudioFile(
-            path: clipPath, startSeconds: clipStart,
-            endSeconds: clipStart + clipDuration,
-            destinationPath: trimmed.path
-        ) != nil {
-            convertSource = trimmed.path
+        // Window and encode in process: the range is SEEKED to (only the
+        // window is decoded) and mixed to mono by us. Both halves of the old
+        // route were wrong - see AudioClip.
+        let clip: AudioClip.Clip
+        do {
+            clip = try AudioClip.write(
+                sourcePath: clipPath, startSeconds: clipStart,
+                durationSeconds: clipDuration, destination: scratch
+            )
+        } catch let fault as AudioClip.Fault {
+            switch fault {
+            case .startPastEnd, .startBeforeFile, .emptyWindow:
+                throw LogicianError.invalidArguments(fault.message)
+            case .unreadable, .emptySource:
+                throw LogicianError.trackNotExposed(
+                    requested: "an audio clip of '\(clipPath)'", exposed: fault.message
+                )
+            case .encoderRefused:
+                throw LogicianError.writeFailed(fault.message)
+            }
         }
-        let convert = Process()
-        convert.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
-        convert.arguments = [
-            convertSource, scratch.path,
-            "-f", "m4af", "-d", "aac", "-b", "64000", "-c", "1"
-        ]
-        convert.standardError = FileHandle.nullDevice
-        try convert.run()
-        convert.waitUntilExit()
-        guard convert.terminationStatus == 0,
-              let clipData = try? Data(contentsOf: scratch), !clipData.isEmpty else {
-            throw LogicianError.writeFailed("afconvert could not produce the clip (is the source a readable audio file?)")
-        }
-        guard clipData.count <= 400_000 else {
-            throw LogicianError.invalidArguments(
-                "the encoded clip is \(clipData.count / 1000) KB - too large to attach safely; request a shorter duration_seconds"
+        guard let clipData = try? Data(contentsOf: scratch), !clipData.isEmpty else {
+            throw LogicianError.writeFailed(
+                "the AAC encoder reported success but wrote no bytes to '\(scratch.path)'"
             )
         }
-        return [
+        guard clipData.count <= 400_000 else {
+            // The advice has to be one the caller can follow: the window IS
+            // honoured now, so a shorter duration really does return fewer
+            // bytes, and the number named here is the length that fits at the
+            // rate this very clip encoded at.
+            let perSecond = Double(clipData.count) / max(clip.durationSeconds, 0.001)
+            let fits = (400_000 / perSecond * 10).rounded(.down) / 10
+            throw LogicianError.invalidArguments(
+                "the encoded clip is \(clipData.count / 1000) KB - over the 400 KB this server "
+                + "will attach; this source encodes at ~\(Int(perSecond / 1000)) KB per second, "
+                + "so pass duration_seconds: \(fits) or less."
+            )
+        }
+        var result: [String: Any] = [
             "success": true,
             "source": clipPath,
-            "start_seconds": clipStart,
-            "duration_seconds": clipDuration,
+            "start_seconds": clip.startSeconds,
+            "duration_seconds": clip.durationSeconds,
+            "source_seconds": clip.sourceSeconds,
             "encoded_bytes": clipData.count,
             "clip_path": scratch.path,
-            "note": "An MCP AUDIO content block accompanies this text (mono AAC). SELF-CHECK: if no audio block reached you, your client DROPS them - do not pretend to hear; instead open clip_path with your client's file viewer (many viewers pass audio files to the model as real multimodal input; verified in Antigravity). NEVER read audio files as text/bash.",
+            "note": "An MCP AUDIO content block accompanies this text (mono AAC, mixed down from \(clip.sourceChannels) channel\(clip.sourceChannels == 1 ? "" : "s")). SELF-CHECK: if no audio block reached you, your client DROPS them - do not pretend to hear; instead open clip_path with your client's file viewer (many viewers pass audio files to the model as real multimodal input; verified in Antigravity). NEVER read audio files as text/bash.",
             "_audio": ["data": clipData.base64EncodedString(), "mimeType": "audio/mp4"]
         ]
+        if requestedDuration > 20.0 {
+            appendWarning(
+                "duration_seconds \(requestedDuration) is over this tool's 20 s ceiling; "
+                + "the clip is 20 s.",
+                to: &result
+            )
+        }
+        if clip.truncated {
+            appendWarning(
+                "the file ends at \(clip.sourceSeconds) s, so the clip is "
+                + "\(clip.durationSeconds) s rather than the \(clipDuration) s requested.",
+                to: &result
+            )
+        }
+        delivered = true
+        return result
     }
 }

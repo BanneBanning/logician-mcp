@@ -852,14 +852,14 @@ Parameters:
 
 #### `logic_get_audio_clip`
 
-LISTEN to rendered audio: returns a short clip (default 8 s, max 20 s) of a local audio file as an MCP audio content block (mono AAC, roughly 64 KB per 8 s) that multimodal models can hear. Use this on the file paths returned by logic_render_track / logic_bounce_range / logic_evaluate_change. NEVER read raw audio files with a text/file tool - megabytes of binary will overflow the model context and can crash the client. Also writes the clip to disk (clip_path in the result): if the audio block does NOT reach you, your client drops MCP audio - open clip_path with your client's file viewer instead, which most clients pass to the model as real audio.
+LISTEN to rendered audio: returns the seconds you ask for out of a local audio file as an MCP audio content block (mono AAC 64 kbps) that multimodal models can hear - default 8 s from second 0, max 20 s. The window is CUT from the file on every format it reads (AIFF/AIFC, WAV, CAF, M4A/AAC, MP3, FLAC - everything this server and Logic write), the result reports the clip it actually made, and a start past the end of the file is refused rather than quietly widened to the whole file. Use this on the file paths returned by logic_render_track / logic_bounce_range / logic_evaluate_change. WHAT IT COSTS, measured 2026-09-02: the default 8 s is ~50 KB encoded and ~70 KB on the wire (~17k tokens if your client stringifies it) on loud material, ~10 KB on quiet (AAC is variable-rate); the 20 s maximum is ~131 KB encoded and ~179 KB on the wire (~45k tokens). include_audio: false cuts that to ~1.3 KB and still returns clip_path and the resource_link - use it when you will listen through the file viewer anyway. NEVER read raw audio files with a text/file tool - megabytes of binary will overflow the model context and can crash the client. Also writes the clip to disk (clip_path in the result, unique per call): if the audio block does NOT reach you, your client drops MCP audio - open clip_path with your client's file viewer instead, which most clients pass to the model as real audio.
 
 Parameters:
 
   - `duration_seconds` (number): Clip length, default 8, max 20.
   - `include_audio` (boolean): Attach the rendered audio as MCP audio content blocks, default true — see AUDIO RESULTS in the server instructions before passing false. Either way the result carries a resource_link to logician://captures/<filename>, so false still leaves you able to fetch the audio with resources/read.
-  - `path` (string) **(required)**: Absolute path to a local audio file (AIFF/WAV/etc).
-  - `start_seconds` (number): Offset into the file, default 0.
+  - `path` (string) **(required)**: Absolute path to a local audio file (AIFF/AIFC, WAV, CAF, M4A, MP3, FLAC).
+  - `start_seconds` (number): Offset into the file, default 0. Past the end of the file is refused, and a window the file ends inside comes back shortened with a warning saying so.
 
 #### `logic_get_transport`
 

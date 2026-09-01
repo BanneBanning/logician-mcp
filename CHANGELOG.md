@@ -424,6 +424,26 @@ with every render coming back as audio the agent can listen to.
   project came back saying it had walked past a dialog it did not understand — and a
   verified reset could have failed its "no dialog left on screen" check on the strength of
   it. A blank title is not a button an alert offers.
+- **`logic_get_audio_clip` cuts the window it reports, on every format, and does it in
+  half the time.** Asking for eight seconds at 0:30 of a WAV, CAF or `.m4a` used to
+  return either the WHOLE file from second 0 while the result reported the window asked
+  for, or nothing at all: the trimmer understood AIFF only, and the encoder behind it
+  refused (`'cclo'` -66564) every source carrying a channel layout — which is every
+  `.m4a` preview this server writes and every raw Logic AIFF, so both documented
+  recovery routes for an oversized file pointed at a guaranteed failure. Windowing and
+  encoding are one in-process pass now: the clip is SEEKED to and only the window is
+  decoded, the mono mixdown is ours rather than an encoder flag's, and the audio comes
+  out byte-identical to what the old path produced when it worked (50,476 B for the same
+  8 s clip, same AAC payload hash). Measured 2026-09-02 on a 50 MB master: 8 s
+  125 ms → 51 ms, 20 s 238 ms → 96 ms, and the `.m4a` preview 8 s went from a hard
+  failure to 57 ms. Two clips can no longer collide — the path carries milliseconds and
+  a random suffix, where four calls inside one second used to write one file and
+  overwrite it three times — a window the file ends inside comes back shortened with a
+  warning instead of an overstated length, a start past the end says so with the file's
+  real duration instead of blaming the file, a refused call no longer leaves an orphan
+  clip in the captures directory, and the tool description now states what a clip
+  actually costs on the wire (~70 KB for the default 8 s, ~179 KB at 20 s, ~1.3 KB with
+  `include_audio: false`).
 
 ### Known limitations (honest by design)
 
