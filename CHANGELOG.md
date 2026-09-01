@@ -78,6 +78,20 @@ with every render coming back as audio the agent can listen to.
   second really insured against, a plugin still instantiating, now waits for the slot to
   name it rather than for a duration to elapse. 8.8 s → 5.2 s warm, with every readback,
   LED proof and cross-check exactly where it was.
+- **The focused channel is checked, not assumed.** Selecting a track HEADER and Logic's
+  focused CHANNEL are two different selections, and the surface's plugin and send views
+  follow the channel: after a headerless strip (`Stereo Out`, an aux, a bus) is addressed,
+  the channel stays there while the previously selected track's header stays selected —
+  which once let `logic_list_inserts` return Stereo Out's chain attributed to the selected
+  track, `verified: true` (observed live 2026-08-31), and would have let a write land on
+  the wrong plugin. The already-selected fast path now consults the surface mirror (the
+  SELECT LED plus the pan-view name cell) and the process's own record of the last
+  verified selection; a divergence is realigned with a real track reselection — a surface
+  channel select provably moves the selection while the plugin-list view stays latched to
+  the strip it last showed, so the realign is the reselection the manual repair uses —
+  reported in results as `selection_readback_route: "realigned_ax_reselect"`, and a
+  divergence that cannot be realigned is refused with both halves named, never read
+  through.
 
 ### Known limitations (honest by design)
 

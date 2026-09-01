@@ -147,6 +147,10 @@ extension LogicAccessibility {
         // plugin tool re-addressing the strip it just wrote returns
         // `already_selected` above and never reaches this line.
         MCUController.settleSurfaceDebt(before: nil)
+        // Focus is about to move; until the move is verified below, the only
+        // honest focus record is none (a failed or half-restored selection
+        // must not leave the previous strip's name standing).
+        MCUController.forgetChannelFocus()
 
         var writeRoute = "ax_selected_children"
         let setStatus = AXUIElementSetAttributeValue(
@@ -177,6 +181,13 @@ extension LogicAccessibility {
             }
         }
 
+        // A track selection that actually MOVED carries Logic's focused
+        // channel with it (the observed realignment for a diverged surface is
+        // exactly this: a real selection change). The `already_selected` fast
+        // path above deliberately records nothing — a still-selected header
+        // proves nothing about the focused channel, which is the silent
+        // wrong-strip bug of 2026-08-31.
+        MCUController.noteChannelFocus(target.name, projectPath: try? projectDocumentPath())
         return selectionResult(
             state: "selected",
             target: target,
