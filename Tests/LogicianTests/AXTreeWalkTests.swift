@@ -59,6 +59,71 @@ final class AXTreeWalkTests: XCTestCase {
         XCTAssertEqual(match?.name, "a1x")
     }
 
+    // MARK: - Nearest (breadth-first)
+
+    /// The whole point of `nearestNode`: the save panel's Bounce button is
+    /// shallow and the file browser next to it is enormous, so "nearest the
+    /// root" has to beat "first in pre-order" (993 ms vs single-digit ms,
+    /// measured 2026-09-01).
+    func testNearestNodeReturnsTheShallowestMatchNotThePreOrderFirst() {
+        let match = nearestNode(from: tree, maximumDepth: 10, children: { $0.children }) {
+            $0.name == "a1x" || $0.name == "b"
+        }
+        XCTAssertEqual(match?.name, "b", "depth 1 beats depth 3")
+        XCTAssertEqual(
+            firstNode(from: tree, maximumDepth: 10, children: { $0.children }) {
+                $0.name == "a1x" || $0.name == "b"
+            }?.name,
+            "a1x",
+            "and pre-order still answers the other way, for the callers that need it"
+        )
+    }
+
+    func testNearestNodeBreaksTiesInChildOrder() {
+        let match = nearestNode(from: tree, maximumDepth: 10, children: { $0.children }) {
+            $0.name == "a" || $0.name == "b"
+        }
+        XCTAssertEqual(match?.name, "a")
+    }
+
+    func testNearestNodeHonoursTheDepthCapExactlyAsPreOrderDoes() {
+        for cap in 0...3 {
+            let reachable = Set(visited(maximumDepth: cap))
+            for name in ["root", "a", "a1", "a1x", "a2", "b", "b1"] {
+                let found = nearestNode(from: tree, maximumDepth: cap, children: { $0.children }) {
+                    $0.name == name
+                }
+                XCTAssertEqual(
+                    found != nil, reachable.contains(name),
+                    "'\(name)' at cap \(cap): the two walks must see the same set of nodes"
+                )
+            }
+        }
+    }
+
+    func testNearestNodeCanMatchTheRootAndReturnsNilWhenNothingMatches() {
+        XCTAssertEqual(
+            nearestNode(from: tree, maximumDepth: 0, children: { $0.children }) { $0.name == "root" }?.name,
+            "root"
+        )
+        XCTAssertNil(nearestNode(from: tree, maximumDepth: 10, children: { $0.children }) {
+            $0.name == "nope"
+        })
+    }
+
+    /// A cycle in the tree would hang a breadth-first walk that trusted its
+    /// frontier; the depth cap is what bounds it, and this pins that.
+    func testNearestNodeTerminatesOnAWideTree() {
+        let wide = Node(name: "root", children: (0..<500).map { index in
+            Node(name: "w\(index)", children: (0..<50).map { Node(name: "deep\($0)") })
+        })
+        XCTAssertEqual(
+            nearestNode(from: wide, maximumDepth: 2, children: { $0.children }) { $0.name == "deep7" }?.name,
+            "deep7"
+        )
+        XCTAssertNil(nearestNode(from: wide, maximumDepth: 1, children: { $0.children }) { $0.name == "deep7" })
+    }
+
     // MARK: - Depth semantics (root is 0, cap is inclusive)
 
     func testMaximumDepthZeroVisitsOnlyTheRoot() {
