@@ -440,13 +440,44 @@ extension LogicAccessibility {
             throw LogicianError.valueNotWritable("insert slot \(slot.index) (\(slot.name)) exposes no open button")
         }
 
-        let before = Set(try logicWindows().map(WindowKey.init))
+        // The window list is read BEFORE the press, and it answers the whole
+        // question when the plugin is not open. A plugin window's title is
+        // the track name — `openPlugin` above refuses any other title — so a
+        // list with no window called `trackName` means this plugin's window
+        // is already closed, and the insert's open button being a TOGGLE
+        // means pressing it would open the plugin rather than close it.
+        // MEASURED 2026-09-01: that is exactly what the old code did, at
+        // 2.63–2.79 s per call, with the plugin window visible on screen for
+        // ~2.3 s of it, before refusing. The snapshot costs 1 ms and the tool
+        // was taking it anyway.
+        let before = try logicWindows()
+        let beforeKeys = Set(before.map(WindowKey.init))
+        let targets = Set(
+            before
+                .filter { stringAttribute($0, kAXTitleAttribute as String) == trackName }
+                .map(WindowKey.init)
+        )
+        guard !targets.isEmpty else {
+            return [
+                "success": true,
+                "verified": true,
+                "state": "already_closed",
+                "track": trackName, "track_name": trackName,
+                "insert_index": slot.index,
+                "plugin_display_name": slot.name,
+                "note": "No window titled '\(trackName)' is open, so the plugin window was already closed"
+                    + " and nothing was pressed. Plugin windows take the TRACK's name as their title;"
+                    + " logic_list_windows shows what is open."
+            ]
+        }
+
         let pressStatus = AXUIElementPerformAction(openButton, kAXPressAction as CFString)
         guard pressStatus == .success else {
             throw LogicianError.writeFailed("AXPress on open button returned AXError \(pressStatus.rawValue)")
         }
 
-        if try pollWindowDisappeared(before: before) {
+        switch try pollWindowToggle(targets: targets, before: beforeKeys) {
+        case .closed:
             return [
                 "success": true,
                 "verified": true,
@@ -455,16 +486,19 @@ extension LogicAccessibility {
                 "insert_index": slot.index,
                 "plugin_display_name": slot.name
             ]
-        }
-
-        if let appeared = try pollWindowDiff(before: before, expectAppear: true) {
-            // The plugin window was closed already; the toggle opened it. Close it again.
-            _ = closeWindowElement(appeared)
+        case .opened(let appeared):
+            // A window titled after the track was open, but it belonged to a
+            // DIFFERENT plugin on the same track: this insert's own window
+            // was closed and the toggle just opened it. Close it again.
+            _ = closeWindowElement(appeared.element)
             throw LogicianError.pluginNotOpen(
                 "the open button opened a new window, which was closed again to restore the UI"
             )
+        case nil:
+            throw LogicianError.openVerificationFailed(
+                "No window disappeared or appeared after pressing the open button."
+            )
         }
-        throw LogicianError.openVerificationFailed("No window disappeared after pressing the open button.")
     }
 
     func closePluginWindow(title: String) throws -> [String: Any] {
@@ -478,16 +512,31 @@ extension LogicAccessibility {
         }
         // Dialogs are plugin/auxiliary windows even when they carry the project
         // document (Drum Machine Designer does); never close standard windows.
-        guard stringAttribute(window, kAXSubroleAttribute as String) == "AXDialog" else {
-            throw LogicianError.windowNotClosable(title)
+        // The rule is the SUBROLE and nothing else — the tool description, the
+        // guide and the refusal message say so since 2026-09-01, having each
+        // claimed a document test the code has never performed.
+        let subrole = stringAttribute(window, kAXSubroleAttribute as String)
+        guard subrole == "AXDialog" else {
+            throw LogicianError.windowNotClosable(title, subrole: subrole)
         }
 
-        let before = Set(try logicWindows().map(WindowKey.init))
+        // No second window list: the element resolved above IS the window the
+        // press is aimed at, and that identity is what the verification asks
+        // about.
         guard closeWindowElement(window) else {
             throw LogicianError.writeFailed("AXPress on the window close button failed")
         }
-        guard try pollWindowDisappeared(before: before) else {
-            throw LogicianError.openVerificationFailed("The window '\(title)' did not disappear after pressing close.")
+        guard try pollPressedWindowGone(window, title: title) else {
+            return [
+                "success": false,
+                "verified": false,
+                "state": "open",
+                "window": title,
+                "reason": "The close button was pressed, and 2 s later a window titled '\(title)'"
+                    + " is still open. Nothing else was touched.",
+                "note": "Try logic_close_plugin with track, plugin and insert index — it closes the"
+                    + " window through the insert's own button instead of the window's close box."
+            ]
         }
         return [
             "success": true,

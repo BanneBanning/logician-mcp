@@ -532,7 +532,7 @@ enum LogicianError: LocalizedError {
     case insertAmbiguous(track: String, plugin: String, slots: [Int], parameter: String)
     case insertMismatch(slot: Int, expected: String, actual: String)
     case openVerificationFailed(String)
-    case windowNotClosable(String)
+    case windowNotClosable(String, subrole: String)
     case windowAmbiguous(String, Int)
     case pluginNotOpen(String)
     case trackNotFound(String, available: [String])
@@ -628,8 +628,12 @@ enum LogicianError: LocalizedError {
             return "Insert slot \(slot) holds '\(actual)', not '\(expected)'. No action was taken."
         case .openVerificationFailed(let detail):
             return "Could not verify that the plugin window state changed as requested: \(detail)"
-        case .windowNotClosable(let title):
-            return "Refusing to close window '\(title)': only plugin windows (dialogs without a document) may be closed."
+        case .windowNotClosable(let title, let subrole):
+            return "Refusing to close window '\(title)': its subrole is \(subrole.isEmpty ? "unset" : subrole)"
+                + " and only windows with subrole AXDialog may be closed. That is the whole test — a"
+                + " dialog is closable even when it carries the project document (Drum Machine Designer"
+                + " does), and a project, Mixer or other AXStandardWindow is refused whether it carries"
+                + " one or not. logic_list_windows reports each window's subrole."
         case .windowAmbiguous(let title, let count):
             return "\(count) windows share the title '\(title)'. Use logic_close_plugin with track, plugin and insert index instead."
         case .pluginNotOpen(let detail):
