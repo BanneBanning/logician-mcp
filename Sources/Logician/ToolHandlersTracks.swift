@@ -19,32 +19,100 @@ extension MCPServer {
         let commandName = kind == "audio"
             ? KeyCommandRegistry.Name.newAudioTrack
             : KeyCommandRegistry.Name.newSoftwareInstrumentTrack
-        let before = ((try? logic.listTracks())?["tracks"] as? [[String: Any]])?.count ?? 0
+        // Read before writing, and REFUSE if the read fails: the whole
+        // verification is a comparison against this listing, and an
+        // unreadable "before" would make the first row seen afterwards look
+        // like a track this call created.
+        guard let beforePayload = try? logic.listTracks(),
+              let beforeTracks = beforePayload["tracks"] as? [[String: Any]] else {
+            throw LogicianError.preconditionUnmet(
+                "The track list could not be read, so a new track could not be told from an"
+                    + " existing one. Nothing was fired. See logic_health."
+            )
+        }
+        let before = TrackChange.rows(beforeTracks)
         let command = try MCUController.resolveKeyCommand(named: commandName, logic: logic)
         _ = try MCUController.triggerKeyCommand(note: command.note, channel: command.channel)
-        // The command opens the Create New Track dialog; answer Create.
+
+        // ONE poll, over the thing this tool actually verifies, looking before
+        // it sleeps — see `TrackChange.createPollDeadline` for the measurement
+        // that replaced the 8.9 s dialog loop that used to stand here. The
+        // dialog look rides on the MISS path: when the row is already there
+        // (3 of 3 profiled runs, on the first look) nobody pays for the
+        // question, and on a Logic version that does prompt it is asked
+        // within milliseconds instead of after a fixed sleep.
         var answered = false
-        for _ in 0..<50 {
-            Thread.sleep(forTimeInterval: 0.12)
-            if logic.answerCreateTrackDialog() { answered = true; break }
-        }
+        var after: [TrackChange.Row] = []
+        var partial = false
         var created = false
-        var after: [[String: Any]] = []
-        for _ in 0..<25 {
-            Thread.sleep(forTimeInterval: 0.15)
-            after = ((try? logic.listTracks())?["tracks"] as? [[String: Any]]) ?? []
-            if after.count > before { created = true; break }
+        var deadline = Date().addingTimeInterval(TrackChange.createPollDeadline)
+        while true {
+            let payload = (try? logic.listTracks()) ?? [:]
+            after = TrackChange.rows((payload["tracks"] as? [[String: Any]]) ?? [])
+            partial = payload["partial"] as? Bool == true
+            if TrackChange.trackAppeared(before: before, after: after) { created = true; break }
+            if !answered, logic.answerCreateTrackDialog() {
+                // A dialog was standing in the way; the track is created after
+                // it is answered, so the clock starts again from there.
+                answered = true
+                deadline = Date().addingTimeInterval(TrackChange.createPollDeadline)
+            }
+            if Date() >= deadline { break }
+            Thread.sleep(forTimeInterval: TrackChange.createPollInterval)
         }
-        return [
+
+        var result: [String: Any] = [
             "success": created,
             "verified": created,
             "type": kind,
             "dialog_answered": answered,
-            "tracks_before": before,
+            "tracks_before": before.count,
             "tracks_after": after.count,
-            "tracks": after.map { ["track_number": $0["track_number"] ?? 0, "track_name": $0["track_name"] ?? ""] },
-            "note": created ? "Track created." : "No new track appeared; a dialog may need attention."
+            "tracks_partial": partial,
+            "tracks": after.map { ["track_number": $0.number, "track_name": $0.name] }
         ]
+        if created {
+            result["state"] = "created"
+            // The next call in the documented recipe is logic_load_instrument
+            // {track_name}, and without this the agent has to diff two
+            // listings or guess Logic's auto-name to get it.
+            if let row = TrackChange.createdRow(before: before, after: after) {
+                result["created_track"] = ["track_number": row.number, "track_name": row.name]
+                result["note"] = kind == "audio"
+                    ? "Track created; `created_track` names it. Its INPUT is not set from here —"
+                        + " the mic or line input and input monitoring are assigned in Logic by"
+                        + " hand before anything can be recorded onto it."
+                    : "Track created; `created_track` names it. A software-instrument track is"
+                        + " EMPTY — pass that track_name to logic_load_instrument next."
+            } else {
+                result["note"] = "Track created, but the listing moved in more than one place, so"
+                    + " which row is the new one cannot be said from here. Re-read"
+                    + " logic_list_tracks before naming it to logic_load_instrument."
+            }
+        } else {
+            switch TrackChange.unseenVerdict(partial: partial) {
+            case .notVisible:
+                result["state"] = "created_not_visible"
+                result["warning"] = "This project renders only part of its track list"
+                    + " (`partial: true`), so the visible rows not changing does NOT mean no"
+                    + " track was created."
+                result["note"] = "The key command fired and the rendered rows did not change, but"
+                    + " they are not all the rows. Scroll the Tracks area and re-read"
+                    + " logic_list_tracks before firing this again — a repeat of a create that"
+                    + " already worked leaves two tracks behind, and Undo is a blind instrument."
+            case .nothing:
+                result["state"] = "failed"
+                result["note"] = "No new track appeared. Nothing here left a dialog up; if Logic"
+                    + " is showing one, answer it and call again."
+            }
+        }
+        // The bank map describes this project's track ORDER — see
+        // `invalidateBankMap()`. A create that may have landed invalidates it
+        // just as surely as one that provably did.
+        if created || result["state"] as? String == "created_not_visible" {
+            invalidateBankMap()
+        }
+        return result
     }
 
     func handleRenameTrack(_ arguments: [String: Any]) throws -> Any {
@@ -69,6 +137,7 @@ extension MCPServer {
             dupAfter = ((try? logic.listTracks())?["tracks"] as? [[String: Any]]) ?? []
             if dupAfter.count > dupBefore { duplicated = true; break }
         }
+        if duplicated { invalidateBankMap() }
         return [
             "success": duplicated, "verified": duplicated,
             "state": duplicated ? "duplicated" : "failed",
@@ -96,49 +165,62 @@ extension MCPServer {
         )
         _ = try MCUController.triggerKeyCommand(note: delCommand.note, channel: delCommand.channel)
 
-        // A track that still holds REGIONS raises a modal confirmation
-        // (measured 2026-08-28). It swallows the key-command plane while it
-        // stands, so it is answered here rather than left for a human: Delete
-        // only when the alert is the one we know AND the selection still names
-        // the requested track, Cancel otherwise.
+        // ONE poll for both outcomes of the key command: the row going away,
+        // and the modal that stands in the way of it going away.
+        //
+        // A track that still holds REGIONS raises a confirmation (measured
+        // 2026-08-28) which swallows the key-command plane while it stands, so
+        // it is answered here rather than left for a human: Delete only when
+        // the alert is the one we know AND the selection still names the
+        // requested track, Cancel otherwise. But a track with no regions
+        // raises nothing, and waiting out the alert's whole 2.5 s timeout to
+        // prove that cost 2.6 s of a 3.3 s call on 7 of 7 profiled deletes.
+        // Asking the same question inside the verification loop prices it at
+        // nothing on the common path: the row is gone on the first look and
+        // the loop never reaches the alert check, while a delete that has NOT
+        // happened yet — the only state a modal could explain — still gets the
+        // full deadline of looks.
+        let beforeRows = TrackChange.rows(delList)
         var confirmation: [String: Any]?
-        if let alert = logic.trackDeletionAlert() {
-            let texts = logic.alertTexts(alert)
-            let selectionStillMatches = logic.selectedTrackName()
-                .map { $0.caseInsensitiveCompare(delTrack) == .orderedSame } ?? true
-            let answer = TrackDeletionAlert.answer(
-                texts: texts, selectionMatches: selectionStillMatches
-            )
-            let answered = logic.answerTrackDeletionAlert(alert, answer)
-            confirmation = [
-                "texts": texts, "answered": answer.rawValue, "dismissed": answered
-            ]
-            if answer == .cancel {
-                throw LogicianError.verificationFailed(
-                    requested: "deleting '\(delTrack)'",
-                    actual: "Logic asked '\(texts.first ?? "an unrecognised alert")' and the"
-                        + " selection could no longer be confirmed as '\(delTrack)', so the alert"
-                        + " was CANCELLED and nothing was deleted",
-                    restored: true
-                )
-            }
-        }
+        var cancelled: [String]?
         var deleted = false
-        var delAfter: [[String: Any]] = []
-        let nameCountBefore = delList.filter {
-            ($0["track_name"] as? String)?.caseInsensitiveCompare(delTrack) == .orderedSame
-        }.count
-        for _ in 0..<15 {
-            Thread.sleep(forTimeInterval: 0.3)
-            delAfter = ((try? logic.listTracks())?["tracks"] as? [[String: Any]]) ?? []
-            let nameCountAfter = delAfter.filter {
-                ($0["track_name"] as? String)?.caseInsensitiveCompare(delTrack) == .orderedSame
-            }.count
-            // Occurrence count, not absence: duplicates share the name.
-            if delAfter.count == delList.count - 1, nameCountAfter == nameCountBefore - 1 {
+        var afterRows: [TrackChange.Row] = []
+        var deadline = Date().addingTimeInterval(TrackChange.deletePollDeadline)
+        while true {
+            afterRows = TrackChange.rows(((try? logic.listTracks())?["tracks"] as? [[String: Any]]) ?? [])
+            if TrackChange.rowRemoved(before: beforeRows, after: afterRows, name: delTrack) {
                 deleted = true; break
             }
+            if confirmation == nil, let alert = logic.trackDeletionAlertNow() {
+                let texts = logic.alertTexts(alert)
+                let selectionStillMatches = logic.selectedTrackName()
+                    .map { $0.caseInsensitiveCompare(delTrack) == .orderedSame } ?? true
+                let answer = TrackDeletionAlert.answer(
+                    texts: texts, selectionMatches: selectionStillMatches
+                )
+                let dismissed = logic.answerTrackDeletionAlert(alert, answer)
+                confirmation = [
+                    "texts": texts, "answered": answer.rawValue, "dismissed": dismissed
+                ]
+                if answer == .cancel { cancelled = texts; break }
+                // Answered Delete: the deletion happens after the press, so
+                // the clock starts again from there.
+                deadline = Date().addingTimeInterval(TrackChange.deletePollDeadline)
+            }
+            if Date() >= deadline { break }
+            Thread.sleep(forTimeInterval: TrackChange.deletePollInterval)
         }
+        if let cancelled {
+            throw LogicianError.verificationFailed(
+                requested: "deleting '\(delTrack)'",
+                actual: "Logic asked '\(cancelled.first ?? "an unrecognised alert")' and the"
+                    + " selection could no longer be confirmed as '\(delTrack)', so the alert"
+                    + " was CANCELLED and nothing was deleted",
+                restored: true
+            )
+        }
+        if deleted { invalidateBankMap() }
+        let delAfter = afterRows.map { ["track_number": $0.number, "track_name": $0.name] }
         var result: [String: Any] = [
             "success": deleted, "verified": deleted,
             "state": deleted ? "deleted" : "failed",
@@ -147,7 +229,7 @@ extension MCPServer {
                 ? "Undo restores the track."
                 : "The track is still listed. Nothing here left a dialog up - a confirmation, if"
                     + " one appeared, is reported in `confirmation`.",
-            "tracks_after": delAfter.map { ["track_number": $0["track_number"] ?? 0, "track_name": $0["track_name"] ?? ""] }
+            "tracks_after": delAfter
         ]
         if let confirmation { result["confirmation"] = confirmation }
         return result

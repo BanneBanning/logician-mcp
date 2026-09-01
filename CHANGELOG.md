@@ -194,6 +194,56 @@ with every render coming back as audio the agent can listen to.
   because they are `AXStandardWindow`. All three now say that, and the refusal
   names the subrole it found.
 
+- **Making a track takes a third of a second, not nine.** `logic_create_track`
+  spent 8.9 s of a 9.3 s call looking fifty times for a *Create New Track* dialog
+  that Logic 12.3.1 never raises for the *New Software Instrument Track* and *New
+  Audio Track* commands — 200 looks out of 200 came back empty while the track was
+  created anyway. There is one poll now, over the track list the tool already
+  verifies against, and it looks before it sleeps: the new row is there on the
+  first read (Logic blocks that read while it builds the track), so nothing is
+  waited for at all. The dialog question rides along on the miss path, so a Logic
+  that does prompt is still answered — within milliseconds instead of after a fixed
+  sleep. Measured live: **9 262 ms → 276-300 ms for a software-instrument track,
+  9 119 ms → 295 ms for an audio track.**
+
+- **The create result names the track it made.** The next call in the recipe is
+  `logic_load_instrument {track_name}`, and the result used to hand back only the
+  whole track list and two counts — so the agent diffed two listings or guessed
+  Logic's auto-name. `created_track {track_number, track_name}` now comes back,
+  read off the row Logic selects, which is also the row that proves the create:
+  measured against a project where the new track landed at position 2 rather than
+  at the end, so "the last row" would have been the wrong answer.
+
+- **A created track that is off-screen is no longer reported as a failure.** Only
+  rendered track rows can be counted (19 of 29 on the reference project), so a
+  project scrolled away from the insertion point could answer *"No new track
+  appeared"* about a track Logic had just made — and the obvious next move on that
+  answer leaves two tracks behind. The verification compares the named row set the
+  way `logic_delete_track` always has, so an insertion that pushes another row out
+  of the viewport is still seen; and when the count has not moved while the listing
+  admits it is partial, the result says `created_not_visible` with `verified: false`
+  and asks you to scroll, which is the strongest true statement this plane can make.
+
+- **Deleting an empty track is under a second.** `logic_delete_track` waited out the
+  full 2.5 s timeout of the "Delete Track and Regions?" alert on every delete, to
+  prove an alert that only ever appears when the track still holds regions: 2.6 s of
+  a 3.3 s call, 7 runs out of 7. The alert question now rides inside the loop that is
+  already watching for the row to disappear, so the wait ends when the deletion lands
+  and the full deadline is only spent while the row is still listed — which is the
+  one state a modal could explain. A track that does hold regions is answered exactly
+  as before, Cancel on any doubt. Measured live: **3 230-3 399 ms → 406-656 ms.**
+
+- **Creating, duplicating or deleting a track forgets the control surface's bank
+  map.** `bank-cache.json` is a picture of which track sits in which bank of eight,
+  and it is scoped by project path and Logic version — neither of which moves when
+  the track ORDER does. Nothing was ever mis-addressed (a cached bank is checked
+  against its expected top row before it is trusted), but the discovery came later,
+  inside whichever surface call happened to be next, which then paid a full ten-bank
+  rescan — on top of banking to the stale entry to disprove it first. The file is
+  deleted at the moment the order changes instead, which is the cheaper answer as
+  well as the honest one: the first surface call after a create measured
+  **11 854 ms with the stale map still in place against 6 796 ms without it**.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.
