@@ -694,21 +694,38 @@ enum TrackDeletionAlert {
 
 extension LogicAccessibility {
 
-    /// The delete-track confirmation, if one is up.
-    func trackDeletionAlert(timeout: Double = 2.5) -> AXUIElement? {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            for window in (try? logicWindows()) ?? []
-            where stringAttribute(window, kAXSubroleAttribute as String) == "AXDialog" {
-                if alertTexts(window).contains(where: {
-                    $0.localizedCaseInsensitiveContains(TrackDeletionAlert.heading)
-                }) {
-                    return window
-                }
+    /// The delete-track confirmation if one is up RIGHT NOW — one look, no
+    /// waiting.
+    ///
+    /// This is the shape callers want, because "no alert" is a negative proof
+    /// and a negative proof is never worth a timeout of its own: measured
+    /// 2026-09-01, `logic_delete_track` spent 2.57–2.64 s of a 3.3 s call
+    /// waiting out the full timeout below for an alert that never comes on a
+    /// track with no regions (7 of 7 runs). `handleDeleteTrack` asks this
+    /// question inside the loop that is already watching for the row to go, so
+    /// the wait ends when the deletion lands rather than when the alert gives
+    /// up.
+    func trackDeletionAlertNow() -> AXUIElement? {
+        for window in (try? logicWindows()) ?? []
+        where stringAttribute(window, kAXSubroleAttribute as String) == "AXDialog" {
+            if alertTexts(window).contains(where: {
+                $0.localizedCaseInsensitiveContains(TrackDeletionAlert.heading)
+            }) {
+                return window
             }
-            Thread.sleep(forTimeInterval: 0.15)
         }
         return nil
+    }
+
+    /// The delete-track confirmation, waited for. Look first, sleep only after
+    /// a miss.
+    func trackDeletionAlert(timeout: Double = 2.5) -> AXUIElement? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            if let alert = trackDeletionAlertNow() { return alert }
+            if Date() >= deadline { return nil }
+            Thread.sleep(forTimeInterval: 0.15)
+        }
     }
 
     /// The static texts of an alert, in order — the evidence the answer is
@@ -734,11 +751,15 @@ extension LogicAccessibility {
                 && stringAttribute($0, kAXTitleAttribute as String) == title
         }) else { return false }
         _ = AXUIElementPerformAction(button, kAXPressAction as CFString)
-        for _ in 0..<20 {
-            Thread.sleep(forTimeInterval: 0.15)
-            if trackDeletionAlert(timeout: 0.1) == nil { return true }
+        // Look before sleeping here too: the press usually tears the alert
+        // down before it returns, and a miss should cost a tick rather than a
+        // seventh of a second.
+        let deadline = Date().addingTimeInterval(2.0)
+        while true {
+            if trackDeletionAlertNow() == nil { return true }
+            if Date() >= deadline { return false }
+            Thread.sleep(forTimeInterval: TrackChange.deletePollInterval)
         }
-        return false
     }
 
     /// The selected track's name, or nil when the list cannot be read (a modal

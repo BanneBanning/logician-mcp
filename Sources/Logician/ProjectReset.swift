@@ -391,6 +391,30 @@ extension MCPServer {
     /// names and both list-editor maps can all have been measured against
     /// unsaved state that the reset just threw away, while their scope stamp
     /// still matches — a cache that is not stale but WRONG.
+    /// Forgets the bank map, because the project's TRACK ORDER just moved.
+    ///
+    /// `bank-cache.json` (MCUTransportLCD.swift:250) is a picture of which
+    /// track sits in which of the control surface's 8-channel banks, scoped by
+    /// Logic version and project path — and neither of those moves when a
+    /// track is created, duplicated or deleted, so the file survives the one
+    /// event that makes it describe a project that no longer exists. Nothing
+    /// is mis-addressed in the meantime: `navigateToBank` checks the bank's
+    /// expected top row before trusting a cached hit and throws the file away
+    /// on a mismatch. What that costs is a full 10-bank rescan, discovered
+    /// later, inside whichever MCU call happened to be next. Deleting the file
+    /// at the moment the order changes turns a wrong map into an absent one —
+    /// and that is CHEAPER, not merely more honest. MEASURED 2026-09-01, one
+    /// `logic_mcu_sends {track_name: "Aux 1"}` (a headerless strip, so it
+    /// resolves through `findChannel`) immediately after a create, same warm
+    /// server process: **11 854 ms with the stale map in place, 6 796 ms with
+    /// it deleted** — the stale map still has to be banked to and disproved
+    /// before the rescan it was supposed to save can even start. One run per
+    /// condition; the direction is not in doubt, the exact figure is one
+    /// sample.
+    func invalidateBankMap() {
+        try? FileManager.default.removeItem(at: MCUController.bankCacheURL)
+    }
+
     @discardableResult
     func invalidateAllProjectCaches() -> [String] {
         let caches: [(String, URL)] = [
