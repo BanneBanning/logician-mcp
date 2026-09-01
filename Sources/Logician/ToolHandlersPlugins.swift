@@ -125,14 +125,29 @@ extension MCPServer {
         _ = try selectStripTarget(
             arguments, expectedProjectPath: arguments["expected_project_path"] as? String
         )
-        if var removed = try MCUController.removePluginViaBrowser(
-            pluginName: requiredString("plugin_name", in: arguments),
-            logic: logic,
-            trackName: requiredString("track_name", in: arguments)
-        ) {
+        let allowMouse = arguments["allow_mouse"] as? Bool == true
+        let viaBrowser: [String: Any]?
+        do {
+            viaBrowser = try MCUController.removePluginViaBrowser(
+                pluginName: requiredString("plugin_name", in: arguments),
+                logic: logic,
+                trackName: requiredString("track_name", in: arguments),
+                insertSlot: arguments["insert_slot"] as? Int
+            )
+        } catch let error as LogicianError {
+            // An ambiguous name match is the one MCU failure the AX fallback
+            // can still answer — it takes insert_index. Fall through to it
+            // only when the caller armed it with both allow_mouse and the
+            // index; otherwise the error already names insert_slot, the
+            // mouse-free way out.
+            guard case .insertAmbiguous = error, allowMouse,
+                  arguments["insert_index"] as? Int != nil else { throw error }
+            viaBrowser = nil
+        }
+        if var removed = viaBrowser {
             removed["track"] = try requiredString("track_name", in: arguments)
             payload = removed
-        } else if arguments["allow_mouse"] as? Bool == true {
+        } else if allowMouse {
             payload = try logic.removePlugin(
                 trackName: requiredString("track_name", in: arguments),
                 trackNumber: arguments["track_number"] as? Int,

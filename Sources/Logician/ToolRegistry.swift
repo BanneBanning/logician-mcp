@@ -1594,7 +1594,7 @@ extension MCPServer {
             Tool(
                 name: "logic_remove_plugin",
                 title: "Remove a plugin",
-                description: "Remove a plugin from a track — mouse-free via the Mackie Control plugin browser's No Plug-in entry (can take up to ~60 s of vpot stepping; verified via LCD and an AX cross-check on the named track). If the MCU bridge is down, the AX chooser fallback requires allow_mouse: true because it briefly takes over the pointer. `cross_check` names that second source: \"ax_insert_list\" (the inspector strip's insert list agreed the plugin is gone) or \"unavailable\" (no inspector is showing that strip, so the control surface's own echo is the only evidence - the result warns when that happens)."
+                description: "Remove a plugin from a track — mouse-free via the Mackie Control plugin browser's No Plug-in entry (can take up to ~60 s of vpot stepping; verified via LCD and an AX cross-check on the named track). When the same display name occupies several slots, the mouse-free route refuses to guess: pass insert_slot to name the one to remove. If the MCU bridge is down, the AX chooser fallback requires allow_mouse: true because it briefly takes over the pointer. `cross_check` names that second source: \"ax_insert_list\" (the inspector strip's insert list agreed the plugin is gone - one fewer instance, when several were there) or \"unavailable\" (no inspector is showing that strip, so the control surface's own echo is the only evidence - the result warns when that happens)."
                     + Tool.stripAddressingNote,
                 inputSchema: [
                     "type": "object",
@@ -1602,7 +1602,8 @@ extension MCPServer {
                         "track_name": ["type": "string"],
                         "track_number": ["type": "integer"],
                         "plugin_name": ["type": "string"],
-                        "insert_index": ["type": "integer", "description": "Needed only when the same plugin sits in several slots - and DESTRUCTIVE if it is wrong: the plugin at that ordinal is the one removed." + Tool.axInsertIndexNote],
+                        "insert_slot": ["type": "integer", "minimum": 1, "maximum": 8, "description": "Needed only when the same plugin sits in several slots - names which one the mouse-free route removes. Its LCD cell must show plugin_name or the call refuses without pressing anything." + Tool.mcuInsertSlotNote],
+                        "insert_index": ["type": "integer", "description": "Same-plugin disambiguator for the allow_mouse Accessibility FALLBACK only (the mouse-free route takes insert_slot instead) - and DESTRUCTIVE if it is wrong: the plugin at that ordinal is the one removed." + Tool.axInsertIndexNote],
                         "allow_mouse": ["type": "boolean", "description": "Permit the Accessibility chooser fallback, which moves the pointer. Default false (data-driven MCU browser only)."],
                         "expected_project_path": ["type": "string", "description": "Refuse unless this is the open project."]
                     ],

@@ -42,7 +42,7 @@ When the Tempo List cannot be read at all, the pre-map behavior is the fallback:
 
 **5. Single-project mode.** Opening/creating a project closes the current one. If the current project has unsaved changes you MUST pass `if_current_modified: "save"` or `"dont_save"` — an explicit decision, otherwise the call refuses. Nothing ever saves except `logic_save_project` (and lifecycle calls where you explicitly chose saving).
 
-**6. MCU physical insert slots ≠ Accessibility ordinals.** The control-surface route takes `insert_slot` (1–8, the Mackie physical slot). List them with `logic_list_inserts {route: "mcu"}` first; empty slots show `--`. The Accessibility route of the same tool returns `index` instead, which is what `logic_open_plugin`, `logic_remove_plugin` and `logic_set_insert_bypass` take. `route_used` in the result says which you got.
+**6. MCU physical insert slots ≠ Accessibility ordinals.** The control-surface route takes `insert_slot` (1–8, the Mackie physical slot). List them with `logic_list_inserts {route: "mcu"}` first; empty slots show `--`. The Accessibility route of the same tool returns `index` instead, which is what `logic_open_plugin` and `logic_set_insert_bypass` take. `logic_remove_plugin` takes both, one per route: `insert_slot` on its default mouse-free route (needed when the same plugin occupies several slots), `insert_index` only for the `allow_mouse` Accessibility fallback. `route_used` in the result says which you got.
 
 **7. Destructive operations have guards but Undo is your friend.** `logic_delete_region` refuses unless exactly ONE region is selected project-wide at the moment Delete fires; `logic_delete_track` re-verifies the selection immediately before firing. Both are restorable with `logic_trigger_key_command {name: "Undo"}` — but ONLY fire Undo right after a known edit (the menu shows no operation name; a blind Undo can revert something else).
 
@@ -960,13 +960,14 @@ Parameters:
 
 #### `logic_remove_plugin`
 
-Remove a plugin from a track — mouse-free via the Mackie Control plugin browser's No Plug-in entry (can take up to ~60 s of vpot stepping; verified via LCD and an AX cross-check on the named track). If the MCU bridge is down, the AX chooser fallback requires allow_mouse: true because it briefly takes over the pointer. `cross_check` names that second source: "ax_insert_list" (the inspector strip's insert list agreed the plugin is gone) or "unavailable" (no inspector is showing that strip, so the control surface's own echo is the only evidence - the result warns when that happens). Accepts headerless output/aux/bus strips — see STRIP ADDRESSING in the server instructions. MAY RETURN `warning` — read it before the rest of the result (RESULT CONTRACT in the server instructions).
+Remove a plugin from a track — mouse-free via the Mackie Control plugin browser's No Plug-in entry (can take up to ~60 s of vpot stepping; verified via LCD and an AX cross-check on the named track). When the same display name occupies several slots, the mouse-free route refuses to guess: pass insert_slot to name the one to remove. If the MCU bridge is down, the AX chooser fallback requires allow_mouse: true because it briefly takes over the pointer. `cross_check` names that second source: "ax_insert_list" (the inspector strip's insert list agreed the plugin is gone - one fewer instance, when several were there) or "unavailable" (no inspector is showing that strip, so the control surface's own echo is the only evidence - the result warns when that happens). Accepts headerless output/aux/bus strips — see STRIP ADDRESSING in the server instructions. MAY RETURN `warning` — read it before the rest of the result (RESULT CONTRACT in the server instructions).
 
 Parameters:
 
   - `allow_mouse` (boolean): Permit the Accessibility chooser fallback, which moves the pointer. Default false (data-driven MCU browser only).
   - `expected_project_path` (string): Refuse unless this is the open project.
-  - `insert_index` (integer): Needed only when the same plugin sits in several slots - and DESTRUCTIVE if it is wrong: the plugin at that ordinal is the one removed. ACCESSIBILITY ordinal (logic_list_inserts route 'ax'), NOT the Mackie insert_slot — see INSERT NUMBERING in the server instructions.
+  - `insert_index` (integer): Same-plugin disambiguator for the allow_mouse Accessibility FALLBACK only (the mouse-free route takes insert_slot instead) - and DESTRUCTIVE if it is wrong: the plugin at that ordinal is the one removed. ACCESSIBILITY ordinal (logic_list_inserts route 'ax'), NOT the Mackie insert_slot — see INSERT NUMBERING in the server instructions.
+  - `insert_slot` (integer): Needed only when the same plugin sits in several slots - names which one the mouse-free route removes. Its LCD cell must show plugin_name or the call refuses without pressing anything. MACKIE physical slot 1-8 (logic_list_inserts route 'mcu'), NOT the Accessibility insert_index — see INSERT NUMBERING in the server instructions.
   - `plugin_name` (string) **(required)**
   - `track_name` (string) **(required)**
   - `track_number` (integer)

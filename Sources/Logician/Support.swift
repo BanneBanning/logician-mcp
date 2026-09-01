@@ -524,7 +524,12 @@ enum LogicianError: LocalizedError {
     /// `exposed`, where it can be true, not in the template.
     case trackNotExposed(requested: String, exposed: String)
     case insertNotFound(track: String, plugin: String, available: [String])
-    case insertAmbiguous(track: String, plugin: String, slots: [Int])
+    /// One display name occupies several insert slots. `parameter` names the
+    /// disambiguating argument of the route that hit this — "insert_index"
+    /// (Accessibility ordinal) or "insert_slot" (Mackie physical slot) — so
+    /// the remedy in the message is the one the failing route actually takes,
+    /// never an invitation to convert between the two numberings.
+    case insertAmbiguous(track: String, plugin: String, slots: [Int], parameter: String)
     case insertMismatch(slot: Int, expected: String, actual: String)
     case openVerificationFailed(String)
     case windowNotClosable(String)
@@ -614,8 +619,11 @@ enum LogicianError: LocalizedError {
                 + sentenceCased(exposed) + (exposed.hasSuffix(".") ? "" : ".")
         case .insertNotFound(let track, let plugin, let available):
             return "No insert matching '\(plugin)' on track '\(track)'. Available inserts: \(available.joined(separator: ", "))."
-        case .insertAmbiguous(let track, let plugin, let slots):
-            return "Insert '\(plugin)' on track '\(track)' is ambiguous; it occupies slots \(slots.map(String.init).joined(separator: ", ")). Pass insert_index to disambiguate."
+        case .insertAmbiguous(let track, let plugin, let slots, let parameter):
+            return "Insert '\(plugin)' on track '\(track)' is ambiguous; it occupies slots "
+                + slots.map(String.init).joined(separator: ", ")
+                + " (\(parameter) numbering). Pass \(parameter) to disambiguate — "
+                + "see INSERT NUMBERING in the server instructions."
         case .insertMismatch(let slot, let expected, let actual):
             return "Insert slot \(slot) holds '\(actual)', not '\(expected)'. No action was taken."
         case .openVerificationFailed(let detail):
