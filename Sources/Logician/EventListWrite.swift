@@ -47,6 +47,51 @@ enum EventField: String {
     case position, pitch, velocity, length
 }
 
+/// What the Event List holds, and how much of it a read could read.
+///
+/// MEASURED 2026-09-01 (profile §5, reproduced 2/2). When the list GROWS,
+/// Logic publishes the new size in `Number of Items` and in `AXRows` at once —
+/// and leaves the row it has not drawn yet with every cell empty but the
+/// Status one: `["", "", "", "Note", "", "", "", ""]`. That row is a real
+/// event; the delete that followed proved it, because the row missing from the
+/// parsed set was the list's genuine last note. It simply has no text yet, and
+/// it stays that way until the list is scrolled.
+///
+/// So: **an unrealised row is COUNTED and not READ**, and that is the one rule
+/// this type exists to apply everywhere. The code it replaced had two counts —
+/// the published row count for the declared-count cross-check and the parsed
+/// array's length for every check after it — and they disagreed by exactly this
+/// row: a `create` that had worked came back `verification_failed` "found the
+/// list holds 25", with the note left sitting in the user's region, and a
+/// `delete` that had worked came back "Requested 24, found 25".
+struct EventCensus: Equatable {
+    /// Every row that carried readable text, in table order. `index` is the
+    /// row's index in the TABLE, so an unrealised row leaves a gap.
+    let rows: [EventRow]
+    /// How many rows Logic published.
+    let published: Int
+    /// What the list's own `Number of Items` says it holds, when it says.
+    let declared: Int?
+
+    /// THE count of events in the region: the list's own, cross-checked against
+    /// the rows it published. Never the parsed array's length — that one is
+    /// short by however many rows Logic has not drawn.
+    var count: Int { declared ?? published }
+    /// Rows that exist and could not be read.
+    var unread: Int { max(0, published - rows.count) }
+    var isComplete: Bool { unread == 0 }
+    /// Logic's two counts disagreeing with EACH OTHER — a genuinely truncated
+    /// table, which is a reason to refuse rather than to read on: a list that
+    /// stops at row 30 of 400 reads as a thirty-note region.
+    var truncated: Bool { declared.map { $0 != published } ?? false }
+    /// What a refusal or a warning calls the rows it could not read.
+    var unreadNote: String {
+        "Logic published \(unread) row(s) it had not drawn yet — a list that has just grown"
+            + " leaves its newest row's cells empty until it is scrolled — so those rows are"
+            + " counted here and cannot be read or addressed."
+    }
+}
+
 enum EventListWrite {
 
     // MARK: Columns
@@ -190,6 +235,84 @@ enum EventListWrite {
         cells.enumerated().compactMap { row(index: $0.offset, cells: $0.element, columns: columns) }
     }
 
+    /// The value one converge loop is moving, out of the row it is moving it in.
+    static func value(of row: EventRow, field: EventField, segment: Int) -> Int? {
+        switch field {
+        case .position: return row.position.indices.contains(segment) ? row.position[segment] : nil
+        case .length: return row.length.indices.contains(segment) ? row.length[segment] : nil
+        case .pitch: return row.pitch
+        case .velocity: return row.velocity
+        }
+    }
+
+    // MARK: The census — ONE count of the list, and what could be read of it
+
+    static func census(cells: [[String]], columns: [String], declaredCount: Int?) -> EventCensus {
+        EventCensus(
+            rows: rows(cells: cells, columns: columns),
+            published: cells.count,
+            declared: declaredCount
+        )
+    }
+
+    /// Did the write disturb a neighbour, or did the read simply not see one?
+    ///
+    /// The multiset difference both ways, plus the judgement a partial read
+    /// forces: a row Logic published and had not drawn reads as nothing at all,
+    /// so at most `unreadAfter` of the vanished are unread rather than gone,
+    /// and at most `unreadBefore` of the appeared were there all along. Beyond
+    /// that slack the difference is real and the caller must be told.
+    static func neighbourVerdict(
+        before: [String], after: [String], unreadBefore: Int, unreadAfter: Int
+    ) -> (vanished: [String], appeared: [String], suspect: Bool) {
+        func missing(_ lhs: [String], from rhs: [String]) -> [String] {
+            var remaining = rhs
+            var absent: [String] = []
+            for row in lhs {
+                if let hit = remaining.firstIndex(of: row) {
+                    remaining.remove(at: hit)
+                } else {
+                    absent.append(row)
+                }
+            }
+            return absent.sorted()
+        }
+        let vanished = missing(before, from: after)
+        let appeared = missing(after, from: before)
+        return (
+            vanished, appeared,
+            vanished.count > unreadAfter || appeared.count > unreadBefore
+        )
+    }
+
+    /// How many stepper writes a move of this size may take.
+    ///
+    /// The budget used to be a flat 80 per field, which **could not reach half
+    /// of Logic's own tick field** (1–240): a legitimate `to_tick` move of more
+    /// than 80 ticks stepped 80 times and then refused — at the profile's
+    /// measured cost, ~21 s spent to say no. Every cell is a one-unit stepper
+    /// (ten units on `AXIncrement`, and only pitch and velocity have that
+    /// gear), so the number of writes a move needs is not a constant at all:
+    /// it is the distance. This is that distance plus eight, for the rollovers
+    /// a position write can take and for a read that comes back stale.
+    ///
+    /// Position and length are budgeted for ONE unit per write even though
+    /// their steppers do honour the ten-unit coarse gear (measured 2026-09-02):
+    /// the budget is the safety net, and a net sized for the fast path would
+    /// refuse a legitimate move the day a Logic version stops answering
+    /// `AXIncrement` on one of those cells. Pitch and velocity keep the coarse
+    /// count because their gear has been measured since 2026-08-28 and their
+    /// whole range is 127 wide.
+    ///
+    /// The cap is a runaway guard, not a limit anything legitimate meets; the
+    /// converge loop's wall-clock deadline is the other half of it.
+    static func stepBudget(_ field: EventField, from current: Int, to target: Int) -> Int {
+        let distance = abs(target - current)
+        let coarse = field == .pitch || field == .velocity
+        let writes = coarse ? distance / 10 + distance % 10 : distance
+        return min(writes + 8, 320)
+    }
+
     // MARK: Addressing
 
     enum Match: Equatable {
@@ -260,5 +383,113 @@ enum EventListWrite {
             bar ?? current[0], beat ?? current[1],
             division ?? current[2], tick ?? current[3]
         ]
+    }
+}
+
+// MARK: - One logic_edit_event call, parsed and validated
+
+/// Everything `logic_edit_event` refuses on, in a form that CANNOT touch Logic.
+///
+/// It is a type rather than a run of `guard`s in the handler because of the
+/// order the handler used to run in: it selected the caller's region FIRST —
+/// `exclusive: true`, which clears every other region's selection and moves
+/// keyboard focus — and only then looked at whether the arguments made sense.
+/// A call with a velocity of 200, a misspelled length or no bar therefore
+/// refused `invalid_arguments` **after** changing the user's selection, which
+/// is the same family as a refusal that claims `restored: true`. Validation
+/// that has no way to reach the UI makes that order impossible to get wrong:
+/// the handler cannot know which region to select until this has parsed.
+struct EventEditRequest {
+    let action: String
+    let trackName: String?
+    let regionName: String?
+    let startBar: Int?
+    let address: EventAddress
+    let change: EventChange
+
+    init(arguments: [String: Any]) throws {
+        guard let action = arguments["action"] as? String, !action.isEmpty else {
+            throw LogicianError.invalidArguments("missing non-empty string: action")
+        }
+        guard ["set", "create", "delete"].contains(action) else {
+            throw LogicianError.invalidArguments("action must be 'set', 'create' or 'delete'")
+        }
+        self.action = action
+        trackName = arguments["track_name"] as? String
+        regionName = arguments["region_name"] as? String
+        startBar = arguments["start_bar"] as? Int
+
+        guard let bar = arguments["bar"] as? Int, bar >= 1 else {
+            throw LogicianError.invalidArguments("bar is required and must be 1 or greater")
+        }
+        func segment(_ key: String) throws -> Int? {
+            guard let value = arguments[key] else { return nil }
+            guard let number = value as? Int, number >= 1 else {
+                throw LogicianError.invalidArguments("\(key) must be a whole number, 1 or greater")
+            }
+            return number
+        }
+        func pitch(_ key: String) throws -> Int? {
+            guard let value = arguments[key] else { return nil }
+            guard let parsed = EventListWrite.parsePitchArgument(value) else {
+                throw LogicianError.invalidArguments(
+                    "\(key) must be a MIDI note number 0-127 or a note name in Logic's own"
+                        + " spelling, where C3 is middle C (60): 'D#2', 'A♯2', 'C3'"
+                )
+            }
+            return parsed
+        }
+        var velocity: Int?
+        if let value = arguments["velocity"] {
+            guard let number = value as? Int, (1...127).contains(number) else {
+                throw LogicianError.invalidArguments(
+                    "velocity must be 1-127 (0 is a note-off, not a quiet note)"
+                )
+            }
+            velocity = number
+        }
+        var length: [Int]?
+        if let value = arguments["length"] {
+            guard let text = value as? String,
+                  let parsed = EventListWrite.parse(segments: text),
+                  parsed.allSatisfy({ $0 >= 0 }) else {
+                throw LogicianError.invalidArguments(
+                    "length must be Logic's own four-field spelling, 'bars beats divisions ticks'"
+                        + " — the same text logic_list_events prints in the Length/Info column."
+                        + " A quarter note is '0 1 0 0'."
+                )
+            }
+            length = parsed
+        }
+        var expectedLength: [Int]?
+        if let value = arguments["expected_current_length"] {
+            guard let text = value as? String, let parsed = EventListWrite.parse(segments: text) else {
+                throw LogicianError.invalidArguments(
+                    "expected_current_length must be Logic's 'bars beats divisions ticks' spelling"
+                )
+            }
+            expectedLength = parsed
+        }
+        address = EventAddress(
+            bar: bar,
+            beat: try segment("beat"),
+            division: try segment("division"),
+            tick: try segment("tick"),
+            pitch: try pitch("pitch")
+        )
+        change = EventChange(
+            pitch: try pitch("new_pitch"),
+            velocity: velocity,
+            bar: try segment("to_bar"),
+            beat: try segment("to_beat"),
+            division: try segment("to_division"),
+            tick: try segment("to_tick"),
+            length: length,
+            expectedVelocity: arguments["expected_current_velocity"] as? Int,
+            expectedLength: expectedLength
+        )
+        if action == "create", address.pitch == nil, change.pitch == nil {
+            throw LogicianError.invalidArguments("action 'create' requires a pitch")
+        }
     }
 }
