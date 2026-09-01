@@ -118,6 +118,19 @@ with every render coming back as audio the agent can listen to.
   believed, a swallowed press is retried once and then reported, and the same
   proven advance drives paging for send levels and the surface view tool.
 
+- **Bouncing a bar range costs ~2.2 s, whatever the bars.** The bounce dialog's
+  position fields turned out to be text elements in disguise: focusing one and
+  typing the bar number is a true absolute jump (41→12 in 53 ms, beat and tick
+  zeroed for free), where the old route stepped a slider one bar per write and
+  paid for the distance — 53–68% of every call, and more the longer the project.
+  Typing into a modal dialog carries its own proof: focus is written and read
+  back before any key is posted, only digits are typed, the commit key is Tab
+  (never Return), the landing is verified against Logic's own display, and any
+  failure falls through to the slider route, which now paces on the field's
+  repaint instead of a fixed sleep. 8.4–11.8 s → 2.1–2.4 s measured, byte- and
+  frame-identical output, and `logic_export_stems`/`logic_evaluate_change`
+  inherit the same jump on every bounce they make.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

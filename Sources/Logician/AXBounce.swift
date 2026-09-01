@@ -130,18 +130,112 @@ extension LogicAccessibility {
             }) {
                 return dialog
             }
-            Thread.sleep(forTimeInterval: 0.1)
+            // 20 ms, not 100: the read above BLOCKS while Logic is opening the
+            // dialog, so the sleep is only the granularity of the look that
+            // follows a genuine miss.
+            Thread.sleep(forTimeInterval: 0.02)
         }
         return nil
+    }
+
+    /// Types an absolute bar into one of the bounce dialog's position fields —
+    /// the whole cost of `setBouncePosition`, replaced by one gesture.
+    ///
+    /// MEASURED live 2026-09-01 on the sandbox project. The position group is
+    /// not just four sliders: it publishes AppKit's text attributes
+    /// (`AXFocused` settable, `AXSelectedTextRange`, `AXNumberOfCharacters`),
+    /// and focusing it SELECTS THE WHOLE FIELD. Typing `12` into it then
+    /// landed `12 1 1 1` — from bar 41, in 53 ms, across the project's 5/4
+    /// meter change, in both fields, forwards and backwards, with the
+    /// beat/division/tick digits reset to 1 for free (which is the sub-bar
+    /// clamp the slider route needs a separate descent to bar 1 to achieve).
+    /// The slider route needs one write per bar of distance instead: ~45 ms
+    /// each, 3-5 s per field on a 64-bar project.
+    ///
+    /// WHY THIS CANNOT PRESS OK BY ACCIDENT — the thing to be careful about,
+    /// because the dialog is modal and its default button starts a render:
+    ///
+    /// - Focus is WRITTEN and then READ BACK, and not one key is posted
+    ///   unless the field itself says it has focus.
+    /// - The commit key is TAB, never Return. Tab moves focus along; Return
+    ///   would activate the default button.
+    /// - Only digits are typed, and only ever the caller's bar number.
+    ///
+    /// Returns false — having posted nothing, or having left the field
+    /// somewhere it can be stepped from — whenever it cannot prove the field
+    /// reads the requested bar. Every false falls through to the slider loop.
+    func typeBouncePosition(group: AXUIElement, bar: Int) -> Bool {
+        guard bar > 0 else { return false }
+        // A bar past the end of the project CLAMPS rather than errors
+        // (measured: typing 200 landed `64 1 1 1`), so the read-back below is
+        // what catches it - it reports the requested bar was not reached and
+        // the slider fallback then fails honestly, naming what the field
+        // reads. Nothing here silently accepts a clamp.
+        guard AXUIElementSetAttributeValue(
+            group, kAXFocusedAttribute as CFString, kCFBooleanTrue
+        ) == .success,
+            stringAttribute(group, kAXFocusedAttribute as String) == "1" else { return false }
+
+        // Unicode keystrokes, not virtual key codes: the digits must land the
+        // same on this machine's Swedish layout as on a US one.
+        let source = CGEventSource(stateID: .hidSystemState)
+        for character in String(bar).unicodeScalars {
+            var unit = UniChar(character.value)
+            guard let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
+                  let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else {
+                return false
+            }
+            down.keyboardSetUnicodeString(stringLength: 1, unicodeString: &unit)
+            up.keyboardSetUnicodeString(stringLength: 1, unicodeString: &unit)
+            down.post(tap: .cghidEventTap)
+            up.post(tap: .cghidEventTap)
+            Thread.sleep(forTimeInterval: 0.004)
+        }
+        let tab: CGKeyCode = 48
+        CGEvent(keyboardEventSource: source, virtualKey: tab, keyDown: true)?.post(tap: .cghidEventTap)
+        CGEvent(keyboardEventSource: source, virtualKey: tab, keyDown: false)?.post(tap: .cghidEventTap)
+
+        // Pace by the effect: the field paints the typed digits before it
+        // reformats them (an intermediate read really does say `4` on the way
+        // to `42 1 1 1`), so accept only the settled bar/beat text, and give
+        // it a bounded window to get there.
+        let deadline = Date().addingTimeInterval(0.6)
+        while Date() < deadline {
+            if let position = BouncePosition.parse(
+                stringAttribute(group, kAXValueAttribute as String)
+            ), position.bar == bar, position.isBarStart {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.008)
+        }
+        return false
     }
 
     /// Drives one of the bounce dialog's Start/End position fields to the START
     /// OF A BAR, and verifies it against the field's own bar/beat display.
     ///
+    /// TWO ROUTES, and the fast one is tried first.
+    ///
+    /// 1. TYPE THE BAR (`typeBouncePosition`). One absolute jump, ~50 ms, any
+    ///    distance. This is the path every normal call takes.
+    /// 2. STEP THE SLIDER (the loop below). One of Logic's bars per write, so
+    ///    O(distance) — kept as the honest fallback for the case where the
+    ///    field refuses focus or a keystroke goes astray, and it converges
+    ///    from wherever route 1 left the field.
+    ///
     /// THE FIELD. Four `AXSlider` digits that all mirror one absolute tick
     /// count. Writing a value inside the range steps it by exactly ONE of
-    /// Logic's bars toward that value; writing the field minimum clamps it to
-    /// `1 1 1 1` and erases any sub-bar remainder with it.
+    /// Logic's bars toward that value — MEASURED per write 2026-09-01: the
+    /// display lands one bar away 0-6 ms after the write and does not move
+    /// again, whatever the value written, so the absolute `hint` below is only
+    /// ever a DIRECTION.
+    ///
+    /// AND WRITING THE MINIMUM DOES NOT CLAMP. The old comment here claimed
+    /// `write(minimum)` snaps the field to `1 1 1 1`; measured, it steps ONE
+    /// bar down per write exactly like every other value (bar 41 -> `39 4 1 1`
+    /// -> `38 4 1 1` -> ...), so the reset path is O(distance) too. It earns
+    /// its place only because it is the one direction that erases a sub-bar
+    /// remainder.
     ///
     /// WHY THE DISPLAY IS THE TRUTH (measured 2026-08-28, and the bug this
     /// replaces). The old converger computed a target tick count as
@@ -176,11 +270,21 @@ extension LogicAccessibility {
             BouncePosition.parse(stringAttribute(group, kAXValueAttribute as String))
         }
         func raw() -> Int64? { Int64(stringAttribute(segment, kAXValueAttribute as String)) }
+        /// One slider write, waiting for the EFFECT rather than a fixed 40 ms:
+        /// measured 2026-09-01, the display lands 0-6 ms after the write on
+        /// every step, so the old blind `sleep(0.04)` was ~35 ms of pure wait
+        /// per bar of distance. A write that changes nothing still costs the
+        /// full window, which is exactly what the stall counters below need.
         func write(_ value: Int64) {
+            let before = stringAttribute(group, kAXValueAttribute as String)
             AXUIElementSetAttributeValue(
                 segment, kAXValueAttribute as CFString, NSNumber(value: value)
             )
-            Thread.sleep(forTimeInterval: 0.04)
+            let deadline = Date().addingTimeInterval(0.04)
+            while Date() < deadline {
+                if stringAttribute(group, kAXValueAttribute as String) != before { return }
+                Thread.sleep(forTimeInterval: 0.004)
+            }
         }
         func failure(_ reason: String) -> LogicianError {
             let others = sibling.map { ", the other field reads '\($0())'" } ?? ""
@@ -195,6 +299,9 @@ extension LogicAccessibility {
             throw LogicianError.valueNotWritable("bounce position value unreadable")
         }
         if start.bar == bar, start.isBarStart { return }
+
+        // Route 1: type the bar. One gesture, any distance.
+        if typeBouncePosition(group: group, bar: bar) { return }
 
         // 1. Anything not exactly on a bar line, or already past the target,
         //    goes back to the field minimum first: it is the one absolute move
@@ -223,11 +330,30 @@ extension LogicAccessibility {
         //    further rather than giving up on arithmetic that was never exact.
         var hint = minimum + Int64(bar - 1) * ticksPerBar
         var stall = 0
+        // A write that MOVES the field but not towards the target is not a
+        // stall, and the raw-value check above cannot see it. Measured
+        // 2026-09-01: at the field's ceiling (bar 64 on this project) the
+        // slider oscillates 63 <-> 64 under a hint above it, changing `raw()`
+        // every time, so the loop below used to burn its whole 400-write
+        // budget - ~18 s - before reporting a target it could never reach.
+        // Counting steps that do not close the distance ends that in six.
+        var noProgress = 0
+        var closest = Int.max
         while true {
             guard let current = display() else { throw failure("the field stopped publishing a position") }
             if current.bar == bar, current.isBarStart { return }
             if current.bar > bar {
                 throw failure("it stepped past the target to '\(current.text)'")
+            }
+            let distance = bar - current.bar
+            if distance < closest {
+                closest = distance
+                noProgress = 0
+            } else {
+                noProgress += 1
+                if noProgress >= 6 {
+                    throw failure("it will not move past '\(current.text)' towards bar \(bar)")
+                }
             }
             guard budget > 0 else { throw failure("it stalled at '\(current.text)'") }
             let before = raw()
@@ -486,16 +612,50 @@ extension LogicAccessibility {
     /// Doubles as the test for "is this window the save panel?" — the panel is
     /// hosted either inside a Logic window or in an AppKit XPC process, and
     /// carrying this button is what identifies it in both places.
+    ///
+    /// FOUND BREADTH-FIRST. The button sits within three levels of the panel window; the window's
+    /// first child is the file browser, which is thousands of elements deep.
+    /// Measured 2026-09-01: pre-order at this depth cap took **993 ms**, the
+    /// same predicate breadth-first takes single-digit ms, and this search ran
+    /// twice per bounce (once to identify the panel, once to press it) for
+    /// ~1.7 s a call. Same cap, same predicates, same one button.
     func savePanelCommitButton(in root: AXUIElement) -> AXUIElement? {
-        firstDescendant(of: root, maximumDepth: AXDepth.bounceDialogControl) {
+        nearestDescendant(of: root, maximumDepth: AXDepth.bounceDialogControl) {
             self.stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
                 && self.stringAttribute($0, kAXIdentifierAttribute as String)
                     == LogicUIStrings.Identifier.okButton
-        } ?? firstDescendant(of: root, maximumDepth: AXDepth.bounceDialogControl) {
+        } ?? nearestDescendant(of: root, maximumDepth: AXDepth.bounceDialogControl) {
             self.stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
                 && self.stringAttribute($0, kAXTitleAttribute as String)
                     == LogicUIStrings.Button.bounce
         }
+    }
+
+    /// Presses the save panel's "already exists" Replace button if it is up,
+    /// and says whether it pressed anything.
+    ///
+    /// STILL STRING-GATED, on purpose. The sheet publishes a default button
+    /// too, but AppKit's overwrite alert makes CANCEL the default - pressing
+    /// "the default" would silently abandon the bounce instead of replacing
+    /// the file. Only the title says Replace, so only the title is trusted;
+    /// the checklist carries the probe that would give this one a
+    /// locale-independent address.
+    ///
+    /// Breadth-first for the same reason the commit button is: the sheet's
+    /// buttons are shallow and the windows underneath it are enormous.
+    func pressReplaceSheetIfPresent() -> Bool {
+        for window in (try? logicWindows()) ?? [] {
+            let match = nearestDescendant(
+                of: window, maximumDepth: AXDepth.bounceDialogControl
+            ) {
+                self.stringAttribute($0, kAXRoleAttribute as String) == "AXButton"
+                    && self.stringAttribute($0, kAXTitleAttribute as String)
+                        == LogicUIStrings.Button.replace
+            }
+            guard let replace = match else { continue }
+            return AXUIElementPerformAction(replace, kAXPressAction as CFString) == .success
+        }
+        return false
     }
 
     func savePanelApplication() -> AXUIElement? {
@@ -631,18 +791,33 @@ extension LogicAccessibility {
         // The save panel is hosted either inside Logic's own window (same
         // title as the dialog) or in an AppKit XPC service process; find it in
         // both places by its Bounce button.
+        // LOOK FIRST, sleep only after a miss. Measured 2026-09-01: the OK
+        // press returns in ~15 ms and the FIRST Accessibility read after it
+        // blocks for ~1.3 s while Logic builds the panel (the second costs
+        // 5 ms) - so the panel is already up by the time that read returns,
+        // and the old leading `sleep(0.08)` bought nothing. The whole loop ran
+        // exactly ONE iteration; its 2 s was Logic's own work plus a pre-order
+        // button search, not waiting.
         let bounceStart = Date()
         var panelRoot: AXUIElement?
+        var commitButton: AXUIElement?
         let panelDeadline = Date().addingTimeInterval(8)
         while Date() < panelDeadline && panelRoot == nil {
-            Thread.sleep(forTimeInterval: 0.08)
-            if let hosted = (try? logicWindows())?.first(where: {
-                self.savePanelCommitButton(in: $0) != nil
-            }) {
-                panelRoot = hosted
-            } else if let xpc = savePanelApplication() {
-                panelRoot = xpc
+            for window in (try? logicWindows()) ?? [] {
+                // The button that IDENTIFIES the panel is the button that gets
+                // pressed: finding it twice used to cost ~730 ms extra.
+                if let commit = savePanelCommitButton(in: window) {
+                    panelRoot = window
+                    commitButton = commit
+                    break
+                }
             }
+            if panelRoot == nil, let xpc = savePanelApplication() {
+                panelRoot = xpc
+                commitButton = savePanelCommitButton(in: xpc)
+            }
+            if panelRoot != nil { break }
+            Thread.sleep(forTimeInterval: 0.08)
         }
         guard let panel = panelRoot else {
             throw LogicianError.openVerificationFailed("the save panel did not appear")
@@ -652,29 +827,20 @@ extension LogicAccessibility {
         // accept the default and move the rendered file to the label name after.
         let timestamp = Int(Date().timeIntervalSince1970)
         let filename = "logicmcp-\(sanitizedFilenameComponent(label, fallback: "bounce"))-\(timestamp)"
-        guard let bounceButton = savePanelCommitButton(in: panel) else {
+        guard let bounceButton = commitButton ?? savePanelCommitButton(in: panel) else {
             throw LogicianError.openVerificationFailed("no Bounce button in the save panel")
         }
         guard AXUIElementPerformAction(bounceButton, kAXPressAction as CFString) == .success else {
             throw LogicianError.writeFailed("pressing Bounce failed")
         }
-        // A possible "already exists" sheet: press Replace.
-        //
-        // STILL STRING-GATED, on purpose. This sheet publishes a default
-        // button too, but AppKit's overwrite alert makes CANCEL the default
-        // — pressing "the default" would silently abandon the bounce instead
-        // of replacing the file. Only the title says Replace, so only the
-        // title is trusted; the checklist carries the probe that would give
-        // this one a locale-independent address.
-        Thread.sleep(forTimeInterval: 0.25)
-        if let replace = (try? logicWindows())?.lazy.compactMap({ window in
-            self.button(
-                in: window, titled: LogicUIStrings.Button.replace,
-                maximumDepth: AXDepth.bounceDialogControl
-            )
-        }).first {
-            _ = AXUIElementPerformAction(replace, kAXPressAction as CFString)
-        }
+        // The possible "already exists" sheet is handled by the render wait
+        // below, not here: see `pressReplaceSheetIfPresent`. What used to sit
+        // at this point was a blind `sleep(0.25)` followed by ONE pre-order
+        // `Replace` search across every Logic window - 0.67-0.84 s measured,
+        // for a look taken at a single moment. Folding the look into the wait
+        // that follows costs nothing (that loop is already polling) and keeps
+        // looking for as long as no file has appeared, which is exactly the
+        // state a sheet would hold us in.
 
         // Wait for the rendered file: the unique name, or (when the panel kept
         // the default name) any audio file created after the bounce started.
@@ -718,10 +884,17 @@ extension LogicAccessibility {
         let renderBudget: TimeInterval = 60
         let renderStart = Date()
         let renderDeadline = renderStart.addingTimeInterval(renderBudget)
+        var replacePressed = false
         while Date() < renderDeadline {
             try checkCancelled()
             Thread.sleep(forTimeInterval: 0.1)
             if resultPath == nil { resultPath = findResult() }
+            // No file yet is the only state an overwrite sheet can be holding
+            // us in, so that is the only state worth looking in. Once bytes
+            // are landing, nothing is blocked and the search stops.
+            if resultPath == nil, !replacePressed, pressReplaceSheetIfPresent() {
+                replacePressed = true
+            }
             // The bytes on disk are the only honest progress signal Logic
             // gives: it publishes no percentage the Accessibility tree can
             // read. The NUMBER therefore tracks the 60 s budget (which is
@@ -799,7 +972,12 @@ extension LogicAccessibility {
 
         reportProgress("encoding the preview", percent: 95)
         let bouncePreview = LogicAccessibility.makeAACPreview(sourcePath: finalPath)
-        let earCopy = LogicAccessibility.encodeEarCopy(path: finalPath)
+        // ONE encode where there used to be two of the same file (~290 ms,
+        // every call). The 128 kbps preview written beside the bounce is
+        // already a stereo AAC; when it fits an attachment it IS the ear copy,
+        // and only a preview too big to attach pays the second, smaller
+        // encode - which is the only case that used to be paid at all.
+        let earCopy = LogicAccessibility.earCopy(preview: bouncePreview, sourcePath: finalPath)
         reportProgress("bounce complete", percent: 100)
         var result: [String: Any] = [
             "success": true,
@@ -888,6 +1066,27 @@ extension LogicAccessibility {
             }
         }
         return names
+    }
+
+    /// The audio block a bounce result carries, taking the preview encode's
+    /// output when it is small enough to attach and encoding a smaller one
+    /// only when it is not.
+    ///
+    /// Both files were always the same audio through the same encoder, at
+    /// 128 and 64 kbps, run back to back on every call for ~290 ms. A 4-bar
+    /// bounce's preview is ~130 KB, so the second run bought nothing; a long
+    /// bounce whose preview exceeds `maxBytes` still gets the 64 kbps cut,
+    /// and a preview that cannot be read falls back to exactly what this did
+    /// before.
+    static func earCopy(
+        preview: String?, sourcePath: String, maxBytes: Int = 400_000
+    ) -> Data? {
+        if let preview,
+           let data = try? Data(contentsOf: URL(fileURLWithPath: preview)),
+           !data.isEmpty, data.count <= maxBytes {
+            return data
+        }
+        return encodeEarCopy(path: sourcePath, maxBytes: maxBytes)
     }
 
     /// Encodes a file as a small mono AAC "ear copy" suitable for an MCP

@@ -71,6 +71,44 @@ func firstNode<Node>(
     return match
 }
 
+/// First node in BREADTH-FIRST order that satisfies `predicate`, root
+/// included — the match NEAREST the root rather than the first one pre-order
+/// happens to reach.
+///
+/// Why this exists (measured live 2026-09-01, the bounce save panel). The
+/// panel's Bounce button is a shallow child of the panel window, but the
+/// window's FIRST child is the file browser, whose subtree is thousands of
+/// elements deep. A pre-order walk descends all of that before it ever looks
+/// at the button's level: `firstDescendant` at `bounceDialogControl` (9) took
+/// **993 ms**, the same search capped at depth 3 took **4 ms**, and the same
+/// walk ran twice per bounce. Breadth-first pays the shallow price without
+/// lowering the cap, so a Logic update that adds one wrapper level still
+/// finds the button (which is what the depth caps exist to survive).
+///
+/// Use this ONLY where "nearest to the root" is the right rule — a named
+/// button on a dialog, of which there is one. Where pre-order is
+/// load-bearing (the region rows, the strip's insert slots, anything ordered
+/// top-to-bottom on screen), keep `firstNode`.
+func nearestNode<Node>(
+    from root: Node,
+    maximumDepth: Int,
+    children: (Node) -> [Node],
+    where predicate: (Node) -> Bool
+) -> Node? {
+    var frontier = [root]
+    var depth = 0
+    while !frontier.isEmpty, depth <= maximumDepth {
+        var next: [Node] = []
+        for node in frontier {
+            if predicate(node) { return node }
+            if depth < maximumDepth { next.append(contentsOf: children(node)) }
+        }
+        frontier = next
+        depth += 1
+    }
+    return nil
+}
+
 // MARK: - Depth caps
 
 /// Every depth cap used by the Accessibility walks, in one place.
@@ -232,5 +270,17 @@ extension LogicAccessibility {
         where predicate: (AXUIElement) -> Bool
     ) -> AXUIElement? {
         firstNode(from: root, maximumDepth: maximumDepth, children: { children(of: $0) }, where: predicate)
+    }
+
+    /// The element NEAREST `root` (root itself included) that satisfies
+    /// `predicate` — breadth-first, so a shallow match is found without
+    /// descending a deep first sibling. See `nearestNode` for why, and for
+    /// when NOT to use it.
+    func nearestDescendant(
+        of root: AXUIElement,
+        maximumDepth: Int,
+        where predicate: (AXUIElement) -> Bool
+    ) -> AXUIElement? {
+        nearestNode(from: root, maximumDepth: maximumDepth, children: { children(of: $0) }, where: predicate)
     }
 }
