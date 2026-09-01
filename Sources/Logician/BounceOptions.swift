@@ -192,3 +192,70 @@ enum PrintedRegion {
         return candidates.first { !knownTracks.contains($0.track) } ?? candidates.first
     }
 }
+
+/// Where a bounce-in-place lands on DISK, which is not where its own result
+/// used to say it landed.
+///
+/// MEASURED 2026-09-01 against `Testlåt Copy.logicx`: every
+/// bounce-in-place writes an audio file into the project's audio-files folder
+/// named after the sheet's `Name` field, and **Undo removes the printed REGION
+/// and leaves the FILE**. Nine fully-undone profiling runs left 16 files
+/// (~68 MB) behind with the arrangement verified back at its exact baseline —
+/// 19 rows, 54 regions, source region unmuted, `Can't Undo`.
+///
+/// The file is found by DIFFING the folder around the print rather than by
+/// composing a name and an extension nobody read, for two reasons the same
+/// run proved: Logic does not overwrite a taken name, it suffixes it
+/// (`Crash_bip`, `Crash_bip_1` … `Crash_bip_11` were all sitting there), and
+/// the extension follows the project's own recording file type rather than
+/// being `.aif` by definition.
+enum PrintedFile {
+
+    /// Logic writes into the project's own media folder, and there are two
+    /// project shapes: a PACKAGE (`Foo.logicx/Media/Audio Files` — the default
+    /// and the one measured) and a FOLDER project, where the `.logicx` is a
+    /// document with `Audio Files` beside it. Both candidates come back, in
+    /// that order; the caller keeps whichever one is on disk.
+    static func audioFolderCandidates(projectPath: String) -> [String] {
+        let project = projectPath as NSString
+        return [
+            project.appendingPathComponent("Media/Audio Files"),
+            (project.deletingLastPathComponent as NSString)
+                .appendingPathComponent("Audio Files")
+        ]
+    }
+
+    /// The names the print added: the folder listing taken after the render
+    /// minus the one taken before it. Sorted, because a track bounce split per
+    /// file adds more than one and a stable order is worth more than arrival
+    /// order from the filesystem.
+    static func arrivals(before: Set<String>, after: [String]) -> [String] {
+        after.filter { !before.contains($0) }.sorted()
+    }
+
+    /// The one sentence a caller has to have. It sits on the `printed_file`
+    /// block itself and not only in the tool's `note`, because the note is
+    /// prose about the whole call and this is the line a cleanup reads.
+    static let undoCaveat = "Undo removes the printed REGION; it does NOT remove this file."
+
+    /// Where the file is, said in words. The tail of both "not identified"
+    /// notes, because a caller who has no path still needs the folder and the
+    /// naming rule to go looking.
+    static let whereLogicWrites =
+        "Logic writes every bounce-in-place into the project's audio-files folder "
+        + "(Media/Audio Files inside the .logicx package) named after the sheet's Name field, "
+        + "suffixed _1, _2 … when that name is taken, and UNDO DOES NOT REMOVE IT."
+
+    /// The folder could not be resolved at all — an honest "not identified",
+    /// never a path nobody read.
+    static let folderUnreadable =
+        "The printed FILE was NOT identified: the project's audio-files folder could not be "
+        + "read. " + whereLogicWrites + " Look there before assuming nothing was written."
+
+    /// The folder WAS read and the diff came back empty, which is a different
+    /// statement and is worth making as one.
+    static let noArrival =
+        "The printed FILE was NOT identified: the folder was read before and after the print "
+        + "and no new entry appeared in it, so either the print reused a name already there or "
+        + "it landed somewhere else. " + whereLogicWrites
+}
