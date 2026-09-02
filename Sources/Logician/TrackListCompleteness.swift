@@ -54,6 +54,50 @@ enum TrackListCompleteness {
         let missingTrackNumbers: [Int]
     }
 
+    /// THE FREE SIGNAL: what the ROW NUMBERS alone prove is missing.
+    ///
+    /// Logic numbers its track rows consecutively from 1, so a listing that
+    /// renders rows 1–9 and 20–29 has already proved that ten rows exist which
+    /// it cannot see — no second read, no header column, no scroll bar. That
+    /// matters because the other three signals are not free: the collapsed-stack
+    /// and scroll-bar evidence needs the track HEADER column, measured 2026-09-02
+    /// at +40–50 ms on a call that runs in 95–120 ms warm — a 40% surcharge for
+    /// two signals. The arrangement map therefore pays for this rule always and for
+    /// the header column only on request — see `LogicAccessibility.listRegions`.
+    ///
+    /// `rowNoun` names what is missing in the first sentence, because the two
+    /// callers list different things: `logic_list_tracks` renders track HEADERS,
+    /// `logic_list_regions` renders region ROWS, and the same number can be
+    /// missing from one and present in the other.
+    static func numbering(rowNumbers: [Int], rowNoun: String) -> Verdict {
+        var evidence: [String] = []
+        var missing: [Int] = []
+        let numbers = rowNumbers.sorted()
+        guard let first = numbers.first, let last = numbers.last else {
+            return Verdict(partial: false, evidence: [], missingTrackNumbers: [])
+        }
+        if first > 1 {
+            missing.append(contentsOf: 1..<first)
+            evidence.append(
+                "the lowest track number rendered is \(first), so \(first - 1) \(rowNoun)(s)"
+                    + " above it are scrolled out of the Tracks area"
+            )
+        }
+        let gaps = Array(Set(first...last).subtracting(numbers)).sorted()
+        if !gaps.isEmpty {
+            missing.append(contentsOf: gaps)
+            evidence.append(
+                "track number(s) \(gaps.map(String.init).joined(separator: ", ")) fall inside"
+                    + " the rendered range and are not listed — they are hidden or scrolled out"
+            )
+        }
+        return Verdict(
+            partial: !evidence.isEmpty,
+            evidence: evidence,
+            missingTrackNumbers: Array(Set(missing)).sorted()
+        )
+    }
+
     /// `scrollable` is the Tracks area's own scroll state: true when Logic's
     /// scroll bar says there is content outside the viewport, false when it says
     /// there is not, nil when the question could not be asked. That last case is
@@ -71,24 +115,10 @@ enum TrackListCompleteness {
             return Verdict(partial: true, evidence: evidence, missingTrackNumbers: [])
         }
 
-        let numbers = rows.map(\.number).sorted()
-        if let first = numbers.first, first > 1 {
-            missing.append(contentsOf: 1..<first)
-            evidence.append(
-                "the lowest track number rendered is \(first), so \(first - 1) track header(s)"
-                    + " above it are scrolled out of the Tracks area"
-            )
-        }
-        if let last = numbers.last {
-            let gaps = Array(Set(numbers.first!...last).subtracting(numbers)).sorted()
-            if !gaps.isEmpty {
-                missing.append(contentsOf: gaps)
-                evidence.append(
-                    "track number(s) \(gaps.map(String.init).joined(separator: ", ")) fall inside"
-                        + " the rendered range and are not listed — they are hidden or scrolled out"
-                )
-            }
-        }
+        let numbering = numbering(rowNumbers: rows.map(\.number), rowNoun: "track header")
+        missing.append(contentsOf: numbering.missingTrackNumbers)
+        evidence.append(contentsOf: numbering.evidence)
+
         let collapsed = rows.filter { $0.isStack && $0.expanded == false }
         if !collapsed.isEmpty {
             evidence.append(

@@ -805,6 +805,27 @@ with every render coming back as audio the agent can listen to.
   for a control name and the banner waited out; if one is still standing after three
   seconds the census says so and refuses to cache the map, because nothing on the surface
   can tell a stuck banner from a strip somebody really called `Solo`.
+- **The arrangement map admits which rows it cannot see, and got faster doing it.**
+  `logic_list_regions` returned three keys and a 165-byte footnote saying scrolled-out
+  tracks are not exposed — while `logic_list_tracks`, called on the same 19 rendered rows
+  seconds later, reported `partial: true` and `missing_track_numbers: [10…19]`. Two tools,
+  one project, one of them silent about the other ten tracks. The map now carries the same
+  contract as the track listing (`partial`, `completeness`, `partial_evidence`,
+  `missing_track_numbers`, and `coverage_checked` naming which signals were read), computed
+  from the row numbers the walk already had: **zero extra Accessibility reads**, and it now
+  reports the same `[10…19]` `logic_list_tracks` does on the same project. The
+  collapsed-stack and scroll-bar evidence is opt-in behind `check_hidden_rows` (+40–50 ms
+  measured). `type` stops being promised for every region: it is parsed from Logic's help
+  sentence, which was measured on all 54 regions of the reference project and, hours earlier
+  the same day, on 2 of the same 54 — so one typed region now types its whole row (a track
+  holds one kind of region) and an absent `type` is documented as UNKNOWN rather than
+  "not audio". **And the same call got a third faster**: the walk reads each node's role
+  before its description, which it needed on 22 of the 448 nodes it visits, so 426 discarded
+  reads are gone — 175 ms → 104–119 ms warm, measured back to back on the same project,
+  cold 299 ms → 186–205 ms, and it lands ×4 on every region WRITE, which walks the
+  arrangement four times. `selected: false` is omitted like `start_beat` already was (52 of
+  54 regions), and the project window is resolved once instead of twice. The payload carries
+  the whole completeness contract for +150 bytes on 54 regions (6 511 → 6 661).
 
 ### Known limitations (honest by design)
 
