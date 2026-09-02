@@ -25,6 +25,20 @@ extension LogicAccessibility {
         ChannelStrip.read(children: stripChildren(of: try inspectorStrip(named: trackName))).plugins
     }
 
+    /// One inspector walk, both answers an automation pass needs before it
+    /// touches anything: the strip's automation-mode row (absent on a strip
+    /// with no track header — an aux, a bus, an output — which is the state
+    /// that makes a mode press unconfirmable) and its static volume in dB,
+    /// which pairs with Logic's 14-bit fader echo into the cross-check the
+    /// cached fader map is trusted on.
+    ///
+    /// Throws when the inspector is not showing this strip at all, which is a
+    /// different fact from "the strip publishes no automation mode" and is
+    /// what `automationModeLabel`'s single `nil` cannot say.
+    func stripAutomationReading(trackName: String) throws -> ChannelStripReading {
+        ChannelStrip.read(children: stripChildren(of: try inspectorStrip(named: trackName)))
+    }
+
     /// The strip's children as `StripChild` values — the shape
     /// `ChannelStrip.read` parses.
     func stripChildren(of strip: AXUIElement) -> [StripChild] {

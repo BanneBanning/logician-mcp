@@ -18,9 +18,126 @@ extension MCUController {
         }
     }
 
+    /// Whether a strip can CONFIRM an automation-mode press at all, told apart
+    /// from an inspector that has simply not repainted yet.
+    ///
+    /// `automationModeLabel` folds both into `nil`, and an automation pass has
+    /// to tell them apart: a strip with no track header — an aux, a bus, an
+    /// output — publishes no automation-mode row and never will, so the press
+    /// can never be verified and the pass must refuse BEFORE it writes
+    /// anything; an inspector still showing the previous track is a transient
+    /// worth another look.
+    enum AutomationModeAvailability: Equatable {
+        /// The strip publishes a mode right now; the dB beside it is the
+        /// static volume, read in the same walk.
+        case publishes(mode: String, volumeDb: Double?)
+        /// The strip is there and has no automation row: no header, no label,
+        /// ever.
+        case headerless(volumeDb: Double?)
+        /// The inspector is showing something else (its own name, verbatim).
+        case inspectorElsewhere(String)
+    }
+
+    /// The verdict for a strip that WAS read. Pure, so the distinction the
+    /// refusal rests on can be tested without an inspector.
+    static func availability(from reading: ChannelStripReading) -> AutomationModeAvailability {
+        guard let mode = reading.automationMode else {
+            return .headerless(volumeDb: reading.volumeDB)
+        }
+        return .publishes(mode: mode, volumeDb: reading.volumeDB)
+    }
+
+    static func automationModeAvailability(
+        logic: LogicAccessibility, trackName: String
+    ) -> AutomationModeAvailability {
+        guard let reading = try? logic.stripAutomationReading(trackName: trackName) else {
+            return .inspectorElsewhere("the inspector is not showing '\(trackName)'")
+        }
+        return availability(from: reading)
+    }
+
+    /// The refusal a headerless strip has earned, in the words that name the
+    /// cause and the way out. Pure so the sentence is testable.
+    static func headerlessAutomationRefusal(trackName: String) -> LogicianError {
+        LogicianError.preconditionUnmet(
+            "'\(trackName)' has no track header, so Logic publishes no automation mode for it —"
+                + " the mode press could never be confirmed and no automation can be recorded"
+                + " on this strip. Automate the tracks feeding the bus instead"
+                + " (logic_track_info names each track's output), or write a static value with"
+                + " logic_set_track_volume / logic_set_send_level."
+        )
+    }
+
+    /// Refuses BEFORE anything is written when the strip cannot confirm a mode
+    /// press, and hands back the strip reading the pass needs anyway (its
+    /// current automation mode and its static volume in dB).
+    ///
+    /// MEASURED 2026-09-02: a headerless-strip call used to cost **10 364 ms**
+    /// — 5 512 ms of calibration fader writes, then two 2.5 s label polls that
+    /// could not succeed — before refusing with "Readback mismatch … the strip
+    /// still shows '?'", which reads like a transient to retry. The refusal is
+    /// now ~0.5 s of looks (1 283 and 998 ms for the whole call on `Aux 2`,
+    /// most of it `findChannel`'s bank scan), with nothing written and the
+    /// cause named.
+    ///
+    /// And whether a NAME is headerless is a property of the project, not of
+    /// the name: `Aux 1` in the sandbox has an aux TRACK row, publishes a mode
+    /// like any track, and records normally — which is why this asks the strip
+    /// instead of pattern-matching the name.
+    static func requireAutomationModeConfirmable(
+        logic: LogicAccessibility, trackName: String
+    ) throws -> (mode: String, volumeDb: Double?) {
+        // Three looks, ~0.5 s: the MCU SELECT echo the caller waited for is
+        // the SURFACE's, and Logic's inspector repaints on its own clock.
+        var last = AutomationModeAvailability.inspectorElsewhere("not read yet")
+        for attempt in 0..<3 {
+            if attempt > 0 { Thread.sleep(forTimeInterval: 0.2) }
+            last = automationModeAvailability(logic: logic, trackName: trackName)
+            switch last {
+            case .publishes(let mode, let volumeDb):
+                return (mode, volumeDb)
+            case .headerless:
+                // Looked at twice before it is believed: a strip mid-repaint
+                // could publish its rows a frame late, and this refusal is
+                // final.
+                if attempt > 0 { throw headerlessAutomationRefusal(trackName: trackName) }
+            case .inspectorElsewhere:
+                continue
+            }
+        }
+        if case .headerless = last { throw headerlessAutomationRefusal(trackName: trackName) }
+        // The inspector never showed the strip. On a bus/aux/output that is the
+        // headerless case wearing another face (an inspector shows the selected
+        // track's own strip and its output, so `Master`, an aux and most buses
+        // never appear there at all); on a normal track it means the repaint
+        // never came. The message names both, because from here they are not
+        // distinguishable and only one of them has a retry.
+        throw LogicianError.preconditionUnmet(
+            "Logic's inspector never showed a channel strip named '\(trackName)', so the"
+                + " automation-mode press could not be verified and nothing was recorded."
+                + " An inspector publishes the SELECTED track's strip and its output only:"
+                + " if '\(trackName)' is a bus, an aux or Master it has no track header and no"
+                + " automation mode — automate the tracks feeding it instead (logic_track_info"
+                + " names each track's output). If it is a normal track, select it in Logic"
+                + " (or with logic_select_track) and call again."
+        )
+    }
+
     /// Sets the selected track's automation mode via the MCU button and
     /// verifies through the channel strip's mode label ("Latch, automation
     /// enabled") — surface write, Accessibility readback.
+    ///
+    /// LOOKS BEFORE IT WAITS (2026-09-02). The poll used to sleep 250 ms
+    /// before its first look; a zero-wait probe read the final label **6/6
+    /// across three runs** immediately after the press, and every run then
+    /// "converged after 1 tick". So the look comes first and the wait only
+    /// happens when the label is not there yet — measured saving 500 ms a
+    /// call, two mode switches per pass. The 2.5 s budget is unchanged.
+    ///
+    /// A strip that publishes no automation row at all fails FAST with the
+    /// headerless refusal rather than polling out the whole budget: 5 of the
+    /// 10.4 s the old headerless refusal cost were two of these polls running
+    /// out against a label that was never coming.
     static func setAutomationMode(
         _ mode: String, logic: LogicAccessibility, trackName: String
     ) throws {
@@ -31,18 +148,129 @@ extension MCUController {
         guard response.ok else {
             throw LogicianError.writeFailed("automation mode press failed")
         }
-        for _ in 0..<10 {
-            Thread.sleep(forTimeInterval: 0.25)
-            if let label = logic.automationModeLabel(trackName: trackName),
-               label.lowercased().hasPrefix(mode.lowercased()) {
-                return
+        let deadline = Date().addingTimeInterval(2.5)
+        var seen = "?"
+        while true {
+            switch automationModeAvailability(logic: logic, trackName: trackName) {
+            case .publishes(let label, _):
+                if label.lowercased().hasPrefix(mode.lowercased()) { return }
+                seen = label
+            case .headerless:
+                throw headerlessAutomationRefusal(trackName: trackName)
+            case .inspectorElsewhere(let reason):
+                seen = reason
             }
+            if Date() >= deadline { break }
+            Thread.sleep(forTimeInterval: 0.05)
         }
         throw LogicianError.verificationFailed(
             requested: "automation mode '\(mode)' on '\(trackName)'",
-            actual: "the strip still shows '\(logic.automationModeLabel(trackName: trackName) ?? "?")'",
+            actual: "the strip still shows '\(seen)'",
             restored: false
         )
+    }
+
+    // MARK: The roll anchor (one rule, both passes)
+
+    /// What one timecode observation during a pre-roll means for the anchor.
+    ///
+    /// The old loop was `bar >= first.bar`, one-sided: its FIRST observation
+    /// could already be past the range, and then the anchor was taken at the
+    /// wrong position, the whole curve was written THERE, and the verification
+    /// replay repeated the same error and confirmed it — `success: true`,
+    /// `verified: true`, curve in the wrong bar. The premise is not
+    /// theoretical: `logic_get_transport`'s profile measured `logic_set_playing`
+    /// starting playback at bar 40 while the playhead read bar 51, because
+    /// Logic plays from its own last play-start position.
+    ///
+    /// So a crossing is only accepted once a bar BELOW the range has been
+    /// seen. Pure, and unit-tested: this decides where every breakpoint of the
+    /// curve lands.
+    enum RollSyncVerdict: Equatable {
+        /// Still before the range — the pre-roll this pass asked for.
+        case preRoll
+        /// The crossing INTO the first bar, with a pre-roll bar behind it.
+        case crossed
+        /// Playback started past the range: nothing may be anchored on this.
+        case startedPastRange
+    }
+
+    static func rollSyncVerdict(
+        observedBar: Int, firstBar: Int, sawPreRoll: Bool
+    ) -> RollSyncVerdict {
+        if observedBar < firstBar { return .preRoll }
+        return sawPreRoll ? .crossed : .startedPastRange
+    }
+
+    /// Ticks in one quarter-note beat on the MCU position display: four
+    /// divisions of 240 (`BBB bb dd ttt`, so `  5 1 4201` is bar 5, beat 1,
+    /// division 4, tick 201 — 0.958 beats past the beat, which is the measured
+    /// shape of the sub-beat residue a verified park leaves behind).
+    static let mcuTicksPerBeat = 960.0
+
+    /// Milliseconds from the position the display is showing to the NEXT bar
+    /// line, or nil when the display is not showing a position at all.
+    ///
+    /// Why the arming lead cannot just count from roll start: `setPlayhead`
+    /// parks on a bar and a beat but carries any SUB-BEAT offset along
+    /// unchanged (measured: `  5 1 4201` after three verified parkings), so the
+    /// crossing can arrive most of a beat earlier than the pre-roll bar's
+    /// length predicts. Reading how far through the bar Logic actually is
+    /// makes the arm land a fixed distance before the bar line however the
+    /// pre-roll started. Pure.
+    static func msToNextBarLine(
+        reading: MCUTimecodeReading, beatSlots: Int, barMs: Double
+    ) -> Double? {
+        guard case .beats(_, let beat, let division, let ticks) = reading,
+              beatSlots >= 1, barMs > 0 else { return nil }
+        // A blanked division or tick field is the bar line itself, not a
+        // missing reading — Logic prints spaces for zero.
+        let withinBeat = (Double(max(division, 1) - 1) * 240 + Double(max(ticks, 1) - 1))
+            / mcuTicksPerBeat
+        let progress = (Double(beat - 1) + withinBeat) / Double(beatSlots)
+        return barMs * (1 - min(max(progress, 0), 1))
+    }
+
+    static func rollStartedPastRangeError(
+        observedBar: Int, firstBar: Int, restored: Bool
+    ) -> LogicianError {
+        LogicianError.verificationFailed(
+            requested: "playback to start in bar \(firstBar - 1) and cross into bar \(firstBar)",
+            actual: "the first position the transport reported was bar \(observedBar), already at or past the range — Logic plays from its own last play-start position, so nothing was written; park the playhead with logic_set_playhead and call again",
+            restored: restored
+        )
+    }
+
+    /// The one pre-roll rule, in ONE place: a Latch pass needs a whole bar in
+    /// front of its first point to arm in, so bar 1 has nothing to roll from.
+    /// Checked by the handler before it reads any map (a pure argument error
+    /// used to cost ~1.8 s of tempo- and meter-map reads to reject) and again
+    /// by each recorder, so no route can lose it.
+    @discardableResult
+    static func automationPreRollBar(firstBar: Int) throws -> Int {
+        guard firstBar >= 2 else {
+            throw LogicianError.invalidArguments("points need bar >= 2 (one bar of pre-roll)")
+        }
+        return firstBar - 1
+    }
+
+    /// Waits for the playhead display to agree it is parked at `bar`, instead
+    /// of sleeping a fixed 500 ms and hoping. The park itself is already
+    /// verified through the control bar by `setPlayhead`; this is the SURFACE
+    /// catching up, and reading it costs 0.5 ms (measured), so the wait is
+    /// over as soon as it is true.
+    static func awaitParkedBar(
+        _ bar: Int, operation: String, timeout: TimeInterval = 1.0
+    ) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if timecodeBar() == bar { return }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        // Out of budget: let the shaped refusal say what the display shows
+        // (SMPTE mode, blank, a modal alert, or the wrong bar) — and if it is
+        // within the display's own tolerance, carry on as before.
+        try requireBeatsDisplay(expectedBar: bar, operation: operation)
     }
 
     // MARK: Automation timing under a tempo map
@@ -96,11 +324,46 @@ extension MCUController {
         return faders[channel]
     }
 
+    /// The beats-per-bar an automation pass measures its offsets in.
+    ///
+    /// `getTransport`'s `time_signature` is the signature AT THE PLAYHEAD, not
+    /// in the range being written — a playhead parked in a 5/4 bar reported
+    /// five beats a bar for a curve in 4/4 (measured 2026-09-02; on the read
+    /// side the same reading made `logic_read_automation` ask for beat 5 of a
+    /// four-beat bar). So the signature at the FIRST POINT's bar, taken from
+    /// the project's meter map, wins whenever the Signature List could be
+    /// read, and the control bar is the fallback for a project whose map
+    /// cannot be. Pure.
+    static func automationBeatsPerBar(
+        firstBar: Int, meterKnowledge: MeterMap?, transportSignature: String?
+    ) -> Double {
+        if let meterKnowledge, meterKnowledge.source == .signatureList {
+            return meterKnowledge.beatsPerBar(atBar: firstBar)
+        }
+        return Double(transportSignature?
+            .split(separator: "/").first.flatMap { Int($0) } ?? 4)
+    }
+
     /// Records a volume automation curve: calibrate each target dB to an
-    /// absolute 14-bit fader position (via LCD-converged writes + Logic's own
-    /// motorized-fader echo), switch the track to Latch, roll playback and
+    /// absolute 14-bit fader position (from the session's cached fader map
+    /// where the evidence allows, otherwise via LCD-converged writes + Logic's
+    /// own motorized-fader echo), switch the track to Latch, roll playback and
     /// place the fader at each point's moment, then return to Read and
     /// verify by REPLAYING the range while sampling the fader echo.
+    ///
+    /// THE FIRST POINT IS ARMED BEFORE THE RANGE (2026-09-02). Latch records
+    /// from the moment the fader is TOUCHED, and entry 0 sits at offset 0 —
+    /// so a schedule that could only start sending after the crossing into
+    /// `first.bar` was *observed* never wrote a breakpoint at bar N beat 1,
+    /// and the range's first instant kept whatever the lane held before.
+    /// Measured on `Audio 9`: `logic_read_automation` read bar 2 beat 1 at the
+    /// lane's pre-existing −0.5 dB after a pass that wrote −14 dB there, while
+    /// the verification — which samples that same instant — called it
+    /// `verified: false` twice and, when the old value happened to be close,
+    /// `verified: true` once over a point that had not landed. The first
+    /// value is now sent a fraction of a beat BEFORE the crossing (the
+    /// arming touch, which is what makes bar N beat 1 itself hold the
+    /// requested value), and sent again on the observed crossing.
     static func recordVolumeAutomation(
         logic: LogicAccessibility,
         trackName: String,
@@ -108,7 +371,8 @@ extension MCUController {
         ramp: Bool,
         verify: Bool,
         tempoMap: TempoMap? = nil,
-        meterMap: MeterMap? = nil
+        meterMap: MeterMap? = nil,
+        meterKnowledge: MeterMap? = nil
     ) throws -> [String: Any] {
         let transport = try logic.getTransport()
         guard let tempo = transport["tempo"] as? Double else {
@@ -116,14 +380,17 @@ extension MCUController {
                 requested: "tempo from the control bar", exposed: "not readable"
             )
         }
-        let beatsPerBar = Double((transport["time_signature"] as? String)?
-            .split(separator: "/").first.flatMap { Int($0) } ?? 4)
         let sorted = points.sorted {
             ($0.bar, $0.beat) < ($1.bar, $1.beat)
         }
-        guard let first = sorted.first, first.bar >= 2 else {
-            throw LogicianError.invalidArguments("points need bar >= 2 (one bar of pre-roll)")
+        guard let first = sorted.first else {
+            throw LogicianError.invalidArguments("points required: [{bar, beat?, db}, ...]")
         }
+        let preRollBar = try automationPreRollBar(firstBar: first.bar)
+        let beatsPerBar = automationBeatsPerBar(
+            firstBar: first.bar, meterKnowledge: meterKnowledge,
+            transportSignature: transport["time_signature"] as? String
+        )
         // The roll sync below anchors on `timecodeBar()`, so the 10-digit
         // display has to be in bars/beats mode — in SMPTE mode it reports
         // hours and the curve would be written at an arbitrary position.
@@ -144,25 +411,52 @@ extension MCUController {
                 exposed: "Logic has not reported fader positions for this bank yet"
             )
         }
+        // The precondition that can NEVER pass, tested before a single fader
+        // message goes out: a strip with no track header publishes no
+        // automation mode, so the Latch press could not be confirmed. It used
+        // to be discovered 5.5 s into a calibration pass that had already
+        // moved the aux's fader.
+        let strip = try requireAutomationModeConfirmable(logic: logic, trackName: trackName)
 
-        // Calibrate: unique dB targets -> absolute fader values, then restore.
-        var calibration: [Double: Int] = [:]
-        for db in Set(sorted.map(\.db)) {
-            guard try setVolume(
-                trackName: trackName, request: .absolute(db), toleranceDb: 0.15
-            ) != nil,
-                  let position = currentFader14(channel) else {
-                _ = try? MCUBridge.send(.fader(channel: channel, value: originalFader))
-                throw LogicianError.verificationFailed(
-                    requested: "calibration of \(db) dB",
-                    actual: "volume converge or fader echo failed; original volume restored",
-                    restored: true
-                )
+        // Calibrate: unique dB targets -> absolute fader values. Cached per
+        // Logic build and project, cross-checked against the strip's own
+        // static dB and the fader echo under it, and only the values that
+        // evidence does not cover cost a converged write (~5 s each).
+        var movedFader = false
+        let calibrated = try resolveFaderCalibration(
+            targets: sorted.map(\.db), liveDb: strip.volumeDb, liveFader: originalFader,
+            table: loadFaderCalibration(),
+            measure: { db in
+                movedFader = true
+                guard try setVolume(
+                    trackName: trackName, request: .absolute(db), toleranceDb: 0.15
+                ) != nil,
+                      let position = currentFader14(channel) else {
+                    _ = try? MCUBridge.send(.fader(channel: channel, value: originalFader))
+                    throw LogicianError.verificationFailed(
+                        requested: "calibration of \(db) dB",
+                        actual: "volume converge or fader echo failed; original volume restored",
+                        restored: true
+                    )
+                }
+                return position
             }
-            calibration[db] = position
+        )
+        let calibration = calibrated.map
+        // A table that was caught out is deleted, not narrowed, and the file is
+        // written from the one this call actually stands behind.
+        if calibrated.retire { discardFaderCalibration() }
+        saveFaderCalibration(calibrated.table)
+        if movedFader {
+            // Restore the static volume the calibration borrowed, and pace on
+            // Logic's own echo of the restore rather than a blind 0.3 s.
+            _ = try? MCUBridge.send(.fader(channel: channel, value: originalFader))
+            _ = waitFor(seconds: 0.4) { status in
+                guard let faders = status["faders_14bit"] as? [Int],
+                      faders.indices.contains(channel) else { return false }
+                return abs(faders[channel] - originalFader) <= 20
+            }
         }
-        _ = try? MCUBridge.send(.fader(channel: channel, value: originalFader))
-        Thread.sleep(forTimeInterval: 0.3)
 
         // Timed schedule relative to the crossing into the first point's bar,
         // integrated over the tempo map when one was read.
@@ -206,28 +500,86 @@ extension MCUController {
         reportProgress("arming latch automation", percent: 15)
         try setAutomationMode("latch", logic: logic, trackName: trackName)
         var report: [String: Any] = [:]
+        // How far before the range the first value is armed. Latch writes from
+        // the touch, so this is what puts a breakpoint at bar N beat 1 — and
+        // it is deliberately a FRACTION of a beat: the arming touch overwrites
+        // that fraction of the lane ahead of the range too, and the shorter it
+        // is the less of the bar before the range it disturbs. 120 ms is under
+        // a quarter beat at 120 BPM and still ten times the MIDI round trip.
+        let armLeadMs = min(120.0, abs(offsetMs(preRollBar, 1)) * 0.25)
+        var armedAt: Date?
         do {
-            _ = try logic.setPlayhead(barNumber: first.bar - 1, beat: 1)
-            Thread.sleep(forTimeInterval: 0.5)
-            // Decisive mode check: the playhead was just parked at a bar
-            // Logic itself verified, and the display has settled after the
-            // move — so it must show that bar. Nothing is in the lane yet
-            // (the calibration writes were already restored above), and the
-            // catch below returns the track to Read and the original volume.
-            try requireBeatsDisplay(
-                expectedBar: first.bar - 1,
-                operation: "volume automation from bar \(first.bar)"
+            _ = try logic.setPlayhead(barNumber: preRollBar, beat: 1)
+            // Decisive mode check, and the pacing too: the playhead was just
+            // parked at a bar Logic itself verified, so the surface must come
+            // to show that bar — waiting for THAT replaces a blind 0.5 s with
+            // a 0.5 ms read (measured). Nothing is in the lane yet (the
+            // calibration writes were already restored above), and the catch
+            // below returns the track to Read and the original volume.
+            try awaitParkedBar(
+                preRollBar, operation: "volume automation from bar \(first.bar)"
             )
             guard (try? setPlaying(true)) != nil else {
                 throw LogicianError.writeFailed("play failed")
             }
-            // Sync: the timecode crossing into the first bar.
+            let rollStart = Date()
+            // The pre-roll bar's own length: under a tempo map it is not the
+            // length of any other bar, and `offsetMs` measures from the first
+            // point, so the pre-roll is its negative offset.
+            let preRollMs = abs(offsetMs(preRollBar, 1))
+            // Sync: the timecode crossing into the first bar, accepted only
+            // after a bar BELOW it has been seen (see `rollSyncVerdict`).
             let syncDeadline = Date().addingTimeInterval(20)
             var anchor: Date?
+            var sawPreRoll = false
+            let preRollSlots = automationBeatSlots(
+                inBar: preRollBar, meter: meterMap, fallback: Int(beatsPerBar.rounded())
+            )
             reportProgress("rolling; waiting for bar \(first.bar)", percent: 25)
             while Date() < syncDeadline {
                 try checkCancelled()
-                if let bar = timecodeBar(), bar >= first.bar { anchor = Date(); break }
+                let reading = timecodeReading()
+                var msToCrossing: Double?
+                if case .beats(let bar, _, _, _) = reading {
+                    switch rollSyncVerdict(
+                        observedBar: bar, firstBar: first.bar, sawPreRoll: sawPreRoll
+                    ) {
+                    case .preRoll:
+                        sawPreRoll = true
+                        if bar == preRollBar {
+                            msToCrossing = msToNextBarLine(
+                                reading: reading, beatSlots: preRollSlots, barMs: preRollMs
+                            )
+                        }
+                    case .crossed: anchor = Date()
+                    case .startedPastRange:
+                        throw rollStartedPastRangeError(
+                            observedBar: bar, firstBar: first.bar, restored: true
+                        )
+                    }
+                    if anchor != nil { break }
+                }
+                // Arm the first value a fraction of a beat before the crossing.
+                // How far the crossing still is comes from the display's own
+                // beat and tick fields where it publishes them — a park's
+                // sub-beat residue can put the bar line most of a beat earlier
+                // than the pre-roll bar's length alone would predict — and from
+                // the elapsed time as the backstop.
+                if armedAt == nil, sawPreRoll,
+                   msToCrossing.map({ $0 <= armLeadMs })
+                    ?? (Date().timeIntervalSince(rollStart) * 1000 >= preRollMs - armLeadMs) {
+                    if let live = currentFader14(channel),
+                       abs(live - schedule[0].value) < 40 {
+                        // Latch writes on a TOUCH: a fader already sitting on
+                        // the target would record nothing at all. Step off it
+                        // and back, both inside the arming lead.
+                        let nudge = schedule[0].value > 200
+                            ? schedule[0].value - 200 : schedule[0].value + 200
+                        _ = try? MCUBridge.send(.fader(channel: channel, value: nudge))
+                    }
+                    _ = try MCUBridge.send(.fader(channel: channel, value: schedule[0].value))
+                    armedAt = Date()
+                }
                 Thread.sleep(forTimeInterval: 0.01)
             }
             guard let start = anchor else {
@@ -246,7 +598,17 @@ extension MCUController {
                 if wait > 0 { Thread.sleep(forTimeInterval: wait) }
                 _ = try MCUBridge.send(.fader(channel: channel, value: entry.value))
             }
-            Thread.sleep(forTimeInterval: 0.5)
+            // Latch has to SEE the last move before the transport stops. The
+            // proof is Logic's own echo of that value coming back, which is a
+            // positive check where the blind 0.5 s tail was a guess; the same
+            // 0.5 s is the budget, not the price.
+            if let last = schedule.last {
+                _ = waitFor(seconds: 0.5) { status in
+                    guard let faders = status["faders_14bit"] as? [Int],
+                          faders.indices.contains(channel) else { return false }
+                    return abs(faders[channel] - last.value) <= 40
+                }
+            }
             _ = try? setPlaying(false)
             try setAutomationMode("read", logic: logic, trackName: trackName)
             _ = try? MCUBridge.send(.fader(channel: channel, value: originalFader))
@@ -263,20 +625,53 @@ extension MCUController {
         report["points"] = sorted.map { ["bar": $0.bar, "beat": $0.beat, "db": $0.db] }
         report["ramp"] = ramp
         report["write_route"] = "mcu_fader_latch"
+        report["calibration"] = calibrated.evidence
+        report["armed_before_range"] = [
+            "lead_ms": (armLeadMs * 10).rounded() / 10,
+            "armed": armedAt != nil,
+            "note": "Latch records from the touch, so the first value is sent this far before bar \(first.bar) beat 1 — that instant then holds the requested value, at the cost of overwriting the same fraction of a beat in front of the range."
+        ]
 
         if verify {
             // Replay in Read and sample Logic's own fader echo at each point.
-            _ = try logic.setPlayhead(barNumber: first.bar - 1, beat: 1)
-            Thread.sleep(forTimeInterval: 0.4)
-            _ = try? setPlaying(true)
             var samples: [[String: Any]] = []
-            let syncDeadline = Date().addingTimeInterval(20)
             var anchor: Date?
-            reportProgress("replaying in Read to verify", percent: 75)
-            while Date() < syncDeadline {
-                try checkCancelled()
-                if let bar = timecodeBar(), bar >= first.bar { anchor = Date(); break }
-                Thread.sleep(forTimeInterval: 0.01)
+            var parkFailure: String?
+            do {
+                _ = try logic.setPlayhead(barNumber: preRollBar, beat: 1)
+                try awaitParkedBar(
+                    preRollBar, operation: "the verification replay of bar \(first.bar)"
+                )
+            } catch {
+                // The pass itself is done and reported; a verification that
+                // could not park is an unverified result, never a lost write
+                // and never a sample read at a position the park did not
+                // reach.
+                parkFailure = error.localizedDescription
+            }
+            if parkFailure == nil {
+                _ = try? setPlaying(true)
+                let syncDeadline = Date().addingTimeInterval(20)
+                var sawPreRoll = false
+                reportProgress("replaying in Read to verify", percent: 75)
+                while Date() < syncDeadline {
+                    try checkCancelled()
+                    if let bar = timecodeBar() {
+                        switch rollSyncVerdict(
+                            observedBar: bar, firstBar: first.bar, sawPreRoll: sawPreRoll
+                        ) {
+                        case .preRoll: sawPreRoll = true
+                        case .crossed: anchor = Date()
+                        case .startedPastRange:
+                            // The same one-sided anchor bug would have made
+                            // the replay confirm a curve written in the wrong
+                            // bar. It reports instead.
+                            parkFailure = "the replay started at bar \(bar), already at or past the range, so no sample could be trusted"
+                        }
+                        if anchor != nil || parkFailure != nil { break }
+                    }
+                    Thread.sleep(forTimeInterval: 0.01)
+                }
             }
             if let start = anchor {
                 for (position, point) in sorted.enumerated() {
@@ -302,10 +697,15 @@ extension MCUController {
             _ = try? MCUBridge.send(.fader(channel: channel, value: originalFader))
             let allPass = !samples.isEmpty && samples.allSatisfy { $0["pass"] as? Bool == true }
             report["verified"] = allPass
-            report["verification"] = [
+            var verification: [String: Any] = [
                 "samples": samples,
-                "note": "The range was replayed in Read mode and Logic's own motorized-fader echo sampled at each point (14-bit positions; tolerance 500 ≈ 1.5 dB near unity)."
+                "note": "The range was replayed in Read mode and Logic's own motorized-fader echo sampled at each point (14-bit positions; tolerance 500 ≈ 1.5 dB near unity). The first point is sampled 0.25 s after its own moment, which the arming touch has already covered."
             ]
+            if let parkFailure {
+                verification["unavailable"] = parkFailure
+                report["verification_note"] = "The pass completed and the curve was written; the verification replay could not run (\(parkFailure)), so verified is false without a point having failed. Read the lane back with logic_read_automation."
+            }
+            report["verification"] = verification
         } else {
             report["verified"] = false
         }
@@ -477,7 +877,8 @@ extension MCUController {
         refreshView: (() throws -> Void)? = nil,
         restoreView: @escaping () -> Void,
         tempoMap: TempoMap? = nil,
-        meterMap: MeterMap? = nil
+        meterMap: MeterMap? = nil,
+        meterKnowledge: MeterMap? = nil
     ) throws -> [String: Any] {
         let transport = try logic.getTransport()
         guard let tempo = transport["tempo"] as? Double else {
@@ -485,12 +886,15 @@ extension MCUController {
                 requested: "tempo from the control bar", exposed: "not readable"
             )
         }
-        let beatsPerBar = Double((transport["time_signature"] as? String)?
-            .split(separator: "/").first.flatMap { Int($0) } ?? 4)
         let sorted = points.sorted { ($0.bar, $0.beat) < ($1.bar, $1.beat) }
-        guard let first = sorted.first, first.bar >= 2 else {
-            throw LogicianError.invalidArguments("points need bar >= 2 (one bar of pre-roll)")
+        guard let first = sorted.first else {
+            throw LogicianError.invalidArguments("points required: [{bar, beat?, value}, ...]")
         }
+        let preRollBar = try automationPreRollBar(firstBar: first.bar)
+        let beatsPerBar = automationBeatsPerBar(
+            firstBar: first.bar, meterKnowledge: meterKnowledge,
+            transportSignature: transport["time_signature"] as? String
+        )
         guard let channel = try findChannel(trackName: trackName) else {
             throw LogicianError.trackNotExposed(
                 requested: "MCU channel for '\(trackName)'", exposed: "not in the bank view"
@@ -499,8 +903,16 @@ extension MCUController {
         guard try selectFoundChannel(channel) else {
             throw LogicianError.writeFailed("MCU select failed")
         }
-        let view = try enterView(channel)
+        // The same precondition as the volume pass, and for the same reason,
+        // before a view is entered or a probe tick is turned: a strip with no
+        // track header has no automation mode to press.
+        _ = try requireAutomationModeConfirmable(logic: logic, trackName: trackName)
+        // ARMED BEFORE THE VIEW IS ENTERED. `enterView` presses its way into a
+        // send or plug-in view and can throw half way, and a restore
+        // registered after it would not run for the view that failed to open —
+        // the surface would be left in it.
         defer { restoreView() }
+        let view = try enterView(channel)
         // The control repaints for a moment after a view switch — poll patiently.
         var initial: Double?
         for _ in 0..<12 {
@@ -558,8 +970,15 @@ extension MCUController {
         reportProgress("arming latch automation", percent: 15)
         try setAutomationMode("latch", logic: logic, trackName: trackName)
         do {
-            _ = try logic.setPlayhead(barNumber: first.bar - 1, beat: 1)
-            Thread.sleep(forTimeInterval: 0.5)
+            _ = try logic.setPlayhead(barNumber: preRollBar, beat: 1)
+            // The parked bar is asserted, not assumed: this whole pass is
+            // timed from roll start, so a transport that starts anywhere else
+            // writes the curve in the wrong bar (see `rollSyncVerdict`).
+            // Waiting for the display to show the parked bar also replaces the
+            // blind 0.5 s that used to sit here.
+            try awaitParkedBar(
+                preRollBar, operation: "\(kindLabel) automation from bar \(first.bar)"
+            )
             let parkedTimecode = freshStatus()?["timecode"] as? String
             guard (try? setPlaying(true)) != nil else {
                 throw LogicianError.writeFailed("play failed")
@@ -576,12 +995,27 @@ extension MCUController {
                 // unwinds exactly like a failed sync.
                 try checkCancelled()
                 if let timecode = freshStatus()?["timecode"] as? String,
-                   timecode != parkedTimecode { anchor = Date(); break }
+                   timecode != parkedTimecode {
+                    // The transport moved — but from WHERE. A roll that began
+                    // at or past the range cannot be the pre-roll this
+                    // schedule is measured from, and accepting it would write
+                    // the whole curve at the wrong position.
+                    if let bar = timecodeBar(),
+                       rollSyncVerdict(
+                           observedBar: bar, firstBar: first.bar, sawPreRoll: false
+                       ) == .startedPastRange {
+                        throw rollStartedPastRangeError(
+                            observedBar: bar, firstBar: first.bar, restored: true
+                        )
+                    }
+                    anchor = Date()
+                    break
+                }
                 Thread.sleep(forTimeInterval: 0.01)
             }
             guard let start = anchor else {
                 throw LogicianError.verificationFailed(
-                    requested: "playback rolling from bar \(first.bar - 1)",
+                    requested: "playback rolling from bar \(preRollBar)",
                     actual: "the timecode never moved", restored: false
                 )
             }
@@ -589,7 +1023,7 @@ extension MCUController {
             // under a tempo map is not the length of any other bar. `offsetMs`
             // is measured from the first point, so the pre-roll bar is its
             // negative offset.
-            let preRollMs = abs(offsetMs(first.bar - 1, 1))
+            let preRollMs = abs(offsetMs(preRollBar, 1))
             for (position, entry) in schedule.enumerated() {
                 // Vpot convergence takes time — lead each write so the curve
                 // centers on the musical moment instead of trailing it. The
@@ -651,17 +1085,55 @@ extension MCUController {
                     "verifying point \(position + 1)/\(sorted.count)",
                     percent: 78 + 21 * Double(position) / Double(sorted.count), throttle: 1
                 )
-                _ = try? logic.setPlayhead(
-                    barNumber: point.bar, beat: max(Int(point.beat.rounded()), 1)
-                )
+                let beat = max(Int(point.beat.rounded()), 1)
+                // The park's RESULT decides whether this sample means
+                // anything. It used to be `try?`, so a park that never landed
+                // was followed by a read at whatever position the playhead was
+                // actually at, reported under the bar and beat that had been
+                // ASKED for. Same rule, same primitive and same words as
+                // `logic_read_automation`'s park-and-prove: the position the
+                // playhead REACHED is what the sample is filed under, with the
+                // requested one beside it when they differ.
+                let requested = AutomationSamplePosition(bar: point.bar, beat: beat)
+                var parkFailure: String?
+                do {
+                    _ = try logic.setPlayhead(barNumber: point.bar, beat: beat)
+                } catch {
+                    parkFailure = error.localizedDescription
+                }
                 Thread.sleep(forTimeInterval: 0.8)
-                let observed = view.read()
-                samples.append([
-                    "bar": point.bar, "beat": point.beat,
-                    "expected": point.value,
-                    "observed": observed.map { $0 as Any } ?? NSNull() as Any,
-                    "pass": observed.map { abs($0 - point.value) <= tolerance } ?? false
-                ])
+                let observed = parkFailure == nil ? view.read() : nil
+                switch automationSampleVerdict(
+                    requested: requested, parkFailure: parkFailure,
+                    landed: timecodeBarBeat().map {
+                        AutomationSamplePosition(bar: $0.bar, beat: $0.beat)
+                    }
+                ) {
+                case .omit(let reason):
+                    samples.append([
+                        "bar": point.bar, "beat": point.beat,
+                        "expected": point.value,
+                        "observed": NSNull() as Any,
+                        "pass": false,
+                        "unavailable": reason
+                    ])
+                case .report(let bar, let beat, let confirmed, let elsewhere):
+                    var sample: [String: Any] = [
+                        "bar": bar, "beat": beat,
+                        "expected": point.value,
+                        "observed": observed.map { $0 as Any } ?? NSNull() as Any,
+                        // A value read at a position nobody asked for verifies
+                        // nothing about the point, however well it matches.
+                        "pass": !elsewhere
+                            && (observed.map { abs($0 - point.value) <= tolerance } ?? false)
+                    ]
+                    if !confirmed { sample["position_confirmed"] = false }
+                    if elsewhere {
+                        sample["requested_bar"] = point.bar
+                        sample["requested_beat"] = point.beat
+                    }
+                    samples.append(sample)
+                }
             }
             _ = try? view.write(original, 2.0)
             let allPass = !samples.isEmpty && samples.allSatisfy { $0["pass"] as? Bool == true }
