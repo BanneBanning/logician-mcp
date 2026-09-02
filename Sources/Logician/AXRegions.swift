@@ -760,11 +760,77 @@ extension LogicAccessibility {
     // pop-up by its action set; see `presetPopUpButton`.
 
     /// Renames a track by writing the channel strip's name field.
-    func renameTrack(trackName: String, newName: String) throws -> [String: Any] {
+    ///
+    /// Read before write, and the reads answer three questions no key command
+    /// should fire before: WHICH row (by name and number, so one of two
+    /// same-named rows can be addressed at all), is this a no-op, and would it
+    /// leave two rows sharing a name. The waits are gone — see
+    /// `TrackChange.renameEditorDeadline` for the probes that proved all three
+    /// blind sleeps dead, 1 455 ms → 271 ms measured 2026-09-02.
+    func renameTrack(
+        trackName: String,
+        trackNumber: Int?,
+        newName: String
+    ) throws -> [String: Any] {
         guard !newName.trimmingCharacters(in: .whitespaces).isEmpty else {
             throw LogicianError.invalidArguments("new_name must be non-empty")
         }
-        _ = try selectTrack(trackName: trackName, trackNumber: nil, expectedProjectPath: nil)
+        let beforeHeaders = try parsedTrackHeaders()
+        let target = try resolveTrack(beforeHeaders, name: trackName, number: trackNumber)
+
+        // A rename to the name the row already carries, character for
+        // character. The old shape fired the key command, opened the editor,
+        // wrote the same string and charged 1 441 ms for it — and then
+        // reported `state: "renamed"`, which is the one thing that did not
+        // happen. Case matters: `{Inst 2 → INST 2}` IS a rename (measured),
+        // and `resolveTrack` addresses rows case-sensitively, so the caller
+        // has to be told which of the two it got.
+        if target.name == newName {
+            return [
+                "success": true, "verified": true, "state": "already_named",
+                "from": target.name, "to": newName, "previous_name": target.name,
+                "renamed_track": ["track_number": target.number, "track_name": target.name],
+                "note": "Track \(target.number) is already named '\(newName)'. Nothing was"
+                    + " selected, no key command fired and nothing was written. A rename that"
+                    + " differs only in CASE is a real rename and is performed."
+            ]
+        }
+        // Refuse to manufacture an unaddressable pair. `logic_duplicate_track`
+        // already makes them — a copy that keeps the source's name leaves two
+        // rows answering to it, and `logic_delete_track` then refuses
+        // "ambiguous; it matches track numbers 26, 27" (measured 2026-09-01).
+        // Rename is the only way OUT of that state, so it must not be a way
+        // into it: two rows sharing a name can only be addressed by number,
+        // and every tool that resolves by name alone refuses them.
+        //
+        // It is a refusal only for a call that did not pass `track_number`.
+        // A caller addressing rows by number has shown it can address the pair
+        // it is asking for — and restoring a project's own duplicate pair
+        // (this reference project ships one) is a legitimate move that a flat
+        // refusal would make impossible. That call goes through, and the
+        // result says what it made.
+        let beforeRows = TrackChange.rows(
+            headers: beforeHeaders.map { (number: $0.number, name: $0.name, selected: $0.selected) }
+        )
+        let clash = TrackChange.nameCollision(
+            rows: beforeRows, renaming: target.number, to: newName
+        )
+        if let clash, trackNumber == nil {
+            throw LogicianError.preconditionUnmet(
+                "Track \(clash.number) is already named '\(newName)', so renaming track"
+                    + " \(target.number) to it would leave two rows answering to one name —"
+                    + " the state logic_duplicate_track produces and which every track tool"
+                    + " refuses as ambiguous unless it is given a track_number. Nothing was"
+                    + " selected and no key command fired. Pick a name no other row carries,"
+                    + " or pass track_number: \(target.number) to make the pair deliberately."
+            )
+        }
+        // By NUMBER as well as name: the row was resolved out of these very
+        // rows, and passing the number through is what keeps the selection
+        // unambiguous when a duplicate pair is what is being repaired.
+        _ = try selectTrack(
+            trackName: target.name, trackNumber: target.number, expectedProjectPath: nil
+        )
         // The header/strip name fields ignore direct AXValue writes; the
         // Rename Track key command opens an inline editor whose focused
         // element IS settable.
@@ -778,8 +844,12 @@ extension LogicAccessibility {
             throw LogicianError.logicNotRunning
         }
         let appElement = AXUIElementCreateApplication(application.processIdentifier)
-        for _ in 0..<15 {
-            Thread.sleep(forTimeInterval: 0.2)
+        // Look BEFORE sleeping: the editor is focused and settable within ~1 ms
+        // of the key command returning (6 of 6 probed runs), and the loop that
+        // slept first paid 200 ms of every call to find it on the first look
+        // anyway.
+        let editorDeadline = Date().addingTimeInterval(TrackChange.renameEditorDeadline)
+        while true {
             // A focused "element" that is not one keeps polling (the editor
             // may not exist yet) rather than trapping mid-rename.
             if let element = elementAttribute(appElement, "AXFocusedUIElement") {
@@ -787,6 +857,8 @@ extension LogicAccessibility {
                 AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
                 if settable.boolValue { editor = element; break }
             }
+            if Date() >= editorDeadline { break }
+            Thread.sleep(forTimeInterval: TrackChange.renameEditorInterval)
         }
         guard let field = editor else {
             throw LogicianError.trackNotExposed(
@@ -794,6 +866,10 @@ extension LogicAccessibility {
                 exposed: "no settable focused element appeared after Rename Track"
             )
         }
+        // The editor comes up pre-filled with the OLD name (6 of 6 probed
+        // runs), so the row's identity can be cross-checked for free at the
+        // one moment it matters: immediately before typing into the field.
+        let prefill = stringAttribute(field, kAXValueAttribute as String)
         let status = AXUIElementSetAttributeValue(
             field, kAXValueAttribute as CFString, newName as CFString
         )
@@ -801,35 +877,111 @@ extension LogicAccessibility {
             throw LogicianError.writeFailed("name write returned AXError \(status.rawValue)")
         }
         _ = AXUIElementPerformAction(field, kAXConfirmAction as CFString)
-        Thread.sleep(forTimeInterval: 0.6)
-        // The rename popover can linger after confirmation and blocks
-        // subsequent commands — close any dialog carrying the new name.
-        if let windows = try? logicWindows() {
-            for window in windows
-            where stringAttribute(window, kAXSubroleAttribute as String) == "AXDialog"
-                && stringAttribute(window, kAXTitleAttribute as String) == newName {
-                // Skip a close button that is not an element, as if the
-                // attribute were absent; `as!` here would trap.
-                if let close = elementAttribute(window, kAXCloseButtonAttribute as String) {
-                    _ = AXUIElementPerformAction(close, kAXPressAction as CFString)
-                }
+
+        // ONE poll, over the thing this tool verifies, looking before it
+        // sleeps — and the popover close rides on the MISS path. Both blind
+        // sleeps that used to stand here (0.6 s + 0.3 s) were proven dead by
+        // reads taken at 0 ms after the confirm; see
+        // `TrackChange.renameEditorDeadline`.
+        var closedPopover = false
+        var afterRows: [TrackChange.Row] = []
+        var partial = false
+        var outcome = TrackChange.RenameOutcome.unchanged
+        var deadline = Date().addingTimeInterval(TrackChange.renamePollDeadline)
+        while true {
+            let payload = (try? listTracks()) ?? [:]
+            afterRows = TrackChange.rows((payload["tracks"] as? [[String: Any]]) ?? [])
+            partial = payload["partial"] as? Bool == true
+            outcome = TrackChange.renameVerdict(
+                after: afterRows, number: target.number, to: newName, partial: partial
+            )
+            if outcome == .renamed { break }
+            if !closedPopover, closeRenamePopover(titled: newName) {
+                // Something WAS standing in the way; the name lands after it
+                // is closed, so the clock starts again from there.
+                closedPopover = true
+                deadline = Date().addingTimeInterval(TrackChange.renamePollDeadline)
             }
+            if Date() >= deadline { break }
+            Thread.sleep(forTimeInterval: TrackChange.renamePollInterval)
         }
-        Thread.sleep(forTimeInterval: 0.3)
-        let tracks = ((try? listTracks())?["tracks"] as? [[String: Any]]) ?? []
-        guard tracks.contains(where: {
-            ($0["track_name"] as? String)?.caseInsensitiveCompare(newName) == .orderedSame
-        }) else {
+
+        var result: [String: Any] = [
+            "success": outcome == .renamed,
+            "verified": outcome == .renamed,
+            "from": target.name, "to": newName,
+            "previous_name": target.name,
+            "renamed_track": ["track_number": target.number, "track_name": newName],
+            "tracks_before": beforeRows.count,
+            "tracks_after": afterRows.count,
+            "tracks_partial": partial,
+            "dialogs_closed": closedPopover
+        ]
+        if !prefill.isEmpty, prefill != target.name {
+            result["warning"] = "The inline editor came up holding '\(prefill)' where the header"
+                + " row reads '\(target.name)'. The write went into the focused field either"
+                + " way; re-read logic_list_tracks before trusting `renamed_track`."
+        } else if let clash, outcome != .unchanged {
+            result["warning"] = "Track \(clash.number) is also named '\(newName)' now, because"
+                + " track_number was passed. Both rows answer to that one name and every track"
+                + " tool refuses it as ambiguous — address either of them by track_number from"
+                + " here on."
+        }
+        switch outcome {
+        case .renamed:
+            result["state"] = "renamed"
+            result["note"] = "Renamed; `renamed_track` addresses the row by number and by its new"
+                + " name. Logic leaves the left inspector strip painted with the OLD name until"
+                + " the selection moves, which is handled here — no selection bounce is needed"
+                + " before the next call on the new name."
+            // Logic will keep painting the old name in the inspector for as
+            // long as this track stays selected; recording it is what stops
+            // the next `selectTrack`-routed call refusing this very row.
+            LogicAccessibility.noteRenamedInPlace(was: target.name, now: newName)
+        case .notVisible:
+            result["state"] = "renamed_not_visible"
+            result["warning"] = "This project renders only part of its track list"
+                + " (`partial: true`) and track \(target.number) is not among the rendered rows,"
+                + " so the rename NOT being visible does not mean it did not land."
+            result["note"] = "The name was written into the focused editor and confirmed. Scroll"
+                + " the Tracks area and re-read logic_list_tracks before firing this again — a"
+                + " retry addressed to '\(target.name)' will not find the row if the rename"
+                + " worked, and Undo is a blind instrument."
+            LogicAccessibility.noteRenamedInPlace(was: target.name, now: newName)
+        case .unchanged:
+            let seen = afterRows.first(where: { $0.number == target.number })?.name ?? "nothing"
             throw LogicianError.verificationFailed(
-                requested: "track renamed to '\(newName)'",
-                actual: "no track header shows the new name",
+                requested: "track \(target.number) '\(target.name)' renamed to '\(newName)'",
+                actual: "that row still reads '\(seen)' after"
+                    + " \(Int(TrackChange.renamePollDeadline)) s of looking; nothing was"
+                    + " restored and nothing else was touched",
                 restored: false
             )
         }
-        return [
-            "success": true, "verified": true, "state": "renamed",
-            "from": trackName, "to": newName
-        ]
+        return result
+    }
+
+    /// Closes a rename popover, if Logic 12.3.1 ever raises one.
+    ///
+    /// It did not once in nine profiled renames across four name shapes
+    /// (2026-09-02: no window with subrole `AXDialog` existed at all at that
+    /// moment, 6/6 instrumented runs, `dialogs_closed=0` on 9/9) — but the
+    /// scan costs 4.3 ms and it is asked on the verification poll's miss path,
+    /// so a version that DOES prompt is answered within milliseconds and a
+    /// version that does not pays nothing for the question.
+    func closeRenamePopover(titled newName: String) -> Bool {
+        guard let windows = try? logicWindows() else { return false }
+        var closed = false
+        for window in windows
+        where stringAttribute(window, kAXSubroleAttribute as String) == "AXDialog"
+            && stringAttribute(window, kAXTitleAttribute as String) == newName {
+            // Skip a close button that is not an element, as if the
+            // attribute were absent; `as!` here would trap.
+            if let close = elementAttribute(window, kAXCloseButtonAttribute as String) {
+                closed = AXUIElementPerformAction(close, kAXPressAction as CFString) == .success
+            }
+        }
+        return closed
     }
 
     /// Rapid-fire stepwise write toward a pan target on the strip's pan

@@ -304,6 +304,115 @@ final class TrackChangeTests: XCTestCase {
         )
     }
 
+    // MARK: Renaming
+
+    /// The shipped check was *"does some visible row carry `new_name`,
+    /// case-insensitively"*, and both of these measured calls satisfied it
+    /// without any evidence of a rename (2026-09-02 profile, D3). The row is
+    /// addressed by NUMBER now, so a name that was already there proves
+    /// nothing about the row that was asked for.
+    func testRenameIsProvenOnTheRowThatWasAddressed() {
+        let after = rows(["Lofi Pad", "Inst 2", "Drums"])
+        XCTAssertTrue(TrackChange.renameLanded(after: after, number: 2, to: "Inst 2"))
+        XCTAssertFalse(TrackChange.renameLanded(after: after, number: 3, to: "Inst 2"))
+    }
+
+    /// The operation whose success was unverifiable: `resolveTrack` compares
+    /// names case-SENSITIVELY, so `{Inst 2 → INST 2}` is a real rename whose
+    /// result must be addressed by the new case — and the old check compared
+    /// case-insensitively, so the pre-existing name satisfied it.
+    func testACaseOnlyRenameIsNotAlreadyLanded() {
+        XCTAssertFalse(
+            TrackChange.renameLanded(after: rows(["Inst 2", "Drums"]), number: 1, to: "INST 2")
+        )
+        XCTAssertTrue(
+            TrackChange.renameLanded(after: rows(["INST 2", "Drums"]), number: 1, to: "INST 2")
+        )
+    }
+
+    /// Two rows sharing a name is the state `logic_duplicate_track`
+    /// manufactures, and renaming one of them is the way out. A name-set
+    /// verdict cannot see that rename at all; the by-number one does.
+    func testRenamingOneOfTwoSameNamedRowsIsProvable() {
+        XCTAssertTrue(
+            TrackChange.renameLanded(
+                after: rows(["Crash", "Crash Copy", "B"]), number: 2, to: "Crash Copy"
+            )
+        )
+    }
+
+    func testARowThatDidNotChangeIsUnchangedNotUnseen() {
+        XCTAssertEqual(
+            TrackChange.renameVerdict(
+                after: rows(["Inst 2", "Drums"]), number: 1, to: "Fp1", partial: true
+            ),
+            .unchanged
+        )
+    }
+
+    /// The mirror image of `logic_create_track`'s D2, and the reason this path
+    /// may not throw: a rename of a scrolled-out row used to come back
+    /// `verification_failed, restored: false` about a rename that had in fact
+    /// landed — and the caller's natural retry is then addressed to a name
+    /// that no longer exists.
+    func testARowThatIsNotRenderedOnAPartialListingIsNotVisible() {
+        XCTAssertEqual(
+            TrackChange.renameVerdict(
+                after: rows(["Inst 2", "Drums"]), number: 14, to: "Fp1", partial: true
+            ),
+            .notVisible
+        )
+    }
+
+    /// A complete listing that does not hold the row at all is not "not
+    /// visible" — there is nothing left for the scroll advice to be about.
+    func testARowMissingFromACompleteListingIsUnchanged() {
+        XCTAssertEqual(
+            TrackChange.renameVerdict(
+                after: rows(["Inst 2", "Drums"]), number: 14, to: "Fp1", partial: false
+            ),
+            .unchanged
+        )
+    }
+
+    /// The tool must not manufacture the pair `logic_duplicate_track` leaves
+    /// behind and rename is the only way out of.
+    func testANameAnotherRowCarriesIsACollision() {
+        let before = rows(["Lofi Pad", "Inst 2", "Drums"])
+        XCTAssertEqual(
+            TrackChange.nameCollision(rows: before, renaming: 2, to: "Drums")?.number, 3
+        )
+    }
+
+    /// The row being renamed is never its own collision — that is the
+    /// `already_named` no-op, not an unaddressable pair.
+    func testTheRowBeingRenamedIsNotItsOwnCollision() {
+        XCTAssertNil(
+            TrackChange.nameCollision(
+                rows: rows(["Lofi Pad", "Inst 2"]), renaming: 2, to: "Inst 2"
+            )
+        )
+    }
+
+    /// Case-sensitively, like `TrackRowAddressing.resolve`: `Drums` and
+    /// `DRUMS` are two rows a caller can still tell apart by name.
+    func testACaseDifferenceIsNotACollision() {
+        XCTAssertNil(
+            TrackChange.nameCollision(
+                rows: rows(["Lofi Pad", "Inst 2", "Drums"]), renaming: 2, to: "DRUMS"
+            )
+        )
+    }
+
+    func testTheRenamedRowIsTheVerdict() {
+        XCTAssertEqual(
+            TrackChange.renameVerdict(
+                after: rows(["Inst 2", "Fp1"]), number: 2, to: "Fp1", partial: true
+            ),
+            .renamed
+        )
+    }
+
     // MARK: The polls look before they sleep
 
     /// The whole point of the 2026-09-01 fix: neither poll may pay a fixed
@@ -313,8 +422,14 @@ final class TrackChangeTests: XCTestCase {
         XCTAssertLessThanOrEqual(TrackChange.createPollInterval, 0.05)
         XCTAssertLessThanOrEqual(TrackChange.duplicatePollInterval, 0.05)
         XCTAssertLessThanOrEqual(TrackChange.deletePollInterval, 0.05)
+        XCTAssertLessThanOrEqual(TrackChange.renamePollInterval, 0.05)
+        XCTAssertLessThanOrEqual(TrackChange.renameEditorInterval, 0.05)
         XCTAssertGreaterThan(TrackChange.createPollDeadline, 1.0)
         XCTAssertGreaterThan(TrackChange.duplicatePollDeadline, 1.0)
         XCTAssertGreaterThan(TrackChange.deletePollDeadline, 1.0)
+        XCTAssertGreaterThan(TrackChange.renamePollDeadline, 1.0)
+        // The editor loop's old budget was 15 × 0.2 s; the deadline keeps that
+        // patience without charging any of it up front.
+        XCTAssertGreaterThanOrEqual(TrackChange.renameEditorDeadline, 3.0)
     }
 }

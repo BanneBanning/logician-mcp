@@ -161,6 +161,94 @@ enum TrackChange {
         rows.filter { $0.name.caseInsensitiveCompare(name) == .orderedSame }.count
     }
 
+    // MARK: Renaming
+
+    /// What a rename may claim, read off the row it addressed.
+    enum RenameOutcome: Equatable {
+        /// The addressed row carries the new name, character for character.
+        case renamed
+        /// The addressed row is not among the rendered ones and the listing
+        /// says it is incomplete, so the rename may well have landed
+        /// off-screen. `verified: false` and a warning, never a failure claim.
+        case notVisible
+        /// The addressed row is right there and does not carry the new name.
+        case unchanged
+    }
+
+    /// Did the row this call addressed take the new name?
+    ///
+    /// This replaces a case-INSENSITIVE presence check over the whole listing
+    /// (*"does some visible row carry `new_name`"*), which the profile of
+    /// 2026-09-02 showed could be satisfied without any evidence of a rename:
+    /// `{Inst 2 → Inst 2}` and `{Inst 2 → INST 2}` both came back
+    /// `verified: true` off a test that was already true BEFORE the write
+    /// (`confirm_zerowait new=yes old_gone=no`). The case-only rename is the
+    /// sharp end of it — `resolveTrack` compares names case-SENSITIVELY, so
+    /// changing only the case is exactly the rename whose result the caller
+    /// then has to address by the new case, and it was the one operation whose
+    /// success could not be told from a silent no-op.
+    ///
+    /// The row NUMBER is what makes the test identify a row rather than a
+    /// name: a rename renumbers nothing, so the row that was addressed is the
+    /// row that must have changed. That is strictly stronger than "one `from`
+    /// gone, one `to` appeared" — it also holds when two rows share a name,
+    /// which is precisely the state `logic_duplicate_track` manufactures.
+    static func renameLanded(after: [Row], number: Int, to: String) -> Bool {
+        after.contains { $0.number == number && $0.name == to }
+    }
+
+    /// The OTHER row a rename would collide with, if any.
+    ///
+    /// Case-sensitive, because that is what makes a pair unaddressable:
+    /// `TrackRowAddressing.resolve` compares names case-sensitively, so
+    /// `Crash` and `CRASH` are two distinguishable rows while two `Crash`
+    /// rows are refused as ambiguous by every name-addressed track tool.
+    static func nameCollision(rows: [Row], renaming number: Int, to newName: String) -> Row? {
+        rows.first { $0.number != number && $0.name == newName }
+    }
+
+    static func renameVerdict(
+        after: [Row],
+        number: Int,
+        to: String,
+        partial: Bool
+    ) -> RenameOutcome {
+        if renameLanded(after: after, number: number, to: to) { return .renamed }
+        // The row is rendered and still reads something else: that is a
+        // provable non-event, whatever the rest of the listing is missing.
+        if after.contains(where: { $0.number == number }) { return .unchanged }
+        return unseenVerdict(partial: partial) == .notVisible ? .notVisible : .unchanged
+    }
+
+    /// MEASURED 2026-09-02 (`logic_rename_track` profile §3–§3.4). The rename
+    /// path spent **1 108 ms of a 1 455 ms call — 76% — in three blind
+    /// `Thread.sleep`s**, and probes taken at 0 ms proved all three dead:
+    ///
+    /// * the inline editor is an `AXTextField`, focused, settable and
+    ///   pre-filled with the OLD name within ~1 ms of the key command's socket
+    ///   round-trip returning (6 of 6 runs, `probe_ms` 0.4–7.1) — and the loop
+    ///   slept 0.2 s BEFORE its first look, then exited on that look on 6 of 6;
+    /// * the header column already carries the new name and has already
+    ///   dropped the old one when the 0.6 s post-confirm sleep begins (6 of 6),
+    ///   and unlike the create and duplicate paths the first post-effect read
+    ///   is NOT the expensive one here (56–82 ms against 52–58 ms in steady
+    ///   state — nothing is being built), so these are a plain deletion rather
+    ///   than a haircut;
+    /// * the "lingering rename popover" the 0.3 s sleep guarded does not
+    ///   exist on Logic 12.3.1 — no window with subrole `AXDialog` at all at
+    ///   that moment (6/6), `dialogs_closed=0` on 9/9 renames across four name
+    ///   shapes. The scan is cheap (4.3 ms), so it is kept and folded onto the
+    ///   poll's MISS path, where a Logic version that does prompt is still
+    ///   answered and a version that does not pays nothing.
+    ///
+    /// Prototype of exactly this shape, same session: **1 455 ms → 263–279 ms
+    /// (mean 271, −81%)**, `looks=1` on 3 of 3 for both polls, with a verdict
+    /// strictly stronger than the one it replaced.
+    static let renameEditorDeadline: TimeInterval = 3.0
+    static let renameEditorInterval: TimeInterval = 0.02
+    static let renamePollDeadline: TimeInterval = 4.0
+    static let renamePollInterval: TimeInterval = 0.02
+
     // MARK: How long the polls look, and how often
 
     /// MEASURED 2026-09-01 (`logic_create_track` profile §3.1–§3.2). The
