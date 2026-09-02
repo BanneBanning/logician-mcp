@@ -730,6 +730,28 @@ with every render coming back as audio the agent can listen to.
   not live-verified: this flow rewrites persisted key bindings, so it was fixed by review and
   23 new tests rather than by running it.
 
+- **`logic_list_key_commands` says each fact once, and can no longer take the server down
+  with it.** The listing answered 7 067 B, and 55% of that was the same text 22–27 times
+  over: a 55-character apology for an unrecorded source on 22 rows, a `notes` string
+  restating that source on 26, `channel: 16` on all 27. Each of those is now said once at
+  the top level or not at all — `channel_default`, one `unrecorded_sources` count, and the
+  learn timestamps and search terms left in the file the answer already names in
+  `registry_path`. Same 27 commands, same notes to fire them with, **2 377 B — 66% smaller,
+  around 1 170 tokens back on every call**, at the same 0.9 ms. Underneath it, the handler
+  keyed the 22 standard command names through a dictionary that TRAPS on a duplicate key —
+  it does not throw, it kills the whole MCP server process, on a read-only call that touches
+  nothing — and those names are a translation surface where four entries differ by one word
+  (`Nudge Region/Event Position Right by Bar`/`Beat`, …). It is a set now, a duplicate name
+  costs a name listed once, and two new tests hold the line. The result also stopped
+  claiming `verified: true`: this call reads a file and never speaks to Logic, so there was
+  nothing for Logic to have confirmed, and the description now says the field is absent and
+  why. The orphan warning it carries — an entry can look registered and never fire — stays.
+
+- **A refusal for a tool that takes no arguments names the alternative.** Eight tools accept
+  nothing at all, and passing one an argument used to be answered with `Accepted: .` — a
+  sentence that looks truncated and helps nobody. It now reads "This tool takes no
+  arguments."; tools that do take arguments still list them.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

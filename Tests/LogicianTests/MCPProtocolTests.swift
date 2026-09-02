@@ -10,7 +10,11 @@ import XCTest
 /// for in tokens on every single call.
 ///
 /// Nothing in this file may dispatch a real tool: `tools/call` cases use a
-/// name that does not exist, so no handler ever reaches Logic.
+/// name that does not exist, so no handler ever reaches Logic. The one case
+/// that names a real tool is the unknown-argument refusal, which is answered
+/// by `callTool` BEFORE the handler is called — and the tool it names
+/// (`logic_list_key_commands`) reads a file rather than Logic even if that
+/// guard were ever to regress.
 final class MCPProtocolTests: XCTestCase {
 
     private let server = MCPServer()
@@ -695,5 +699,45 @@ final class MCPProtocolTests: XCTestCase {
             XCTAssertNotNil(properties[key], key)
         }
         XCTAssertTrue(tool.description.contains("ABSOLUTE"))
+    }
+
+    // MARK: - The refusal for an argument no tool declares
+
+    /// A refusal's second job is naming the alternative. For the eight tools
+    /// that declare `properties: [:]` the text used to render a bare
+    /// "Accepted: ." - measured on logic_list_key_commands, 2026-09-02.
+    func testARefusalForANoArgumentToolSaysItTakesNoArguments() {
+        let text = MCPServer.unknownArgumentRefusal(
+            tool: "logic_list_key_commands", unknown: ["foo"], accepted: []
+        )
+        XCTAssertEqual(
+            text,
+            "logic_list_key_commands does not accept: foo. This tool takes no arguments."
+                + " The argument was NOT applied - do not assume it took effect."
+        )
+        XCTAssertFalse(text.contains("Accepted: ."), "the empty list is not an alternative")
+    }
+
+    /// A tool that does take arguments keeps the wording it had.
+    func testARefusalForAToolWithArgumentsStillListsThemSorted() {
+        XCTAssertEqual(
+            MCPServer.unknownArgumentRefusal(
+                tool: "logic_set_track_pan", unknown: ["db", "aim"],
+                accepted: ["track_name", "pan"]
+            ),
+            "logic_set_track_pan does not accept: aim, db. Accepted: pan, track_name."
+                + " The argument was NOT applied - do not assume it took effect."
+        )
+    }
+
+    /// End to end through `tools/call`, so the wiring is pinned too and not
+    /// just the string builder. `logic_list_key_commands` reads a file and
+    /// never reaches Logic - and this call is refused before the handler runs.
+    func testCallingANoArgumentToolWithAnArgumentIsRefusedWithTheNewWording() throws {
+        let result = server.callTool(name: "logic_list_key_commands", arguments: ["foo": 1])
+        let content = try XCTUnwrap(result["content"] as? [[String: Any]])
+        let text = try XCTUnwrap(content.first?["text"] as? String)
+        XCTAssertTrue(text.contains("This tool takes no arguments"), text)
+        XCTAssertFalse(text.contains("Accepted: ."), text)
     }
 }

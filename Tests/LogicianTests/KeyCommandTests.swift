@@ -123,4 +123,136 @@ final class KeyCommandTests: XCTestCase {
             )
         }
     }
+
+    /// The notes have been guarded since they were written; the NAMES never
+    /// were, and they are the riskier column. `Name` is a localization surface
+    /// and four of these entries are `Nudge Region/Event Position …` variants
+    /// one word apart — a translation that flattened two of them would have
+    /// been caught by nothing until `logic_list_key_commands` was called.
+    func testStandardCommandNamesAreUnique() {
+        let names = KeyCommandRegistry.standardCommands.map { $0.name.lowercased() }
+        XCTAssertEqual(
+            Set(names).count, names.count,
+            "two standard commands carry the same name: "
+                + Dictionary(grouping: names, by: { $0 }).filter { $0.value.count > 1 }
+                    .keys.sorted().joined(separator: ", ")
+        )
+    }
+
+    /// And if one day they are NOT unique, the answer is still an answer.
+    /// This was `Dictionary(uniqueKeysWithValues:)` in the listing handler,
+    /// which traps rather than throws: a duplicated name killed the whole MCP
+    /// server process on a read-only call.
+    func testCollidingStandardNamesAnswerNormallyInsteadOfTrapping() {
+        let colliding: [(search: String, name: String, preferredNote: Int)] = [
+            ("nudge", "Nudge Region/Event Position Right by Bar", 112),
+            ("nudge", "Nudge Region/Event Position Right by Bar", 113),
+            ("save", "Save", 105)
+        ]
+        let missing = KeyCommandRegistry.standardNotLearned(in: colliding, registryNames: [])
+        XCTAssertEqual(missing, ["Nudge Region/Event Position Right by Bar", "Save"])
+
+        // And the collision does not survive into the answer twice when the
+        // registry does hold it either.
+        XCTAssertEqual(
+            KeyCommandRegistry.standardNotLearned(in: colliding, registryNames: ["save"]),
+            ["Nudge Region/Event Position Right by Bar"]
+        )
+    }
+
+    func testStandardNotLearnedMatchesCaseInsensitivelyAndKeepsDeclarationOrder() {
+        let registry: Set<String> = Set(
+            KeyCommandRegistry.standardCommands.dropFirst().map { $0.name.lowercased() }
+        )
+        XCTAssertEqual(
+            KeyCommandRegistry.standardNotLearned(registryNames: registry),
+            [KeyCommandRegistry.standardCommands[0].name]
+        )
+        XCTAssertTrue(
+            KeyCommandRegistry.standardNotLearned(
+                registryNames: Set(KeyCommandRegistry.standardCommands.map { $0.name.uppercased() })
+            ).count == KeyCommandRegistry.standardCommands.count,
+            "registryNames is documented as lowercased; an uppercase set must not match"
+        )
+    }
+
+    // MARK: - The listing payload's shape
+    //
+    // Pinned because there was no test at all when 55% of this payload was
+    // found to be the same sentence 22-27 times (profiled 2026-09-02, 7 026 B).
+    // Each assertion below is a fact the answer must keep saying, or a repeat
+    // it must not start saying again.
+
+    private var sampleRegistry: [[String: Any]] {
+        [
+            [
+                "name": "Save", "note": 105, "channel": 16,
+                "learned": "2026-08-25", "learned_at": "2026-08-25T10:00:00Z",
+                "notes": "learned automatically by logic_setup_key_commands"
+            ],
+            [
+                "name": "Bounce Regions in Place", "note": 60, "channel": 15,
+                "source": "logic_learn_key_command", "search": "bounce",
+                "learned_at": "2026-08-30T09:00:00Z", "port_unique_id": 4711
+            ],
+            ["name": "Delete", "note": 111, "channel": 16, "port_unique_id": 99]
+        ]
+    }
+
+    func testListingRowsKeepEveryFactACallerCanActOn() {
+        let rows = KeyCommandRegistry.listingRows(from: sampleRegistry, currentPortUniqueID: 4711)
+        XCTAssertEqual(rows.map { $0["name"] as? String }, ["Bounce Regions in Place", "Delete", "Save"])
+        XCTAssertEqual(rows.map { $0["note"] as? Int }, [60, 111, 105])
+
+        let bounce = rows[0]
+        XCTAssertEqual(bounce["channel"] as? Int, 15, "a non-default channel must survive")
+        XCTAssertEqual(bounce["source"] as? String, "logic_learn_key_command")
+        XCTAssertEqual(bounce["port_identity"] as? String, "current")
+        XCTAssertNil(bounce["port_unique_id"], "the live identity is already named at top level")
+
+        let delete = rows[1]
+        XCTAssertEqual(delete["port_identity"] as? String, "changed")
+        XCTAssertEqual(delete["port_unique_id"] as? Int, 99, "a foreign identity is worth naming")
+    }
+
+    func testListingRowsSayTheConstantsNoTimes() {
+        let rows = KeyCommandRegistry.listingRows(from: sampleRegistry, currentPortUniqueID: 4711)
+        for row in rows {
+            XCTAssertNil(row["notes"], "notes restated source")
+            XCTAssertNil(row["standard"], "derivable, and 27 booleans of it")
+            XCTAssertNil(row["learned"], "in the file at registry_path")
+            XCTAssertNil(row["learned_at"], "in the file at registry_path")
+            XCTAssertNil(row["search"], "in the file at registry_path")
+        }
+        XCTAssertNil(rows[2]["channel"], "channel 16 is the default and is said once")
+        XCTAssertNil(
+            rows[2]["source"],
+            "an entry with no recorded source costs no 55-char apology per row"
+        )
+        XCTAssertEqual(KeyCommandRegistry.unrecordedSourceCount(in: sampleRegistry), 2)
+    }
+
+    /// A row that records an identity while the live port cannot be read at
+    /// all: nothing may be claimed, but the recorded number is the only
+    /// witness there is, so it stays.
+    func testListingRowsClaimNoIdentityWhenTheLivePortIsUnreadable() {
+        let rows = KeyCommandRegistry.listingRows(from: sampleRegistry, currentPortUniqueID: nil)
+        for row in rows { XCTAssertNil(row["port_identity"]) }
+        XCTAssertEqual(rows[0]["port_unique_id"] as? Int, 4711)
+    }
+
+    /// A corrupt channel is a fact. Dropping it would let the caller read the
+    /// absence as "16".
+    func testListingRowsKeepAChannelThatIsNotAnInt() {
+        let rows = KeyCommandRegistry.listingRows(
+            from: [["name": "Save", "note": 105, "channel": "sixteen"]], currentPortUniqueID: nil
+        )
+        XCTAssertEqual(rows[0]["channel"] as? String, "sixteen")
+    }
+
+    func testListingRowsSurviveARegistryRowWithNothingInIt() {
+        let rows = KeyCommandRegistry.listingRows(from: [[:]], currentPortUniqueID: 1)
+        XCTAssertEqual(rows[0]["name"] as? String, "?")
+        XCTAssertTrue(rows[0]["note"] is NSNull)
+    }
 }

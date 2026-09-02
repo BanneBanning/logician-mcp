@@ -381,46 +381,23 @@ extension MCPServer {
     /// are compared against.
     func handleListKeyCommands(_ arguments: [String: Any]) throws -> Any {
         let livePortID = sourceUniqueID(named: commandsPortName).map(Int.init)
-        let standard = Dictionary(
-            uniqueKeysWithValues: KeyCommandRegistry.standardCommands.map {
-                ($0.name.lowercased(), $0)
-            }
-        )
-        let commands = KeyCommandRegistry.commands().map { raw -> [String: Any] in
-            let name = (raw["name"] as? String) ?? "?"
-            var entry: [String: Any] = [
-                "name": name,
-                "note": raw["note"] ?? NSNull(),
-                "channel": raw["channel"] ?? 16,
-                // Entries written before v0.54 carry no source; saying so is
-                // more honest than attributing them to the onboarding tool.
-                "source": raw["source"] ?? "unrecorded (bound before the registry tracked a source)",
-                "learned": raw["learned"] ?? NSNull(),
-                "standard": standard[name.lowercased()] != nil
-            ]
-            if let at = raw["learned_at"] { entry["learned_at"] = at }
-            if let search = raw["search"] { entry["search"] = search }
-            if let notes = raw["notes"] { entry["notes"] = notes }
-            // Logic scopes an assignment to the port's unique ID, so an entry
-            // that records which identity it was learned against can be
-            // checked later; one that does not is silent about it rather than
-            // presumed good.
-            if let recorded = raw["port_unique_id"] as? Int {
-                entry["port_unique_id"] = recorded
-                if let livePortID { entry["port_identity"] = recorded == livePortID ? "current" : "changed" }
-            }
-            return entry
-        }.sorted { (($0["name"] as? String) ?? "") < (($1["name"] as? String) ?? "") }
-
-        let registered = Set(commands.compactMap { ($0["name"] as? String)?.lowercased() })
-        let missing = KeyCommandRegistry.standardCommands
-            .filter { !registered.contains($0.name.lowercased()) }
-            .map(\.name)
+        // Read once, then map. The raw rows — not the mapped ones — are what
+        // the identity and source questions are asked of, because the mapped
+        // row deliberately drops the fields they read.
+        let raw = KeyCommandRegistry.commands()
+        let commands = KeyCommandRegistry.listingRows(from: raw, currentPortUniqueID: livePortID)
+        let registered = Set(raw.compactMap { ($0["name"] as? String)?.lowercased() })
+        let missing = KeyCommandRegistry.standardNotLearned(registryNames: registered)
         let stale = KeyCommandRegistry.staleIdentityNames(
-            in: commands, currentPortUniqueID: livePortID
+            in: raw, currentPortUniqueID: livePortID
         )
+        // No `verified`. It is defined as "Logic's own feedback confirmed the
+        // result" and this call never speaks to Logic — it reads a file — so
+        // there is nothing for Logic to have confirmed. The description says
+        // the field is absent and why, rather than shipping a true that means
+        // nothing.
         var payload: [String: Any] = [
-            "success": true, "verified": true,
+            "success": true,
             "port": "Logic MCP Commands",
             "port_unique_id": livePortID ?? NSNull(),
             "registry_path": KeyCommandRegistry.url.path,
@@ -428,8 +405,18 @@ extension MCPServer {
             "commands": commands,
             "standard_not_learned": missing,
             "learnable_note_range": "\(KeyCommandRegistry.learnableNoteRange.lowerBound)-\(KeyCommandRegistry.learnableNoteRange.upperBound)",
-            "note": "The registry is the CONSENT RECORD: logic_trigger_key_command refuses any note that is not listed here, because an unlisted note could be bound to anything in the user's key command set. Every entry is an assignment that exists in the user's own Logic Key Commands window and can be removed there (select the command, Delete Assignment). This call read a file - Logic was not touched, so an entry listed here can still have been orphaned inside Logic (recreated MIDI ports do that silently); logic_setup_key_commands with relearn: true is the repair."
+            "note": "The registry is the CONSENT RECORD: logic_trigger_key_command refuses any note not listed here, and every entry is an assignment in the user's own Logic Key Commands window, removable there (select the command, Delete Assignment). This read the FILE at registry_path, not Logic - so an entry listed here can still have been orphaned inside Logic by a recreated MIDI port; logic_setup_key_commands with relearn: true is the repair. Learn timestamps and search terms stay in the file."
         ]
+        // The two facts the rows leave out, said once each instead of 22 and
+        // 27 times: what an absent `channel` means, and how many entries
+        // predate the registry recording which tool bound them.
+        if commands.contains(where: { $0["channel"] == nil }) {
+            payload["channel_default"] = KeyCommandRegistry.defaultChannel
+        }
+        let unrecorded = KeyCommandRegistry.unrecordedSourceCount(in: raw)
+        if unrecorded > 0 {
+            payload["unrecorded_sources"] = "\(unrecorded) of these entries carry no 'source': they were bound before the registry recorded which tool bound them. Entries bound since carry theirs."
+        }
         if !stale.isEmpty {
             payload["port_identity_changed"] = stale
             payload["warning"] = "These commands were learned against a DIFFERENT 'Logic MCP "
