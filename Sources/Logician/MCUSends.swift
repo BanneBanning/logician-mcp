@@ -16,7 +16,14 @@ extension MCUController {
                   let assignment = status["assignment"] as? String else { return false }
             if assignment == MCULCDStrings.Assignment.send { return true }
             let before = status["received_events"] as? Int ?? -1
-            try press("assign_send")
+            // The one press in this server that keeps the old 50 ms hold, and
+            // it asks for it BY NAME. Logic Control gives SEND a long-press
+            // meaning — held, it opens the submode chooser instead of cycling
+            // S1/SE — and the 2026-09-02 hold sweep only cleared the buttons
+            // whose behaviour is hold-independent (assign_track, assign_pan,
+            // bank_left). Until SEND is swept too, this press is timed exactly
+            // as it always was.
+            try press("assign_send", holdMs: BridgeCommand.unsweptPressHoldMs)
             _ = awaitEvents(since: before, timeoutMs: 400)
             _ = quiescentStatus()
         }

@@ -214,13 +214,22 @@ public struct BridgeCommand: Codable, Sendable, Equatable {
     /// Off by default because the automation recorder fires faders on a
     /// musical clock and cannot afford the wait.
     public var verify: Bool?
+    /// How long the button stays down, for every command that presses one
+    /// (`press`, `select`, `mute`, `solo`, `vpot_press`). Absent means ZERO —
+    /// see `pressHoldMs` for the measurement that made that the default.
+    ///
+    /// ADDITIVE (2026-09-02): a daemon older than this ignores the key and
+    /// holds its historical 50 ms, which is a slower press and nothing else.
+    /// No protocol bump, same precedent as `bridge_protocol` on `status`.
+    public var holdMs: Int?
 
-    enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey, CaseIterable {
         case cmd, button, note, channel, index, delta, value, bytes, since
         case timeoutMs = "timeout_ms"
         case target, field
         case maxMs = "max_ms"
         case tolerance, ratio, events, verify
+        case holdMs = "hold_ms"
     }
 
     public init(cmd: String?) { self.cmd = cmd }
@@ -254,6 +263,7 @@ public struct BridgeCommand: Codable, Sendable, Equatable {
         ratio = container.lenient(Double.self, .ratio)
         events = container.lenient([MIDIStreamEvent].self, .events)
         verify = container.lenient(Bool.self, .verify)
+        holdMs = container.lenient(Int.self, .holdMs)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -278,7 +288,40 @@ public struct BridgeCommand: Codable, Sendable, Equatable {
         try container.encodeIfPresent(ratio, forKey: .ratio)
         try container.encodeIfPresent(events, forKey: .events)
         try container.encodeIfPresent(verify, forKey: .verify)
+        try container.encodeIfPresent(holdMs, forKey: .holdMs)
     }
+
+    /// How long this command's button press should hold the note down, in
+    /// milliseconds — 0 when the caller said nothing, clamped to a ceiling.
+    ///
+    /// ZERO IS THE MEASURED DEFAULT, not an optimistic one. Swept live
+    /// 2026-09-02 on Logic Pro against the real surface: the two note edges
+    /// were driven as separate `raw` sends with the gap under the client's
+    /// control, and every hold from ~0.2 ms to 50 ms produced the same
+    /// assignment change with Logic's echo landing 102-106 ms later —
+    /// 16 of 16 transitions honoured, latency flat. What Logic needs is BOTH
+    /// EDGES: a note-on with no release left the assignment display half
+    /// changed for 1348 ms of polling and only completed when the release
+    /// arrived. So the gap buys nothing and the release buys everything.
+    ///
+    /// The ceiling exists because `handleCommand` runs under the daemon's
+    /// global command lock: a hold is time every OTHER client on this surface
+    /// spends blocked, so an agent cannot ask for a minute of it.
+    ///
+    /// Long-press semantics are the one thing the sweep does NOT cover — held
+    /// SEND opens Logic Control's submode chooser, and the modifier buttons
+    /// have their own hold behaviour. A caller that wants one asks for it by
+    /// name; see `unsweptPressHoldMs`.
+    public var pressHoldMs: Int { min(max(holdMs ?? 0, 0), BridgeCommand.maxPressHoldMs) }
+
+    /// The longest hold the daemon will sit through for one press (2 s).
+    public static let maxPressHoldMs = 2000
+
+    /// The daemon's historical 50 ms hold, kept as a NAME for the handful of
+    /// presses whose Logic behaviour depends on how long the button is down
+    /// and which the 2026-09-02 sweep therefore did not clear. Passing it
+    /// preserves exactly the timing those presses have always had.
+    public static let unsweptPressHoldMs = 50
 }
 
 public extension BridgeCommand {
@@ -286,15 +329,21 @@ public extension BridgeCommand {
     static let status = BridgeCommand(cmd: BridgeCommandName.status.rawValue)
     static let midiAbort = BridgeCommand(cmd: BridgeCommandName.midiAbort.rawValue)
 
-    static func press(button: String) -> BridgeCommand {
+    /// `holdMs` defaults to 0 — see `pressHoldMs` for the sweep that proved
+    /// Logic honours a press with no measurable gap between its two edges.
+    /// It is only ever written onto the wire when a caller asks for a real
+    /// hold, so a press stays the three keys it has always been.
+    static func press(button: String, holdMs: Int = 0) -> BridgeCommand {
         var command = BridgeCommand(cmd: BridgeCommandName.press.rawValue)
         command.button = button
+        if holdMs > 0 { command.holdMs = holdMs }
         return command
     }
 
-    static func press(note: Int) -> BridgeCommand {
+    static func press(note: Int, holdMs: Int = 0) -> BridgeCommand {
         var command = BridgeCommand(cmd: BridgeCommandName.press.rawValue)
         command.note = note
+        if holdMs > 0 { command.holdMs = holdMs }
         return command
     }
 

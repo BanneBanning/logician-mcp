@@ -805,6 +805,41 @@ with every render coming back as audio the agent can listen to.
   for a control name and the banner waited out; if one is still standing after three
   seconds the census says so and refuses to cache the map, because nothing on the surface
   can tell a stuck banner from a strip somebody really called `Solo`.
+- **Every button press on the control surface got 50 ms faster.** Pressing an MCU button
+  meant holding it down for 50 ms, and that hold was **99.4% of what a press cost the whole
+  server** — 51–56 ms of a 51–56 ms round trip, paid by `press`, `select`, `mute`, `solo`
+  and `vpot_press` alike, twelve times in a single mixer census, while the bridge's global
+  command lock kept every other client off the surface for the duration. It was swept live
+  against Logic: holds of ~0.2, 1, 2, 5, 10, 25 and 50 ms all changed the view, **16
+  transitions out of 16**, with Logic's echo landing 102–106 ms after the press at every one
+  of them. The hold bought nothing. What Logic does need is both note edges — a press with
+  no release left the display half-changed for 1.3 s of polling — so both are still sent,
+  with nothing between them. `hold_ms` is a real argument now for the handful of Logic
+  Control behaviours that depend on how long a button is down (held SEND opens the submode
+  chooser); those were not swept, and the one press in the server that relies on one asks
+  for its 50 ms by name. The saving arrives the next time the bridge daemon is started from
+  this build; an older daemon simply ignores the new field and keeps its 50 ms, which is why
+  this needed no protocol change.
+
+- **`logic_mcu_command` stopped advertising doors that were bricked up.** Its description
+  told callers to pass `verify: true` for the daemon's `final_value`/`followed` readback and
+  the schema refused the argument, so the tool's **only** readback was unreachable and every
+  fader write through it was blind. Three of the fifteen commands it lists — `converge`,
+  `midi_stream` and a parameterised `await` — were in the same position, advertised with
+  none of their arguments declared; one measurement in the profiling ledger had already been
+  abandoned over exactly that. Every field the bridge can read is a declared argument now,
+  and a test holds the two lists equal so they cannot drift apart again. The result gained
+  the contract the rest of the server speaks — `success`, `state`, and `verified` only where
+  something actually read Logic back — because `ok: true` promised far less than it looked:
+  an MCU note Logic has nothing bound to answered `ok: true` six times with the surface
+  byte-identical before and after. `state: "sent"` says that out loud, and the description
+  now points at `{"cmd": "status"}` on the same tool — the daemon's live snapshot, 0.4–0.7 ms
+  — instead of `logic_mcu_status`, which reads a state file that can be minutes old. It also
+  honours `expected_project_path` at last: the guard was written, forbidden by the schema and
+  therefore dead, on the one destructive tool that had no project check at all. And the
+  refusal for an unregistered key-command note stopped pasting the entire registry into an
+  error string — 1 159 B of prose to say one thing — for the count and the name of the tool
+  that lists them.
 
 ### Known limitations (honest by design)
 

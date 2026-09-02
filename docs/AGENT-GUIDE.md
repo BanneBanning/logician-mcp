@@ -838,7 +838,7 @@ Parameters:
 
 #### `logic_mcu_command`
 
-Send a command to Logic through the Mackie Control bridge (UI-independent). cmd is one of: press {button: play|stop|record|rewind|forward|cycle|click|bank_left|bank_right|channel_left|channel_right|flip|name_value|assign_track|assign_send|assign_pan|assign_plugin|assign_eq|assign_instrument|...}, select/mute/solo {channel: 0-7}, fader {channel: 0-8, value: 0-16383, verify: true}, vpot {index: 0-7, delta: +-n}, vpot_press {index}, raw {bytes: [..]}, ping. Read logic_mcu_status afterwards to verify via Logic's feedback. FADER: Logic does follow an absolute fader write (measured, with and without the fader-touch note), but it SNAPS the position to its own resolution — 5631 through 5635 all landed on 5628 — so never compare the echo to the value you asked for with ==. Pass verify: true to get final_value (where Logic actually settled) and followed back; to restore a fader exactly, write back a value Logic itself reported, which is on its grid by construction. Channel 8 is the dedicated master fader, which is Logic's `Master` strip and NOT `Stereo Out`.
+Send a command to Logic through the Mackie Control bridge (UI-independent) - the raw escape hatch underneath every other MCU tool here. cmd is one of: press {button | note 0-127, hold_ms}, select/mute/solo {channel: 0-7}, vpot_press {index: 0-7}, fader {channel: 0-8, value: 0-16383, verify: true}, vpot {index: 0-7, delta: +-n}, converge {index, target, field, tolerance, max_ms, ratio}, raw {bytes: [..]}, midi_stream {events: [[offset_ms, byte, ..], ..]}, midi_abort, keycmd {note, channel} (routed through the key-command registry, which refuses notes it has not recorded consent for), status, await {since, timeout_ms}, ping. BUTTONS, all 26: play, stop, record, rewind, forward, cycle, click, marker, nudge, drop, replace, solo_global; bank_left, bank_right, channel_left, channel_right, flip, global_view, name_value, smpte_beats; assign_track, assign_send, assign_pan, assign_plugin, assign_eq, assign_instrument. WHAT THE RESULT MEANS: state is "sent" for anything that only put bytes on the wire, and that is nearly everything here - an MCU note Logic has nothing bound to answers exactly like one that worked (measured 2026-09-02: note 127 pressed six times, ok and success true every time, the surface byte-identical before and after). To find out what Logic actually did, send {"cmd": "status"} on THIS tool: 0.4-0.7 ms for the daemon's live in-process snapshot of the surface, where logic_mcu_status reads a state FILE that can be minutes old. state is "read" for status/ping/await, which change nothing and so carry no verified at all; "verified" or "unconfirmed" only where the daemon really did read Logic back, which is fader with verify: true and converge; "refused" when the daemon rejected the command, with error saying why. HOLD: hold_ms is how long a press keeps the button down, and it defaults to 0. Swept live 2026-09-02 - every hold from ~0.2 ms to 50 ms changed the view, 16 transitions out of 16, with Logic's echo landing 102-106 ms later at every one of them, so the 50 ms this used to wait was pure latency on every press, select, mute, solo and vpot_press in the server. Both note edges are still sent: a note-on with no release leaves the change half-done. Pass hold_ms only for Logic Control's hold behaviours - held SEND opens the submode chooser - which the sweep did not cover. FADER: Logic does follow an absolute fader write (measured, with and without the fader-touch note), but it SNAPS the position to its own resolution - 5631 through 5635 all landed on 5628 - so never compare the echo to the value you asked for with ==. Pass verify: true to get final_value (where Logic actually settled) and followed back; to restore a fader exactly, write back a value Logic itself reported, which is on its grid by construction. Channel 8 is the dedicated master fader, which is Logic's `Master` strip and NOT `Stereo Out`.
 
 Parameters:
 
@@ -847,9 +847,20 @@ Parameters:
   - `channel` (integer)
   - `cmd` (string) **(required)**: One of: `await`, `converge`, `fader`, `keycmd`, `midi_abort`, `midi_stream`, `mute`, `ping`, `press`, `raw`, `select`, `solo`, `status`, `vpot`, `vpot_press`.
   - `delta` (integer): Vpot ticks, positive = clockwise; magnitudes above 63 are clamped.
+  - `events` (array of array): midi_stream: [[offset_ms, byte, ...], ...] on the performance port, max 20000 events. Playback is asynchronous - poll midi_streaming on status, or stop it with midi_abort.
+  - `expected_project_path` (string): Absolute .logicx path; when given, the open project's AXDocument must match before a single byte is sent.
+  - `field` (integer): converge: which LCD value field to read; defaults to index.
+  - `hold_ms` (integer): How long a press/select/mute/solo/vpot_press holds the button down. Default 0, and 0 is the MEASURED default: holds from ~0.2 ms to 50 ms were all honoured, 16 of 16, with the same 102-106 ms echo. Pass one only for Logic Control's hold behaviours, which are unswept.
   - `index` (integer): Vpot/channel-strip index 0-7.
+  - `max_ms` (integer): converge: give up after this long (clamped to 15000).
   - `note` (integer)
+  - `ratio` (number): converge: seed for ticks-per-unit; the loop re-estimates it as it goes.
+  - `since` (integer): await: return as soon as received_events passes this. -1, the default, returns on the next event of any kind.
+  - `target` (number): converge: the value to steer the vpot's LCD field to.
+  - `timeout_ms` (integer): await: give up after this long (default 500, clamped to 5000).
+  - `tolerance` (number): converge: how close to target counts as arrived.
   - `value` (integer): 14-bit fader value 0-16383.
+  - `verify` (boolean): fader only: wait for Logic's own echo (up to 400 ms) and report final_value and followed. The only readback this tool has.
 
 #### `logic_get_audio_clip`
 
