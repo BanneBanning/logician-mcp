@@ -55,6 +55,141 @@ enum Captures {
     static func mimeType(forPathExtension extensionName: String) -> String? {
         audioMIMETypes[extensionName.lowercased()]
     }
+
+    // MARK: - Retention
+
+    /// The most bytes of audio the captures directory may hold, and the most
+    /// files. NOTHING pruned this folder before 2026-09-02, and it grows by
+    /// the length of the PROJECT on every freeze render regardless of the bars
+    /// asked for: measured on the development machine, 169 files / 1.2 GB, of
+    /// which 71 `render-*` files / 1.1 GB were leftovers, ~46 MB per call.
+    ///
+    /// The numbers are deliberately ABOVE what that machine already held, so
+    /// shipping this deletes nothing that is there today and only bounds what
+    /// arrives from now on — a retention policy is not a licence to throw away
+    /// the user's renders the first time they update the server. Tighten them
+    /// here, in one place, when the budget should bite sooner.
+    static let retentionByteBudget: Int64 = 2_000_000_000
+    static let retentionFileBudget = 200
+
+    /// Captures this never removes, however far over budget the folder is:
+    /// the newest few files are the ones the CURRENT call just wrote (a render
+    /// writes an `.aif`, its `.m4a` preview and, with a bar range, a `.wav`
+    /// slice and that slice's preview), and a sweep that deletes those has
+    /// eaten the result it was making room for.
+    static let retentionAlwaysKeepNewest = 8
+
+    /// One capture, as the policy sees it. Separately typed so the decision is
+    /// pure arithmetic over a list and can be tested without a directory.
+    struct Capture: Equatable {
+        let name: String
+        let bytes: Int64
+        let modified: Date
+    }
+
+    /// Which captures a sweep would remove, oldest first.
+    ///
+    /// Newest-first, keep while it fits, and once one file does not fit, it
+    /// and everything older goes — the classic shape, and the one an agent can
+    /// predict: "the newest N captures inside M bytes survive". Ties in
+    /// modification date break by name so two runs on the same folder agree.
+    static func retentionPlan(
+        _ captures: [Capture],
+        byteBudget: Int64 = retentionByteBudget,
+        fileBudget: Int = retentionFileBudget,
+        alwaysKeepNewest: Int = retentionAlwaysKeepNewest
+    ) -> [Capture] {
+        let newestFirst = captures.sorted {
+            $0.modified == $1.modified ? $0.name > $1.name : $0.modified > $1.modified
+        }
+        var keptBytes: Int64 = 0
+        var keptCount = 0
+        var full = false
+        var removals: [Capture] = []
+        for capture in newestFirst {
+            if keptCount < alwaysKeepNewest {
+                keptBytes += capture.bytes
+                keptCount += 1
+                continue
+            }
+            if full || keptCount >= fileBudget || keptBytes + capture.bytes > byteBudget {
+                full = true
+                removals.append(capture)
+                continue
+            }
+            keptBytes += capture.bytes
+            keptCount += 1
+        }
+        return removals.reversed()
+    }
+
+    /// Enforces the policy on the real directory before a writer adds to it,
+    /// and reports what it removed — nil when it removed nothing, which is the
+    /// normal answer and must not put an empty block in every result.
+    ///
+    /// Only files whose extension is in `audioMIMETypes` are considered, so
+    /// the sealed-metrics JSON, anything the user dropped in the folder that
+    /// is not audio, and every subdirectory are left alone.
+    @discardableResult
+    static func makeRoom(
+        byteBudget: Int64 = retentionByteBudget,
+        fileBudget: Int = retentionFileBudget,
+        alwaysKeepNewest: Int = retentionAlwaysKeepNewest
+    ) -> [String: Any]? {
+        let manager = FileManager.default
+        let root = root
+        guard let entries = try? manager.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [
+                .contentModificationDateKey, .fileSizeKey, .isRegularFileKey
+            ],
+            options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+        ) else { return nil }
+        var captures: [Capture] = []
+        for url in entries {
+            guard mimeType(forPathExtension: url.pathExtension) != nil,
+                  let values = try? url.resourceValues(forKeys: [
+                      .contentModificationDateKey, .fileSizeKey, .isRegularFileKey
+                  ]),
+                  values.isRegularFile == true else { continue }
+            captures.append(Capture(
+                name: url.lastPathComponent,
+                bytes: Int64(values.fileSize ?? 0),
+                modified: values.contentModificationDate ?? .distantPast
+            ))
+        }
+        let removals = retentionPlan(
+            captures, byteBudget: byteBudget, fileBudget: fileBudget,
+            alwaysKeepNewest: alwaysKeepNewest
+        )
+        guard !removals.isEmpty else { return nil }
+        var removedFiles = 0
+        var removedBytes: Int64 = 0
+        var failed: [String] = []
+        for capture in removals {
+            let url = root.appendingPathComponent(capture.name)
+            if (try? manager.removeItem(at: url)) != nil {
+                removedFiles += 1
+                removedBytes += capture.bytes
+            } else {
+                failed.append(capture.name)
+            }
+        }
+        guard removedFiles > 0 || !failed.isEmpty else { return nil }
+        var report: [String: Any] = [
+            "removed_files": removedFiles,
+            "removed_bytes": Int(removedBytes),
+            "policy": "the newest \(fileBudget) captures within"
+                + " \(String(format: "%.1f", Double(byteBudget) / 1_000_000_000)) GB,"
+                + " oldest first; the newest \(alwaysKeepNewest) are never removed",
+            "note": "The captures directory is pruned by every tool that writes to it -"
+                + " these files were the oldest over budget. Rendered audio is a CACHE of"
+                + " something Logic can render again; anything to keep belongs outside"
+                + " \(root.path)."
+        ]
+        if !failed.isEmpty { report["could_not_remove"] = failed }
+        return report
+    }
 }
 
 // MARK: - URIs
@@ -65,10 +200,11 @@ let guideResourceURI = "logician://guide"
 /// Everything under the captures directory: `logician://captures/<filename>`.
 let capturesURIPrefix = "logician://captures/"
 
-/// How many captures `resources/list` names. The directory has hundreds of
-/// files and nothing prunes it — 93 files and 738 MB on the development machine
-/// after two weeks — so listing all of them would put a megabyte of JSON in
-/// front of a model to describe audio it will read at most one of. The most
+/// How many captures `resources/list` names. The directory holds hundreds of
+/// files — 93 and 738 MB on the development machine after two weeks, 169 and
+/// 1.2 GB a fortnight later, which is what `Captures.makeRoom` now bounds — so
+/// listing all of them would put a megabyte of JSON in front of a model to
+/// describe audio it will read at most one of. The most
 /// recent N by modification time is what a session actually wants: the renders
 /// it just made.
 let capturesListLimit = 50

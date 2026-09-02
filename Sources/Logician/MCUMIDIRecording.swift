@@ -535,6 +535,17 @@ extension MCUController {
             )
         }
 
+        // The playhead is parked ONCE for the whole A/B. A freeze render jumps
+        // it to the project start and rolls from there, so each render puts it
+        // back — and stepping the control bar's bar slider costs ~0.12 s per
+        // bar, which is a price to pay once here rather than twice. The
+        // renders below are told not to.
+        var savedPlayhead: (bar: Int, beat: Int)?
+        if let transport = try? logic.getTransport(),
+           let bar = transport["playhead_bar"] as? Int {
+            savedPlayhead = (bar, transport["playhead_beat"] as? Int ?? 1)
+        }
+
         // An A/B is four phases and two whole renders. Each render reports its
         // own 0…100, folded into the half of the scale it occupies, so the
         // client sees one line climbing from 0 to 100 instead of two renders
@@ -544,7 +555,12 @@ extension MCUController {
             try renderSelectedTrack(
                 projectPath: projectPath, label: "\(trackName.lowercased())-a",
                 sliceStartSeconds: startSeconds, sliceEndSeconds: endSeconds,
-                logic: logic, trackName: trackName
+                logic: logic, trackName: trackName,
+                // This A/B never publishes a render's own audio block or
+                // preview — `baseline_preview`/`after_preview` are null here
+                // and the blocks come from `attachABAudio` below — so neither
+                // render pays for one.
+                restorePlayhead: false, includeAudio: false
             )
         }
         reportProgress("applying the change", percent: 46)
@@ -610,12 +626,14 @@ extension MCUController {
                 try renderSelectedTrack(
                     projectPath: projectPath, label: "\(trackName.lowercased())-b",
                     sliceStartSeconds: startSeconds, sliceEndSeconds: endSeconds,
-                    logic: logic, trackName: trackName
+                    logic: logic, trackName: trackName,
+                    restorePlayhead: false, includeAudio: false
                 )
             }
         } catch {
             // Never leave the change in place after a failed B render.
             _ = rollBack()
+            _ = savedPlayhead.map { restorePlayheadReport(logic: logic, saved: $0) }
             throw error
         }
 
@@ -629,6 +647,7 @@ extension MCUController {
                 restored = false
             }
         }
+        let playhead = savedPlayhead.map { restorePlayheadReport(logic: logic, saved: $0) }
 
         func sliceMetrics(_ render: [String: Any]) -> [String: Any]? {
             (render["slice"] as? [String: Any])?["metrics"] as? [String: Any]
@@ -669,6 +688,12 @@ extension MCUController {
             "deltas": deltas,
             "note": "Two dialog-free freeze renders of this single track, compared on the sliced bar range only. No playback occurred."
         ]
+        if let playhead {
+            evalResult["playhead"] = playhead
+            if playhead["restored"] as? Bool != true {
+                appendWarning(playhead["note"] as? String, to: &evalResult)
+            }
+        }
         evalResult = attachABAudio(
             to: evalResult,
             baselinePath: ((renderA["slice"] as? [String: Any])?["path"] as? String) ?? (renderA["path"] as? String),

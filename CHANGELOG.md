@@ -1244,6 +1244,37 @@ with every render coming back as audio the agent can listen to.
   control bar's signature AT THE PLAYHEAD: it comes from the project's Signature List at
   the first point's own bar, which also makes 6/8 three beats a bar instead of six.
 
+- **A long render comes back audible, or says why not — and puts the playhead back.**
+  `logic_render_track` promised its sound rode along and, on a full-track render,
+  delivered nothing: the ear copy encoded the WHOLE file at 64 kbps and was thrown away
+  above the 400 KB an audio block may hold, so a 136.7 s freeze render arrived with no
+  audio block and no note (2/2 measured), after spending 933–1 004 ms producing it. The
+  length now decides before anything is encoded: a short render is carried whole, a long
+  one carries a bounded WINDOW of its first ~42 s — seeked and decoded like
+  `logic_get_audio_clip`, so only the window is read — named in `listen_note` and
+  `audio_window`, with the whole file at `path` and any other stretch one clip call away.
+  When no block can be made at all, the note says why and where to listen instead. The
+  render also stopped moving the user's playhead behind their back: a freeze jumps it to
+  the project start and rolls from there, so where it was is read first and restored
+  afterwards, verified against Logic's control bar and reported in `playhead` (a failed
+  restore warns and names the position it was left at). And the captures folder is no
+  longer unbounded — it had grown to 169 files / 1.2 GB, a render being the whole project
+  length whatever bars are asked for — so every tool that writes there now keeps the
+  newest 200 captures within 2 GB and reports anything it removed in `captures_pruned`;
+  the budgets sit above what any existing folder holds, so updating deletes nothing you
+  already have. **Faster with it**: the render's own work is ~1.3 s cheaper — the 0.4 s
+  blind settle is replaced by the track-header read that was already on the next line,
+  and the 0.9 s three-round flush floor by the AIFF's own declared size and frame count.
+  A bar-range render saves another ~1.2 s, because the AAC preview is now of the SLICE
+  rather than of the whole track, and that preview IS the audio block: measured
+  7.86–7.95 s before, **7.03–7.11 s** after (5.30 s on one call whose playhead restore
+  was skipped). A whole-track render spends its saving on putting the playhead back and
+  comes out level, 8.29 s before against **8.13–8.55 s** after, now WITH the audio
+  actually attached; the restore costs ~0.08 s per bar of distance, so a playhead 55 bars
+  from the project start makes it 11.8 s. `include_audio: false` now skips the encode
+  instead of paying for a block that gets dropped, and the A/B's two renders skip both
+  the block and the preview.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

@@ -64,6 +64,80 @@ final class AudioContainerTests: XCTestCase {
         XCTAssertNil(LogicAccessibility.containerComplete(header: Data(), fileSize: 4096))
     }
 
+    // MARK: - A finished render, not merely a covered container
+
+    /// The bytes below are LOGIC'S OWN, copied out of the sandbox on
+    /// 2026-09-02: the first 96 bytes of a freeze render caught before it
+    /// streamed any samples, and of the finished file from the same track.
+    /// The header-only snapshot passes `containerComplete` — FORM declares
+    /// 504 bytes and 4 096 are there — which is how two renders were copied
+    /// out in 3.3 s and came back as 0-frame captures. `numSampleFrames` is
+    /// the field that tells them apart.
+    private let headerOnlyFreezeHead = Data(
+        [0x46, 0x4F, 0x52, 0x4D, 0x00, 0x00, 0x01, 0xF8, 0x41, 0x49, 0x46, 0x43,
+         0x43, 0x4F, 0x4D, 0x4D, 0x00, 0x00, 0x01, 0xB4, 0x00, 0x02, 0x00, 0x00,
+         0x00, 0x00, 0x00, 0x20, 0x40, 0x0E, 0xAC, 0x44]
+    )
+
+    private let finishedFreezeHead = Data(
+        [0x46, 0x4F, 0x52, 0x4D, 0x02, 0xE0, 0x0C, 0x60, 0x41, 0x49, 0x46, 0x43,
+         0x43, 0x4F, 0x4D, 0x4D, 0x00, 0x00, 0x01, 0xB4, 0x00, 0x02, 0x00, 0x5C,
+         0x01, 0x4D, 0x00, 0x20, 0x40, 0x0E, 0xAC, 0x44]
+    )
+
+    func testAHeaderOnlyFreezeSnapshotIsNotAFinishedRender() {
+        // Its container IS covered — that is the trap.
+        XCTAssertEqual(
+            LogicAccessibility.containerComplete(header: headerOnlyFreezeHead, fileSize: 4096),
+            true
+        )
+        XCTAssertEqual(
+            LogicAccessibility.audioRenderComplete(head: headerOnlyFreezeHead, fileSize: 4096),
+            false
+        )
+    }
+
+    func testAFinishedFreezeRenderIsComplete() {
+        XCTAssertEqual(
+            LogicAccessibility.audioRenderComplete(
+                head: finishedFreezeHead, fileSize: 48_237_672
+            ),
+            true
+        )
+    }
+
+    func testAFinishedHeaderOnAShortFileIsStillIncomplete() {
+        // The samples are declared but not all written yet.
+        XCTAssertEqual(
+            LogicAccessibility.audioRenderComplete(
+                head: finishedFreezeHead, fileSize: 1_000_000
+            ),
+            false
+        )
+    }
+
+    func testARenderVerdictIsWithheldOnAContainerItCannotJudge() {
+        XCTAssertNil(LogicAccessibility.audioRenderComplete(
+            head: Data(Array("OggS".utf8) + [0, 0, 0, 8]), fileSize: 4096
+        ))
+        // FORM says covered, but the head read reached no COMM chunk: judging
+        // nothing is the honest answer, and the caller keeps its old evidence.
+        XCTAssertNil(LogicAccessibility.audioRenderComplete(
+            head: Data(Array("FORM".utf8) + [0, 0, 0, 8 + 4] + Array("AIFF".utf8)),
+            fileSize: 4096
+        ))
+    }
+
+    func testAWavRenderFallsBackToTheContainerCheck() {
+        let header = Data(Array("RIFF".utf8) + [0x00, 0x01, 0x00, 0x00] + Array("WAVE".utf8))
+        XCTAssertEqual(
+            LogicAccessibility.audioRenderComplete(head: header, fileSize: 264), true
+        )
+        XCTAssertEqual(
+            LogicAccessibility.audioRenderComplete(head: header, fileSize: 100), false
+        )
+    }
+
     func testContainerCompleteRejectsAnEmptyDeclaredPayload() {
         // A header written before any payload size is known.
         let header = Data(Array("FORM".utf8) + [0, 0, 0, 0] + Array("AIFF".utf8))
