@@ -5,7 +5,7 @@ import Foundation
 // MARK: - The one tree-walk primitive
 
 /// What a walk does after visiting a node.
-enum AXWalkStep {
+enum AXWalkStep: Equatable {
     /// Descend into this node's children (the normal case).
     case descend
     /// Do not descend into this node's children, but keep walking the rest of

@@ -84,12 +84,11 @@ struct EventCensus: Equatable {
     /// table, which is a reason to refuse rather than to read on: a list that
     /// stops at row 30 of 400 reads as a thirty-note region.
     var truncated: Bool { declared.map { $0 != published } ?? false }
-    /// What a refusal or a warning calls the rows it could not read.
-    var unreadNote: String {
-        "Logic published \(unread) row(s) it had not drawn yet — a list that has just grown"
-            + " leaves its newest row's cells empty until it is scrolled — so those rows are"
-            + " counted here and cannot be read or addressed."
-    }
+    /// What a refusal or a warning calls the rows it could not read. The
+    /// wording lives in `UndrawnListRows` because the READERS say it too now
+    /// (`ListEditorCensus`), and an agent should meet one sentence for one
+    /// phenomenon whichever tool it came from.
+    var unreadNote: String { UndrawnListRows.note(unread) }
 }
 
 enum EventListWrite {

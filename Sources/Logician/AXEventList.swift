@@ -11,7 +11,7 @@ import Foundation
 /// the Marker tab's is short, so a reader hardcoding column positions would
 /// misreport the day Logic adds one. The columns are published — so they are
 /// reported, and the cells are keyed by them.
-struct ListEditorEntry {
+struct ListEditorEntry: Equatable {
     let index: Int
     /// Column title (as Logic prints it) → cell text.
     let fields: [String: String]
@@ -32,7 +32,9 @@ struct ListEditorEntry {
 
 extension LogicAccessibility {
 
-    /// Reads one tab of the List Editors pane as column-keyed rows.
+    /// Reads one tab of the List Editors pane as column-keyed rows, plus the
+    /// census that says how many rows the list holds and how many of them this
+    /// read could actually read.
     ///
     /// The `Number of Items` cross-check applies here exactly as it does to the
     /// tempo map, and for the same reason: an AX table inside a scroll area may
@@ -40,12 +42,19 @@ extension LogicAccessibility {
     /// row 30 of 400 is worse than one that refuses — an agent would conclude
     /// the region holds thirty notes. A mismatch is a failure, never a shorter
     /// answer.
+    ///
+    /// That check is about the two counts DISAGREEING, and it does not catch
+    /// the other half of the same problem: a row Logic has published, counted
+    /// and not drawn (`UndrawnListRows`). Both counts agree there — 26 rows,
+    /// 26 declared — and mapping every published row made a blank
+    /// `{"Status": "Note"}` entry take a real note's place in the answer, with
+    /// nothing in the result to say so (measured 3/3, 2026-09-02). So the
+    /// entries are the DRAWN rows only, and the census carries the rest.
     func readListEditorEntries(
         tab: String,
         inspectGroup: ((AXUIElement) -> Void)? = nil
     ) -> (
-        entries: [ListEditorEntry]?, columns: [String], declaredCount: Int?,
-        failure: ListEditorFailure?
+        census: ListEditorCensus?, columns: [String], failure: ListEditorFailure?
     ) {
         let read = withListEditorsTab(named: tab) { window -> (table: ListEditorTable?, failure: ListEditorFailure?) in
             let inner = self.readListEditorTable(tab: tab, in: window)
@@ -55,25 +64,24 @@ extension LogicAccessibility {
             if let group = inner.table?.group { inspectGroup?(group) }
             return inner
         }
-        if let failure = read.failure { return (nil, [], nil, failure) }
-        guard let inner = read.value else { return (nil, [], nil, .tableNotFound(tab)) }
+        if let failure = read.failure { return (nil, [], failure) }
+        guard let inner = read.value else { return (nil, [], .tableNotFound(tab)) }
         guard let table = inner.table else {
-            return (nil, [], nil, inner.failure ?? .tableNotFound(tab))
+            return (nil, [], inner.failure ?? .tableNotFound(tab))
         }
         if let declared = table.declaredCount, declared != table.rows.count {
             return (
-                nil, table.columns, declared,
+                nil, table.columns,
                 .countMismatch(tab: tab, rows: table.rows.count, declared: declared)
             )
         }
-        let entries = table.rows.map { row in
-            var fields: [String: String] = [:]
-            for (index, column) in table.columns.enumerated() where !column.isEmpty {
-                fields[column] = row.cell(index)
-            }
-            return ListEditorEntry(index: row.index, fields: fields, cells: row.cells)
-        }
-        return (entries, table.columns, table.declaredCount, nil)
+        return (
+            ListEditorCensus.of(
+                cells: table.rows.map(\.cells), columns: table.columns,
+                declaredCount: table.declaredCount
+            ),
+            table.columns, nil
+        )
     }
 
     /// The Event tab's rows for whatever is currently selected in Logic.
@@ -84,7 +92,7 @@ extension LogicAccessibility {
     /// function reads what the list is showing; deciding what it should show is
     /// the caller's job, done with `logic_select_region` before the call.
     func readEventList() -> (
-        events: [[String: Any]]?, columns: [String], declaredCount: Int?,
+        events: [[String: Any]]?, census: ListEditorCensus?, columns: [String],
         region: String?, failure: ListEditorFailure?
     ) {
         var region: String?
@@ -98,23 +106,24 @@ extension LogicAccessibility {
                     == LogicUIStrings.Element.regionPath
             }.map { self.stringAttribute($0, kAXValueAttribute as String) }
         }
-        guard let entries = read.entries else {
-            return (nil, read.columns, read.declaredCount, region, read.failure)
+        guard let census = read.census else {
+            return (nil, nil, read.columns, region, read.failure)
         }
         return (
-            entries.map(ListEditorPayload.event(from:)),
-            read.columns, read.declaredCount, region, nil
+            census.entries.map(ListEditorPayload.event(from:)),
+            census, read.columns, region, nil
         )
     }
 
     /// The Marker tab's rows: position and name, plus every other column the
     /// list publishes.
     func readMarkerList() -> (
-        markers: [[String: Any]]?, columns: [String], failure: ListEditorFailure?
+        markers: [[String: Any]]?, census: ListEditorCensus?, columns: [String],
+        failure: ListEditorFailure?
     ) {
         let read = readListEditorEntries(tab: LogicUIStrings.Element.ListEditorTab.marker)
-        guard let entries = read.entries else { return (nil, read.columns, read.failure) }
-        return (entries.map(ListEditorPayload.marker(from:)), read.columns, nil)
+        guard let census = read.census else { return (nil, nil, read.columns, read.failure) }
+        return (census.entries.map(ListEditorPayload.marker(from:)), census, read.columns, nil)
     }
 }
 

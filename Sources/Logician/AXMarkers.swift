@@ -121,7 +121,11 @@ extension LogicAccessibility {
     /// row). Verified by the marker being gone from a fresh read, never by the
     /// action's return code.
     func deleteMarker(name: String?, bar: Int?) throws -> [String: Any] {
-        let before = readMarkerList().markers?.count
+        // The list's OWN count on both sides, never the readable rows': a row
+        // Logic has published and not drawn is a marker that exists, and
+        // counting only what could be read would make a delete that worked
+        // look like one that did not (`ListEditorCensus`).
+        let before = readMarkerList().census?.count
         let performed = try withMarkerRow(name: name, bar: bar) { row, _ in
             let done = self.performListEditorRowDelete(row)
             // Settle BEFORE the scope ends: the pane closes on the way out, and
@@ -130,7 +134,7 @@ extension LogicAccessibility {
             return done
         }
         let after = readMarkerList()
-        let remaining = after.markers?.count
+        let remaining = after.census?.count
         let gone = (before != nil && remaining != nil) ? remaining! < before! : false
         return [
             "success": gone,
@@ -187,7 +191,9 @@ extension LogicAccessibility {
         let renamed = after.markers?.contains {
             ($0["name"] as? String)?.localizedCaseInsensitiveCompare(newName) == .orderedSame
         } ?? false
-        return [
+        // A readback that could not read every row is not evidence of failure.
+        // Say which it was rather than letting `verified: false` stand alone.
+        var payload: [String: Any] = [
             "success": renamed,
             "verified": renamed,
             "state": renamed ? "renamed" : "failed",
@@ -197,5 +203,11 @@ extension LogicAccessibility {
             "write_route": "list_editor_cell_value",
             "readback_route": "marker_list_reread"
         ]
+        if !renamed, let census = after.census, !census.isComplete {
+            payload["warning"] = "The rename was written and the readback could not see every"
+                + " row. " + census.unreadNote + " So this is 'not verified', NOT 'did not"
+                + " happen' — read the Marker List again."
+        }
+        return payload
     }
 }

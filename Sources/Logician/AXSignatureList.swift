@@ -58,7 +58,34 @@ extension LogicAccessibility {
         // Which column is the position is read off the header rather than
         // assumed: it is column 0 on the Signature tab and column 1 on the
         // Marker tab, and the two tables are read by the same code.
-        let positionIndex = table.columns.firstIndex { $0.lowercased().contains(LogicUIStrings.Element.positionColumn) } ?? 0
+        let positionIndex = UndrawnListRows.positionIndex(in: table.columns) ?? 0
+        // A row Logic has published and NOT DRAWN is the quietest failure this
+        // reader can have, and the counts above cannot see it: they agree.
+        // Every cell of such a row is blank, and blank reads here as "the
+        // project's initial signature at bar 1 with no n/d in it" — i.e. as a
+        // key change — so a time signature that had just been added would be
+        // dropped from the meter map while the read reported success, and every
+        // bar after it would be placed confidently wrong. The Event and Marker
+        // tabs can report what they read and name what they could not; a meter
+        // map cannot be partial, so this refuses exactly the way an unparseable
+        // position already does.
+        let undrawn = table.rows.filter {
+            !UndrawnListRows.isDrawn(
+                cells: $0.cells, positionIndex: positionIndex, emptyPositionIsTheFirstRow: true
+            )
+        }
+        if !undrawn.isEmpty {
+            return (
+                nil,
+                .rowsUnreadable(
+                    tab: LogicUIStrings.Element.ListEditorTab.signature,
+                    detail: "row(s) \(undrawn.map { String($0.index + 1) }.joined(separator: ", "))"
+                        + " of \(table.rows.count) — " + UndrawnListRows.note(undrawn.count)
+                        + " Scroll the Signature List, or read it again"
+                ),
+                0
+            )
+        }
         var events: [MeterEvent] = []
         var keyRows = 0
         for row in table.rows {

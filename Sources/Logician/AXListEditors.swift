@@ -108,7 +108,7 @@ extension LogicAccessibility {
             )) != nil else {
                 return (nil, .paneUnavailable)
             }
-            settleForListEditors()
+            settleForListEditors(tab: tab, in: window)
         }
         defer {
             if !wasOpen {
@@ -124,11 +124,19 @@ extension LogicAccessibility {
         let previous = tabs.first(where: \.selected)?.name
         if !target.selected {
             _ = AXUIElementPerformAction(target.element, kAXPressAction as CFString)
-            settleForListEditors()
+            settleForListEditors(tab: tab, in: window)
+        }
+        // The element to press on the way out is one we are ALREADY HOLDING:
+        // `tabs` was read with the pane open, the pane does not close until
+        // this function returns, and pressing a sibling tab does not replace
+        // the strip. Re-walking the window for it cost 214–230 ms against a ~100 ms
+        // press (measured 2026-09-02, `logic_list_signatures` profile §6/C4) —
+        // a whole tree walk to find something already in hand.
+        let restore = previous.flatMap { name in
+            name == tab ? nil : tabs.first(where: { $0.name == name })
         }
         defer {
-            if let previous, previous != tab,
-               let restore = tempoListTabs(in: window).first(where: { $0.name == previous }) {
+            if let restore {
                 _ = AXUIElementPerformAction(restore.element, kAXPressAction as CFString)
             }
         }
@@ -136,9 +144,96 @@ extension LogicAccessibility {
     }
 
     /// The pane repaints after a menu toggle or a tab switch; the table's rows
-    /// are not there on the first look.
-    func settleForListEditors() {
-        Thread.sleep(forTimeInterval: 0.6)
+    /// are not there on the first look. So this WAITS FOR THE TAB, and only
+    /// falls back on the clock.
+    ///
+    /// MEASURED 2026-09-02, twice, and the two settles are NOT the same size:
+    ///
+    /// - **After the tab switch** (`logic_list_signatures` profile §6/C1) the
+    ///   readiness question answered true on the FIRST poll at 64–66 ms, 3/3,
+    ///   against the flat 0.6 s — **~535 ms of pure clock-watching** on every
+    ///   caller whose tab is not the resting one (Signature, Marker, Tempo, and
+    ///   `logic_project_snapshot` twice more).
+    /// - **After the pane opens** (`logic_list_events` profile §4) it is real
+    ///   work: ready at 286–462 ms there and 523–548 ms in the later
+    ///   measurement, the first poll always false. **~50–80 ms**, not the
+    ///   200–310 the earlier profile estimated — the pane genuinely needs that
+    ///   time and only the tail was slack.
+    ///
+    /// The old 0.6 s stays as the DEADLINE, so a pane that never becomes
+    /// readable costs exactly what it always did and the caller's own count
+    /// cross-check still gets the last word.
+    ///
+    /// Shared by every List Editors tool: `logic_list_events`, `logic_markers`,
+    /// `logic_list_signatures`, `logic_tempo_events`, `logic_edit_event`,
+    /// `logic_create_marker` and the meter-map read behind all bar math.
+    func settleForListEditors(tab: String, in window: AXUIElement) {
+        let deadline = Date().addingTimeInterval(0.6)
+        while Date() < deadline {
+            if listEditorTabIsDrawn(tab: tab, in: window) { return }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+    }
+
+    /// The cheap half of `readListEditorTable`: is the tab's group there, does
+    /// it declare a count, and has its table published that many rows? Not one
+    /// cell is read — this is a readiness question, not a read, and it costs
+    /// ~60 ms because both walks it makes stop at the table (`ListEditorWalk`).
+    ///
+    /// Deliberately says "no" when the count is missing or short: the answer
+    /// only ever gates a wait that has a deadline, so a false negative costs
+    /// the 0.6 s that used to be unconditional, while a false positive would
+    /// hand the reader a half-painted table.
+    ///
+    /// It does NOT ask whether every row has been drawn. A row Logic has
+    /// published, counted and not drawn stays that way until the list is
+    /// scrolled (`UndrawnListRows`), so waiting for it would spend the whole
+    /// deadline on every read after a create and still not get it — the
+    /// readers report and name that row instead, which is the honest answer.
+    private func listEditorTabIsDrawn(tab: String, in window: AXUIElement) -> Bool {
+        guard let group = listEditorTabGroup(tab: tab, in: window) else { return false }
+        var table: AXUIElement?
+        var declaredCount: Int?
+        walk(from: group, maximumDepth: AXDepth.listEditorTable) { element in
+            let role = stringAttribute(element, kAXRoleAttribute as String)
+            if role == "AXStaticText",
+               stringAttribute(element, kAXDescriptionAttribute as String)
+                == LogicUIStrings.Element.numberOfItems {
+                declaredCount = TempoMap.parseTempoListItemCount(
+                    stringAttribute(element, kAXValueAttribute as String)
+                )
+            }
+            if role == "AXTable", table == nil { table = element }
+            return ListEditorWalk.step(role: role)
+        }
+        guard let table, let declaredCount else { return false }
+        let rows = (attribute(table, kAXRowsAttribute as String) as? [AXUIElement])?.count
+            ?? children(of: table).filter {
+                stringAttribute($0, kAXRoleAttribute as String) == "AXRow"
+            }.count
+        return rows == declaredCount
+    }
+
+    /// The tab's OWN group — the one carrying a `Number of Items` child — so
+    /// one tab's table can never be mistaken for another's.
+    ///
+    /// This walk `.stop`s at the group, before it can reach any table, which is
+    /// why it is NOT pruned with `ListEditorWalk`: the same probe that found
+    /// the pruning worth 115–540 ms on the other two walks measured no
+    /// difference here (51.6–56.4 ms either way, 2026-09-02).
+    private func listEditorTabGroup(tab: String, in window: AXUIElement) -> AXUIElement? {
+        var tabGroup: AXUIElement?
+        walk(from: window, maximumDepth: AXDepth.listEditorTab) { element in
+            guard stringAttribute(element, kAXRoleAttribute as String) == "AXGroup",
+                  stringAttribute(element, kAXDescriptionAttribute as String) == tab,
+                  children(of: element).contains(where: {
+                      stringAttribute($0, kAXDescriptionAttribute as String)
+                    == LogicUIStrings.Element.numberOfItems
+                  }) else { return .descend }
+            tabGroup = element
+            return .stop
+        }
+        return tabGroup
     }
 
     /// Reads the currently showing tab's table: column titles, every published
@@ -153,18 +248,9 @@ extension LogicAccessibility {
     func readListEditorTable(
         tab: String, in window: AXUIElement
     ) -> (table: ListEditorTable?, failure: ListEditorFailure?) {
-        var tabGroup: AXUIElement?
-        walk(from: window, maximumDepth: AXDepth.listEditorTab) { element in
-            guard stringAttribute(element, kAXRoleAttribute as String) == "AXGroup",
-                  stringAttribute(element, kAXDescriptionAttribute as String) == tab,
-                  children(of: element).contains(where: {
-                      stringAttribute($0, kAXDescriptionAttribute as String)
-                    == LogicUIStrings.Element.numberOfItems
-                  }) else { return .descend }
-            tabGroup = element
-            return .stop
+        guard let group = listEditorTabGroup(tab: tab, in: window) else {
+            return (nil, .tableNotFound(tab))
         }
-        guard let group = tabGroup else { return (nil, .tableNotFound(tab)) }
         var table: AXUIElement?
         var declaredCount: Int?
         walk(from: group, maximumDepth: AXDepth.listEditorTable) { element in
@@ -176,7 +262,10 @@ extension LogicAccessibility {
                 )
             }
             if role == "AXTable", table == nil { table = element }
-            return .descend
+            // `Number of Items` is a SIBLING of the table, never a descendant,
+            // so the rows are walked for nothing: 68–75 ms at 25 rows and
+            // 308–368 ms at 54 became 4.4–5.4 ms at any size (2026-09-02).
+            return ListEditorWalk.step(role: role)
         }
         guard let table else { return (nil, .tableNotFound(tab)) }
         var columns: [String] = []

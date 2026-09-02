@@ -77,11 +77,18 @@ extension LogicAccessibility {
 
     /// The four List Editors tabs, by their `AXDescription`, with which one is
     /// selected. Empty when the pane is not open.
+    ///
+    /// The tab strip sits ABOVE the table, so the table's rows are pruned out
+    /// of the search (`ListEditorWalk`): measured 2026-09-02, this walk cost
+    /// 108–131 ms at 25 rows and 265–290 ms at 54 while looking for four radio
+    /// buttons, and 56–62 ms at any row count once it stopped descending into
+    /// the rows.
     func tempoListTabs(in window: AXUIElement) -> [(name: String, element: AXUIElement, selected: Bool)] {
         var found: [(String, AXUIElement, Bool)] = []
         walk(from: window, maximumDepth: AXDepth.listEditorTab) { element in
-            guard stringAttribute(element, kAXRoleAttribute as String) == "AXRadioButton" else {
-                return .descend
+            let role = stringAttribute(element, kAXRoleAttribute as String)
+            guard role == "AXRadioButton" else {
+                return ListEditorWalk.step(role: role)
             }
             let name = stringAttribute(element, kAXDescriptionAttribute as String)
             guard LogicUIStrings.Element.listEditorTabs.contains(name) else { return .descend }
