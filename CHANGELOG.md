@@ -775,6 +775,37 @@ with every render coming back as audio the agent can listen to.
   sentence that looks truncated and helps nobody. It now reads "This tool takes no
   arguments."; tools that do take arguments still list them.
 
+- **The strip census stops counting banks and starts proving them, and gets a second faster
+  doing it.** The walk to the leftmost bank was eight blind `bank_left` presses and the walk
+  right was ten iterations, neither with a branch for running out — so a project past 64
+  strips had its census numbered from whatever bank eight presses happened to land on, and
+  one past 80 strips was cut short, both reported as a plain success with the shifted map
+  written to the bank cache every later write resolves through. Both ends are evidence now:
+  the walk left stops when a press produces no MIDI at all AND leaves the name row
+  byte-identical, confirmed by a second quiet window so a bank change Logic answers late
+  cannot be mistaken for the edge; the walk right stops when the rightmost bank's clamp
+  proves the list ended. When either proof cannot be had, the tool says which one and reads
+  nothing, rather than caching a map that aims writes at the wrong channel. The proof is
+  also the saving: `logic_list_strips` no longer pays 207 ms for each press Logic ignores,
+  and the end-of-scan probe charges one 200 ms silence round instead of two when the press
+  it is settling produced no event — **1.58 / 1.61 s standing at the leftmost bank against
+  3.04 s before, and 1.54 / 1.76 s from the rightmost against 2.59 / 2.61 s** (measured
+  2026-09-02 on a 25-strip project), with `logic_mixer_snapshot`, every `findChannel` and
+  every control-surface write sharing the same walk. The old oddity where the census cost
+  half a second MORE when the surface was already where it wanted to be is gone with it.
+
+- **A `Solo` left over from the last press can no longer be published as a strip's name.**
+  Logic paints the name of the control it just saw over that strip's LCD name cell, and
+  that banner turns out to be a timed transient: **1.94 s and 1.99 s**, measured at 50 ms
+  resolution across a solo and an unsolo. The old bank walk spent 1.7 s pressing blindly
+  before it read anything and so outlasted it by accident — the walk above is fast enough
+  to read it, and did: `Solo` came back as the name of three different strips and the
+  census reported 32 strips for a 25-strip project, because the banner also hides the
+  rightmost bank's re-shown tail from the overlap check. Every bank's row is now checked
+  for a control name and the banner waited out; if one is still standing after three
+  seconds the census says so and refuses to cache the map, because nothing on the surface
+  can tell a stuck banner from a strip somebody really called `Solo`.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.
