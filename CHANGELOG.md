@@ -570,6 +570,35 @@ with every render coming back as audio the agent can listen to.
   fade instead of reading through it, because that overlay paints the destination's aux
   name over the position label and lets the dB value spill into the cell underneath, which
   is how a send at `PosPan` could be reported as sitting at `B`.
+- **`logic_get_transport` keeps every key it promises, and says the tempo it reports is
+  the one at the playhead.** The description has always promised that a field whose
+  control bar element is missing comes back `null`, but the playhead position and the
+  tempo/signature/key trio were only ever written into the result INSIDE the `if let`
+  that found their group — so a control bar this server cannot read (a non-English Logic
+  UI, a collapsed window) dropped five keys instead of nulling them, and
+  `logic_project_snapshot`, which serves this payload as its `transport` section, would
+  have shown a diff reading "the tempo was removed" where the truth was "the tempo could
+  not be read". Every documented field is now present on every call, and the payload
+  builder is pure, so that contract is a unit test rather than a hope. The other half is
+  honesty about what those three fields ARE: `tempo`, `time_signature` and `key_signature`
+  are the values in force AT THE PLAYHEAD, not project constants — the same project, four
+  seconds apart, nothing edited, answers 120 BPM in 4/4 with the playhead at bar 1 and 121
+  BPM in 5/4 at bar 51. The tool description and the guide now say so and point at
+  `logic_tempo_events` and `logic_list_signatures` for the whole maps.
+
+- **The transport read got 40% faster, and the Smart Tempo look 15%.** One control bar,
+  walked once: the six transport checkboxes, the playhead LCD, the tempo, the signature,
+  the key and the Smart Tempo pop-up each used to re-fetch the same sibling array and
+  re-read the descriptions ahead of them — 98 of the call's 129 Accessibility reads — and
+  the project window was resolved twice, once for the control bar and again for the
+  document path it already had. Measured warm on the reference project: **8.2–9.4 ms →
+  4.9–6.1 ms**, byte-identical payload. That is ten internal callers cheaper, including
+  the metronome poll that runs this whole read once per tick. And
+  `read_smart_tempo_mode: true` dropped two blind sleeps a zero-wait probe had already
+  disproved — 120 ms spent before the appear loop's first look at a window
+  `pressMenuItem(settled:)` had just proven was there, and 250 ms after a close press that
+  had already landed: **0.85–0.87 s → 0.72–0.74 s** per call, 0.20 s for the first visit
+  in a process.
 
 ### Known limitations (honest by design)
 
