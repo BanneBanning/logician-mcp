@@ -1012,7 +1012,7 @@ Parameters:
 
 #### `logic_set_track_mute`
 
-Mute or unmute a track via its inspector channel strip mute button, verified by readback (control surface first, inspector strip as fallback). A track already in the requested state is a verified no-op (state: "already_on" / "already_off") and nothing is pressed. Accepts headerless output/aux/bus strips — see STRIP ADDRESSING in the server instructions.
+Mute or unmute a track via its inspector channel strip mute button, verified by readback (control surface first, inspector strip as fallback). A track already in the requested state is a verified no-op (state: "already_on" / "already_off") and nothing is pressed. SAFE UNDER A SOLO: Logic FLASHES the mute LED of every channel a standing solo silences, so the state is read across a sampled WINDOW and only a steady LED counts as a mute — a flashing one is reported `mute_led_blinking` with `mute_blink_note`, which means "silent right now but NOT muted". `enabled: false` on such a track is therefore a truthful no-op instead of a press that would have muted it, and `enabled: true` really mutes it. `any_soloed` in the result is Logic's whole-project solo indicator; `led_evidence` says which window was paid (`blink_window` 1.4 s while a solo stands, `settled_window` 0.3 s otherwise). Accepts headerless output/aux/bus strips — see STRIP ADDRESSING in the server instructions.
 
 Parameters:
 
@@ -1023,7 +1023,7 @@ Parameters:
 
 #### `logic_set_track_solo`
 
-Solo or unsolo a track via its inspector channel strip solo button, verified by readback (control surface first, inspector strip as fallback). A track already in the requested state is a verified no-op (state: "already_on" / "already_off") and nothing is pressed. A solo left on silently empties every later bounce, so unsolo before judging a mix. Accepts headerless output/aux/bus strips — see STRIP ADDRESSING in the server instructions.
+Solo or unsolo a track via its inspector channel strip solo button, verified by readback (control surface first, inspector strip as fallback). A track already in the requested state is a verified no-op (state: "already_on" / "already_off") and nothing is pressed. A solo left on silently empties every later bounce, so unsolo before judging a mix — and it makes logic_set_track_mute read a window rather than an instant, because Logic flashes the mute LED of every channel a solo silences. Accepts headerless output/aux/bus strips — see STRIP ADDRESSING in the server instructions.
 
 Parameters:
 

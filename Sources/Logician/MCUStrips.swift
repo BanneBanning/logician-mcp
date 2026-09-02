@@ -457,6 +457,19 @@ extension MCUController {
     /// made. Every rec-LED read in this file is a WINDOW, and the evidence is
     /// asymmetric: seen lit once = armed; never lit across a full window =
     /// not armed.
+    ///
+    /// It is also the window that tells a blinking MUTE LED from a mute, and
+    /// that blink is SLOWER than the record-ready one — worth knowing, because
+    /// it is what sets the floor under this number. MEASURED 2026-09-02 on
+    /// `Testlåt Copy` with `Bas` soloed, sampling the daemon's own mirror
+    /// every 7.2 ms for 6 s: the mute LEDs of two solo-silenced strips (notes
+    /// 0x10 and 0x15) toggled in exact phase with each other, 8 edges each,
+    /// the gaps 729/730/730/731/732/734/735/736/738/741 ms — a ~733 ms phase,
+    /// not 640. Two edges are therefore guaranteed only past
+    /// 2 × 741 = 1 482 ms, so 1.6 s clears the bound by 118 ms while 1.4 s
+    /// would NOT: it would read a flashing mute as steady on the ~9% of phases
+    /// where it opens late enough to catch a single edge. That is the whole
+    /// defect, so the margin is not decoration.
     static let recBlinkWindow: TimeInterval = 1.6
 
     // MARK: The blink rule — one window, four LED rows, two kinds of evidence
@@ -533,8 +546,10 @@ extension MCUController {
     /// Not a majority vote and not a union, because the two failure modes pull
     /// in opposite directions and edges tell them apart:
     ///
-    /// - Logic's blink is ~640 ms on / 640 ms off (measured 2026-08-28), so
-    ///   its edges are 640 ms apart and any window of `recBlinkWindow` (1.6 s)
+    /// - Logic's blink is ~640 ms on / 640 ms off on the record-ready LED
+    ///   (measured 2026-08-28) and ~733 ms on the mute LED a solo silences
+    ///   (measured 2026-09-02 — see `recBlinkWindow`), so its edges are at
+    ///   most ~741 ms apart and any window of `recBlinkWindow` (1.6 s)
     ///   contains AT LEAST TWO of them. Two edges is therefore proof of a
     ///   blink, and no steady state can produce them.
     /// - One edge is not a blink: it is a state that ARRIVED during the window
@@ -578,6 +593,33 @@ extension MCUController {
     /// record-arm needs, where a blink is the positive answer.
     static func everLitStrips(base: Int, across samples: [Set<Int>]) -> [Int] {
         (0..<8).filter { channel in samples.contains { $0.contains(base + channel) } }
+    }
+
+    /// One LED note, classified across a window of the LIVE mirror — the
+    /// single-strip counterpart of `decodeBankLEDs`, for the write paths.
+    ///
+    /// It returns the moment `ledSteadiness` can say `.blinking`, because two
+    /// edges are proof and no later sample can revise them; only a steady LED
+    /// has to be watched for the whole window. `samples` and `elapsed` come
+    /// back so a result — or a refusal — can say what its evidence cost.
+    static func ledSteadinessOnSurface(
+        _ note: Int, window: TimeInterval
+    ) -> (verdict: LEDSteadiness, samples: Int, elapsed: TimeInterval) {
+        var samples: [Set<Int>] = []
+        let start = Date()
+        while true {
+            if let status = freshStatus() {
+                samples.append(Set(status["leds_lit"] as? [Int] ?? []))
+                if ledSteadiness(note, across: samples) == .blinking { break }
+            }
+            if Date().timeIntervalSince(start) >= window { break }
+            Thread.sleep(forTimeInterval: ledSampleInterval)
+        }
+        return (
+            ledSteadiness(note, across: samples),
+            samples.count,
+            Date().timeIntervalSince(start)
+        )
     }
 
     /// One bank's four LED rows, decided from one window.

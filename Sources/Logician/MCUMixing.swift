@@ -6,6 +6,112 @@ import LogicMCUBridge
 extension MCUController {
     // MARK: Mute / solo
 
+    /// What one strip LED, watched across a window, says about the control it
+    /// belongs to.
+    enum ToggleReading: Equatable {
+        /// The control is in this state. `ledBlinking` records that the answer
+        /// came from a FLASHING LED rather than a steady one — which is a fact
+        /// worth reporting, not a doubt: it is what a standing solo looks like.
+        case state(Bool, ledBlinking: Bool)
+        /// The window caught no sample at all: the mirror never answered.
+        /// NEVER the same answer as `.state(false)`.
+        case unreadable
+        /// The LED was flashing where nothing has been measured to flash.
+        case unexplainedBlink
+    }
+
+    /// The write-side evidence rule — one line per control, pure so it can be
+    /// tested without a surface (`ToggleLEDEvidenceTests`).
+    ///
+    /// The two controls read the SAME kind of evidence with different rules,
+    /// which is why this is a function of the control and not of the LED alone:
+    ///
+    /// - **mute**: only a STEADY LED is a mute. Logic flashes the mute LED of
+    ///   every channel a standing solo silences (proven live 2026-09-02: `Bas`
+    ///   soloed, nothing muted anywhere, and six strips read lit in a single
+    ///   instant), so a blinking mute LED means "silent right now, NOT muted".
+    ///   That is the same asymmetry `decodeBankLEDs` reads the census with, and
+    ///   reading one instant of it here is how `enabled: false` on an unmuted
+    ///   track could conclude "it is muted", press mute, and MUTE the track
+    ///   while reporting success — while `enabled: true` could read the lit
+    ///   phase as an existing mute and return a verified no-op having done
+    ///   nothing. Both directions were silent wrongness on a tool that changes
+    ///   what the song sounds like.
+    /// - **solo**: a STEADY LED, and a flashing one is not answered at all.
+    ///   The solo LED has been steady in every state measured: 15 consecutive
+    ///   reads of a standing solo (2026-09-02), and 59 samples across 3 981 ms
+    ///   of `Bas` soloed with ZERO edges on its solo LED (note 0x09) and zero
+    ///   on the rude-solo LED, while the mute LEDs of two silenced strips
+    ///   toggled six times each in the same sampling. So a flashing solo LED is
+    ///   a surface state whose meaning this server has not established — and a
+    ///   write refuses on it rather than pressing on a coin flip.
+    static func toggleReading(
+        control: BridgeCommandName, verdict: LEDSteadiness
+    ) -> ToggleReading {
+        switch verdict {
+        case .steady(let lit): return .state(lit, ledBlinking: false)
+        case .unsampled: return .unreadable
+        case .blinking:
+            return control == .mute ? .state(false, ledBlinking: true) : .unexplainedBlink
+        }
+    }
+
+    /// The whole write-side branch as one value: what the window said, what
+    /// the caller asked for, and therefore whether anything gets pressed.
+    enum ToggleDecision: Equatable {
+        /// The control is already the way the caller asked for it. Nothing is
+        /// pressed. `ledBlinking` says the answer came from a flashing mute
+        /// LED — the case that used to press mute on an unmuted track.
+        case alreadySet(ledBlinking: Bool)
+        /// It is in the other state, so the button is pressed. `currentlyOn`
+        /// is what it was, for the compare-and-set message.
+        case press(currentlyOn: Bool, ledBlinking: Bool)
+        /// The window caught nothing; this route must not answer at all.
+        case unreadable
+        /// A flash where nothing is known to flash: refuse, press nothing.
+        case unexplainedBlink
+    }
+
+    /// `toggleReading` against the caller's request. Pure, and the ONLY place
+    /// that decides whether a mute or solo button gets pressed.
+    static func toggleDecision(
+        control: BridgeCommandName, verdict: LEDSteadiness, requested: Bool
+    ) -> ToggleDecision {
+        switch toggleReading(control: control, verdict: verdict) {
+        case .unreadable: return .unreadable
+        case .unexplainedBlink: return .unexplainedBlink
+        case .state(let current, let blinking):
+            return current == requested
+                ? .alreadySet(ledBlinking: blinking)
+                : .press(currentlyOn: current, ledBlinking: blinking)
+        }
+    }
+
+    /// How long ONE strip LED has to be watched before a write may believe it.
+    ///
+    /// Only the mute LED blinks, and only while a solo stands somewhere in the
+    /// project — so only that combination pays the full `recBlinkWindow`.
+    /// Everything else pays `settledLEDWindow` (0.3 s), which is not a blink
+    /// test but a settle: it still catches the late LED repaint after the bank
+    /// step `findChannel` just made, which the old single instant did not.
+    ///
+    /// The same 1.6 s the census pays per bank, and deliberately not a cheaper
+    /// number of this route's own: the mute blink's phase measures ~733 ms
+    /// (2026-09-02, `recBlinkWindow`), so two edges are only guaranteed past
+    /// 1 482 ms and there is nothing left to shave. What IS shaved is the
+    /// blinking case, which `ledSteadinessOnSurface` returns on the second
+    /// edge rather than at the end of the window.
+    ///
+    /// `soloStanding` nil — the surface could not be asked — takes the long
+    /// window, because the conservative side of that question is the one that
+    /// stays correct.
+    static func toggleLEDWindow(
+        control: BridgeCommandName, soloStanding: Bool?
+    ) -> TimeInterval {
+        guard control == .mute else { return settledLEDWindow }
+        return soloStanding == false ? settledLEDWindow : recBlinkWindow
+    }
+
     static func setToggle(
         trackName: String,
         control: String, // "mute" | "solo"
@@ -20,43 +126,159 @@ extension MCUController {
         else {
             throw LogicianError.invalidArguments("control must be mute or solo")
         }
-        guard freshStatus() != nil else { return nil }
+        // `requireSurface` wakes a surface Logic has simply not talked to yet,
+        // and a surface that stays unreachable is NOT an error on this path:
+        // mute and solo have a real inspector-strip route, so nil hands the
+        // write to it instead of refusing.
+        guard (try? requireSurface("the \(control) LED for '\(trackName)'")) != nil else {
+            return nil
+        }
         guard let channel = try findChannel(trackName: trackName) else { return nil }
-        let ledBase = strip == .mute ? 0x10 : 0x08
-        let note = ledBase + channel
-        guard let before = freshStatus() else { return nil }
+        let note = (strip == .mute ? muteLEDBase : soloLEDBase) + channel
+        // Note 0x73 answers "is anything soloed" for the WHOLE project in one
+        // steady read — a soloed channel with no strip on this surface
+        // included — and it is what decides whether the mute LED can be
+        // flashing at all. Only mute needs to ask.
+        let soloStanding = strip == .mute ? anySoloedStripOnSurface() : nil
+        let window = toggleLEDWindow(control: strip, soloStanding: soloStanding)
+        let before = ledSteadinessOnSurface(note, window: window)
+        let evidence = window >= recBlinkWindow ? "blink_window" : "settled_window"
+        let decision = toggleDecision(
+            control: strip, verdict: before.verdict, requested: enabled
+        )
+        let current: Bool
+        let currentFromBlink: Bool
+        switch decision {
+        case .unreadable:
+            // The mirror answered nothing across the whole window. Inventing
+            // `false` here is exactly how an unmuted track gets muted, so the
+            // write goes to the inspector-strip route instead.
+            debugLog("setToggle: \(control) LED unreadable across \(window) s")
+            return nil
+        case .unexplainedBlink:
+            throw LogicianError.preconditionUnmet(
+                "The \(control) LED of '\(trackName)' (strip \(channel + 1)) was FLASHING:"
+                    + " \(before.samples) samples across \(Int(before.elapsed * 1000)) ms with at"
+                    + " least two edges. Nothing on this surface has been measured to flash a solo"
+                    + " LED, so its state cannot be read and NOTHING was pressed. Read"
+                    + " logic_mixer_snapshot to see what the surface is showing."
+            )
+        case .alreadySet(let blinking):
+            current = enabled
+            currentFromBlink = blinking
+        case .press(let currentlyOn, let blinking):
+            current = currentlyOn
+            currentFromBlink = blinking
+        }
         // Compare-and-set, off the state this route was already reading to
         // decide whether the button needs pressing at all.
-        if let expectedCurrent, ledLit(note, in: before) != expectedCurrent {
+        if let expectedCurrent, current != expectedCurrent {
             throw LogicianError.currentValueMismatch(
                 expected: "\(control)=\(expectedCurrent)",
-                actual: "\(control)=\(ledLit(note, in: before))"
+                actual: "\(control)=\(current)"
+                    + (currentFromBlink
+                        ? " (the mute LED is BLINKING, which is a standing solo silencing this"
+                            + " channel, not a mute)"
+                        : "")
             )
         }
-        if ledLit(note, in: before) == enabled {
-            return [
-                "success": true, "verified": true,
-                "state": "already_" + (enabled ? "on" : "off"),
-                "track": trackName, "track_name": trackName, "control": control, control: enabled, "route": "mcu"
-            ]
+        if case .alreadySet = decision {
+            return toggleResult(
+                trackName: trackName, control: control, strip: strip, enabled: enabled,
+                channel: channel, state: "already_" + (enabled ? "on" : "off"),
+                evidence: evidence, samples: before.samples, soloStanding: soloStanding,
+                ledBlinking: currentFromBlink, pressed: false
+            )
         }
+        let events = freshStatus()?["received_events"] as? Int ?? -1
         let response = try MCUBridge.send(.channel(strip, channel))
         guard response.ok else {
             throw LogicianError.writeFailed("MCU \(control) failed: \(response.error ?? "?")")
         }
-        guard pollStatus(until: { ledLit(note, in: $0) == enabled }) != nil else {
+        // Let the LED repaint ARRIVE before the readback window opens. A window
+        // that straddles the press catches the old blink's edges and the new
+        // state together, counts two edges, and spends a second whole window
+        // finding out what it already knew.
+        _ = awaitEvents(since: events, timeoutMs: 800)
+        // The readback re-runs the same window rule, and it has to: under a
+        // standing solo the press lands in a bank of flashing mute LEDs, where
+        // one instant confirms whichever phase it happened to catch. Unmuting a
+        // genuinely muted track under a solo ends with the LED BLINKING rather
+        // than dark — the solo silences it the moment the mute lets go — and
+        // that is the correct reading of `mute: false`, not a failure.
+        var after: (verdict: LEDSteadiness, samples: Int, elapsed: TimeInterval)?
+        for _ in 0..<3 {
+            let read = ledSteadinessOnSurface(note, window: window)
+            if case .state(let value, _) = toggleReading(control: strip, verdict: read.verdict),
+               value == enabled {
+                after = read
+                break
+            }
+        }
+        guard let after else {
             throw LogicianError.verificationFailed(
-                requested: "\(control)=\(enabled)",
-                actual: "MCU \(control) LED did not change",
+                requested: "\(control)=\(enabled) on '\(trackName)' (strip \(channel + 1))",
+                actual: "the MCU \(control) LED never settled at that state across three"
+                    + " \(Int(window * 1000)) ms windows after the press",
                 restored: false
             )
         }
-        return [
+        var landedBlinking = false
+        if case .state(_, let blinking) = toggleReading(control: strip, verdict: after.verdict) {
+            landedBlinking = blinking
+        }
+        return toggleResult(
+            trackName: trackName, control: control, strip: strip, enabled: enabled,
+            channel: channel, state: enabled ? "on" : "off",
+            evidence: evidence, samples: after.samples, soloStanding: soloStanding,
+            ledBlinking: landedBlinking, pressed: true
+        )
+    }
+
+    /// The mute/solo result, with the LED evidence it was decided on.
+    ///
+    /// `led_evidence` and `mute_led_blinking` are the census's own key names
+    /// (`logic_mixer_snapshot`), so an agent that reads the mixer and then
+    /// writes a mute meets one vocabulary rather than two.
+    private static func toggleResult(
+        trackName: String,
+        control: String,
+        strip: BridgeCommandName,
+        enabled: Bool,
+        channel: Int,
+        state: String,
+        evidence: String,
+        samples: Int,
+        soloStanding: Bool?,
+        ledBlinking: Bool,
+        pressed: Bool
+    ) -> [String: Any] {
+        var payload: [String: Any] = [
             "success": true, "verified": true,
-            "state": enabled ? "on" : "off",
-            "track": trackName, "track_name": trackName, "control": control, control: enabled,
-            "route": "mcu", "readback_route": "mcu_channel_led"
+            "state": state,
+            "track": trackName, "track_name": trackName,
+            "control": control, control: enabled,
+            "mcu_strip": channel + 1,
+            "route": "mcu",
+            "readback_route": "mcu_channel_led_window",
+            "led_evidence": evidence,
+            "led_samples": samples
         ]
+        if pressed { payload["write_route"] = "mcu_channel_button" }
+        if strip == .mute, let soloStanding { payload["any_soloed"] = soloStanding }
+        guard ledBlinking else { return payload }
+        payload["mute_led_blinking"] = true
+        payload["mute_blink_note"] = pressed
+            ? "The mute LED of '\(trackName)' is BLINKING after the write, and that is the correct"
+                + " reading of mute: false — Logic flashes the mute LED of every channel a standing"
+                + " solo silences (any_soloed is true), so this channel is no longer muted but is"
+                + " still SILENT until the solo goes."
+            : "NOTHING was pressed. The mute LED of '\(trackName)' is BLINKING, which is not a mute:"
+                + " Logic flashes the mute LED of every channel a standing solo silences (any_soloed"
+                + " is true), so this channel is silent right now but NOT muted — pressing mute"
+                + " would have muted it. Unsolo to hear it, or read logic_mixer_snapshot for the"
+                + " whole picture."
+        return payload
     }
 
     // MARK: Volume (vpot converge against the LCD dB readout)
