@@ -428,5 +428,99 @@ enum KeyCommandRegistry {
         ("previous plug-in", Name.previousPluginSetting, 121),
         ("create marker", Name.createMarker, 104)
     ]
+
+    /// The channel every learn uses unless something forces another one. Named
+    /// so the listing can leave it OUT of a row and say it once instead.
+    static let defaultChannel = 16
+
+    /// The standard commands the registry holds no entry for, in the order
+    /// `standardCommands` declares them and spelled the way it spells them.
+    /// `registryNames` is the LOWERCASED name of every entry in the file.
+    ///
+    /// The `Set` is a safety property, not an optimisation. Until 2026-09-02
+    /// `handleListKeyCommands` keyed these names through
+    /// `Dictionary(uniqueKeysWithValues:)`, which does not throw on a
+    /// duplicate key — it TRAPS, killing the whole MCP server process, on a
+    /// `.readOnly` call that touches nothing. `Name` is a localization
+    /// surface (see its FRENCH notes above) and four of these entries are
+    /// `Nudge Region/Event Position …` variants one word apart, so a
+    /// translation pass is exactly the change that could collide two of them.
+    /// The dictionary's values were never read; membership was the only
+    /// question it was ever asked. A collision now costs the name being
+    /// listed once instead of twice, and nothing else.
+    static func standardNotLearned(
+        in standard: [(search: String, name: String, preferredNote: Int)] = standardCommands,
+        registryNames: Set<String>
+    ) -> [String] {
+        var seen = Set<String>()
+        var missing: [String] = []
+        for command in standard {
+            let key = command.name.lowercased()
+            guard !registryNames.contains(key), seen.insert(key).inserted else { continue }
+            missing.append(command.name)
+        }
+        return missing
+    }
+
+    /// How many entries were bound before the registry recorded WHICH tool
+    /// bound them. The listing says this once instead of apologising for it on
+    /// every row.
+    static func unrecordedSourceCount(in commands: [[String: Any]]) -> Int {
+        commands.filter { (($0["source"] as? String) ?? "").isEmpty }.count
+    }
+
+    /// The rows `logic_list_key_commands` answers with — pure over the registry
+    /// rows so the payload's SHAPE can be pinned by a test on a machine with no
+    /// registry file.
+    ///
+    /// What is left OUT is the point. Measured 2026-09-02: the answer was
+    /// 7 026 B and 55% of it was the same text 22–27 times over — a 55-char
+    /// "unrecorded" sentence on 22 rows, a `notes` string restating `source`
+    /// on 26, `channel: 16` on all 27. Every one of those facts is now said
+    /// once, at the top level, or not at all:
+    ///
+    /// - `source` only when the entry records one; the answer says once how
+    ///   many entries predate source tracking.
+    /// - `channel` only when it is NOT the default 16 (`channel_default`).
+    /// - `notes` never — it restated `source` in other words.
+    /// - `learned`, `learned_at`, `search`, `standard` never: they are in the
+    ///   file the answer names in `registry_path`, and nothing branches on them.
+    /// - `port_unique_id` only when it is NOT the live identity (where it
+    ///   agrees, the top-level `port_unique_id` already said it) or when there
+    ///   is no live identity to compare it against.
+    ///
+    /// What survives is every fact a caller can act on: the name, the note
+    /// that fires it, a non-default channel, a recorded source, and whether
+    /// the port identity the binding was scoped to is still the live one.
+    static func listingRows(
+        from commands: [[String: Any]], currentPortUniqueID: Int?
+    ) -> [[String: Any]] {
+        commands.map { entry -> [String: Any] in
+            var row: [String: Any] = [
+                "name": (entry["name"] as? String) ?? "?",
+                "note": entry["note"] ?? NSNull()
+            ]
+            // Anything that is not exactly the default survives, including a
+            // value that is not an Int at all: a corrupt channel is a fact,
+            // and dropping it would let the caller assume 16.
+            if let channel = entry["channel"], (channel as? Int) != defaultChannel {
+                row["channel"] = channel
+            }
+            if let source = entry["source"] as? String, !source.isEmpty {
+                row["source"] = source
+            }
+            if let recorded = entry["port_unique_id"] as? Int {
+                if let live = currentPortUniqueID {
+                    row["port_identity"] = recorded == live ? "current" : "changed"
+                    if recorded != live { row["port_unique_id"] = recorded }
+                } else {
+                    // No live identity to judge against, so the recorded one
+                    // is the only witness left; keep it rather than claim.
+                    row["port_unique_id"] = recorded
+                }
+            }
+            return row
+        }.sorted { (($0["name"] as? String) ?? "") < (($1["name"] as? String) ?? "") }
+    }
 }
 

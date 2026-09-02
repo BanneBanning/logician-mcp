@@ -17,10 +17,31 @@ extension MCPServer {
         let unknown = arguments.keys.filter { properties[$0] == nil }.sorted()
         guard !unknown.isEmpty else { return }
         throw LogicianError.invalidArguments(
-            "\(tool.name) does not accept: \(unknown.joined(separator: ", ")). "
-                + "Accepted: \(properties.keys.sorted().joined(separator: ", ")). "
-                + "The argument was NOT applied - do not assume it took effect."
+            MCPServer.unknownArgumentRefusal(
+                tool: tool.name, unknown: unknown, accepted: Array(properties.keys)
+            )
         )
+    }
+
+    /// The refusal text for arguments a tool does not declare. Pure and
+    /// `static` so both of its branches can be pinned by a test.
+    ///
+    /// The empty-`accepted` branch exists because eight tools declare
+    /// `properties: [:]` — they take nothing at all — and for those the text
+    /// used to render a bare "Accepted: .", a sentence that looks truncated
+    /// and names no alternative. Measured on `logic_list_key_commands`
+    /// (2026-09-02): `{"foo": 1}` was refused with *"Accepted: ."*. A refusal
+    /// has one job beyond saying no, which is to say what to call instead;
+    /// "this tool takes no arguments" is that answer when the list is empty.
+    static func unknownArgumentRefusal(
+        tool: String, unknown: [String], accepted: [String]
+    ) -> String {
+        let alternative = accepted.isEmpty
+            ? "This tool takes no arguments."
+            : "Accepted: \(accepted.sorted().joined(separator: ", "))."
+        return "\(tool) does not accept: \(unknown.sorted().joined(separator: ", ")). "
+            + alternative
+            + " The argument was NOT applied - do not assume it took effect."
     }
 
     /// nil when this server has a tool called `name`; otherwise the message
