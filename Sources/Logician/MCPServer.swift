@@ -217,6 +217,16 @@ final class MCPServer: @unchecked Sendable {
     }
 
     private func shutdown() {
+        // The Region inspector's disclosure triangles are the surface debt's
+        // Accessibility-plane cousin: the region tools leave open what they
+        // opened, so a chain of region calls does not spend ~0.6 s per call
+        // re-opening a panel it is about to close again. This is where that
+        // debt is paid. Self-guarding — no debt, no walk, and the close looks
+        // at each triangle before pressing it (see `InspectorDebt`).
+        if logic.settleInspectorDebt() {
+            log("stdin closed; the Region inspector's disclosures were closed again")
+        }
+
         // stdin closed: the client is gone. Leave the control surface in the
         // neutral Pan view — a leaked hot plugin/instrument view otherwise
         // makes Logic auto-open plugin windows on every later track selection.

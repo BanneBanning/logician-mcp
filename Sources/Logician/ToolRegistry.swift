@@ -985,7 +985,7 @@ extension MCPServer {
             Tool(
                 name: "logic_get_region_params",
                 title: "Read region parameters",
-                description: "Read a region's own parameters out of Logic's Region inspector — the panel at the top of the left inspector that says 'Region: <name>'. This is the read side of logic_set_region_params and the only way to see a region's quantize, transpose, velocity, loop, mute, gain, fades or delay. Pass track_name (plus region_name and/or start_bar) and the region is selected first; call it with no arguments to read whatever is selected. THREE THINGS THE RESULT TELLS YOU BEFORE THE VALUES. `subject` says whose parameters these are: a region, 'multiple' when several are selected (values that differ read as mixed), or 'defaults' — with NOTHING selected the panel shows the TRACK's region defaults ('MIDI Defaults' / 'Audio Defaults'), which is a different thing entirely and is never written by this server. `region_type` is read off the rows Logic published, independently of the arrangement map: a MIDI region has Velocity Offset, Dynamics, Gate Time and the Q-rows, an audio region has Gain, Fine Tune, Fade-In/Out, Reverse and Smart Tempo. And `enabled` per row is load-bearing: Logic greys out every Q-row while Quantize is Off, and a disabled control cannot be written. `display` is Logic's own text for the value and is ABSENT at a parameter's default, because Logic prints the default blank. The panel is opened (and its 'More' section with it) and put back exactly as it was found.",
+                description: "Read a region's own parameters out of Logic's Region inspector — the panel at the top of the left inspector that says 'Region: <name>'. This is the read side of logic_set_region_params and the only way to see a region's quantize, transpose, velocity, loop, mute, gain, fades or delay. Pass track_name (plus region_name and/or start_bar) and the region is selected first; call it with no arguments to read whatever is selected. THREE THINGS THE RESULT TELLS YOU BEFORE THE VALUES. `subject` says whose parameters these are: a region, 'multiple' when several are selected (values that differ read as mixed), or 'defaults' — with NOTHING selected the panel shows the TRACK's region defaults ('MIDI Defaults' / 'Audio Defaults'), which is a different thing entirely and is never written by this server. `region_type` is read off the rows Logic published, independently of the arrangement map: a MIDI region has Velocity Offset, Dynamics, Gate Time and the Q-rows, an audio region has Gain, Fine Tune, Fade-In/Out, Reverse and Smart Tempo. And `enabled` per row is load-bearing: Logic greys out every Q-row while Quantize is Off, and a disabled control cannot be written. `display` is Logic's own text for the value and is ABSENT at a parameter's default, because Logic prints the default blank. The panel is opened (and its 'More' section with it) and then LEFT open, because re-opening a collapsed panel costs 0.6 s and the next region call would only open it again; `panel_state` reports exactly what was found and what was left, and this server closes them again when the session ends.",
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -994,13 +994,14 @@ extension MCPServer {
                         "start_bar": ["type": "integer", "description": "With track_name: the region's current start bar."],
                         "include_quantize_values": [
                             "type": "boolean",
-                            "description": "Also open the Quantize pop-up and return every value Logic offers (note values, triplets, swing A-F, tuplets). Costs a menu open; the menu is always dismissed."
+                            "description": "Also return every value Logic's Quantize pop-up offers (note values, triplets, swing A-F, tuplets) — the vocabulary logic_set_region_params accepts for `quantize`. The list belongs to the Logic INSTALL rather than the project, so it is read off the menu once (~0.7 s, and the menu is always dismissed) and served from cache afterwards; `quantize_values_source` says which, and the cache is retired the moment Logic's version or UI language changes."
                         ]
                     ],
                     "additionalProperties": false
                 ],
-                // Selects a region when addressed by name, and toggles the
-                // panel's disclosure triangles, which it restores.
+                // Selects a region when addressed by name, and opens the
+                // panel's disclosure triangles, which it closes again when the
+                // session ends (see `InspectorDebt`).
                 safety: .write,
                 idempotent: true,
                 handler: MCPServer.handleGetRegionParams

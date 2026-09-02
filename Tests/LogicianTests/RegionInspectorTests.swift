@@ -473,4 +473,266 @@ final class RegionInspectorTests: XCTestCase {
             ).isEmpty
         )
     }
+
+    // MARK: - What the disclosure poll spends
+
+    /// 630 ms of every call with the panel collapsed at rest, and most of it
+    /// was this: a loop that slept 0.1 s BEFORE its first look, four times a
+    /// call, on toggles that had all already settled by then (measured
+    /// 2026-09-02, 8 of 8).
+    func testTheDisclosurePollLooksLongBeforeItSleepsLong() {
+        XCTAssertLessThanOrEqual(
+            LogicAccessibility.DisclosurePoll.interval, 0.015,
+            "the old 0.1 s floor bought nothing on any measured toggle"
+        )
+    }
+
+    /// Cut the WAIT, never the VERIFICATION: a triangle that genuinely refuses
+    /// to move must still be given the 1.2 s the old 12 x 0.1 s loop gave it
+    /// before `setDisclosure` calls it stuck and the read raises
+    /// `trackNotExposed`.
+    func testTheDisclosurePollIsExactlyAsPatientAsTheLoopItReplaced() {
+        XCTAssertGreaterThanOrEqual(LogicAccessibility.DisclosurePoll.budget, 1.2 - 1e-9)
+    }
+
+    /// The same bargain for the pop-up menu: 1.2 s per press attempt, 3.0 s on
+    /// the last one, 0.3 s for the dismissal — every budget kept, none of it
+    /// spent before the first look.
+    func testTheMenuPollKeepsEveryBudgetItsBlindSleepsHad() {
+        XCTAssertGreaterThanOrEqual(LogicAccessibility.MenuPoll.budget, 1.2 - 1e-9)
+        XCTAssertGreaterThanOrEqual(LogicAccessibility.MenuPoll.patientBudget, 3.0 - 1e-9)
+        XCTAssertGreaterThanOrEqual(LogicAccessibility.MenuPoll.dismissBudget, 0.3 - 1e-9)
+        XCTAssertLessThanOrEqual(LogicAccessibility.MenuPoll.interval, 0.03)
+    }
+
+    // MARK: - The disclosure debt
+
+    /// A read that had to open both triangles leaves both open and owes both.
+    func testOpeningBothDisclosuresLeavesThemOpenAndRecordsTheDebt() {
+        let plan = LogicAccessibility.planInspectorRestore(
+            standing: nil, openedRegionPanel: true, openedMore: true,
+            projectDocument: "/Music/A.logicx"
+        )
+        XCTAssertFalse(plan.closeRegionPanelNow)
+        XCTAssertFalse(plan.closeMoreNow)
+        XCTAssertEqual(
+            plan.debt,
+            LogicAccessibility.InspectorDebt(
+                regionPanel: true, more: true, projectDocument: "/Music/A.logicx"
+            )
+        )
+    }
+
+    /// A panel found OPEN owes nothing: this server did not open it, so it has
+    /// no business closing it at shutdown.
+    func testAPanelFoundOpenIsNeverOwed() {
+        let plan = LogicAccessibility.planInspectorRestore(
+            standing: nil, openedRegionPanel: false, openedMore: false,
+            projectDocument: "/Music/A.logicx"
+        )
+        XCTAssertNil(plan.debt)
+        XCTAssertFalse(plan.closeRegionPanelNow)
+        XCTAssertFalse(plan.closeMoreNow)
+    }
+
+    /// The second call in a chain finds both open and adds nothing — but the
+    /// debt the FIRST call left has to survive it, or the shutdown restore
+    /// quietly stops happening after two calls.
+    func testTheDebtSurvivesACallThatOpensNothing() {
+        let first = LogicAccessibility.planInspectorRestore(
+            standing: nil, openedRegionPanel: true, openedMore: true,
+            projectDocument: "/Music/A.logicx"
+        )
+        let second = LogicAccessibility.planInspectorRestore(
+            standing: first.debt, openedRegionPanel: false, openedMore: false,
+            projectDocument: "/Music/A.logicx"
+        )
+        XCTAssertEqual(second.debt, first.debt)
+    }
+
+    /// A call that opens only "More" on top of a panel already owed must end
+    /// up owing BOTH, not swapping one for the other.
+    func testDebtsAccumulateRatherThanOverwrite() {
+        let standing = LogicAccessibility.InspectorDebt(
+            regionPanel: true, more: false, projectDocument: "/Music/A.logicx"
+        )
+        let plan = LogicAccessibility.planInspectorRestore(
+            standing: standing, openedRegionPanel: false, openedMore: true,
+            projectDocument: "/Music/A.logicx"
+        )
+        XCTAssertEqual(
+            plan.debt,
+            LogicAccessibility.InspectorDebt(
+                regionPanel: true, more: true, projectDocument: "/Music/A.logicx"
+            )
+        )
+    }
+
+    /// A debt names a panel in ONE document. Once another song is open that
+    /// panel is gone and the debt can never be verified again, so it is
+    /// retired rather than pressed into a stranger's inspector.
+    func testADebtFromAnotherProjectIsRetiredRatherThanPaidElsewhere() {
+        let standing = LogicAccessibility.InspectorDebt(
+            regionPanel: true, more: true, projectDocument: "/Music/A.logicx"
+        )
+        let plan = LogicAccessibility.planInspectorRestore(
+            standing: standing, openedRegionPanel: false, openedMore: false,
+            projectDocument: "/Music/B.logicx"
+        )
+        XCTAssertNil(plan.debt)
+    }
+
+    func testANewDebtDoesNotInheritTheOldProjectsTriangles() {
+        let standing = LogicAccessibility.InspectorDebt(
+            regionPanel: true, more: true, projectDocument: "/Music/A.logicx"
+        )
+        let plan = LogicAccessibility.planInspectorRestore(
+            standing: standing, openedRegionPanel: true, openedMore: false,
+            projectDocument: "/Music/B.logicx"
+        )
+        XCTAssertEqual(
+            plan.debt,
+            LogicAccessibility.InspectorDebt(
+                regionPanel: true, more: false, projectDocument: "/Music/B.logicx"
+            )
+        )
+    }
+
+    /// No readable document, no deferral: a restore that cannot be scoped to
+    /// the project it belongs to could be paid back into a different song, so
+    /// it is paid on the spot instead.
+    func testWithoutAProjectDocumentTheRestoreIsPaidImmediately() {
+        let plan = LogicAccessibility.planInspectorRestore(
+            standing: nil, openedRegionPanel: true, openedMore: true,
+            projectDocument: nil
+        )
+        XCTAssertTrue(plan.closeRegionPanelNow)
+        XCTAssertTrue(plan.closeMoreNow)
+        XCTAssertNil(plan.debt)
+    }
+
+    /// ...and a debt already standing is not thrown away by one unreadable
+    /// document: it carries its own project and is checked again at settle
+    /// time.
+    func testAnUnreadableDocumentLeavesAnExistingDebtStanding() {
+        let standing = LogicAccessibility.InspectorDebt(
+            regionPanel: true, more: false, projectDocument: "/Music/A.logicx"
+        )
+        let plan = LogicAccessibility.planInspectorRestore(
+            standing: standing, openedRegionPanel: false, openedMore: false,
+            projectDocument: nil
+        )
+        XCTAssertEqual(plan.debt, standing)
+    }
+
+    // MARK: - Scoping the quantize vocabulary
+
+    private func quantizeMenu() -> [String] {
+        ["Off", "1/4-Note", "1/8-Note", "1/16-Note", "1/16 Swing F", "7-Tuplet"]
+    }
+
+    private func quantizeCacheFile() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("quantize-\(UUID().uuidString).json")
+    }
+
+    func testTheQuantizeListRoundTripsWithinOneLogicInstall() {
+        let url = quantizeCacheFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let scope = LogicAccessibility.quantizeValuesScope(
+            logicVersion: "12.3.1", logicBuild: "5470.24", uiLanguage: "en"
+        )
+        saveScopedCache(quantizeMenu(), to: url, scope: scope)
+        XCTAssertEqual(loadScopedCache(url, scope: scope, as: [String].self), quantizeMenu())
+    }
+
+    /// The list is Logic's own menu STRINGS. A Logic relaunched in German
+    /// spells every one of them differently, and handing an agent the English
+    /// vocabulary for a German menu is exactly the confidently-wrong answer
+    /// this server exists to prevent.
+    func testTheQuantizeListIsInvisibleAfterTheUILanguageChanges() {
+        let url = quantizeCacheFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+        saveScopedCache(quantizeMenu(), to: url, scope: LogicAccessibility.quantizeValuesScope(
+            logicVersion: "12.3.1", logicBuild: "5470.24", uiLanguage: "en"
+        ))
+        XCTAssertNil(loadScopedCache(
+            url,
+            scope: LogicAccessibility.quantizeValuesScope(
+                logicVersion: "12.3.1", logicBuild: "5470.24", uiLanguage: "de"
+            ),
+            as: [String].self
+        ))
+    }
+
+    /// A Logic UPDATE can add a grid. Same language, different build, no
+    /// reuse.
+    func testTheQuantizeListIsInvisibleAfterALogicUpdate() {
+        let url = quantizeCacheFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+        saveScopedCache(quantizeMenu(), to: url, scope: LogicAccessibility.quantizeValuesScope(
+            logicVersion: "12.3.1", logicBuild: "5470.24", uiLanguage: "en"
+        ))
+        XCTAssertNil(loadScopedCache(
+            url,
+            scope: LogicAccessibility.quantizeValuesScope(
+                logicVersion: "12.4.0", logicBuild: "5500.10", uiLanguage: "en"
+            ),
+            as: [String].self
+        ))
+    }
+
+    /// An install whose language could NOT be inferred must not quietly share
+    /// a scope with one where it could: "unknown" is its own answer.
+    func testAnUninferableLanguageIsItsOwnScope() {
+        XCTAssertNotEqual(
+            LogicAccessibility.quantizeValuesScope(
+                logicVersion: "12.3.1", logicBuild: "5470.24", uiLanguage: nil
+            ),
+            LogicAccessibility.quantizeValuesScope(
+                logicVersion: "12.3.1", logicBuild: "5470.24", uiLanguage: "en"
+            )
+        )
+    }
+
+    /// The project is deliberately NOT in the scope. The quantize menu is a
+    /// property of the Logic install — 36 items, byte-identical across region
+    /// types and songs (measured 2026-09-02) — and re-walking it per song
+    /// would be the 715 ms this cache exists to stop paying.
+    func testTheQuantizeScopeIgnoresWhichSongIsOpen() {
+        let scope = LogicAccessibility.quantizeValuesScope(
+            logicVersion: "12.3.1", logicBuild: "5470.24", uiLanguage: "en"
+        )
+        XCTAssertFalse(scope.contains(".logicx"))
+    }
+
+    /// A file this install can never use again is retired on the way past,
+    /// rather than left to be re-read and re-rejected on every call.
+    func testAMismatchedQuantizeCacheIsDeletedWhenAskedTo() {
+        let url = quantizeCacheFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+        saveScopedCache(quantizeMenu(), to: url, scope: LogicAccessibility.quantizeValuesScope(
+            logicVersion: "12.3.1", logicBuild: "5470.24", uiLanguage: "en"
+        ))
+        XCTAssertNil(loadScopedCache(
+            url,
+            scope: LogicAccessibility.quantizeValuesScope(
+                logicVersion: "12.3.1", logicBuild: "5470.24", uiLanguage: "sv"
+            ),
+            as: [String].self,
+            deleteOnMismatch: true
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    /// The Logician build is in the token too, so a version of this server
+    /// that changes how the menu is read never inherits the previous build's
+    /// list.
+    func testTheQuantizeScopeCarriesTheServerBuild() {
+        XCTAssertTrue(
+            LogicAccessibility.quantizeValuesScope(
+                logicVersion: "12.3.1", logicBuild: "5470.24", uiLanguage: "en"
+            ).hasPrefix("v\(cacheSchemaVersion)|")
+        )
+    }
 }

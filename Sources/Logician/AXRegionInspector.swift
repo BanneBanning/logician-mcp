@@ -137,14 +137,41 @@ extension LogicAccessibility {
         )
     }
 
+    // MARK: - Disclosure triangles
+
+    /// How a disclosure poll is spent. Pure, so the schedule can be asserted
+    /// without an Accessibility tree.
+    ///
+    /// MEASURED 2026-09-02 (Logic Pro 12.3.1, "Testlåt Copy"): every one
+    /// of the 8 disclosure toggles in a profiling matrix had already settled
+    /// by the loop's FIRST look — and the loop slept 0.1 s *before* looking,
+    /// so 100 ms of every toggle was this floor rather than Logic's repaint.
+    /// Four toggles per `logic_get_region_params` call made that 400 ms of the
+    /// 630 ms a collapsed Region panel cost the tool.
+    ///
+    /// The PATIENCE is unchanged: 1.2 s, exactly what the old 12 × 0.1 s loop
+    /// gave a triangle before calling it stuck. Only the granularity moved.
+    enum DisclosurePoll {
+        static let interval: TimeInterval = 0.015
+        /// Includes the free look that happens before the first sleep, so the
+        /// waiting is `(attempts - 1) × interval`.
+        static let attempts = 81
+        static var budget: TimeInterval { Double(attempts - 1) * interval }
+    }
+
     /// Presses a disclosure triangle until it reads `open`, and says whether
     /// it had to. Returns nil when the triangle would not move.
+    ///
+    /// LOOK BEFORE SLEEPING, twice over: once before the press (a triangle
+    /// already in the wanted state is a verified no-op and costs one read),
+    /// and once immediately after it, with no sleep at all. See
+    /// `DisclosurePoll` for why the old loop's first look was 100 ms late.
     private func setDisclosure(_ triangle: AXUIElement, open: Bool) -> Bool? {
         let want = open ? "1" : "0"
         if stringAttribute(triangle, kAXValueAttribute as String) == want { return false }
         _ = AXUIElementPerformAction(triangle, kAXPressAction as CFString)
-        for _ in 0..<12 {
-            Thread.sleep(forTimeInterval: 0.1)
+        for attempt in 0..<DisclosurePoll.attempts {
+            if attempt > 0 { Thread.sleep(forTimeInterval: DisclosurePoll.interval) }
             if stringAttribute(triangle, kAXValueAttribute as String) == want { return true }
         }
         return nil
@@ -156,16 +183,162 @@ extension LogicAccessibility {
         }
     }
 
-    /// Opens the panel (and, when asked, the "More" section), runs `body` and
-    /// puts BOTH disclosures back the way they were found — the same
-    /// discipline the List Editors reads follow. The panel is Logic's UI
-    /// state, not the caller's.
+    /// The outline's one "More" triangle — the row that carries a disclosure.
+    private func moreDisclosure(in outline: AXUIElement) -> AXUIElement? {
+        guard let row = regionInspectorRawRows(outline).first(where: { hasDisclosure($0) })
+        else { return nil }
+        return firstDescendant(of: row, maximumDepth: 2) {
+            stringAttribute($0, kAXRoleAttribute as String) == "AXDisclosureTriangle"
+        }
+    }
+
+    // MARK: - The disclosure debt
+
+    /// A Region-inspector disclosure this server OPENED and has not closed
+    /// again.
+    ///
+    /// WHY THE CLOSE IS DEFERRED. Measured 2026-09-02: with the Region panel
+    /// and its "More" section collapsed — Logic's default, and how the sandbox
+    /// sat at rest — `withRegionInspector` cost **681–712 ms** against
+    /// **51–63 ms** with both already open, for a byte-identical answer. Half
+    /// of that gap was the poll floor `DisclosurePoll` now removes; the other
+    /// ~310 ms was the closing pair, paid by a READ-ONLY tool purely as UI
+    /// courtesy — and immediately undone by the next region call, which opened
+    /// both again. An agent chaining `logic_get_region_params` →
+    /// `logic_set_region_params` → `logic_get_region_params` paid it three
+    /// times to end where it started.
+    ///
+    /// WHY IT IS SAFE HERE, which is the part that had to be argued rather
+    /// than assumed — the surface debt this borrows from guards a real hazard
+    /// (a leaked plugin view makes Logic auto-open windows), and a UI panel
+    /// deserves the same interrogation:
+    ///
+    /// 1. **Nothing in this server needs the panel shut.** Every path through
+    ///    `withRegionInspector` already handles "already open" — that is the
+    ///    state the profile measured as both correct and 13× cheaper. Open is
+    ///    not a hazard state, it is the fast one. There is therefore no tool
+    ///    whose correctness a standing debt can damage, and no "settle before
+    ///    X" rule anyone has to remember.
+    /// 2. **The settle cannot fight the user.** It goes through
+    ///    `setDisclosure`, which looks before it presses: a triangle the user
+    ///    has already closed reads "0" and is left alone.
+    /// 3. **The debt is scoped to the document it was incurred in**, the same
+    ///    discipline `ScopedCache` applies to a file. A debt whose project is
+    ///    no longer the open one names a panel that is gone, so it is dropped
+    ///    rather than paid back into a stranger's window.
+    /// 4. **The residue is the least surprising one available.** What is left
+    ///    on screen is the Region inspector showing the parameters the agent
+    ///    was just asked about, in a panel Logic itself remembers between
+    ///    sessions because users toggle it constantly.
+    ///
+    /// What it costs, stated plainly: a session killed outright (SIGKILL, a
+    /// crash) never reaches `MCPServer.shutdown()` and leaves the panel open;
+    /// and a user who closes the panel and then deliberately reopens it during
+    /// a session will have it closed once at shutdown. Both are cosmetic, and
+    /// the second is indistinguishable from the first without asking Logic a
+    /// question it does not answer.
+    struct InspectorDebt: Equatable {
+        /// The Region panel's own triangle was opened by us.
+        let regionPanel: Bool
+        /// The outline's "More" triangle was opened by us.
+        let more: Bool
+        /// The project document the panel belonged to.
+        let projectDocument: String
+
+        var isEmpty: Bool { !regionPanel && !more }
+    }
+
+    // Single-threaded server loop, like `MCUController.surfaceDebt`.
+    nonisolated(unsafe) static var inspectorDebt: InspectorDebt?
+
+    /// What a call that opened `openedRegionPanel` / `openedMore` should do on
+    /// the way out. Pure: the decision is tested without a panel.
+    struct InspectorRestorePlan: Equatable {
+        let closeMoreNow: Bool
+        let closeRegionPanelNow: Bool
+        /// The debt left standing afterwards; nil means nothing is owed.
+        let debt: InspectorDebt?
+    }
+
+    static func planInspectorRestore(
+        standing: InspectorDebt?,
+        openedRegionPanel: Bool,
+        openedMore: Bool,
+        projectDocument: String?
+    ) -> InspectorRestorePlan {
+        // No readable document, no deferral. A restore that cannot be scoped
+        // to the project it belongs to could be paid back into a DIFFERENT
+        // song later, so it is paid now instead — the same rule an unscopable
+        // `ScopedCache` follows: absent beats guessed. Any standing debt keeps
+        // standing; it carries its own document and is checked again at settle
+        // time.
+        guard let projectDocument else {
+            return InspectorRestorePlan(
+                closeMoreNow: openedMore,
+                closeRegionPanelNow: openedRegionPanel,
+                debt: standing
+            )
+        }
+        // A debt for another document names a panel that is no longer on
+        // screen. It can never be verified again, so it is retired rather than
+        // carried.
+        let carried = standing?.projectDocument == projectDocument ? standing : nil
+        let debt = InspectorDebt(
+            regionPanel: (carried?.regionPanel ?? false) || openedRegionPanel,
+            more: (carried?.more ?? false) || openedMore,
+            projectDocument: projectDocument
+        )
+        return InspectorRestorePlan(
+            closeMoreNow: false, closeRegionPanelNow: false, debt: debt.isEmpty ? nil : debt
+        )
+    }
+
+    /// Closes whatever this server left open, and says whether it had
+    /// anything to do. Called from `MCPServer.shutdown()` when stdin closes;
+    /// safe to call with no debt, with the project changed, or with the panel
+    /// already back the way the debt wants it.
+    @discardableResult
+    func settleInspectorDebt() -> Bool {
+        guard let debt = Self.inspectorDebt else { return false }
+        Self.inspectorDebt = nil
+        guard let document = try? projectDocumentPath(), document == debt.projectDocument else {
+            return false
+        }
+        guard let panel = try? regionInspectorPanel() else { return false }
+        // "More" first: it lives inside the outline, which is only published
+        // while the panel is open.
+        if debt.more, let outline = regionInspectorOutline(panel),
+           let triangle = moreDisclosure(in: outline) {
+            _ = setDisclosure(triangle, open: false)
+        }
+        if debt.regionPanel { _ = setDisclosure(panel.disclosure, open: false) }
+        return true
+    }
+
+    /// Opens the panel (and, when asked, the "More" section), runs `body`, and
+    /// then either closes what it opened or records it as a debt — see
+    /// `InspectorDebt` for the measurement and the argument. Either way the
+    /// panel's state is REPORTED rather than assumed: `panelState` says what
+    /// was found, what was opened and whether the close was deferred.
     func withRegionInspector<Result>(
         needMore: Bool,
         _ body: (RegionInspectorPanel, [RegionInspectorRow]) throws -> Result
     ) throws -> (result: Result, panelState: [String: Any]) {
         var panel = try regionInspectorPanel()
         var state: [String: Any] = [:]
+
+        // These two drive the exit and are re-pointed at the plan once it is
+        // known. Until then they carry the OLD behaviour, so a throw between
+        // here and the plan still leaves the panel as it was found.
+        var closePanelOnExit = false
+        var closeMoreOnExit = false
+        var moreTriangle: AXUIElement?
+        defer { if closePanelOnExit { _ = setDisclosure(panel.disclosure, open: false) } }
+        defer {
+            if closeMoreOnExit, let triangle = moreTriangle {
+                _ = setDisclosure(triangle, open: false)
+            }
+        }
 
         let panelWasClosed = stringAttribute(panel.disclosure, kAXValueAttribute as String) != "1"
         if panelWasClosed {
@@ -175,17 +348,14 @@ extension LogicAccessibility {
                     exposed: "the panel's disclosure triangle did not open"
                 )
             }
-            state["region_panel"] = "opened and restored"
-        } else {
-            state["region_panel"] = "already open"
+            closePanelOnExit = true
+            // Re-read: the name field is the same element, but the panel's own
+            // children change when it OPENS — the scroll area and its outline
+            // appear with it. Found already open, the first walk is already
+            // the right one, and re-walking it was 7–12 ms of nothing
+            // (measured 2026-09-02).
+            panel = try regionInspectorPanel()
         }
-        defer {
-            if panelWasClosed { _ = setDisclosure(panel.disclosure, open: false) }
-        }
-
-        // Re-read: the name field is the same element, but the panel's own
-        // children change when it opens.
-        panel = try regionInspectorPanel()
         guard let outline = regionInspectorOutline(panel) else {
             throw LogicianError.trackNotExposed(
                 requested: "the Region inspector's parameter rows",
@@ -193,12 +363,9 @@ extension LogicAccessibility {
             )
         }
 
-        var moreTriangle: AXUIElement?
+        var openedMore = false
         var moreWasClosed = false
-        if let row = regionInspectorRawRows(outline).first(where: { hasDisclosure($0) }),
-           let triangle = firstDescendant(of: row, maximumDepth: 2, where: {
-               stringAttribute($0, kAXRoleAttribute as String) == "AXDisclosureTriangle"
-           }) {
+        if let triangle = moreDisclosure(in: outline) {
             moreTriangle = triangle
             moreWasClosed = stringAttribute(triangle, kAXValueAttribute as String) != "1"
             if needMore, moreWasClosed {
@@ -208,15 +375,35 @@ extension LogicAccessibility {
                         exposed: "the More disclosure did not open"
                     )
                 }
-                state["more"] = "opened and restored"
-            } else {
-                state["more"] = moreWasClosed ? "closed" : "already open"
+                openedMore = true
+                closeMoreOnExit = true
             }
         }
-        defer {
-            if needMore, moreWasClosed, let triangle = moreTriangle {
-                _ = setDisclosure(triangle, open: false)
-            }
+
+        let plan = Self.planInspectorRestore(
+            standing: Self.inspectorDebt,
+            openedRegionPanel: panelWasClosed,
+            openedMore: openedMore,
+            projectDocument: try? projectDocumentPath()
+        )
+        Self.inspectorDebt = plan.debt
+        closePanelOnExit = plan.closeRegionPanelNow
+        closeMoreOnExit = plan.closeMoreNow
+
+        state["region_panel"] = panelWasClosed
+            ? (plan.closeRegionPanelNow ? "opened and restored" : "opened and left open")
+            : "already open"
+        if openedMore {
+            state["more"] = plan.closeMoreNow ? "opened and restored" : "opened and left open"
+        } else if moreTriangle != nil {
+            state["more"] = moreWasClosed ? "closed" : "already open"
+        }
+        if plan.debt != nil {
+            state["restore"] = "deferred"
+            state["restore_note"] = "The disclosures this server opened are left OPEN so the next "
+                + "region-inspector call does not spend ~0.6 s re-opening them; this server closes "
+                + "them again when the session ends. Closing them yourself in Logic is safe — the "
+                + "deferred close reads the triangle before it presses it."
         }
 
         let rows = regionInspectorRows(outline)
@@ -301,6 +488,24 @@ extension LogicAccessibility {
 
     // MARK: - Pop-up menus
 
+    /// How the pop-up menu polls are spent. Same shape and the same total
+    /// patience as the blind sleeps they replaced (1.2 s per press attempt,
+    /// 3.0 s on the last, 0.3 s for the dismissal), looking first and looking
+    /// often instead of sleeping first.
+    ///
+    /// The interval is 0.03 rather than the disclosure's 0.015 because each
+    /// look here is a walk of Logic's whole menu tree, not one attribute read:
+    /// polling faster would spend the saving on the probe.
+    enum MenuPoll {
+        static let interval: TimeInterval = 0.03
+        static let attempts = 41
+        static let patientAttempts = 101
+        static let dismissAttempts = 11
+        static var budget: TimeInterval { Double(attempts - 1) * interval }
+        static var patientBudget: TimeInterval { Double(patientAttempts - 1) * interval }
+        static var dismissBudget: TimeInterval { Double(dismissAttempts - 1) * interval }
+    }
+
     /// The Region inspector's pop-up menus are parented deeper than
     /// `popupMenus()` looks, so this walk has its own cap. See
     /// `AXDepth.regionInspectorMenu`.
@@ -341,8 +546,9 @@ extension LogicAccessibility {
         var opened: AXUIElement?
         pressing: for attempt in 0..<3 {
             _ = AXUIElementPerformAction(popup, kAXPressAction as CFString)
-            for _ in 0..<(attempt == 2 ? 20 : 8) {
-                Thread.sleep(forTimeInterval: 0.15)
+            let attempts = attempt == 2 ? MenuPoll.patientAttempts : MenuPoll.attempts
+            for poll in 0..<attempts {
+                if poll > 0 { Thread.sleep(forTimeInterval: MenuPoll.interval) }
                 if let menu = inspectorMenus().first { opened = menu; break pressing }
             }
             dismissInspectorMenus()
@@ -356,7 +562,15 @@ extension LogicAccessibility {
         defer {
             _ = AXUIElementPerformAction(menu, kAXCancelAction as CFString)
             dismissInspectorMenus()
-            Thread.sleep(forTimeInterval: 0.3)
+            // What the 0.3 s that used to sit here was standing in for: the
+            // menu actually being GONE. A menu left standing swallows Logic's
+            // keyboard, so the wait stays — it is now a positive check for the
+            // thing itself rather than a guess at how long it takes, and it
+            // gives up after the same 0.3 s.
+            for attempt in 0..<MenuPoll.dismissAttempts {
+                if attempt > 0 { Thread.sleep(forTimeInterval: MenuPoll.interval) }
+                if inspectorMenus().isEmpty { break }
+            }
         }
         return try body(menu)
     }
@@ -373,6 +587,86 @@ extension LogicAccessibility {
         try withInspectorMenu(popup) { menu in menuTitles(menu) }
     }
 
+    // MARK: - The quantize vocabulary, learned once
+
+    /// Logic's quantize menu, from the cache when this install has already
+    /// published it and from the pop-up otherwise. The second element says
+    /// which, because "where did this list come from" is exactly the question
+    /// a cached answer has to answer for itself.
+    ///
+    /// WHY IT IS CACHEABLE AT ALL. The menu is 36 items and byte-identical for
+    /// every region in every project: it is a function of Logic's version and
+    /// the language its UI is drawn in, not of the session (measured
+    /// 2026-09-02 across MIDI and audio regions in "Testlåt Copy" — the
+    /// same 36 strings, and 715 ms to re-derive them every single time).
+    /// `logic_set_region_params` sends callers here to learn the vocabulary it
+    /// accepts, so it is a list agents read repeatedly and Logic changes only
+    /// when it is updated or relaunched in another language.
+    func quantizeMenuOptions(_ popup: AXUIElement) throws -> (values: [String], source: String) {
+        if let cached = cachedQuantizeValues() { return (cached, "cache") }
+        let values = try regionInspectorMenuOptions(popup)
+        rememberQuantizeValues(values)
+        return (values, "logic_menu")
+    }
+
+    static var quantizeValuesCacheURL: URL {
+        MCUBridge.directory.appendingPathComponent("region-quantize-values.json")
+    }
+
+    /// Identity the quantize list is valid for. Pure, so the scoping rule is
+    /// tested without Logic running.
+    ///
+    /// The list is the INSTALL's, not the project's — opening another song
+    /// does not rename `1/16 Swing F` — so the project path that scopes the
+    /// tempo and bank maps would be exactly the wrong key here. What DOES
+    /// change it is a Logic update and the language Logic draws its menus in,
+    /// and both are in the token. A `nil` language (Logic not installed, the
+    /// bundle unreadable) is spelled out rather than dropped, so an install
+    /// whose language cannot be inferred never shares a scope with one whose
+    /// language is known.
+    static func quantizeValuesScope(
+        logicVersion: String, logicBuild: String, uiLanguage: String?
+    ) -> String {
+        "v\(cacheSchemaVersion)|logic \(logicVersion) (\(logicBuild))|ui \(uiLanguage ?? "unknown")"
+    }
+
+    /// The token for the Logic that is running now, or nil when there is no
+    /// Logic to ask — and an unscopable cache is treated as absent, never
+    /// guessed at.
+    func quantizeValuesScope() -> String? {
+        guard let logic = NSRunningApplication
+            .runningApplications(withBundleIdentifier: bundleIdentifier).first,
+              let bundleURL = logic.bundleURL,
+              let info = Bundle(url: bundleURL)?.infoDictionary else { return nil }
+        let language = LogicUILanguage.report(
+            LogicUILanguage.evidence(bundleIdentifier: bundleIdentifier)
+        ).language
+        return Self.quantizeValuesScope(
+            logicVersion: (info["CFBundleShortVersionString"] as? String) ?? "?",
+            logicBuild: (info["CFBundleVersion"] as? String) ?? "?",
+            uiLanguage: language
+        )
+    }
+
+    /// The list for this install, or nil when there is not a usable one. A
+    /// file stamped for another Logic or another language can never become
+    /// useful again, so it is retired rather than re-read and re-rejected.
+    func cachedQuantizeValues() -> [String]? {
+        loadScopedCache(
+            Self.quantizeValuesCacheURL, scope: quantizeValuesScope(),
+            as: [String].self, deleteOnMismatch: true
+        )
+    }
+
+    /// Every path that computes the list populates the cache — the read
+    /// tool's `include_quantize_values`, and the WRITE path, which has the
+    /// whole menu open in front of it every time it sets `quantize` and used
+    /// to throw it away.
+    func rememberQuantizeValues(_ values: [String]) {
+        guard !values.isEmpty else { return }
+        saveScopedCache(values, to: Self.quantizeValuesCacheURL, scope: quantizeValuesScope())
+    }
+
     /// Presses one item by exact (case-insensitive) title. Never fuzzy: a near
     /// miss is refused with the real list, because picking the wrong quantize
     /// grid is a musical change nobody asked for.
@@ -382,6 +676,12 @@ extension LogicAccessibility {
         try withInspectorMenu(popup) { menu in
             let items = children(of: menu)
                 .filter { stringAttribute($0, kAXRoleAttribute as String) == "AXMenuItem" }
+            // The write path has the quantize menu open in front of it, which
+            // is the same 715 ms walk the read path pays for
+            // `include_quantize_values`. Every path that computes cacheable
+            // data populates the cache, so it is banked here too rather than
+            // read and dropped.
+            if parameter == "quantize" { rememberQuantizeValues(menuTitles(menu)) }
             func titleOf(_ item: AXUIElement) -> String {
                 stringAttribute(item, kAXTitleAttribute as String)
             }
@@ -440,11 +740,17 @@ extension LogicAccessibility {
                 if let quantize = rows.first(where: {
                     RegionInspector.parameter(forLabel: $0.label)?.key == "quantize"
                 }), let popup = quantize.value {
-                    result["quantize_values"] = try self.regionInspectorMenuOptions(popup)
+                    let menu = try self.quantizeMenuOptions(popup)
+                    result["quantize_values"] = menu.values
+                    result["quantize_values_source"] = menu.source
                     result["quantize_values_note"] = "Logic's own quantize menu, verbatim — the "
                         + "vocabulary logic_set_region_params accepts for `quantize`. Separator rows "
                         + "are omitted; 'Make Groove Template' and 'Remove Groove Template from List' "
-                        + "are commands rather than values and this server does not press them."
+                        + "are commands rather than values and this server does not press them. "
+                        + "`quantize_values_source` says whether the list was read off the menu just "
+                        + "now ('logic_menu', ~0.7 s) or came from this Logic install's cached copy "
+                        + "('cache'), which is retired the moment Logic's version or UI language "
+                        + "changes."
                 }
             }
             return result

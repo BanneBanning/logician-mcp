@@ -500,6 +500,28 @@ with every render coming back as audio the agent can listen to.
   `include_audio: false` the two ear copies are no longer transcoded for the transport
   to throw away (134–289 ms), and the result reads exactly as it did before.
 
+- **Reading a region's parameters stopped paying 630 ms to open a panel that opens in
+  100.** Logic keeps the Region inspector's parameter panel collapsed by default, so every
+  `logic_get_region_params` opened it, opened its "More" section, read, and shut both
+  again — four presses whose cost was almost entirely a poll loop that slept a tenth of a
+  second before its first look. Measured live: all eight toggles had already settled by
+  then. The loop looks first now, and what it opened is left OPEN rather than shut for the
+  next call to reopen: the panel phase went from 681–712 ms to 51–63 ms once it is up, and
+  a chain of region calls pays the opening once instead of once each. `panel_state` says
+  what was found and what was left, this server closes the triangles again when the session
+  ends, and closing them yourself in Logic is safe — the deferred close reads each triangle
+  before it presses it.
+
+- **Logic's quantize vocabulary is learned once instead of every time.** The 36-item
+  Quantize menu `logic_get_region_params include_quantize_values` returns is the same 36
+  items for every region in every project — it is a property of the Logic install, not the
+  song — and re-walking it cost 715 ms a call. It is now cached per Logic version and UI
+  language (and retired the moment either changes), the write path banks the copy it
+  already has open instead of dropping it, and `quantize_values_source` says whether you
+  got the menu or the cache. The pop-up's own blind waits became positive checks with the
+  same patience: the menu is still proven open before it is read and proven gone before the
+  call returns.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.
