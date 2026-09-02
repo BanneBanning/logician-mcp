@@ -446,9 +446,29 @@ func silenceMIDIIn() {
 
 // MARK: - MCU commands (to Logic)
 
-func pressButton(note: UInt8) {
+/// Presses and releases one MCU button. `holdMs` is how long it stays down,
+/// and the default is ZERO.
+///
+/// This line used to sleep a flat 50 ms, and it was 99.4% of what a button
+/// press cost the whole server: 51-56 ms of a 51-56 ms round trip, paid by
+/// every `press`, `select`, `mute`, `solo` and `vpot_press` in it — twelve of
+/// them per mixer census — while the global `commandHandlingLock` held every
+/// other client off the surface for the duration.
+///
+/// Swept live 2026-09-02 (Logic Pro, real Mackie Control emulation): the two
+/// edges were driven as separate `raw` sends so the gap was the client's to
+/// choose, and holds of ~0.2, 1, 2, 5, 10, 25 and 50 ms all changed the
+/// assignment view, 16 transitions out of 16, with Logic's echo arriving
+/// 102-106 ms after the press EVERY time. The sleep bought no reliability and
+/// no latency. What it is not is optional in the other direction: a note-on
+/// with no release left the display half-changed for 1348 ms of polling, so
+/// both `send` calls stay.
+///
+/// A caller that wants Logic Control's HOLD semantics — held SEND opens the
+/// submode chooser — passes its own `holdMs`; those were not swept.
+func pressButton(note: UInt8, holdMs: Int = 0) {
     send([0x90, note, 0x7F])
-    Thread.sleep(forTimeInterval: 0.05)
+    if holdMs > 0 { Thread.sleep(forTimeInterval: Double(holdMs) / 1000) }
     send([0x90, note, 0x00])
 }
 
@@ -531,16 +551,19 @@ func handleCommand(_ object: BridgeCommand) -> BridgeResponse {
     }
     // `name` is nil for anything outside the vocabulary, which falls through
     // to the same "unknown cmd" reply the string switch used to produce.
+    // Every button-pressing command reads its hold from the same place, so
+    // `hold_ms` cannot mean one thing on `press` and another on `mute`.
+    let holdMs = object.pressHoldMs
     switch object.name {
     case .press:
         if let name = object.button, let note = buttonNames[name] {
-            pressButton(note: note)
+            pressButton(note: note, holdMs: holdMs)
             var response = BridgeResponse.success
             response.pressed = name
             return response
         }
         if let note = object.note, (0...127).contains(note) {
-            pressButton(note: UInt8(note))
+            pressButton(note: UInt8(note), holdMs: holdMs)
             var response = BridgeResponse.success
             response.pressedNote = note
             return response
@@ -550,25 +573,25 @@ func handleCommand(_ object: BridgeCommand) -> BridgeResponse {
         guard let channel = object.channel, (0...7).contains(channel) else {
             return .failure("channel 0-7 required")
         }
-        pressButton(note: UInt8(0x18 + channel))
+        pressButton(note: UInt8(0x18 + channel), holdMs: holdMs)
         return .success
     case .mute:
         guard let channel = object.channel, (0...7).contains(channel) else {
             return .failure("channel 0-7 required")
         }
-        pressButton(note: UInt8(0x10 + channel))
+        pressButton(note: UInt8(0x10 + channel), holdMs: holdMs)
         return .success
     case .solo:
         guard let channel = object.channel, (0...7).contains(channel) else {
             return .failure("channel 0-7 required")
         }
-        pressButton(note: UInt8(0x08 + channel))
+        pressButton(note: UInt8(0x08 + channel), holdMs: holdMs)
         return .success
     case .vpotPress:
         guard let index = object.index, (0...7).contains(index) else {
             return .failure("index 0-7 required")
         }
-        pressButton(note: UInt8(0x20 + index))
+        pressButton(note: UInt8(0x20 + index), holdMs: holdMs)
         return .success
     case .fader:
         guard let channel = object.channel, (0...8).contains(channel),

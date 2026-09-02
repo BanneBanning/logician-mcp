@@ -480,18 +480,27 @@ extension MCPServer {
     }
 
     func handleMcuCommand(_ arguments: [String: Any]) throws -> Any {
-        let payload: Any
+        let cmd = arguments["cmd"] as? String
+        // The server's one `.destructive` raw escape hatch, and until
+        // 2026-09-02 the only write tool with NO project guard: the filter
+        // below stripped `expected_project_path` out of the forwarded object,
+        // but the schema forbade the key, so the guard was dead code that no
+        // call could ever reach. It is declared and honoured now. Free when
+        // absent — `verifyProjectPath(nil)` returns without touching Logic.
+        try logic.verifyProjectPath(arguments["expected_project_path"] as? String)
         // The registry is the consent record: firing a raw MIDI note
         // could trigger whatever the user has bound to it. Route
         // `keycmd` through the registry-checked path (refuses unlisted
         // notes) instead of forwarding it raw to the bridge.
-        if (arguments["cmd"] as? String) == "keycmd" {
+        if cmd == "keycmd" {
             guard let note = arguments["note"] as? Int else {
                 throw LogicianError.invalidArguments("keycmd requires an integer note")
             }
             let channel = arguments["channel"] as? Int ?? 16
-            payload = try MCUController.triggerKeyCommand(note: note, channel: channel)
-            return payload
+            return MCPServer.mcuCommandResult(
+                cmd: cmd, arguments: arguments,
+                reply: try MCUController.triggerKeyCommand(note: note, channel: channel)
+            )
         }
         var command: [String: Any] = [:]
         for (key, value) in arguments where key != "expected_project_path" {
@@ -501,8 +510,80 @@ extension MCPServer {
         // does not model, so the agent's object goes over the wire verbatim
         // and the reply comes back verbatim. Everywhere else the server
         // speaks BridgeCommand/BridgeResponse.
-        payload = try MCUBridge.sendRaw(command)
-        return payload
+        return MCPServer.mcuCommandResult(
+            cmd: cmd, arguments: arguments, reply: try MCUBridge.sendRaw(command)
+        )
+    }
+
+    /// The result contract for `logic_mcu_command`: the daemon's own reply,
+    /// plus `success`, `state` and — only where something actually read Logic
+    /// back — `verified`. Pure and `static` so every branch is pinned by a
+    /// test rather than by a live surface.
+    ///
+    /// WHY THIS EXISTS. The daemon's reply was forwarded untouched, so a write
+    /// through the server's one raw escape hatch answered `{"ok": true}` — 11
+    /// bytes — to an agent the server's own instructions tell to branch on
+    /// `success` and `state`. And `ok` promises far less than it looks:
+    /// measured 2026-09-02, `{"cmd":"press","note":127}` (an MCU note Logic
+    /// has nothing bound to) returned `ok: true` six times with `assignment`
+    /// and `lcd_top` byte-identical before and after. `ok` means the daemon
+    /// called MIDISend. That is what `state: "sent"` and `verified: false` say
+    /// out loud.
+    ///
+    /// The states, and what each one is evidence of:
+    /// - `refused` — the daemon rejected the command; `error` says why.
+    /// - `read` — `status`/`ping`/`await`, which emit no MIDI. Nothing was
+    ///   changed, so there is nothing to verify and `verified` is ABSENT
+    ///   rather than a `true` that means nothing.
+    /// - `sent` — bytes left this process and nobody looked. The common case.
+    /// - `verified` / `unconfirmed` — the daemon DID read Logic back: `fader`
+    ///   with `verify: true` (Logic's fader echo) or `converge` (the LCD value
+    ///   it steered by), and the two states say whether the readback agrees.
+    static func mcuCommandResult(
+        cmd: String?, arguments: [String: Any], reply: [String: Any]
+    ) -> [String: Any] {
+        var result = reply
+        // `ok` is the bridge's word; the keycmd route answers through
+        // MCUController and already speaks `success`.
+        let ok = (reply["ok"] as? Bool) ?? (reply["success"] as? Bool) ?? false
+        result["success"] = ok
+        guard ok else {
+            result["state"] = "refused"
+            return result
+        }
+        let name = cmd.flatMap(BridgeCommandName.init(rawValue:))
+        // An unknown cmd counts as one that emitted, exactly as
+        // `BridgeCommand.emitsMIDI` decides it: guessing "read" about a
+        // command this build does not model is the guess that hides a write.
+        guard name?.emitsMIDI ?? true else {
+            result["state"] = "read"
+            return result
+        }
+        func settle(_ agreed: Bool) {
+            result["verified"] = agreed
+            result["state"] = agreed ? "verified" : "unconfirmed"
+        }
+        if let followed = reply["followed"] as? Bool {
+            settle(followed) // fader + verify: Logic's own echo
+        } else if name == .converge,
+                  let final = numeric(reply["final_value"]),
+                  let target = numeric(arguments["target"]) {
+            // The daemon stops at `max(tolerance, 0.5)` of the target (its own
+            // step floor), so that is the width the answer is judged at.
+            settle(abs(final - target) <= max(numeric(arguments["tolerance"]) ?? 0, 0.5))
+        } else {
+            result["verified"] = false
+            result["state"] = "sent"
+        }
+        return result
+    }
+
+    /// A JSON number as a Double whichever way the client typed it — `6` and
+    /// `-6.0` both reach the handler, as Int and Double respectively.
+    private static func numeric(_ value: Any?) -> Double? {
+        if let double = value as? Double { return double }
+        if let int = value as? Int { return Double(int) }
+        return nil
     }
 
     // MARK: - Finding a tool

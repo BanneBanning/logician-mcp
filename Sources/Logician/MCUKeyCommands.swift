@@ -11,12 +11,18 @@ extension MCUController {
     /// anything in the user's key command set.
     static func triggerKeyCommand(note: Int, channel: Int) throws -> [String: Any] {
         guard let entry = KeyCommandRegistry.entry(note: note, channel: channel) else {
+            // A refusal names the alternative — it does not paste the whole
+            // registry into an error string. This used to render 1159 B of
+            // prose (measured 2026-09-02 against the real 27-command
+            // registry), ~24x a normal reply from this plane, unparseable and
+            // uncapped, to say one thing: that note is not registered. The
+            // count is the fact worth carrying inline; the names live in the
+            // tool whose entire job is to list them.
             throw LogicianError.trackNotExposed(
                 requested: "key command note \(note) channel \(channel)",
-                exposed: "registered commands: "
-                    + KeyCommandRegistry.commands().map {
-                        "\($0["name"] ?? "?") (note \($0["note"] ?? "?"))"
-                    }.joined(separator: ", ")
+                exposed: "\(KeyCommandRegistry.commands().count) commands are registered — "
+                    + "logic_list_key_commands names them with their notes, and "
+                    + "logic_learn_key_command adds one"
             )
         }
         let response = try MCUBridge.send(.keycmd(note: note, channel: channel))

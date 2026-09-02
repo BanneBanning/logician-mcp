@@ -228,6 +228,12 @@ CASES = [
     ("press play",                b'{"cmd":"press","button":"play"}'),
     ("press by note",             b'{"cmd":"press","note":94}'),
     ("press unknown button",      b'{"cmd":"press","button":"nope"}'),
+    # hold_ms is ADDITIVE (2026-09-02): the baseline daemon has never heard of
+    # it and holds its 50 ms, the candidate honours it — and the REPLY must be
+    # identical either way, which is the whole reason it shipped without a
+    # protocol bump. The press cases above already pin the no-hold default.
+    ("press with a hold",         b'{"cmd":"press","button":"play","hold_ms":25}'),
+    ("select with a hold",        b'{"cmd":"select","channel":3,"hold_ms":25}'),
     ("select",                    b'{"cmd":"select","channel":3}'),
     ("select missing channel",    b'{"cmd":"select"}'),
     ("mute",                      b'{"cmd":"mute","channel":0}'),

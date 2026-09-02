@@ -169,8 +169,13 @@ enum MCUController {
         return nil // more data arrived; caller should re-check content first
     }
 
-    static func press(_ button: String) throws {
-        let response = try MCUBridge.send(.press(button: button))
+    /// `holdMs` is how long the button stays down; 0 — the default — is the
+    /// measured one (see `BridgeCommand.pressHoldMs`), and it is what every
+    /// press in this server takes unless the button's Logic behaviour depends
+    /// on the hold. Against a daemon older than 2026-09-02 the argument is
+    /// ignored and the press keeps its historical 50 ms.
+    static func press(_ button: String, holdMs: Int = 0) throws {
+        let response = try MCUBridge.send(.press(button: button, holdMs: holdMs))
         guard response.ok else {
             throw LogicianError.writeFailed("MCU press \(button) failed: \(response.error ?? "?")")
         }
