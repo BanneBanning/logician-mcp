@@ -3,6 +3,33 @@ import ApplicationServices
 import Foundation
 import LogicMCUBridge
 
+/// What one walk of Logic's control bar found, as optionals: `nil` means the
+/// element was not there, which the payload publishes as `null` — never as a
+/// missing key. Separating the READ from the payload is what makes the
+/// never-a-missing-key contract testable with Logic Pro closed; see
+/// `LogicAccessibility.transportPayload`.
+struct ControlBarReading {
+    var projectDocument: String?
+    var playing: Bool?
+    var recording: Bool?
+    var cycle: Bool?
+    var metronome: Bool?
+    var countIn: Bool?
+    var soloMode: Bool?
+    /// Set only when the Cycle button was missing and the ruler answered.
+    var cycleSource: String?
+    var playheadBar: Int?
+    var playheadBeat: Int?
+    /// The tempo, signature and key IN FORCE AT THE PLAYHEAD — the control bar
+    /// publishes no project-level constant.
+    var tempo: Double?
+    var timeSignature: String?
+    var keySignature: String?
+    var tempoMode: ProjectTempoMode = .absent
+    var tempoModeRoute: String = "control_bar"
+    var tempoModeVisitNote: String?
+}
+
 extension LogicAccessibility {
     // MARK: - Tempo write (control bar slider, rapid-fire stepwise)
 
@@ -99,7 +126,14 @@ extension LogicAccessibility {
     /// The same read against an already-resolved inner "Control Bar" group, so
     /// `getTransport` does not walk the window twice.
     func projectTempoMode(inControlBar inner: AXUIElement) -> ProjectTempoMode {
-        guard let popup = children(of: inner).first(where: {
+        projectTempoMode(inControlBarChildren: children(of: inner))
+    }
+
+    /// The same read against an inner group whose children have already been
+    /// enumerated. Keyed on role + help rather than description, which is why
+    /// `DescribedChildren` hands its `all` array out at all.
+    func projectTempoMode(inControlBarChildren siblings: [AXUIElement]) -> ProjectTempoMode {
+        guard let popup = siblings.first(where: {
             stringAttribute($0, kAXRoleAttribute as String) == "AXPopUpButton"
                 && stringAttribute($0, kAXHelpAttribute as String)
                     .hasPrefix(LogicUIStrings.Element.projectTempoMenuHelpPrefix)
@@ -272,71 +306,154 @@ extension LogicAccessibility {
     // MARK: - Transport
 
     func getTransport(readSmartTempoMode: Bool = false) throws -> [String: Any] {
-        let bar = try controlBarGroup()
-        var result: [String: Any] = [
-            "project_document": (try? projectDocumentPath()) ?? NSNull()
-        ]
-        let checkboxes = [
-            ("playing", LogicUIStrings.Element.playButton),
-            ("recording", LogicUIStrings.Element.recordButton),
-            ("cycle", LogicUIStrings.Element.cycleButton),
-            ("metronome", LogicUIStrings.Element.metronomeButton),
-            ("count_in", LogicUIStrings.Element.countInButton),
-            ("solo_mode", LogicUIStrings.Element.soloModeButton)
-        ]
-        for (key, description) in checkboxes {
-            result[key] = controlBarChild(bar, description).map {
+        LogicAccessibility.transportPayload(
+            try readControlBar(readSmartTempoMode: readSmartTempoMode)
+        )
+    }
+
+    /// Everything `logic_get_transport` reads, in ONE walk of the control bar.
+    ///
+    /// Two enumerations, not thirteen. Every named control is looked up in a
+    /// `DescribedChildren` index built once per group; before 2026-09-02 each
+    /// of the six checkboxes, the playhead LCD, the inner group, the tempo, the
+    /// signature, the key and the Smart Tempo pop-up re-fetched its siblings
+    /// and re-read their descriptions — 98 of the call's 129 AX reads. The
+    /// project window is resolved once too, and the document path taken off it
+    /// rather than through a second walk of Logic's window list.
+    ///
+    /// MEASURED 2026-09-02, same project, same process, before and after:
+    /// **8.2–9.4 ms → 4.9–6.1 ms** warm, with a byte-identical payload.
+    ///
+    /// Missing elements come back as `nil` and are published as `null`; see
+    /// `transportPayload`.
+    private func readControlBar(readSmartTempoMode: Bool) throws -> ControlBarReading {
+        let window = try projectWindow()
+        let bar = try controlBarGroup(in: window)
+        var reading = ControlBarReading()
+        // `projectWindow()` only ever returns a window it has already proven
+        // carries the document, so this is a single attribute read; the walk
+        // stays as the fallback for the day that stops being true.
+        reading.projectDocument = documentPath(of: window) ?? (try? projectDocumentPath())
+
+        let barChildren = describedChildren(of: bar)
+        func checkbox(_ description: String) -> Bool? {
+            barChildren[description].map {
                 stringAttribute($0, kAXValueAttribute as String) == "1"
-            } ?? NSNull()
+            }
         }
-        if result["cycle"] is NSNull, let rulerCycle = cycleStateFromRuler() {
+        reading.playing = checkbox(LogicUIStrings.Element.playButton)
+        reading.recording = checkbox(LogicUIStrings.Element.recordButton)
+        reading.cycle = checkbox(LogicUIStrings.Element.cycleButton)
+        reading.metronome = checkbox(LogicUIStrings.Element.metronomeButton)
+        reading.countIn = checkbox(LogicUIStrings.Element.countInButton)
+        reading.soloMode = checkbox(LogicUIStrings.Element.soloModeButton)
+        if reading.cycle == nil, let rulerCycle = cycleStateFromRuler() {
             // Narrow windows collapse the Cycle button; the ruler still knows.
-            result["cycle"] = rulerCycle
-            result["cycle_source"] = "ruler_cycle_region"
+            reading.cycle = rulerCycle
+            reading.cycleSource = "ruler_cycle_region"
         }
-        if let lcd = playheadGroup(in: bar) {
-            result["playhead_bar"] = sliderValue(lcd, LogicUIStrings.Element.playheadBarSlider) ?? NSNull()
-            result["playhead_beat"] = sliderValue(lcd, LogicUIStrings.Element.playheadBeatSlider) ?? NSNull()
+
+        guard let inner = barChildren[LogicUIStrings.Element.controlBar] else {
+            // No inner group: the playhead, tempo, signature and key stay nil
+            // and are published as null. They are NOT dropped — see
+            // `transportPayload`.
+            return reading
         }
-        if let inner = children(of: bar).first(where: {
-            stringAttribute($0, kAXDescriptionAttribute as String) == LogicUIStrings.Element.controlBar
-        }) {
-            result["tempo"] = children(of: inner)
-                .first { stringAttribute($0, kAXDescriptionAttribute as String) == LogicUIStrings.Element.tempo }
-                .flatMap { Double(stringAttribute($0, kAXValueAttribute as String)) } ?? NSNull()
-            result["time_signature"] = children(of: inner)
-                .first { stringAttribute($0, kAXDescriptionAttribute as String)
-                == LogicUIStrings.Element.timeSignature }
-                .map { stringAttribute($0, kAXValueAttribute as String) } ?? NSNull()
-            result["key_signature"] = children(of: inner)
-                .first { stringAttribute($0, kAXDescriptionAttribute as String)
-                == LogicUIStrings.Element.keySignature }
-                .map { stringAttribute($0, kAXValueAttribute as String) } ?? NSNull()
-            // Smart Tempo: which mode a recording will apply to the project's
-            // tempo map. The key is present only when the mode is actually
-            // known — an unreadable mode reported as a value would read as
-            // "keep", and Adapt is the one that rewrites the tempo track.
-            var tempoMode = projectTempoMode(inControlBar: inner)
-            var route = "control_bar"
-            var visitNote: String?
-            // Opt-in, because this one raises and closes a window: the control
-            // bar publishes no value (Logic Pro 12.3.1), so the mode is only
-            // knowable from File > Project Settings > Smart Tempo.
-            if readSmartTempoMode, tempoMode.name == nil {
-                let deep = projectTempoModeViaSettings()
-                tempoMode = deep.mode
-                route = "project_settings_window"
-                visitNote = deep.visit.note
+        let innerChildren = describedChildren(of: inner)
+        if let lcd = innerChildren[LogicUIStrings.Element.playheadPosition] {
+            let fields = describedChildren(of: lcd)
+            func field(_ description: String) -> Int? {
+                fields[description].flatMap { Int(stringAttribute($0, kAXValueAttribute as String)) }
             }
-            if let name = tempoMode.name {
-                result["project_tempo_mode"] = name
-                result["project_tempo_mode_route"] = route
-                if let visitNote { result["project_tempo_mode_note"] = visitNote }
-            } else if let explanation = tempoMode.explanation {
-                result["project_tempo_mode_note"] = visitNote.map {
-                    "\(explanation) The Project Settings fallback also failed: \($0)."
-                } ?? explanation
+            reading.playheadBar = field(LogicUIStrings.Element.playheadBarSlider)
+            reading.playheadBeat = field(LogicUIStrings.Element.playheadBeatSlider)
+        }
+        // The tempo, signature and key the control bar publishes are the ones
+        // IN FORCE AT THE PLAYHEAD, not project constants — measured 2026-09-02
+        // on one project, one uninterrupted run, nothing edited between the
+        // reads: 121 BPM in 5/4 with the playhead at bar 51, 120 BPM in 4/4
+        // with it at bar 1. The whole maps live in `logic_tempo_events` and
+        // `logic_list_signatures`, and every description that names these three
+        // fields says so.
+        reading.tempo = innerChildren[LogicUIStrings.Element.tempo]
+            .flatMap { Double(stringAttribute($0, kAXValueAttribute as String)) }
+        reading.timeSignature = innerChildren[LogicUIStrings.Element.timeSignature]
+            .map { stringAttribute($0, kAXValueAttribute as String) }
+        reading.keySignature = innerChildren[LogicUIStrings.Element.keySignature]
+            .map { stringAttribute($0, kAXValueAttribute as String) }
+
+        // Smart Tempo: which mode a recording will apply to the project's
+        // tempo map. The MODE is reported only when it is actually known — an
+        // unreadable mode reported as a value would read as "keep", and Adapt
+        // is the one that rewrites the tempo track.
+        reading.tempoMode = projectTempoMode(inControlBarChildren: innerChildren.all)
+        // Opt-in, because this one raises and closes a window: the control
+        // bar publishes no value (Logic Pro 12.3.1), so the mode is only
+        // knowable from File > Project Settings > Smart Tempo.
+        //
+        // NOT CACHED, deliberately. The mode is a project setting that changes
+        // only in Logic's own UI — the shape this server caches everywhere else
+        // — but every other cache has a cheap live cross-check (the tempo map
+        // against the control bar's tempo, the bank map against the LCD) and
+        // this one CANNOT have any: the reason the window route exists is that
+        // the control bar publishes nothing to check against, so a cache hit
+        // would be unverifiable by construction. And the consumer is
+        // `logic_record_midi`'s refusal, which exists to stop an Adapt-mode
+        // project rewriting the user's tempo track. A cached "keep" from before
+        // the user switched the pane would let exactly that through, silently.
+        // 0.73 s of honesty beats a 0 ms answer that can be confidently wrong.
+        if readSmartTempoMode, reading.tempoMode.name == nil {
+            let deep = projectTempoModeViaSettings()
+            reading.tempoMode = deep.mode
+            reading.tempoModeRoute = "project_settings_window"
+            reading.tempoModeVisitNote = deep.visit.note
+        }
+        return reading
+    }
+
+    /// The result payload, PURE — no Accessibility, no Logic, so the contract
+    /// below is a unit test rather than a hope.
+    ///
+    /// THE CONTRACT: every documented key is present on every call, `null` when
+    /// its control bar element was missing. Until 2026-09-02 the playhead pair
+    /// and the tempo/signature/key trio were assigned INSIDE the `if let` that
+    /// found their group, so a collapsed control bar or a non-English Logic UI
+    /// dropped the keys entirely while the description promised nulls — and
+    /// `logic_project_snapshot`, which serves this payload as its `transport`
+    /// section under a never-a-missing-key contract, would have shown a diff
+    /// reading "the tempo was removed" where the truth was "the tempo could not
+    /// be read".
+    static func transportPayload(_ reading: ControlBarReading) -> [String: Any] {
+        var result: [String: Any] = [
+            "project_document": reading.projectDocument ?? NSNull(),
+            "playing": reading.playing ?? NSNull(),
+            "recording": reading.recording ?? NSNull(),
+            "cycle": reading.cycle ?? NSNull(),
+            "metronome": reading.metronome ?? NSNull(),
+            "count_in": reading.countIn ?? NSNull(),
+            "solo_mode": reading.soloMode ?? NSNull(),
+            "playhead_bar": reading.playheadBar ?? NSNull(),
+            "playhead_beat": reading.playheadBeat ?? NSNull(),
+            "tempo": reading.tempo ?? NSNull(),
+            "time_signature": reading.timeSignature ?? NSNull(),
+            "key_signature": reading.keySignature ?? NSNull()
+        ]
+        // Reported only when it happened: "the ruler answered instead" is an
+        // event, not a field, and a null one would read as a claim about a
+        // route that was never taken.
+        if let cycleSource = reading.cycleSource {
+            result["cycle_source"] = cycleSource
+        }
+        if let name = reading.tempoMode.name {
+            result["project_tempo_mode"] = name
+            result["project_tempo_mode_route"] = reading.tempoModeRoute
+            if let note = reading.tempoModeVisitNote {
+                result["project_tempo_mode_note"] = note
             }
+        } else if let explanation = reading.tempoMode.explanation {
+            result["project_tempo_mode_note"] = reading.tempoModeVisitNote.map {
+                "\(explanation) The Project Settings fallback also failed: \($0)."
+            } ?? explanation
         }
         return result
     }
@@ -1082,7 +1199,14 @@ extension LogicAccessibility {
     }
 
     func controlBarGroup() throws -> AXUIElement {
-        let mainWindow = try projectWindow()
+        try controlBarGroup(in: projectWindow())
+    }
+
+    /// The same lookup against a window the caller has already resolved, so a
+    /// reader that also wants the project document path does not walk Logic's
+    /// window list a second time to get it — `projectWindow()` filters on
+    /// `documentPath(of:) != nil` and then throws the path away.
+    func controlBarGroup(in mainWindow: AXUIElement) throws -> AXUIElement {
         let bar = firstDescendant(of: mainWindow, maximumDepth: AXDepth.controlBar) { element in
             stringAttribute(element, kAXRoleAttribute as String) == "AXGroup"
                 && stringAttribute(element, kAXDescriptionAttribute as String)

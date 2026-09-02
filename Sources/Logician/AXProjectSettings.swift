@@ -109,8 +109,11 @@ extension LogicAccessibility {
     /// written for, and why that mapping tests substrings rather than the bare
     /// words.
     ///
-    /// COST: ~1.6 s to open, read and close (measured). Nothing is written; the
-    /// pop-up is read, never pressed.
+    /// COST: ~0.73 s to open, read and close, measured 2026-09-02 on the
+    /// reference project — 0.20 s for the first visit in a server process,
+    /// 0.72–0.74 s for every later one (Logic rebuilds the File menu after the
+    /// first press). It was 0.85–0.87 s until the two blind sleeps below came
+    /// out. Nothing is written; the pop-up is read, never pressed.
     func projectTempoModeViaSettings() -> (mode: ProjectTempoMode, visit: ProjectSettingsVisit) {
         let existing = projectSettingsWindow()
         var opened = false
@@ -144,9 +147,19 @@ extension LogicAccessibility {
                     "File > Project Settings > Smart Tempo… could not be opened (\(error.localizedDescription))"
                 ))
             }
+            // LOOK BEFORE SLEEPING. `pressMenuItem(settled:)` above polls
+            // `projectSettingsWindow() != nil` and only returns once that is
+            // true, so the window is already there when this loop starts —
+            // measured 2026-09-02 with a zero-wait probe: "settings window
+            // present before first sleep = true", loop ticks = 1. The 120 ms
+            // that used to be spent before the first look was pure waste on
+            // every `read_smart_tempo_mode` call and on every
+            // `logic_record_midi` arming check. The loop stays: it is the
+            // verification that the window is a NEW one, not the pane check
+            // `settled` cannot make.
             var found: AXUIElement?
-            for _ in 0..<25 {
-                Thread.sleep(forTimeInterval: 0.12)
+            for tick in 0..<25 {
+                if tick > 0 { Thread.sleep(forTimeInterval: 0.12) }
                 if let candidate = projectSettingsWindow(),
                    !before.contains(WindowKey(element: candidate)) {
                     found = candidate
@@ -171,9 +184,15 @@ extension LogicAccessibility {
             }
         }
         defer {
+            // The close press BLOCKS until the teardown has landed — the same
+            // family as every other AX press in this server. Measured
+            // 2026-09-02 with a zero-wait probe: "settings window gone right
+            // after press = true", so the 250 ms that used to follow this line
+            // waited for something that had already happened. Nothing was
+            // verified by it and nothing is lost with it: it was a blind sleep
+            // inside a `defer`, after the mode had already been returned.
             if opened {
                 _ = closeWindowElement(window)
-                Thread.sleep(forTimeInterval: 0.25)
             }
         }
         guard let popUp else {

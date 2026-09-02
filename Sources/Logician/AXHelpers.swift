@@ -3,6 +3,17 @@ import ApplicationServices
 import Foundation
 import LogicMCUBridge
 
+/// One element's children, indexed by their `AXDescription`, plus the children
+/// themselves for the lookups that key on something else (role, help). Built by
+/// `LogicAccessibility.describedChildren(of:)` — see there for what it costs
+/// and why.
+struct DescribedChildren {
+    let all: [AXUIElement]
+    let byDescription: [String: AXUIElement]
+
+    subscript(description: String) -> AXUIElement? { byDescription[description] }
+}
+
 extension LogicAccessibility {
     // MARK: - Channel strip helpers
 
@@ -662,6 +673,32 @@ extension LogicAccessibility {
 
     func children(of element: AXUIElement) -> [AXUIElement] {
         attribute(element, kAXChildrenAttribute as String) as? [AXUIElement] ?? []
+    }
+
+    /// One enumeration of `element`'s children with ONE `AXDescription` read
+    /// each, so a group that is asked for several named controls pays for the
+    /// walk once instead of once per name.
+    ///
+    /// WHY. `children(of:).first { description == … }` re-fetches the sibling
+    /// array and re-reads `AXDescription` on every child ahead of its target,
+    /// which is invisible until the same group is asked six times. MEASURED
+    /// 2026-09-02 on `logic_get_transport`: the control bar was enumerated
+    /// eight times and its inner group five, **98 of the call's 129 AX reads**
+    /// (~4.3 ms of ~8 ms), to read fourteen values. The metronome checkbox
+    /// alone scanned thirteen descriptions, and the next lookup started over.
+    ///
+    /// First match wins, exactly as `first(where:)` did, so swapping a chain of
+    /// lookups onto one index changes nothing about which element is found.
+    func describedChildren(of element: AXUIElement) -> DescribedChildren {
+        let all = children(of: element)
+        var index: [String: AXUIElement] = [:]
+        index.reserveCapacity(all.count)
+        for child in all {
+            let description = stringAttribute(child, kAXDescriptionAttribute as String)
+            guard !description.isEmpty, index[description] == nil else { continue }
+            index[description] = child
+        }
+        return DescribedChildren(all: all, byDescription: index)
     }
 
     func stringAttribute(_ element: AXUIElement, _ name: String) -> String {
