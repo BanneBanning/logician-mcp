@@ -407,7 +407,8 @@ Read the INSTRUMENT slot's parameter names and formatted values (all MCU pages) 
 
 Parameters:
 
-  - `max_pages` (integer): Page cap, default 12 (each uncached page costs ~1.7 s; large instruments have 80+). pages_total and truncated report what was left out.
+  - `expected_project_path` (string): Refuse unless this is the open project.
+  - `max_pages` (integer): Page cap, default 12 (a page this build has not read before costs ~2.1 s of Logic's own indicator fade; large instruments have 80+). The pages actually read are cached, so repeating the same call is cheap. pages_total and truncated report what was left out.
   - `track_name` (string) **(required)**
   - `track_number` (integer)
 
@@ -418,6 +419,7 @@ Set one INSTRUMENT parameter through host automation (MCU vpot) with LCD echo re
 Parameters:
 
   - `expected_current_value` (string)
+  - `expected_project_path` (string): Refuse unless this is the open project.
   - `parameter` (string) **(required)**
   - `target_value` (string) **(required)**
   - `tolerance` (number)

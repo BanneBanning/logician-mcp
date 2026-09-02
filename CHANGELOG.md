@@ -1014,6 +1014,28 @@ with every render coming back as audio the agent can listen to.
   `logic_survey_plugins`, which opens every insert in a loop, was failing from the second
   insert onwards for the same reason.
 
+- **The instrument slot's parameters are as quick as an insert's, and a big instrument
+  finally gets cheaper the second time you look.** Reading `808`'s Quick Sampler went from
+  8.2 s to **3.6 s**, and asking again in the same session from 8.2 s to **3.8 s**; setting one
+  of its parameters right after reading it went from 4.3 s to **0.95 s**. The surface is no
+  longer walked all the way home to the Pan view at the end of every call and then walked
+  straight back in at the start of the next one — it is left where it is, recorded as a debt,
+  and the next call on the same track reuses the view it finds (re-proved against the LCD
+  first, so a surface that moved in between costs a re-entry, never a write to the wrong
+  instrument). **A capped read now caches the pages it read**: `Bas`'s Trilian is 64 pages, the
+  default look at 12 of them cost 30.7 s *every single time* because a capped read stored
+  nothing, and the second identical call is now **4.5 s**. A parameter sitting in one of the
+  last two encoder cells no longer costs an extra 1.9 s per write — those cells hide behind
+  Logic's own "Page x/y" indicator, and the indicator's own page number is accepted as the
+  proof of where the surface is instead of waiting 2.1 s for it to fade (`FilRes`: 6.2 s →
+  2.5 s, the same as a cell-2 parameter). **A track with an empty instrument slot says so**:
+  six different failures used to share the sentence "no instrument in the slot, or the edit
+  mode could not be entered", and an empty slot now comes back as a precondition naming
+  `logic_load_instrument` rather than as something to retry. The reader also reports the
+  instrument's real name (`Trilian`, `Quick Sampler`) instead of the six-character LCD
+  abbreviation it uses as a cache key, carries the same `success` / `verified` / route and
+  selection evidence its plug-in twin does, and both tools now take `expected_project_path`.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

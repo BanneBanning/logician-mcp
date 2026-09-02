@@ -318,8 +318,9 @@ extension MCPServer {
                     "type": "object",
                     "properties": [
                         "track_name": ["type": "string"],
-                        "max_pages": ["type": "integer", "description": "Page cap, default 12 (each uncached page costs ~1.7 s; large instruments have 80+). pages_total and truncated report what was left out."],
-                        "track_number": ["type": "integer"]
+                        "max_pages": ["type": "integer", "description": "Page cap, default 12 (a page this build has not read before costs ~2.1 s of Logic's own indicator fade; large instruments have 80+). The pages actually read are cached, so repeating the same call is cheap. pages_total and truncated report what was left out."],
+                        "track_number": ["type": "integer"],
+                        "expected_project_path": ["type": "string", "description": "Refuse unless this is the open project."]
                     ],
                     "required": ["track_name"],
                     "additionalProperties": false
@@ -342,7 +343,8 @@ extension MCPServer {
                         "parameter": ["type": "string"],
                         "target_value": ["type": "string"],
                         "expected_current_value": ["type": "string"],
-                        "tolerance": ["type": "number"]
+                        "tolerance": ["type": "number"],
+                        "expected_project_path": ["type": "string", "description": "Refuse unless this is the open project."]
                     ],
                     "required": ["track_name", "parameter", "target_value"],
                     "additionalProperties": false

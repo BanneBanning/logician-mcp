@@ -28,7 +28,7 @@ extension MCUController {
     /// Like `surfaceDebt`, this is bookkeeping about what this process did,
     /// not a mirror of Logic: the live probe in `currentFocusVerdict` outranks
     /// it whenever the surface can actually be read. (Single-threaded server
-    /// loop, like `hotPluginView`.)
+    /// loop, like `hotEditView`.)
     struct ChannelFocus: Equatable {
         let strip: String
         let projectPath: String?

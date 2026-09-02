@@ -17,12 +17,12 @@ final class SurfaceDeferralTests: XCTestCase {
     override func setUp() {
         super.setUp()
         MCUController.surfaceDebt = nil
-        MCUController.hotPluginView = nil
+        MCUController.hotEditView = nil
     }
 
     override func tearDown() {
         MCUController.surfaceDebt = nil
-        MCUController.hotPluginView = nil
+        MCUController.hotEditView = nil
         super.tearDown()
     }
 
@@ -75,13 +75,15 @@ final class SurfaceDeferralTests: XCTestCase {
     /// `forgetSurfaceViews`, the half of `exitToPan` that does not press
     /// anything: a unit test must not move the user's real surface.
     func testTheRestoreClearsTheDebtAndTheHotView() {
-        MCUController.hotPluginView = ("Bas", 1, "Cha EQ")
+        MCUController.hotEditView = MCUController.HotEditView(
+            track: "Bas", slot: .insert(1), cacheKey: "Cha EQ"
+        )
         MCUController.deferSurfaceRestore(
             MCUController.SurfaceDebt(strip: "Bas", view: "plugin_edit", slot: 1)
         )
         MCUController.forgetSurfaceViews()
         XCTAssertNil(MCUController.surfaceDebt)
-        XCTAssertNil(MCUController.hotPluginView)
+        XCTAssertNil(MCUController.hotEditView)
     }
 
     // MARK: - The send view's debt
