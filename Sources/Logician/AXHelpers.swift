@@ -303,6 +303,40 @@ extension LogicAccessibility {
         return path
     }
 
+    /// How long we are willing to wait for a reply to a press that opens a
+    /// TRACKING menu — a menu Logic runs its own runloop for.
+    ///
+    /// MEASURED 2026-09-02 (`logic_plugin_preset` §4.1): `AXUIElementPerformAction`
+    /// on the setting pop-up returned `-25204 kAXErrorCannotComplete` after
+    /// **1 500–1 510 ms on 8 of 8 presses**, while a look taken the instant
+    /// that call returned found the menu **already open, 8 of 8, at ~30 ms**,
+    /// on the first poll iteration every time. Logic's menu-tracking runloop
+    /// does not answer Accessibility while a menu is up, so the press cannot
+    /// be replied to at all: it sits out the whole default messaging timeout
+    /// and then reports failure on an action that worked. That was 1.5 s per
+    /// menu cycle, 24% of a `select` and 45% of a `list`.
+    ///
+    /// The press itself is delivered when it is sent, not when it is
+    /// answered, so waiting for the reply buys nothing — and the code never
+    /// read the status anyway: presence of the menu is, and stays, the only
+    /// judge.
+    static let trackingMenuPressTimeout: TimeInterval = 0.2
+    static let trackingMenuPressInterval: TimeInterval = 0.025
+
+    /// Press a control that opens a tracking menu, without paying the
+    /// messaging timeout for the reply that will never come.
+    ///
+    /// The status is deliberately discarded (see `trackingMenuPressTimeout`);
+    /// every caller verifies by finding the menu. The timeout is set on THIS
+    /// element only and put back to 0 afterwards, which is the documented
+    /// "use the global/default value" — nothing in this server ever sets a
+    /// global one, so the element ends the call exactly as it started it.
+    func pressOpeningTrackingMenu(_ element: AXUIElement) {
+        AXUIElementSetMessagingTimeout(element, Float(Self.trackingMenuPressTimeout))
+        _ = AXUIElementPerformAction(element, kAXPressAction as CFString)
+        AXUIElementSetMessagingTimeout(element, 0)
+    }
+
     /// How long a window-close poll waits in total, and how long it waits
     /// between looks.
     ///

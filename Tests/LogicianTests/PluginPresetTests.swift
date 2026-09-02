@@ -184,6 +184,81 @@ final class PluginPresetTests: XCTestCase {
         XCTAssertEqual(nested.dictionary["active"] as? Bool, true)
     }
 
+    // MARK: - One menu cycle: entries and elements line up
+
+    /// The Accessibility side keeps one AXUIElement per menu node and picks
+    /// the leaf to press by the INDEX of the entry that matched, so a
+    /// position list that does not line up with `flattenPresetMenu` would
+    /// press the wrong setting — the one failure mode of reading and pressing
+    /// in a single menu cycle. Everything below pins that alignment.
+    private func names(at positions: [PresetMenuPosition], in items: [PresetMenuItem]) -> [String] {
+        positions.map { position in
+            let item = items[position.item]
+            guard let child = position.child else { return item.title }
+            return item.children[child].title
+        }
+    }
+
+    func testEveryEntryHasExactlyOnePositionInTheSameOrder() {
+        for menu in [compressorMenu, limiterMenu, noSettingsMenu] {
+            let entries = flattenPresetMenu(menu)
+            let positions = flattenPresetMenuPositions(menu)
+            XCTAssertEqual(positions.count, entries.count)
+            XCTAssertEqual(names(at: positions, in: menu), entries.map(\.name))
+        }
+    }
+
+    func testAFlatMenusPositionsPointAtTheTopLevelItemItself() {
+        let positions = flattenPresetMenuPositions(limiterMenu)
+        XCTAssertTrue(positions.allSatisfy { $0.child == nil })
+        XCTAssertEqual(positions.first, PresetMenuPosition(item: 20, child: nil))
+    }
+
+    func testACategorysPositionsCarryTheChildIndex() {
+        let positions = flattenPresetMenuPositions(compressorMenu)
+        // "01 Drums" is item 20, and its three settings are children 0-2.
+        XCTAssertEqual(positions.prefix(3), [
+            PresetMenuPosition(item: 20, child: 0),
+            PresetMenuPosition(item: 20, child: 1),
+            PresetMenuPosition(item: 20, child: 2)
+        ])
+    }
+
+    func testASeparatorInsideASubmenuShiftsTheChildIndexButNotTheEntryIndex() {
+        // The alignment case that an off-by-one would hide: the separator is
+        // dropped from the ENTRIES but still occupies a child slot, so the
+        // element for "Two" is child 2, not child 1.
+        let menu = commandBlock() + [
+            PresetMenuItem(title: "Category", children: [
+                PresetMenuItem(title: "One"),
+                PresetMenuItem(title: "", enabled: false),
+                PresetMenuItem(title: "Two")
+            ])
+        ]
+        let positions = flattenPresetMenuPositions(menu)
+        XCTAssertEqual(positions, [
+            PresetMenuPosition(item: 20, child: 0),
+            PresetMenuPosition(item: 20, child: 2)
+        ])
+        XCTAssertEqual(names(at: positions, in: menu), ["One", "Two"])
+    }
+
+    func testTheEntryAMatchResolvesToHasOneUnambiguousIndex() {
+        // `selectPreset` presses `entries.firstIndex(of: entry)`. A name that
+        // could mean two rows never gets that far — it comes back ambiguous —
+        // so every resolved entry has exactly one index, and it is the row
+        // whose element the press reuses.
+        let entries = flattenPresetMenu(compressorMenu)
+        guard case .resolved(let hit) = matchPresetName("04 Voice/Rock Bass", in: entries) else {
+            return XCTFail("expected a resolution")
+        }
+        XCTAssertEqual(entries.filter { $0 == hit }.count, 1)
+        guard let index = entries.firstIndex(of: hit) else { return XCTFail("no index") }
+        XCTAssertEqual(names(at: flattenPresetMenuPositions(compressorMenu), in: compressorMenu)[index],
+                       "Rock Bass")
+        XCTAssertEqual(entries[index].category, "04 Voice")
+    }
+
     // MARK: - Matching a requested name
 
     func testAnExactNameResolves() {
@@ -367,6 +442,74 @@ final class PluginPresetTests: XCTestCase {
         // parameters. A name is not a state.
         XCTAssertTrue(presetOverwriteWarning.contains("overwrites every parameter"))
         XCTAssertTrue(presetOverwriteWarning.contains("does NOT bring them back"))
+    }
+
+    // MARK: - A name match is not a state match
+
+    func testTheLabelComparisonIsANameComparisonAndNothingElse() {
+        let entry = PresetEntry(name: "Warm Master", category: nil, active: false)
+        XCTAssertTrue(presetLabelNames("Warm Master", entry))
+        XCTAssertTrue(presetLabelNames("wärm mäster", entry))
+        XCTAssertFalse(presetLabelNames("Standard Master", entry))
+        XCTAssertFalse(presetLabelNames(nil, entry))
+    }
+
+    func testTheFastPathSaysBY_NAMEInTheStateItself() {
+        // The defect this exists for: the old token was `already_loaded`, a
+        // name match presented as a state match. Measured 2026-09-02 on a
+        // Channel EQ whose header named the setting AND carried Logic's own
+        // tick, 3 of 26 parameters were away from the factory values — so a
+        // caller who wanted those values got "verified, already loaded,
+        // nothing was pressed" and kept the tweaks.
+        let entry = PresetEntry(name: "Synth Sub Bass Enhancer", category: "02 Keyboards", active: true)
+        let payload = presetNameMatchPayload(entry: entry, label: "Synth Sub Bass Enhancer")
+        XCTAssertEqual(payload["state"] as? String, "already_loaded_by_name")
+        XCTAssertTrue((payload["state"] as? String)?.hasPrefix("already_") == true,
+                      "it is still a verified no-op, so it stays in the already_* family")
+        XCTAssertEqual(payload["success"] as? Bool, true)
+        XCTAssertEqual(payload["verified"] as? Bool, true)
+        XCTAssertEqual(payload["pressed"] as? Bool, false)
+        XCTAssertEqual(payload["preset"] as? String, "02 Keyboards/Synth Sub Bass Enhancer")
+        // What `verified` covers is said out loud, next to the claim.
+        XCTAssertTrue((payload["verified_by"] as? String)?.contains("not the parameters") == true)
+    }
+
+    func testTheFastPathCarriesTheNameMatchWarningAndNamesTheWayOut() {
+        let entry = PresetEntry(name: "Punchy", category: nil, active: false)
+        let warning = presetNameMatchPayload(entry: entry, label: "Punchy")["warning"] as? String
+        XCTAssertNotNil(warning)
+        XCTAssertTrue(warning?.contains("NAME match") == true)
+        XCTAssertTrue(warning?.contains("3 of 26") == true)
+        XCTAssertTrue(warning?.contains("reload: true") == true)
+        XCTAssertTrue(warning?.contains("logic_list_plugin_parameters") == true)
+        // The note offers the alternative rather than only refusing to press.
+        let note = presetNameMatchPayload(entry: entry, label: "Punchy")["note"] as? String
+        XCTAssertTrue(note?.contains("reload: true") == true)
+    }
+
+    func testReloadIsInTheSchemaAndSaysWhatItCosts() {
+        guard let tool = MCPServer().toolRegistry()
+            .first(where: { $0.name == "logic_plugin_preset" }),
+            let properties = tool.inputSchema["properties"] as? [String: Any],
+            let reload = properties["reload"] as? [String: Any] else {
+            return XCTFail("reload is missing from logic_plugin_preset")
+        }
+        XCTAssertEqual(reload["type"] as? String, "boolean")
+        XCTAssertTrue((reload["description"] as? String)?.contains("OVERWRITES") == true)
+        // The description tells an agent which token the no-op answers with.
+        XCTAssertTrue(tool.description.contains("already_loaded_by_name"))
+    }
+
+    // MARK: - The way back
+
+    func testTheUndoNoteCarriesTheMeasuredOneUndoPerWriteRule() {
+        // Measured 2026-09-02: four writes needed exactly four undos, and the
+        // state after undo #3 equalled the state after #1 — so an agent
+        // cannot feel its way back, and the note has to say so.
+        XCTAssertTrue(presetUndoNote.contains("ONE undo per write"))
+        XCTAssertTrue(presetUndoNote.contains("not monotonic"))
+        XCTAssertTrue(presetUndoNote.contains("logic_list_plugin_parameters"))
+        XCTAssertTrue(presetUndoNote.contains("BEFORE the first write"))
     }
 
     func testTheTwoUnreadableMenuReasonsAreDifferentSentences() {

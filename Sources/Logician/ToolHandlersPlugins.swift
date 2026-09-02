@@ -335,7 +335,8 @@ extension MCPServer {
         case "select":
             payload = try presetSelectPayload(
                 track: presetTrack, plugin: presetPlugin,
-                requested: try requiredString("name", in: arguments)
+                requested: try requiredString("name", in: arguments),
+                reload: arguments["reload"] as? Bool ?? false
             )
         case "undo":
             payload = try presetUndoPayload(track: presetTrack)
@@ -413,8 +414,21 @@ extension MCPServer {
     }
 
     /// `action: "select"` — load a setting by name, verified by the label.
+    ///
+    /// ONE menu cycle: the menu is read, the request is matched against it and
+    /// the leaf is pressed with the menu still open. The shape this replaces
+    /// read the menu, dismissed it, and opened the identical menu again to
+    /// find the leaf by title — measured 2026-09-02 at 3 144 ms of a 6 234 ms
+    /// call, for a lookup that had already happened. With that cycle gone and
+    /// the press no longer waiting out the messaging timeout, a warm `select`
+    /// on track `808`'s Channel EQ measured **1 107-1 254 ms** (verified
+    /// 2026-09-02, down from 6 087-6 562 ms), and the name-match no-op
+    /// 1 082 ms.
+    ///
+    /// `reload: true` presses even when the header already names the setting;
+    /// see `presetNameMatchWarning` for why that is not the default.
     private func presetSelectPayload(
-        track: String, plugin: String, requested: String
+        track: String, plugin: String, requested: String, reload: Bool
     ) throws -> [String: Any] {
         guard logic.presetPopUpButton(windowTitle: track) != nil else {
             throw LogicianError.trackNotExposed(
@@ -423,42 +437,32 @@ extension MCPServer {
             )
         }
         let labelBefore = logic.pluginPresetLabel(windowTitle: track)
-        let entries = flattenPresetMenu(try logic.readPresetMenu(windowTitle: track))
-        let entry: PresetEntry
-        switch matchPresetName(requested, in: entries) {
-        case .resolved(let hit):
-            entry = hit
-        case .ambiguous(let paths):
-            throw LogicianError.presetAmbiguous(requested: requested, paths: paths)
-        case .notFound(let available):
-            throw LogicianError.presetNotFound(
-                plugin: plugin, requested: requested, available: available
-            )
+        let selection = try logic.selectPreset(windowTitle: track) { entries in
+            let entry: PresetEntry
+            switch matchPresetName(requested, in: entries) {
+            case .resolved(let hit):
+                entry = hit
+            case .ambiguous(let paths):
+                throw LogicianError.presetAmbiguous(requested: requested, paths: paths)
+            case .notFound(let available):
+                throw LogicianError.presetNotFound(
+                    plugin: plugin, requested: requested, available: available
+                )
+            }
+            // Already named on the header: press nothing unless the caller
+            // asked for the load anyway. Re-loading overwrites every tweak
+            // made on top of the setting, which is exactly what the default
+            // is protecting — and exactly what `reload: true` is for.
+            return (entry, reload || !presetLabelNames(labelBefore, entry))
         }
-        // Already there: say so and press nothing. Re-loading the same setting
-        // would overwrite any tweak made on top of it for no gain.
-        if labelBefore?.compare(entry.name, options: [.caseInsensitive, .diacriticInsensitive])
-            == .orderedSame {
-            return [
-                "success": true,
-                "verified": true,
-                "state": "already_loaded",
-                "preset_before": labelBefore.map { $0 as Any } ?? NSNull() as Any,
-                "preset_after": labelBefore.map { $0 as Any } ?? NSNull() as Any,
-                "preset": entry.qualifiedName,
-                "note": "The setting was already loaded; nothing was pressed."
-            ]
+        guard selection.pressed else {
+            return presetNameMatchPayload(entry: selection.entry, label: labelBefore)
         }
-        try logic.pressPresetMenuItem(
-            windowTitle: track, category: entry.category, name: entry.name
-        )
-        let labelAfter = logic.pluginPresetLabel(windowTitle: track)
-        let landed = labelAfter?.compare(entry.name, options: [.caseInsensitive, .diacriticInsensitive])
-            == .orderedSame
-        guard landed else {
+        let entry = selection.entry
+        guard presetLabelNames(selection.label, entry) else {
             throw LogicianError.verificationFailed(
                 requested: entry.qualifiedName,
-                actual: labelAfter ?? "no readable setting label",
+                actual: selection.label ?? "no readable setting label",
                 // Honest: the press happened, so the plugin may well be on
                 // another setting now. There is no restore to claim.
                 restored: false
@@ -468,10 +472,12 @@ extension MCPServer {
             "success": true,
             "verified": true,
             "state": "loaded",
+            "pressed": true,
+            "reloaded": reload && presetLabelNames(labelBefore, entry),
             "preset": entry.qualifiedName,
             "preset_category": entry.category.map { $0 as Any } ?? NSNull() as Any,
             "preset_before": labelBefore.map { $0 as Any } ?? NSNull() as Any,
-            "preset_after": labelAfter.map { $0 as Any } ?? NSNull() as Any,
+            "preset_after": selection.label.map { $0 as Any } ?? NSNull() as Any,
             "note": "Loaded by pressing the item in the plugin window's setting menu;"
                 + " verified against the header label."
         ]
@@ -501,6 +507,10 @@ extension MCPServer {
     /// while the parameters move, so claiming `verified` off the label would
     /// be claiming more than was seen. Read the parameters back
     /// (logic_list_plugin_parameters) when the state matters.
+    ///
+    /// How many times to call it, and why the caller cannot feel its way
+    /// there: `presetUndoNote` — measured, one undo per write, on a history
+    /// that repeats states.
     private func presetUndoPayload(track: String) throws -> [String: Any] {
         guard logic.presetPopUpButton(windowTitle: track) != nil else {
             throw LogicianError.trackNotExposed(
@@ -509,8 +519,9 @@ extension MCPServer {
             )
         }
         let labelBefore = logic.pluginPresetLabel(windowTitle: track)
-        try logic.pressPresetMenuItem(windowTitle: track, category: nil, name: presetUndoItemTitle)
-        let labelAfter = logic.pluginPresetLabel(windowTitle: track)
+        let labelAfter = try logic.pressPresetCommand(
+            windowTitle: track, titled: presetUndoItemTitle, movedFrom: labelBefore
+        )
         return [
             "success": true,
             "verified": false,
@@ -518,11 +529,8 @@ extension MCPServer {
             "preset_before": labelBefore.map { $0 as Any } ?? NSNull() as Any,
             "preset_after": labelAfter.map { $0 as Any } ?? NSNull() as Any,
             "label_changed": labelBefore != labelAfter,
-            "note": "Pressed the plugin window's own Setting ▸ Undo — Logic's per-plugin history,"
-                + " which restores the parameter STATE, not a setting name. The label is reported"
-                + " but proves nothing on its own: an undo between two unnamed states leaves it"
-                + " unchanged. Read the parameters back with logic_list_plugin_parameters when the"
-                + " state matters. Repeat the call to step further back."
+            "undos_per_write": 1,
+            "note": presetUndoNote
         ]
     }
 
@@ -548,12 +556,22 @@ extension MCPServer {
                 : KeyCommandRegistry.Name.previousPluginSetting,
             logic: logic
         )
+        // Paced by the EFFECT, not by the clock: after each trigger the
+        // header label is read until it moves. Measured 2026-09-02, the label
+        // had ALREADY moved when read at ~0 ms after the trigger
+        // (`Tighten Subs` → `Brighten Hi Hat`, wrapping the list), and the
+        // read after the sleep agreed — so the shape this replaces paid
+        // 0.5 s per step plus a trailing 0.5 s, 1 000 ms of a 1 697 ms call,
+        // for something already true. 0.8 s per step is now the DEADLINE
+        // (`pollPresetLabel`), which is what a genuine end-of-list costs.
+        // Verified 2026-09-02: `steps: 1` on track `808`'s Channel EQ is a
+        // 333 ms call, label proof included.
+        var labelAfter = labelBefore
         for _ in 0..<steps {
             _ = try MCUController.triggerKeyCommand(note: presetCommand.note, channel: presetCommand.channel)
-            Thread.sleep(forTimeInterval: 0.5)
+            let moved = labelAfter
+            labelAfter = logic.pollPresetLabel(windowTitle: track) { $0 != moved }
         }
-        Thread.sleep(forTimeInterval: 0.5)
-        let labelAfter = logic.pluginPresetLabel(windowTitle: track)
         // success reports whether the preset actually MOVED. It used to be a
         // literal true, so at the end of a preset list - or on a plugin with
         // no factory settings - the agent was told the step happened and
