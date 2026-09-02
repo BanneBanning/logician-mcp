@@ -701,6 +701,34 @@ with every render coming back as audio the agent can listen to.
   rather than accumulating one file per call in the captures directory, and the documented
   costs were corrected against measurement: the note diff is +3.9 s for one region rather
   than "+~2 s", and a routed track ~2.6 s rather than 5.9 s.
+- **Key-command learning stops trusting things it never checked.** Learning writes into the
+  user's own Logic key command set — state that lives outside every project, that no Undo
+  reaches and that no copy restores — and five of its steps were taken on faith. The MIDI
+  note Logic is armed to capture was sent with the answer thrown away, so a bridge that was
+  down or refusing produced "all candidate notes collided" after 4.5 s of waiting for a note
+  nobody sent; the reply is read now, the failure names the bridge rather than Logic, and the
+  daemon start it used to hide (up to 3 s) is started deliberately and reported as
+  `bridge_start_ms`. `relearn`'s Delete-Assignment loop aimed at "the first table in the
+  window" while the code elsewhere allows the ~1400-row COMMAND list to be a table too — it
+  now has to prove the assignments table is a different element than the command list, and
+  refuses rather than risk deleting the user's real key commands. A command that already
+  carries a different note is refused instead of quietly given a second assignment
+  (`relearn: true` replaces it). Collision fallbacks used to be `note + 20` and `note + 40`,
+  which for every note the picker can choose landed inside the 100-121 block reserved for the
+  product's own commands; they come from the same free-note allocator as the first choice now,
+  and the registry refuses to record a note another command already answers to instead of
+  silently holding two entries for it. An explicit `note:` belonging to another command is
+  refused on the repair path too, not only the first-learn path. Both learning tools also run
+  the 0.8 ms orphaned-twin-port audit first and refuse while one is present — Logic binds key
+  commands to a port's unique ID, so that is the one way to produce a registry entry that can
+  never fire — and every new entry records the port identity it was learned against, which
+  `logic_list_key_commands` reads back and warns about when it has changed. Two blind sleeps
+  whose outcome the code already reads (0.5 s after selecting the row, 0.4 s after arming
+  Learn) became polls with those numbers as caps, and the Learn checkbox is found once per
+  command instead of three times; the 1.0 s search settle and the 1.0 s after the note stay,
+  because one is Logic re-filtering 1400 rows and the other is the MIDI plane. Unit-tested,
+  not live-verified: this flow rewrites persisted key bindings, so it was fixed by review and
+  23 new tests rather than by running it.
 
 ### Known limitations (honest by design)
 
