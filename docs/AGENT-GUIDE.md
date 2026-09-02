@@ -1035,7 +1035,7 @@ Parameters:
 
 #### `logic_open_plugin`
 
-Open the plugin window for one insert on the named (selected) track by pressing the insert's open button, then verify that the window appeared. If the window was already open it is identified via its toggle behaviour and restored. Fails closed on not_found, ambiguous (two inserts with the same plugin), not_exposed and verification_failed.
+Open the plugin window for one insert on the named (selected) track by pressing the insert's open button, then verify by what the WINDOW SHOWS. Logic reuses ONE plugin window per channel and swaps the plugin into it in place, so a second plugin on the same track opens without any window appearing; `window_shows` carries the plugin name the window's own header publishes, `state` is `swapped_in` with `replaced_plugin` when Logic reused the channel's window, `opened` when a new one appeared, and `verified_by` says which proof was taken. Reads the header BEFORE pressing: a window already showing this plugin returns state already_open in ~150 ms without pressing anything and without the window flickering off screen. Fails closed on not_found, ambiguous (two inserts with the same plugin) and not_exposed; a press Logic accepted whose effect could not be seen returns success: false, state unverified, never a claimed open.
 
 Parameters:
 

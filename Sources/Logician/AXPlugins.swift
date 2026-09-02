@@ -223,7 +223,7 @@ extension LogicAccessibility {
                 "no new insert matching '\(pluginName)' appeared on '\(trackName)'"
             )
         }
-        let newWindow = try pollWindowDiff(before: windowsBefore, expectAppear: true)
+        let newWindow = try pollNewWindow(before: windowsBefore)
         return [
             "success": true,
             "verified": true,
@@ -329,7 +329,13 @@ extension LogicAccessibility {
                     insertIndex: slot.index,
                     expectedProjectPath: nil
                 )
-                let openedByUs = (openResult["state"] as? String) == "opened"
+                // `swapped_in` counts: Logic reuses one plugin window per
+                // channel, so an insert opened INTO the window a previous
+                // insert left up is just as much this survey's doing, and
+                // leaving it up would hand the next insert the same window
+                // again. Only `already_open` — the user's own window,
+                // untouched — is not ours to close.
+                let openedByUs = ["opened", "swapped_in"].contains(openResult["state"] as? String ?? "")
                 Thread.sleep(forTimeInterval: 0.3)
                 let parameters = (try? listParameters(windowTitle: trackName)) ?? []
                 entry["accessible_parameters"] = parameters.count
@@ -393,39 +399,129 @@ extension LogicAccessibility {
             throw LogicianError.valueNotWritable("insert slot \(slot.index) (\(slot.name)) exposes no open button")
         }
 
-        let before = Set(try logicWindows().map(WindowKey.init))
+        // ASK BEFORE PRESSING. The window list is read anyway, and the
+        // channel's own plugin window — if one is up — says in its header
+        // which plugin it is showing. That answers "is this plugin already
+        // open?" for free.
+        //
+        // MEASURED 2026-09-02: the old code answered it by PRESSING the
+        // toggle, which closed the user's window in 8.7 ms, then waited out a
+        // 2.2 s poll for an appearance that was ruled out at 13 ms, pressed
+        // again and polled again — `already_open` in 2 570 ms with the window
+        // off the screen for 2.4 s of it.
+        let windowsBefore = try logicWindows()
+        let before = Set(windowsBefore.map(WindowKey.init))
+        let channelWindows = pluginWindowsShowing(trackName: trackName, in: windowsBefore)
+        if let open = windowAlreadyShowing(channelWindows, plugin: slot.name) {
+            return openResult(
+                state: "already_open",
+                track: trackName,
+                slot: slot,
+                shows: channelWindows.first { $0.key == open }?.shows ?? slot.name,
+                replacing: nil,
+                verifiedBy: "window_header_before_press"
+            )
+        }
+
         let pressStatus = AXUIElementPerformAction(openButton, kAXPressAction as CFString)
         guard pressStatus == .success else {
             throw LogicianError.writeFailed("AXPress on open button returned AXError \(pressStatus.rawValue)")
         }
 
-        if let appeared = try pollWindowDiff(before: before, expectAppear: true) {
-            let title = stringAttribute(appeared, kAXTitleAttribute as String)
+        // What the channel's window was showing a moment ago, for the answer
+        // to be able to say what this open REPLACED.
+        let wasShowing = channelWindows.compactMap { $0.shows.isEmpty ? nil : $0.shows }.first
+
+        let verdict = try pollWindowList { windows -> PluginOpenVerdict<WindowKey>? in
+            pluginOpenVerdict(
+                plugin: slot.name,
+                before: channelWindows,
+                allBefore: before,
+                now: pluginWindowsShowing(trackName: trackName, in: windows),
+                allNow: windows.map(WindowKey.init)
+            )
+        }
+
+        switch verdict {
+        case .showing(let window):
+            let reused = channelWindows.contains { $0.key == window }
+            let shown = pluginWindowsShowing(trackName: trackName, in: [window.element]).first?.shows
+            return openResult(
+                state: reused ? "swapped_in" : "opened",
+                track: trackName,
+                slot: slot,
+                shows: shown ?? slot.name,
+                replacing: reused ? wasShowing : nil,
+                verifiedBy: "window_header"
+            )
+        case .changed:
+            // The window would not name itself (its header is hidden), but it
+            // is publishing a different shape than it did before the press,
+            // and only the swap can have done that.
+            return openResult(
+                state: "swapped_in",
+                track: trackName,
+                slot: slot,
+                shows: "",
+                replacing: wasShowing,
+                verifiedBy: "window_shape_changed"
+            )
+        case .appeared(let window):
+            let title = stringAttribute(window.element, kAXTitleAttribute as String)
             guard title == trackName else {
-                _ = closeWindowElement(appeared)
+                _ = closeWindowElement(window.element)
                 throw LogicianError.openVerificationFailed(
                     "A window titled '\(title)' appeared, expected '\(trackName)'. It was closed again."
                 )
             }
-            return openResult(state: "opened", track: trackName, slot: slot, windowTitle: title)
-        }
-
-        if firstMissingWindow(from: before) != nil {
-            // The plugin window was already open; the open button toggled it closed.
-            // Press again to restore it and report the identified window.
+            let shown = pluginWindowsShowing(trackName: trackName, in: [window.element]).first?.shows
+            return openResult(
+                state: "opened",
+                track: trackName,
+                slot: slot,
+                shows: shown ?? "",
+                replacing: nil,
+                verifiedBy: "window_appeared"
+            )
+        case .closed:
+            // The plugin WAS open and nothing readable said so, so the toggle
+            // press shut the user's window. Press again to put it back.
             let beforeRestore = Set(try logicWindows().map(WindowKey.init))
             let restoreStatus = AXUIElementPerformAction(openButton, kAXPressAction as CFString)
             guard restoreStatus == .success,
-                  let reopened = try pollWindowDiff(before: beforeRestore, expectAppear: true) else {
+                  try pollNewWindow(before: beforeRestore) != nil else {
                 throw LogicianError.openVerificationFailed(
                     "The open button toggled an already-open window closed and it could not be reopened."
                 )
             }
-            let title = stringAttribute(reopened, kAXTitleAttribute as String)
-            return openResult(state: "already_open", track: trackName, slot: slot, windowTitle: title)
+            return openResult(
+                state: "already_open",
+                track: trackName,
+                slot: slot,
+                shows: "",
+                replacing: nil,
+                verifiedBy: "window_closed_and_reopened"
+            )
+        case nil:
+            // The press reported success and nothing observable moved. Say
+            // exactly that rather than calling a press that may well have
+            // worked a failure — which is what this tool did until
+            // 2026-09-02, on every in-place content swap.
+            return [
+                "success": false,
+                "verified": false,
+                "state": "unverified",
+                "track": trackName,
+                "insert_index": slot.index,
+                "plugin_display_name": slot.name,
+                "reason": "The insert's open button was pressed and Logic accepted the press, but 2 s"
+                    + " later no window had opened or closed and the channel's plugin window"
+                    + " publishes neither a plugin name nor a changed shape. The press may well"
+                    + " have worked; this tool will not claim it did.",
+                "note": "logic_list_plugin_parameters {window_title: \"\(trackName)\"} reads what the"
+                    + " window contains, and logic_list_windows says what is open."
+            ]
         }
-
-        throw LogicianError.openVerificationFailed("No window appeared or disappeared after pressing the open button.")
     }
 
     func closePlugin(

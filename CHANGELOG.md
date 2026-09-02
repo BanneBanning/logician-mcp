@@ -1001,6 +1001,18 @@ with every render coming back as audio the agent can listen to.
   the description says markers keep Logic's default names, and that `create` presses the
   Marker tab's own button with the key command as the fallback, which is what it has always
   actually done.
+- **Opening a second plugin on a track works, and says which plugin you are looking at.**
+  Logic reuses ONE plugin window per channel and swaps the plugin into it in place — same
+  window, same title, same spot on screen — so `logic_open_plugin` verifying by "did a
+  window appear?" saw nothing happen and reported `verification_failed` on a press that had
+  worked, every time, after 2.5 s. It reads the window's own header now: `window_shows`
+  carries the plugin name Logic paints there, `state` is `swapped_in` with
+  `replaced_plugin` when the channel's window was reused. Asking that same header BEFORE
+  pressing also settles "is it already open?" for free — 2 570 ms and 2.4 s of the window
+  flickering off screen becomes ~150 ms and no press at all — and dropping a 100 ms sleep
+  that sat in front of the first look takes a normal open from ~307 ms to ~200 ms.
+  `logic_survey_plugins`, which opens every insert in a loop, was failing from the second
+  insert onwards for the same reason.
 
 ### Known limitations (honest by design)
 
