@@ -52,13 +52,11 @@ extension MCUController {
         trackNumber: Int?,
         enabled: Bool
     ) throws -> [String: Any] {
-        guard freshStatus() != nil else {
-            throw LogicianError.trackNotExposed(
-                requested: "record-arm for '\(trackName)'",
-                exposed: "the Mackie Control bridge is not running or Logic has never talked to it"
-                    + " — record-arm has no Accessibility-only route in this server (see logic_health)"
-            )
-        }
+        try requireSurface(
+            "record-arm for '\(trackName)'",
+            consequence: "Record-arm has no Accessibility-only route in this server, so nothing"
+                + " was read or pressed"
+        )
         // Headerless strips are refused up front. `parsedTrackHeaders` sees only
         // the RENDERED rows, so an empty list means "cannot tell", not "not a
         // track" — refusing on that would break a scrolled-out but perfectly

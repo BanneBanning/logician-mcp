@@ -286,12 +286,7 @@ extension MCUController {
     /// with its full name and track number, and a strip that is not is reported
     /// as exactly that — unresolved — rather than guessed at.
     static func listStrips(logic: LogicAccessibility) throws -> [String: Any] {
-        guard freshStatus() != nil else {
-            throw LogicianError.trackNotExposed(
-                requested: "the Mackie Control bridge",
-                exposed: "the bridge is not running or Logic has never talked to it (see logic_health)"
-            )
-        }
+        try requireSurface("the Mackie Control bridge")
         let scan = try scanBanks()
         let bankTops = scan.banks.map(\.top)
         let inventory = stripInventory(bankTops: bankTops)
@@ -368,17 +363,30 @@ extension MCUController {
         return showing()
     }
 
-    /// Strips whose record-ready LED (notes 0x00-0x07) was seen lit.
+    /// The four per-strip LED rows of the Mackie protocol, as note numbers.
+    /// Eight wide each and BANK-RELATIVE, which is why one read only ever
+    /// describes eight strips.
+    static let recArmLEDBase = 0x00
+    static let soloLEDBase = 0x08
+    static let muteLEDBase = 0x10
+    static let selectLEDBase = 0x18
+
+    /// Strips whose record-ready LED (notes 0x00-0x07) was lit IN THIS ONE
+    /// SNAPSHOT. Every one of these four decoders reads a single instant, and
+    /// an instant is not a state: see `ledSteadiness` for the rule that turns
+    /// a window of them into an answer, and D1 in
+    /// `profiles/logic_mixer_snapshot.md` for what publishing one directly
+    /// cost.
     static func recArmedStrips(in status: [String: Any]) -> [Int] {
-        (0..<8).filter { ledLit(0x00 + $0, in: status) }
+        (0..<8).filter { ledLit(recArmLEDBase + $0, in: status) }
     }
 
     static func mutedStrips(in status: [String: Any]) -> [Int] {
-        (0..<8).filter { ledLit(0x10 + $0, in: status) }
+        (0..<8).filter { ledLit(muteLEDBase + $0, in: status) }
     }
 
     static func soloedStrips(in status: [String: Any]) -> [Int] {
-        (0..<8).filter { ledLit(0x08 + $0, in: status) }
+        (0..<8).filter { ledLit(soloLEDBase + $0, in: status) }
     }
 
     /// The Mackie Control "rude solo" indicator — the ONE solo signal on this
@@ -451,18 +459,218 @@ extension MCUController {
     /// not armed.
     static let recBlinkWindow: TimeInterval = 1.6
 
-    /// Samples the eight rec LEDs across a full blink cycle and returns the
-    /// union of what was ever lit.
-    static func sampleRecArmedStrips(window: TimeInterval = recBlinkWindow) -> Set<Int> {
-        var seen: Set<Int> = []
-        let deadline = Date().addingTimeInterval(window)
-        repeat {
+    // MARK: The blink rule — one window, four LED rows, two kinds of evidence
+
+    /// How often the LED mirror is read inside a window. 60 ms against a
+    /// 640 ms blink phase is ~10 samples per phase, so no phase can be missed.
+    static let ledSampleInterval: TimeInterval = 0.06
+
+    /// The window a bank pays when nothing that BLINKS is being asked about.
+    ///
+    /// Long enough to be a settle for the value row after a bank step (the
+    /// pass-1 row settled in 137–164 ms, measured 2026-09-02) and to catch a
+    /// late LED repaint, and short enough that four of them cost 1.2 s instead
+    /// of the blink window's 6.5 s. It is NOT long enough to tell a blink from
+    /// a steady LED, so it is only ever taken when the surface has said no
+    /// solo is standing — see `ledWindowSeconds`.
+    static let settledLEDWindow: TimeInterval = 0.3
+
+    /// The longest a short window will wait for the value row to stop moving.
+    static let valueRowHoldCap: TimeInterval = 1.2
+
+    /// One pass over the mirror: the lit-note sets and the value rows seen,
+    /// sample by sample, at `ledSampleInterval`.
+    ///
+    /// Sampling once and deciding four questions from the samples is what
+    /// makes the blink rule free: `mixerSnapshot` was already paying this
+    /// window for record-arm and reading mute/solo/select off a single instant
+    /// beside it.
+    ///
+    /// `holdValueRow` extends a short window (never past `valueRowHoldCap`)
+    /// until the value row has been byte-identical across two consecutive
+    /// samples, so the dB read that follows cannot land on a half-painted row
+    /// — the settle the blink window used to provide by being long.
+    static func sampleSurface(
+        window: TimeInterval, holdValueRow: Bool = false
+    ) -> (leds: [Set<Int>], valueRows: [String]) {
+        var leds: [Set<Int>] = []
+        var rows: [String] = []
+        let start = Date()
+        while true {
             if let status = freshStatus() {
-                seen.formUnion(recArmedStrips(in: status))
+                leds.append(Set(status["leds_lit"] as? [Int] ?? []))
+                if let bottom = status["lcd_bottom"] as? String { rows.append(bottom) }
             }
-            Thread.sleep(forTimeInterval: 0.06)
-        } while Date() < deadline
-        return seen
+            Thread.sleep(forTimeInterval: ledSampleInterval)
+            let elapsed = Date().timeIntervalSince(start)
+            if elapsed >= max(window, valueRowHoldCap) { break }
+            if elapsed >= window, !holdValueRow || valueRowHeld(rows) { break }
+        }
+        return (leds, rows)
+    }
+
+    /// Has the value row stopped moving? Two consecutive identical samples,
+    /// 60 ms apart. Pure, so "settled" is a rule rather than a sleep.
+    static func valueRowHeld(_ rows: [String]) -> Bool {
+        guard rows.count >= 2 else { return false }
+        return rows[rows.count - 1] == rows[rows.count - 2]
+    }
+
+    /// What a window of samples says about ONE LED.
+    enum LEDSteadiness: Equatable {
+        /// It held one state for the whole window (at most one edge, and this
+        /// is the state the window ENDED in).
+        case steady(lit: Bool)
+        /// It changed twice or more: Logic is flashing it.
+        case blinking
+        /// Nothing was sampled — the mirror never answered. NEVER the same
+        /// answer as `steady(lit: false)`.
+        case unsampled
+    }
+
+    /// Classifies one LED note across a window of samples by COUNTING EDGES.
+    ///
+    /// Not a majority vote and not a union, because the two failure modes pull
+    /// in opposite directions and edges tell them apart:
+    ///
+    /// - Logic's blink is ~640 ms on / 640 ms off (measured 2026-08-28), so
+    ///   its edges are 640 ms apart and any window of `recBlinkWindow` (1.6 s)
+    ///   contains AT LEAST TWO of them. Two edges is therefore proof of a
+    ///   blink, and no steady state can produce them.
+    /// - One edge is not a blink: it is a state that ARRIVED during the window
+    ///   (the LED repaint after a bank step lands a few samples in), and the
+    ///   honest reading of that is the state the window ended in. A rule that
+    ///   demanded "lit in every sample" would report a genuinely muted strip
+    ///   as unmuted whenever its repaint was late — the same silent wrongness
+    ///   pointing the other way.
+    static func ledSteadiness(_ note: Int, across samples: [Set<Int>]) -> LEDSteadiness {
+        guard let first = samples.first else { return .unsampled }
+        var edges = 0
+        var lit = first.contains(note)
+        for sample in samples.dropFirst() where sample.contains(note) != lit {
+            edges += 1
+            lit.toggle()
+            if edges >= 2 { return .blinking }
+        }
+        return .steady(lit: lit)
+    }
+
+    /// The strips of one bank whose LED at `base` was steadily lit, and the
+    /// ones Logic was flashing. Blinking is reported separately and never
+    /// folded into "lit": which of the two a caller may publish depends on
+    /// what the LED means (see `decodeBankLEDs`).
+    static func steadyLitStrips(
+        base: Int, across samples: [Set<Int>]
+    ) -> (lit: [Int], blinking: [Int]) {
+        var lit: [Int] = []
+        var blinking: [Int] = []
+        for channel in 0..<8 {
+            switch ledSteadiness(base + channel, across: samples) {
+            case .steady(let on): if on { lit.append(channel) }
+            case .blinking: blinking.append(channel)
+            case .unsampled: break
+            }
+        }
+        return (lit, blinking)
+    }
+
+    /// The strips whose LED at `base` was EVER lit — the asymmetric rule
+    /// record-arm needs, where a blink is the positive answer.
+    static func everLitStrips(base: Int, across samples: [Set<Int>]) -> [Int] {
+        (0..<8).filter { channel in samples.contains { $0.contains(base + channel) } }
+    }
+
+    /// One bank's four LED rows, decided from one window.
+    struct BankLEDReading: Equatable {
+        /// Steadily lit mute LEDs: a real mute.
+        let muted: [Int]
+        /// Mute LEDs Logic was FLASHING — channels a standing solo silences,
+        /// which is not the same fact as `muted` and is reported separately.
+        let muteBlinking: [Int]
+        let soloed: [Int]
+        let selected: [Int]
+        /// Any LED row that blinked where nothing is known to blink. Empty in
+        /// every state measured so far; a warning rather than a silent guess.
+        let unexpectedBlinks: [String]
+        /// Strips seen record-armed, or nil when the caller did not ask —
+        /// which makes the field ABSENT from the row rather than false.
+        let recordArmed: [Int]?
+    }
+
+    /// The per-family evidence rules, in one place, over one window.
+    ///
+    /// - record-arm: EVER lit. Logic flashes an armed strip's rec LED, so a
+    ///   blink is the armed answer (`recBlinkWindow`).
+    /// - mute: STEADILY lit. Logic flashes the mute LED of every channel a
+    ///   standing solo silences (proven live 2026-09-02: with only `Bas`
+    ///   soloed and nothing muted anywhere, one instant reported six strips
+    ///   `muted: true`), so a mute LED that blinks is evidence of a SOLO and a
+    ///   real mute is the steady one. Exactly the mirror image of the rule
+    ///   above, from the same samples.
+    /// - solo and select: STEADILY lit. Both are steady in every state
+    ///   measured (15 consecutive reads of a standing solo, 2026-09-02), so
+    ///   the window costs them nothing and protects them from the transient
+    ///   mid-repaint frame that the single instant never guarded against.
+    ///
+    /// `nil` when the window produced no sample at all: with nothing sampled
+    /// every list would be empty and every field would read `false`, which is
+    /// an invented state read. The caller reports those strips without LED
+    /// fields and says why.
+    static func decodeBankLEDs(
+        samples: [Set<Int>], includeRecordArm: Bool
+    ) -> BankLEDReading? {
+        guard !samples.isEmpty else { return nil }
+        let mute = steadyLitStrips(base: muteLEDBase, across: samples)
+        let solo = steadyLitStrips(base: soloLEDBase, across: samples)
+        let select = steadyLitStrips(base: selectLEDBase, across: samples)
+        var unexpected: [String] = []
+        if !solo.blinking.isEmpty { unexpected.append("solo") }
+        if !select.blinking.isEmpty { unexpected.append("select") }
+        return BankLEDReading(
+            muted: mute.lit,
+            muteBlinking: mute.blinking,
+            soloed: solo.lit,
+            selected: select.lit,
+            unexpectedBlinks: unexpected,
+            recordArmed: includeRecordArm
+                ? everLitStrips(base: recArmLEDBase, across: samples)
+                : nil
+        )
+    }
+
+    /// The LED fields of one strip row. Pure, because "absent, not false" is a
+    /// contract and a contract is worth a test: `record_armed` is missing
+    /// entirely when it was not asked for, and `mute_led_blinking` appears
+    /// only on a strip Logic is flashing.
+    static func ledRowFields(channel: Int, reading: BankLEDReading) -> [String: Any] {
+        var fields: [String: Any] = [
+            "muted": reading.muted.contains(channel),
+            "soloed": reading.soloed.contains(channel),
+            "selected": reading.selected.contains(channel)
+        ]
+        if let armed = reading.recordArmed {
+            fields["record_armed"] = armed.contains(channel)
+        }
+        if reading.muteBlinking.contains(channel) {
+            fields["mute_led_blinking"] = true
+        }
+        return fields
+    }
+
+    /// How long one bank's LED window has to be.
+    ///
+    /// The full blink window is paid when something that blinks is actually
+    /// being asked about: record-arm (the caller asked for it) or mute while a
+    /// solo stands anywhere in the project — which note 0x73 answers for the
+    /// whole project in one steady read (`anySoloedStrip`). With no solo
+    /// standing nothing flashes a mute LED, so a short settle is enough and
+    /// the four windows cost 1.2 s instead of 6.5 s.
+    ///
+    /// `nil` (the surface could not be asked) takes the long window: the
+    /// conservative side of that question is the one that stays correct.
+    static func ledWindowSeconds(includeRecordArm: Bool, soloStanding: Bool?) -> TimeInterval {
+        if includeRecordArm { return recBlinkWindow }
+        return soloStanding == false ? settledLEDWindow : recBlinkWindow
     }
 
     /// The whole mixer in one call: every strip's fader dB as Logic prints it,
@@ -475,13 +683,23 @@ extension MCUController {
     /// establishes strip identity — see `scanBanks` for why a cached map is not
     /// allowed to do that here. LED states are read per bank: the LED note
     /// numbers are bank-RELATIVE, so one read only ever describes eight strips.
-    static func mixerSnapshot(logic: LogicAccessibility) throws -> [String: Any] {
-        guard freshStatus() != nil else {
-            throw LogicianError.trackNotExposed(
-                requested: "the Mackie Control bridge",
-                exposed: "the bridge is not running or Logic has never talked to it (see logic_health)"
-            )
-        }
+    ///
+    /// Every LED answer comes out of a sampled WINDOW rather than an instant
+    /// (`decodeBankLEDs`), which is what stops a blinking LED being published
+    /// as a steady state. `includeRecordArm: false` drops the one question
+    /// that needs the full 1.6 s blink window per bank and makes the field
+    /// absent — as long as no solo is standing, because a standing solo makes
+    /// the mute LEDs blink and the window is then the mute answer's evidence
+    /// too.
+    ///
+    /// MEASURED 2026-09-02 on `Testlåt Copy` (25 strips / 4 banks), against
+    /// 12 246–12 432 ms before this change: **8 547 / 10 126 ms** with
+    /// record-arm, **5 517 ms** without it, and 10 238 / 11 148 ms with a solo
+    /// standing (was 14 560–14 686 ms).
+    static func mixerSnapshot(
+        logic: LogicAccessibility, includeRecordArm: Bool = true
+    ) throws -> [String: Any] {
+        try requireSurface("the Mackie Control bridge")
         // Pass 1: names, pan and the pan-view vpot rings, in one settled read
         // per bank.
         let scan = try scanBanks()
@@ -522,19 +740,22 @@ extension MCUController {
         }
         var dbByBank: [Int: [String]] = [:]
         var fadersByBank: [Int: [Int]] = [:]
-        var mutedByBank: [Int: [Int]] = [:]
-        var soloedByBank: [Int: [Int]] = [:]
-        var selectedByBank: [Int: [Int]] = [:]
-        var armedByBank: [Int: Set<Int>] = [:]
+        var ledsByBank: [Int: BankLEDReading] = [:]
         var metersByBank: [Int: (levels: [Int], overloads: [Bool])] = [:]
         var meterFeedAvailable = false
+        // THE WHOLE-PROJECT SOLO ANSWER, taken once. Note 0x73 is steady and
+        // not bank-relative (`rudeSoloLED`), and it is what decides whether
+        // the mute LEDs are being blinked at all — so it is both the cheap
+        // window decision and the independent witness the per-strip solo list
+        // is cross-checked against below.
+        let soloStanding = anySoloedStripOnSurface()
+        let window = ledWindowSeconds(includeRecordArm: includeRecordArm, soloStanding: soloStanding)
         for bank in 0..<bankTops.count {
-            // Each bank costs a settle plus a 1.6 s blink window, so this loop
-            // is where a big mixer spends its time and where a cancellation
-            // has to land. Bailing here leaves the surface parked on whichever
-            // bank was reached; the `ensurePanNames`/`resetToLeftmostBank`
-            // restore below is skipped by the throw, which the shutdown path
-            // and the next tool's own reset both handle.
+            // Each bank costs a settle plus its LED window, so this loop is
+            // where a big mixer spends its time and where a cancellation has
+            // to land. Bailing here leaves the surface parked on whichever
+            // bank was reached, which the next tool's own reset (and the
+            // shutdown path) handle.
             //
             // Pass 1 (the bank walk above) is roughly a third of the cost, so
             // this pass reports across 30…100. Nested inside
@@ -545,15 +766,16 @@ extension MCUController {
                 percent: 30 + 70 * Double(bank) / Double(bankTops.count)
             )
             _ = quiescentStatus()
-            // The record-ready sampling window doubles as the settle the value
-            // row needs after a bank step, so the blink costs nothing extra.
-            armedByBank[bank] = sampleRecArmedStrips()
+            // ONE window, four LED rows. It doubles as the settle the value
+            // row needs after a bank step: the long window is long enough by
+            // itself, and the short one waits for the row to hold still.
+            let samples = sampleSurface(
+                window: window, holdValueRow: window < recBlinkWindow
+            )
+            ledsByBank[bank] = decodeBankLEDs(samples: samples.leds, includeRecordArm: includeRecordArm)
             guard let status = freshStatus() else { break }
             dbByBank[bank] = (status["lcd_bottom"] as? String).map(lcdValueFields) ?? []
             fadersByBank[bank] = status["faders_14bit"] as? [Int] ?? []
-            mutedByBank[bank] = mutedStrips(in: status)
-            soloedByBank[bank] = soloedStrips(in: status)
-            selectedByBank[bank] = selectedStrips(in: status)
             // Logic's own meter feed, if this daemon publishes it. Sampled at
             // the same instant as the rest of this bank's row — which is a
             // DIFFERENT instant from every other bank's, so these eight
@@ -565,15 +787,31 @@ extension MCUController {
             if meterFeedSeen(in: status) { meterFeedAvailable = true }
             if bank < bankTops.count - 1 { try press("bank_right") }
         }
-        reportProgress("mixer read; restoring the surface", percent: 100)
+        reportProgress("mixer read", percent: 100)
+        // PATTERN #1, the debt: everything this call reports is in memory by
+        // now, and putting the surface back in the Pan view at the leftmost
+        // bank cost 3 671 ms — 30% of the call, measured 2026-09-02 — AFTER
+        // the last byte the caller waited for. So it is recorded as a debt
+        // instead of paid here. `ensurePanNames` settles it the moment any
+        // tool that needs that view asks for it (107 ms if the surface is
+        // already there), `settleSurfaceDebt` pays it before an Accessibility
+        // selection onto another strip, and `MCPServer.shutdown()` pays it
+        // when the session ends — so the surface is never LEFT in this view,
+        // it is only handed over in it. Every FAILURE path above keeps its own
+        // explicit restore: a refusal has no result for the debt to travel
+        // with.
+        deferSurfaceRestore(SurfaceDebt(strip: nil, view: "channel_strip", slot: nil))
+        // Read AFTER the restore decision, which is the whole point: this used
+        // to be read before two restore calls that changed it, so a payload
+        // saying "CS" described a surface the call had already moved to PN.
         let assignment = freshStatus()?["assignment"] as? String
-        // Leave the surface where every other tool expects to find it.
-        _ = try? ensurePanNames()
-        _ = try? resetToLeftmostBank()
 
         let headers = (try? logic.parsedTrackHeaders()) ?? []
         var strips: [[String: Any]] = []
         var unreadableDb = 0
+        var blinkingMutes: [Int] = []
+        var unexpectedBlinks: Set<String> = []
+        var unreadLEDStrips = 0
         for entry in inventory {
             var row: [String: Any] = [
                 "strip": entry.position,
@@ -601,10 +839,16 @@ extension MCUController {
             let faders = fadersByBank[entry.bank] ?? []
             row["fader_14bit"] = faders.indices.contains(entry.channel) && faders[entry.channel] >= 0
                 ? faders[entry.channel] as Any : NSNull() as Any
-            row["muted"] = (mutedByBank[entry.bank] ?? []).contains(entry.channel)
-            row["soloed"] = (soloedByBank[entry.bank] ?? []).contains(entry.channel)
-            row["selected"] = (selectedByBank[entry.bank] ?? []).contains(entry.channel)
-            row["record_armed"] = (armedByBank[entry.bank] ?? []).contains(entry.channel)
+            if let leds = ledsByBank[entry.bank] {
+                row.merge(ledRowFields(channel: entry.channel, reading: leds)) { current, _ in current }
+                if leds.muteBlinking.contains(entry.channel) { blinkingMutes.append(entry.position) }
+                unexpectedBlinks.formUnion(leds.unexpectedBlinks)
+            } else {
+                // The bank was never sampled (the mirror stopped answering
+                // mid-walk). Absent is the only honest answer — `false` here
+                // would be a state read this call never took.
+                unreadLEDStrips += 1
+            }
             let panCells = panByBank[entry.bank] ?? []
             let panText = panCells.indices.contains(entry.channel) ? panCells[entry.channel] : ""
             row["pan_text"] = panText
@@ -631,9 +875,12 @@ extension MCUController {
             "strip_count": strips.count,
             "bank_count": bankTops.count,
             "assignment_after": assignment ?? NSNull(),
+            "surface_restore": "deferred",
             "read_route": "mcu_lcd_and_led_mirror",
+            "any_soloed": soloStanding.map { $0 as Any } ?? NSNull() as Any,
+            "led_evidence": window >= recBlinkWindow ? "blink_window" : "settled_window",
             "meter_feed": meterFeedAvailable ? "available" : "unavailable",
-            "note": "One read of the whole mixer off Logic's own control-surface feedback. volume_db is the dB string Logic prints in its channel-strip Volume view (the readout logic_set_track_volume converges against) — not a conversion of the fader position, which is reported separately and raw as fader_14bit. muted/soloed/selected come from the LED mirror. record_armed is sampled across a full blink cycle: Logic FLASHES an armed strip's record LED (~640 ms on / 640 ms off), so a single instant would read half of the armed strips as unarmed."
+            "note": "One read of the whole mixer off Logic's own control-surface feedback. volume_db is the dB string Logic prints in its channel-strip Volume view (the readout logic_set_track_volume converges against) — not a conversion of the fader position, which is reported separately and raw as fader_14bit. muted/soloed/selected/record_armed come from the LED mirror, each sampled across a WINDOW rather than one instant, because Logic uses a blinking LED as a state of its own: an armed strip's record LED flashes (~640 ms on / 640 ms off), so seen-lit-once means armed, while the mute LED flashes on every channel a standing solo silences, so only a STEADY mute LED is a mute — a blinking one is marked mute_led_blinking and reported muted: false. any_soloed is note 0x73, Logic's whole-project solo indicator, which sees soloed channels this surface has no strip for. assignment_after is the view the surface is HANDED OVER in: the return to the pan view is deferred (surface_restore) and paid by the next control-surface tool or at session end."
         ]
         if meterFeedAvailable {
             result["meter_note"] = "meter_level is Logic's OWN control-surface meter for that strip:"
@@ -656,6 +903,41 @@ extension MCUController {
                 "\(unreadableDb) strip(s) had no parsable dB cell in the channel-strip Volume view;"
                     + " their volume_db is null and volume_text carries whatever the LCD showed."
                     + " Re-read, or ask for the single strip with logic_set_track_volume's readback.",
+                to: &result
+            )
+        }
+        // The blinking mutes are NOT a fault — they are what a standing solo
+        // looks like on this surface — so they are reported as a fact rather
+        // than a warning, and named, because "silenced right now but not
+        // muted" is exactly what an agent asked to undo a solo pass needs.
+        if !blinkingMutes.isEmpty {
+            result["mute_blink_note"] = "Strip(s) \(blinkingMutes.map(String.init).joined(separator: ", "))"
+                + " have a BLINKING mute LED and are reported muted: false. Logic flashes the mute"
+                + " LED of every channel a standing solo silences (any_soloed is true), so those"
+                + " channels are silent right now but not muted — pressing mute on them would"
+                + " mute them. Unsolo and re-read to see the mixer without the blink."
+        }
+        if !unexpectedBlinks.isEmpty {
+            appendWarning(
+                "The \(unexpectedBlinks.sorted().joined(separator: " and ")) LED(s) of at least one"
+                    + " strip were BLINKING, which nothing in this project has been measured to do."
+                    + " Those strips are reported false for that field rather than guessed at;"
+                    + " re-read, and if it persists the LED meaning needs re-establishing.",
+                to: &result
+            )
+        }
+        if soloStanding == true, strips.allSatisfy({ $0["soloed"] as? Bool != true }) {
+            result["solo_note"] = "Logic's whole-project solo indicator (note 0x73) is lit but no"
+                + " strip on the surface reads soloed: the soloed channel has no strip of its own"
+                + " here — a track inside a collapsed folder stack is the measured case. Nothing is"
+                + " wrong with the strip rows; the mixer simply cannot name it."
+        }
+        if unreadLEDStrips > 0 {
+            appendWarning(
+                "\(unreadLEDStrips) strip(s) carry no muted/soloed/selected fields at all: the"
+                    + " control-surface mirror stopped answering during their bank's LED window, and"
+                    + " an absent field is the honest answer where false would be an invented state."
+                    + " Re-read (see logic_health).",
                 to: &result
             )
         }

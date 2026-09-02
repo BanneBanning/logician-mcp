@@ -185,45 +185,96 @@ extension MCUController {
             guard let second = freshStatus(), fullNames(second) else { return false }
             return (second["lcd_top"] as? String) == top
         }
+        /// FAST NEGATIVE — the other half of the fast path.
+        ///
+        /// `stableState` earns its full second when the question is "WHAT am I
+        /// looking at?", and the answer is genuinely ambiguous inside the pan
+        /// family: the multi-channel names view, the single-channel pan view
+        /// and the mode banner all read `PN`. Outside it there is nothing to
+        /// disambiguate — a row whose assignment code is `CS`, `SE`, `IN` or
+        /// `P…` is not the names view under any reading, and the move from
+        /// every one of them is the same press.
+        ///
+        /// So a non-`PN` code that is byte-identical (row AND code) across the
+        /// same 100 ms gap `confirmedFullNames` uses skips the silence proof.
+        /// Measured 2026-09-02: `stableState` cost 1 209.8 ms to conclude
+        /// `asgn='CS'` about a view `ensureVolumeView` had verified 6.7 s
+        /// earlier.
+        ///
+        /// The worst case is bounded and cheap: if the code is stale because a
+        /// repaint INTO the pan view is in flight, the press toggles one step
+        /// too far and the next iteration classifies and presses again — one
+        /// extra pass through a six-iteration loop, against a second saved on
+        /// every restore.
+        func confirmedNonPanState() -> (top: String, assignment: String)? {
+            guard let first = freshStatus(),
+                  let top = first["lcd_top"] as? String,
+                  let code = first["assignment"] as? String,
+                  !code.isEmpty, code != MCULCDStrings.Assignment.pan else { return nil }
+            let events = first["received_events"] as? Int ?? -1
+            _ = awaitEvents(since: events, timeoutMs: 100)
+            guard let second = freshStatus(),
+                  (second["lcd_top"] as? String) == top,
+                  (second["assignment"] as? String) == code else { return nil }
+            return (top, code)
+        }
+        /// Waits for the names view to HOLD, not merely to appear.
+        ///
+        /// The press used to be followed by `waitFor(fullNames)`, and measured
+        /// 2026-09-02 that returned hit=true in **20.3 ms** — on the frame
+        /// where Logic had painted the names row and had not yet dropped the
+        /// `Pan/Surround parameter:` banner over its right half. 200 µs later
+        /// the same row failed `confirmedFullNames`, so the loop went round
+        /// again and paid a full second of silence proof plus the banner wait
+        /// for a press that had already worked: 2 029 ms for one press
+        /// (pattern #5 — a fast check that disagrees pays ONE settled read,
+        /// not a whole extra iteration).
+        func waitForConfirmedFullNames(seconds: Double) -> Bool {
+            let deadline = Date().addingTimeInterval(seconds)
+            while true {
+                if confirmedFullNames() { return true }
+                if Date() >= deadline { return false }
+                guard let status = freshStatus() else { return false }
+                _ = awaitEvents(since: status["received_events"] as? Int ?? -1, timeoutMs: 200)
+            }
+        }
         for iteration in 0..<6 {
             if confirmedFullNames() {
                 surfaceDebt = nil
                 return true
             }
-            guard let state = stableState() else { debugLog("ensurePanNames[\(iteration)]: no stable state"); return false }
-            debugLog("ensurePanNames[\(iteration)]: asgn='\(state.assignment)' top='\(state.top.prefix(48))'")
-            if fullNames(["lcd_top": state.top, "assignment": state.assignment]) {
-                surfaceDebt = nil
-                return true
-            }
-            if state.top.contains(MCULCDStrings.parameterBannerMarker)
-                && state.assignment == MCULCDStrings.Assignment.pan {
-                // Names view with Logic's mode BANNER ("Pan/Surround
-                // parameter: Pan") still covering the right half - it fades
-                // on its own; pressing now would toggle AWAY from the
-                // correct view, so wait it out.
-                debugLog("ensurePanNames[\(iteration)]: waiting out mode banner")
-                if waitFor(seconds: 5.0, fullNames) != nil {
+            if let quick = confirmedNonPanState() {
+                debugLog("ensurePanNames[\(iteration)]: fast asgn='\(quick.assignment)'")
+            } else {
+                guard let proven = stableState() else { debugLog("ensurePanNames[\(iteration)]: no stable state"); return false }
+                debugLog("ensurePanNames[\(iteration)]: asgn='\(proven.assignment)' top='\(proven.top.prefix(48))'")
+                if fullNames(["lcd_top": proven.top, "assignment": proven.assignment]) {
                     surfaceDebt = nil
                     return true
                 }
-                continue
+                if proven.top.contains(MCULCDStrings.parameterBannerMarker)
+                    && proven.assignment == MCULCDStrings.Assignment.pan {
+                    // Names view with Logic's mode BANNER ("Pan/Surround
+                    // parameter: Pan") still covering the right half - it fades
+                    // on its own; pressing now would toggle AWAY from the
+                    // correct view, so wait it out.
+                    debugLog("ensurePanNames[\(iteration)]: waiting out mode banner")
+                    if waitForConfirmedFullNames(seconds: 5.0) {
+                        surfaceDebt = nil
+                        return true
+                    }
+                    continue
+                }
             }
-            // Any other stable state (single-channel pan, the channel-strip
-            // overview, a plugin view, ...) - press toward the names view.
+            // Any other state (single-channel pan, the channel-strip overview,
+            // a plugin view, ...) - press toward the names view, then wait for
+            // the target to HOLD. A press that goes nowhere falls through to
+            // the unchanged classification on the next iteration.
             try press("assign_pan")
-            // Wait for the TARGET rather than for the display to go quiet.
-            // This used to be a bare `awaitEvents(800)` and the next iteration
-            // then paid another full second of silence proof plus, usually, a
-            // separate wait for the mode banner to fade — three sequential
-            // waits for one press. `fullNames` is the same predicate the
-            // banner branch above already trusts from `waitFor`, and the next
-            // iteration's `confirmedFullNames` still has to see the row hold
-            // still for 100 ms before this returns true, so the press is
-            // followed by a positive check and a stability check, not by a
-            // guess. A press that goes nowhere falls through to the unchanged
-            // `stableState` classification on the next iteration.
-            _ = waitFor(seconds: 5.0, fullNames)
+            if waitForConfirmedFullNames(seconds: 5.0) {
+                surfaceDebt = nil
+                return true
+            }
         }
         return false
     }

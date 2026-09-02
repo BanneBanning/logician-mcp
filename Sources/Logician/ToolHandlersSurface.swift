@@ -11,7 +11,10 @@ extension MCPServer {
     }
 
     func handleMixerSnapshot(_ arguments: [String: Any]) throws -> Any {
-        try MCUController.mixerSnapshot(logic: logic)
+        try MCUController.mixerSnapshot(
+            logic: logic,
+            includeRecordArm: arguments["include_record_arm"] as? Bool ?? true
+        )
     }
 
     func handleSetTrackRecordArm(_ arguments: [String: Any]) throws -> Any {

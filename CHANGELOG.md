@@ -1059,6 +1059,31 @@ with every render coming back as audio the agent can listen to.
   `logic_list_signatures` refuses outright — a meter map that dropped a signature change would
   place every later bar confidently wrong.
 
+- **The mixer read no longer mistakes a blinking light for a state — and it is twice as
+  fast.** Solo one track in a project where nothing is muted, ask `logic_mixer_snapshot`,
+  and six strips used to come back `"muted": true`: Logic FLASHES the mute LED of every
+  channel a solo silences, and the tool read one instantaneous frame of that flashing.
+  An agent asked to unmute everything after a solo pass would have muted six channels
+  that were never muted. Every LED answer is now taken across a sampled window and
+  classified by counting edges, so a steady mute LED is a mute, a blinking one is
+  reported `muted: false` and marked `mute_led_blinking` ("silent right now because
+  something is soloed, but not muted"), and a record LED that blinks still means armed —
+  the same samples, opposite rules, because that is what the two lights mean. The result
+  also carries `any_soloed`, Logic's whole-project solo indicator, which sees a soloed
+  channel that has no strip on the surface at all. On the reference project the call
+  went from **12.3 s to 8.5–10.1 s, and to 5.5 s** when the mix read is about levels and
+  pan: `include_record_arm: false` drops the one question that
+  needs the 1.6 s-per-bank blink window (the field is then ABSENT, never false), the
+  return to the pan view is deferred to whichever tool next needs it instead of being
+  charged to a call that had already read every byte it reports, and the restore itself
+  stopped paying two full-second silence proofs for a view it already knew. Two smaller
+  truths came with it: `assignment_after` is read after the restore decision rather than
+  before it, so it describes the surface the caller is actually handed; and ten minutes
+  of an untouched Logic no longer takes the whole control-surface plane down with "the
+  bridge is not running or Logic has never talked to it" while the bridge is running and
+  Logic is fine — an idle surface is woken with one probe press, and the four faults that
+  shared that one sentence now each name what was found and the repair for it.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.
