@@ -134,10 +134,14 @@ extension MCPServer {
             // so every future agent gets it at exactly the right moment.
             // Which tools get it is declared per tool in ToolRegistry.swift,
             // so a new sound-changing tool cannot quietly miss out.
+            // Gated on the PAYLOAD as well as the tool: a preview mode that
+            // changed nothing must not ship "You changed the ARRANGEMENT"
+            // beside its own "NOTHING WAS CHANGED" (see `Tool.changedNothing`).
             if let note = tool.listenNoteText,
                var successPayload = payload as? [String: Any],
                successPayload["success"] as? Bool == true,
-               successPayload["listen_note"] == nil {
+               successPayload["listen_note"] == nil,
+               !Tool.changedNothing(successPayload) {
                 successPayload["listen_note"] = note
                 return toolResult(
                     payload: successPayload, isError: false, includeAudio: includeAudio, era: era
