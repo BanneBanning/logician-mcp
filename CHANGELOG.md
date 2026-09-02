@@ -826,6 +826,36 @@ with every render coming back as audio the agent can listen to.
   arrangement four times. `selected: false` is omitted like `start_beat` already was (52 of
   54 regions), and the project window is resolved once instead of twice. The payload carries
   the whole completeness contract for +150 bytes on 54 regions (6 511 → 6 661).
+- **Loading an instrument takes seconds instead of twelve of them, and it stops failing loads
+  that worked.** `logic_load_instrument` was `logic_add_plugin` as it stood before round 2:
+  no pacing, two walks home to the Pan view, four blind sleeps and an abbreviation test
+  calibrated for track names. Profiled 2026-09-02, a warm load was **11.3-12.4 s**, of which
+  46% was the surface walking home twice — once immediately before pressing its way back into
+  the view it had just left — 27% was blind sleeping and 0.5% was the write. The same loads now
+  take **1.4-4.6 s**: the middle walk home is gone (the IN bank view is re-entered from the
+  parameter page and proven by its own top row, a stronger check than the assignment code it
+  replaces), the walk home at the end is a deferred `SurfaceDebt` like the plug-in and send
+  tools', the browse advances by waiting for the cell to CHANGE rather than firing ticks into
+  unfinished repaints, and three of the four sleeps became positive checks. Four things it no
+  longer gets wrong. **A load that worked is no longer reported as a failure**: `ARP 2600 V3`
+  loaded, the slot read `ARPV3`, and the call came back `verification_failed` with
+  `restored: false` on a destructive tool — the readback now accepts both shapes of
+  abbreviation Logic uses on that row, and the same load verifies in 1.4 s. **An instrument
+  whose name is too long for the shared browse row can be loaded at all**: `Drum Kit Designer
+  Multi-Output` is 30 characters into strip 5's 27, so Logic paints it shifted left and it
+  reads `m Kit Designer Multi-Output` — it is now identified by its tail, exactly, and the
+  result says the row was too narrow and what it read. **The track already holding it is a
+  verified no-op**, `already_loaded` off the slot cell without touching the browser, where the
+  repeat call used to browse, drift and fail in 4.9 s; naming a `format` always browses,
+  because a six-character slot cell cannot say which channel format it holds. And **asking for
+  something the browser will not show refuses in seconds**: an entry-counted cap with a
+  wall-clock budget that scales with `max_steps`, instead of about two minutes of vpot turning,
+  reporting the entries it actually looked at rather than the number of times a name changed.
+  The press is now gated on two agreeing reads taken with the surface quiet, and any correction
+  is proven the same way: the browse row's mirror can hand back a frame the cursor has already
+  left, and answering that by turning the vpot back until some read agrees put an `Abbey Road`
+  plug-in on a track that had asked for `ARP 2600 V3`. `edit_page_after_confirm` also stopped
+  passing off a row of dashes, or the channel-names row, as the parameter page it advertises.
 
 ### Known limitations (honest by design)
 

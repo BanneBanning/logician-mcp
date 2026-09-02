@@ -40,7 +40,7 @@ extension MCPServer {
             trackName: requiredString("track_name", in: arguments),
             instrument: requiredString("instrument", in: arguments),
             format: arguments["format"] as? String,
-            maxSteps: arguments["max_steps"] as? Int ?? 1200
+            maxSteps: arguments["max_steps"] as? Int ?? MCUController.browseEntryCap
         )
     }
 
