@@ -31,7 +31,7 @@ surface — including running the server binary against Logic — requires holdi
 the shared lock, and must never happen without it:
 
     LOCK="/private/tmp/claude-501/logician-live.lock"
-    n=0; until mkdir "$LOCK" 2>/dev/null; do n=$((n+1)); [ $n -gt 150 ] && { echo "LOCK TIMEOUT"; exit 1; }; sleep 20; done
+    n=0; until mkdir "$LOCK" 2>/dev/null; do n=$((n+1)); [ $n -gt 1500 ] && { echo "LOCK TIMEOUT"; exit 1; }; sleep 2; done
     echo "<tool> $(date +%s)" > "$LOCK/holder"
     ...live work...
     rm -rf "$LOCK"      # ALWAYS, also on failure, after the surface is back in PN
