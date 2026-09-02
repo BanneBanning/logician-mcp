@@ -719,12 +719,14 @@ extension LogicAccessibility {
     // MARK: - Read
 
     func readRegionParameters(
-        trackName: String?, regionName: String?, startBar: Int?, includeQuantizeValues: Bool
+        trackName: String?, regionName: String?, startBar: Int?, includeQuantizeValues: Bool,
+        trackNumber: Int? = nil
     ) throws -> [String: Any] {
         var addressed: [String: Any]?
         if let trackName {
             addressed = try selectRegion(
-                trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true
+                trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true,
+                trackNumber: trackNumber
             )
         }
         let (payload, panelState) = try withRegionInspector(needMore: true) { panel, rows in
@@ -854,7 +856,8 @@ extension LogicAccessibility {
 
     func setRegionParameters(
         trackName: String?, regionName: String?, startBar: Int?,
-        scope: String, arguments: [String: Any], expected: [String: Any]
+        scope: String, arguments: [String: Any], expected: [String: Any],
+        trackNumber: Int? = nil
     ) throws -> [String: Any] {
         // 1. What was asked for, checked before anything is touched.
         var planned: [PlannedWrite] = []
@@ -947,7 +950,8 @@ extension LogicAccessibility {
                 throw LogicianError.invalidArguments("scope 'region' needs track_name")
             }
             addressed = try selectRegion(
-                trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true
+                trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true,
+                trackNumber: trackNumber
             )
             guard try selectedRegionCount() == 1 else {
                 throw LogicianError.verificationFailed(
@@ -1298,9 +1302,11 @@ extension LogicAccessibility {
     /// Verified twice over: the panel reads the new name back, AND the
     /// arrangement map shows it on the region at that position — the panel
     /// alone would only prove that a text field accepted text.
+    /// - Parameter trackNumber: addresses the ROW by number instead of
+    ///   trusting the name to be unique (see `resolveRegionRow`).
     func renameRegion(
         trackName: String, regionName: String?, startBar: Int?,
-        newName: String, expectedCurrentName: String?
+        newName: String, expectedCurrentName: String?, trackNumber: Int? = nil
     ) throws -> [String: Any] {
         let wanted = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !wanted.isEmpty else {
@@ -1310,9 +1316,10 @@ extension LogicAccessibility {
             throw LogicianError.invalidArguments("new_name must be a single line")
         }
 
-        let before = try regionSnapshot(trackName: trackName)
+        let before = try regionSnapshot(trackName: trackName, trackNumber: trackNumber)
         let addressed = try selectRegion(
-            trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true
+            trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true,
+            trackNumber: trackNumber
         )
         guard try selectedRegionCount() == 1 else {
             throw LogicianError.verificationFailed(
@@ -1375,7 +1382,7 @@ extension LogicAccessibility {
 
         let panelAfter = try regionInspectorPanel()
         let panelName = PrintedRegion.canonicalName(panelAfter.panelName)
-        let after = try regionSnapshot(trackName: trackName)
+        let after = try regionSnapshot(trackName: trackName, trackNumber: trackNumber)
         let position = addressed["start_bar"] as? Int
         let beat = addressed["start_beat"] as? Int
         let renamed = after.first {

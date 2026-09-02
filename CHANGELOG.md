@@ -1036,6 +1036,29 @@ with every render coming back as audio the agent can listen to.
   abbreviation it uses as a cache key, carries the same `success` / `verified` / route and
   selection evidence its plug-in twin does, and both tools now take `expected_project_path`.
 
+- **Every region tool can now say WHICH ROW it means, and the three list readers say how much
+  of the list they could see.** An imported arrangement is a stack of identically named tracks
+  — Logic names each track an import creates after the default patch it loaded, so `Studio
+  Grand` is three rows — and the region tools were the ones that could not tell them apart:
+  `logic_delete_region` refused `track_number` outright while `logic_delete_track` accepted it,
+  and a region addressed by name alone landed on whichever row Logic had rendered first.
+  Thirteen tools (delete/copy/move/split/rename/select, the two region-parameter tools,
+  `logic_list_events`, `logic_edit_event`, `logic_remove_silence`, `logic_bounce_in_place`)
+  now take `track_number` — cross-checked against `track_name` by the same rule the track
+  tools have always used, so a stale pair refuses before anything is written — and a name
+  matching two rendered rows is refused as ambiguous instead of resolved to the first of them.
+  `logic_copy_region` takes `to_track_number` for the destination as well, and
+  `logic_select_region` reports the row it landed on. A region that could not be picked out on
+  the row also stops borrowing the plug-in vocabulary: "Accessible plugin parameter is
+  ambiguous: region on 'Crash'" is now a sentence about regions that lists the candidates and
+  names both ways out (`start_bar`, `track_number`), and a request matching NO region is a
+  not-found rather than an ambiguity that matched zero. Finally, the List Editors readers say
+  in their own descriptions what they have reported in fields since 2026-09-01: Logic draws
+  only the rows IN VIEW, so `logic_list_events` and `logic_markers` answer with the list's own
+  count plus `events_read`/`markers_read` and the row numbers they could not read, while
+  `logic_list_signatures` refuses outright — a meter map that dropped a signature change would
+  place every later bar confidently wrong.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

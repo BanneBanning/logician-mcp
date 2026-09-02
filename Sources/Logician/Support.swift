@@ -569,6 +569,12 @@ enum LogicianError: LocalizedError {
     case trackNotFound(String, available: [String])
     case trackAmbiguous(String, numbers: [Int])
     case trackMismatch(number: Int, expected: String, actual: String)
+    /// Several regions on ONE track row answer to the same request. Distinct
+    /// from `parameterAmbiguous`, which every region refusal used to borrow —
+    /// so an agent that asked for a region on 'Crash' was told "Accessible
+    /// plugin parameter is ambiguous", with neither the word "region" nor the
+    /// two arguments that resolve it anywhere in the sentence.
+    case regionAmbiguous(track: String, requested: String, candidates: [String])
     case selectionFailed(requested: String, actual: String, restored: Bool)
     case trackNotStack(String)
     /// Several control-surface strips answer to one name (duplicate track
@@ -607,7 +613,7 @@ enum LogicianError: LocalizedError {
         case .windowNotFound, .parameterNotFound, .insertNotFound, .trackNotFound,
              .stripNotFound, .presetNotFound, .keyCommandNotFound: return "not_found"
         case .parameterAmbiguous, .insertAmbiguous, .windowAmbiguous, .trackAmbiguous,
-             .stripAmbiguous, .presetAmbiguous: return "ambiguous"
+             .stripAmbiguous, .presetAmbiguous, .regionAmbiguous: return "ambiguous"
         case .valueNotWritable, .trackNotExposed, .windowNotClosable, .trackNotStack: return "not_exposed"
         case .currentValueMismatch, .projectMismatch, .insertMismatch, .pluginNotOpen, .trackMismatch,
              .preconditionUnmet, .projectTempoModeUnsafe, .tempoMapUnsafe: return "precondition_failed"
@@ -675,6 +681,15 @@ enum LogicianError: LocalizedError {
             return "Track name '\(name)' is ambiguous; it matches track numbers \(numbers.map(String.init).joined(separator: ", ")). Pass track_number to disambiguate."
         case .trackMismatch(let number, let expected, let actual):
             return "Track \(number) is named '\(actual)', not '\(expected)'. No action was taken."
+        case .regionAmbiguous(let track, let requested, let candidates):
+            return sentenceCased(requested) + " on track '\(track)' matches \(candidates.count)"
+                + " regions. Nothing was selected and nothing was written. That row holds: "
+                + candidates.joined(separator: ", ")
+                + ". Pass start_bar (the region's CURRENT start bar, which every edit changes) to"
+                + " name one, and region_name as well when two regions share a bar. If the region"
+                + " you meant is on a DIFFERENT row that carries the same track name — an imported"
+                + " project is full of them — pass track_number; logic_list_regions prints each"
+                + " row's track_number."
         case .selectionFailed(let requested, let actual, let restored):
             return "Track selection could not be verified. Requested '\(requested)', selection is '\(actual)'. Restored previous selection: \(restored)."
         case .trackNotStack(let name):

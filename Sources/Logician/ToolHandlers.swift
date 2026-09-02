@@ -165,6 +165,26 @@ extension MCPServer {
         return value
     }
 
+    /// The `track_number` of a REGION call, refused when it arrives alone.
+    ///
+    /// The number's value is that it is CHECKED against `track_name`
+    /// (`resolveRegionRow`); on its own it would have to be trusted instead,
+    /// and a row number the caller read before an edit is exactly the kind of
+    /// stale handle this argument exists to catch. So the tools whose
+    /// `track_name` is optional refuse the pairing rather than quietly
+    /// ignoring a number they cannot use.
+    func regionTrackNumber(in arguments: [String: Any]) throws -> Int? {
+        guard let number = arguments["track_number"] as? Int else { return nil }
+        guard arguments["track_name"] is String else {
+            throw LogicianError.invalidArguments(
+                "track_number needs track_name as well — the two are cross-checked against each"
+                    + " other, which is the whole point of passing the number. Nothing was read"
+                    + " or written."
+            )
+        }
+        return number
+    }
+
     /// A JSON number argument, whichever way the client typed it. `-12` and
     /// `-12.0` are the same dB value and a schema that says `"type": "number"`
     /// accepts both, so a handler that only reads `as? Double` silently ignores

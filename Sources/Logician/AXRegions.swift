@@ -347,6 +347,59 @@ extension LogicAccessibility {
         return result
     }
 
+    /// The arrangement row a region call is addressed to.
+    ///
+    /// One resolution for every region tool, applying the SAME rule
+    /// `resolveTrack` applies to the track-header column
+    /// (`TrackRowAddressing`): a `track_number` given together with a
+    /// `track_name` is cross-checked and a pair that disagrees refuses before
+    /// anything is written, and a name that matches several rendered rows is
+    /// ambiguous rather than answered by the first one.
+    ///
+    /// That last part is a behaviour CHANGE, and a deliberate one. These tools
+    /// took `rows.first(where:)` on the name, which is a silent guess exactly
+    /// where the project makes duplicate names normal: `logic_import_midi`
+    /// leaves a row called `Studio Grand` behind for every unrouted track it
+    /// imports, and a delete addressed by name alone would have picked
+    /// whichever of them Logic rendered first.
+    func resolveRegionRow(
+        _ rows: [(number: Int, track: String, regions: [AXUIElement])],
+        trackName: String, trackNumber: Int?
+    ) throws -> (number: Int, track: String, regions: [AXUIElement]) {
+        let summary = TrackRowAddressing.rowSummary(
+            rows.map { TrackRowAddressing.Row(number: $0.number, name: $0.track) }
+        )
+        let verdict = TrackRowAddressing.resolve(
+            rows: rows.map { TrackRowAddressing.Row(number: $0.number, name: $0.track) },
+            name: trackName, number: trackNumber, caseInsensitive: true
+        )
+        switch verdict {
+        case .resolved(let number):
+            guard let row = rows.first(where: { $0.number == number }) else {
+                throw LogicianError.trackNotExposed(
+                    requested: "track row \(number) ('\(trackName)')",
+                    exposed: "visible track rows: " + summary
+                )
+            }
+            return row
+        case .numberNotFound(let missing):
+            throw LogicianError.trackNotExposed(
+                requested: "track row \(missing) ('\(trackName)')",
+                exposed: "visible track rows: " + summary
+                    + ". A row Logic has not rendered publishes no regions at all"
+            )
+        case .nameNotFound:
+            throw LogicianError.trackNotExposed(
+                requested: "track '\(trackName)'",
+                exposed: "visible track rows: " + summary
+            )
+        case .ambiguous(let numbers):
+            throw LogicianError.trackAmbiguous(trackName, numbers: numbers)
+        case .mismatch(let number, let expected, let actual):
+            throw LogicianError.trackMismatch(number: number, expected: expected, actual: actual)
+        }
+    }
+
     /// Selects one region, identified by track + name and/or start bar.
     /// exclusive (default) first clears every other selected region so the
     /// following edit operation (cut/copy/nudge…) touches ONLY this one.
@@ -386,16 +439,7 @@ extension LogicAccessibility {
             throw LogicianError.invalidArguments("pass region_name and/or start_bar")
         }
         let rows = try regionRows()
-        guard let row = rows.first(where: {
-            if let trackNumber { return $0.number == trackNumber }
-            return $0.track.caseInsensitiveCompare(trackName) == .orderedSame
-        }) else {
-            throw LogicianError.trackNotExposed(
-                requested: trackNumber.map { "track row \($0) ('\(trackName)')" }
-                    ?? "track '\(trackName)'",
-                exposed: "visible track rows: " + rows.map(\.track).joined(separator: ", ")
-            )
-        }
+        let row = try resolveRegionRow(rows, trackName: trackName, trackNumber: trackNumber)
         let annotated = row.regions.map { ($0, parseRegion($0)) }
         let hits = annotated.filter { _, info in
             if let name = regionName,
@@ -405,12 +449,29 @@ extension LogicAccessibility {
             if let bar = startBar, info["start_bar"] as? Int != bar { return false }
             return true
         }
-        guard hits.count == 1, let hit = hits.first else {
-            throw LogicianError.parameterAmbiguous(
-                "region on '\(trackName)' (candidates: " + annotated.map { _, info in
-                    "\(info["name"] ?? "?")@bar\(info["start_bar"] ?? 0)"
-                }.joined(separator: ", ") + ")",
-                hits.count
+        // Two different answers, and they used to be one: NO region matching
+        // the request is a not-found, and SEVERAL is an ambiguity. The single
+        // `parameterAmbiguous` that covered both said "Accessible plugin
+        // parameter is ambiguous: … matched 0 controls" at an agent that had
+        // named a region on a track.
+        guard let hit = hits.first else {
+            throw LogicianError.trackNotExposed(
+                requested: RegionAddressing.request(regionName: regionName, startBar: startBar)
+                    + " on track row \(row.number) ('\(row.track)')",
+                exposed: "that row holds: "
+                    + (row.regions.isEmpty
+                        ? "no regions"
+                        : RegionAddressing.candidates(annotated.map { $0.1 })
+                            .joined(separator: ", "))
+                    + ". A region's start_bar changes with every edit, so re-read"
+                    + " logic_list_regions rather than reusing an earlier one"
+            )
+        }
+        guard hits.count == 1 else {
+            throw LogicianError.regionAmbiguous(
+                track: row.track,
+                requested: RegionAddressing.request(regionName: regionName, startBar: startBar),
+                candidates: RegionAddressing.candidates(hits.map { $0.1 })
             )
         }
         // Focus BEFORE the region selection, never after: the repair writes to
@@ -519,6 +580,10 @@ extension LogicAccessibility {
         result["state"] = wroteSelection ? "selected" : "already_selected"
         result["track"] = row.track
         result["track_name"] = row.track
+        // The ROW, not just the name: on a project where several rows carry
+        // one name it is the only unambiguous handle, and every region tool
+        // now takes it back as `track_number`.
+        result["track_number"] = row.number
         result["exclusive"] = exclusive
         if exclusive { result["deselected"] = plan.siblingsToClear }
         if let additive {
@@ -812,18 +877,22 @@ extension LogicAccessibility {
     /// would fold two namesake rows into one snapshot, which is exactly the
     /// shape that makes a paste look verified on the wrong track.
     func regionSnapshot(trackName: String, trackNumber: Int? = nil) throws -> [[String: Any]] {
-        guard let trackNumber else {
-            let map = try listRegions(trackName: trackName)
-            return ((map["tracks"] as? [[String: Any]])?.first?["regions"] as? [[String: Any]]) ?? []
-        }
         let rows = try regionRows()
-        guard let row = rows.first(where: { $0.number == trackNumber }) else {
-            throw LogicianError.trackNotExposed(
-                requested: "track row \(trackNumber) ('\(trackName)')",
-                exposed: "visible track rows: " + rows.map(\.track).joined(separator: ", ")
-            )
+        if rows.isEmpty {
+            // Whether an arrangement with no rendered rows is EMPTY or merely
+            // unreadable is `listRegions`' verdict, and it refuses on both —
+            // asking it here keeps that judgement in one place instead of
+            // reporting "no track of that name" about a Tracks area this walk
+            // could not read at all. It throws; the resolution below is what
+            // the compiler needs, not a second answer.
+            _ = try listRegions(trackName: trackName)
         }
-        return row.regions.map(parseRegion)
+        let row = try resolveRegionRow(rows, trackName: trackName, trackNumber: trackNumber)
+        // Typed the way `listRegions` types them: a row holds one KIND of
+        // region, so where one region publishes its help sentence the rest of
+        // the row is filled in from it. The by-number path used to skip this
+        // and answer with `type` missing on regions whose neighbours had it.
+        return LogicAccessibility.typedRowRegions(row.regions.map(parseRegion))
     }
 
     /// Counts selected regions across ALL RENDERED rows.
@@ -863,16 +932,7 @@ extension LogicAccessibility {
 
     func arrangementCensus(trackName: String, trackNumber: Int? = nil) throws -> ArrangementCensus {
         let rows = try regionRows()
-        guard let target = rows.first(where: {
-            if let trackNumber { return $0.number == trackNumber }
-            return $0.track.caseInsensitiveCompare(trackName) == .orderedSame
-        }) else {
-            throw LogicianError.trackNotExposed(
-                requested: trackNumber.map { "track row \($0) ('\(trackName)')" }
-                    ?? "regions on '\(trackName)'",
-                exposed: "visible track rows: " + rows.map(\.track).joined(separator: ", ")
-            )
-        }
+        let target = try resolveRegionRow(rows, trackName: trackName, trackNumber: trackNumber)
         var total = 0
         var selected = 0
         for row in rows {
@@ -1137,18 +1197,22 @@ extension LogicAccessibility {
     /// see `RegionEditGuard`. The after-check compares the region total across
     /// EVERY rendered row, so collateral damage on a rendered row is a loud
     /// failure instead of an invisible one.
+    ///
+    /// - Parameter trackNumber: addresses the ROW by number instead of trusting
+    ///   the name to be unique (see `resolveRegionRow`).
     func deleteRegion(
-        trackName: String, regionName: String?, startBar: Int?
+        trackName: String, regionName: String?, startBar: Int?, trackNumber: Int? = nil
     ) throws -> [String: Any] {
         // The census and the coverage read come BEFORE any write, so a refusal
         // can honestly say the project is untouched — selection included. The
         // census doubles as the before-picture: selecting a region changes no
         // region counts.
-        let before = try arrangementCensus(trackName: trackName)
+        let before = try arrangementCensus(trackName: trackName, trackNumber: trackNumber)
         let (coverage, plan) = try regionEditPlan(.delete, regionRowNumbers: before.rowNumbers)
         let exclusive = try establishExclusiveRegionSelection(
             .delete, plan: plan,
-            trackName: trackName, regionName: regionName, startBar: startBar
+            trackName: trackName, regionName: regionName, startBar: startBar,
+            trackNumber: trackNumber
         )
         let targetName = exclusive.region["name"] as? String
         let targetBar = exclusive.region["start_bar"] as? Int
@@ -1162,7 +1226,7 @@ extension LogicAccessibility {
         var after = before
         let deadline = Date().addingTimeInterval(2.0)
         repeat {
-            after = try arrangementCensus(trackName: trackName)
+            after = try arrangementCensus(trackName: trackName, trackNumber: trackNumber)
             verdict = RegionEditGuard.verify(
                 targetStillPresent: after.targetRegions.contains {
                     ($0["start_bar"] as? Int) == targetBar && ($0["name"] as? String) == targetName
@@ -1362,9 +1426,11 @@ extension LogicAccessibility {
     /// reference project (ten subtracks under a collapsed stack) a Split that
     /// also cut four regions off screen passed the guard and the after-check
     /// both. See `RegionEditGuard`.
+    /// - Parameter trackNumber: addresses the ROW by number instead of
+    ///   trusting the name to be unique (see `resolveRegionRow`).
     func splitRegion(
         trackName: String, regionName: String?, startBar: Int?,
-        atBar: Int, atBeat: Int, notesCrossing: String
+        atBar: Int, atBeat: Int, notesCrossing: String, trackNumber: Int? = nil
     ) throws -> [String: Any] {
         guard LogicAccessibility.notesCrossingChoices[notesCrossing.lowercased()] != nil else {
             throw LogicianError.invalidArguments(
@@ -1385,7 +1451,7 @@ extension LogicAccessibility {
         // region total, because the after-check needs both and the second one
         // is what makes "two regions where one was" a claim about the project
         // instead of about one track.
-        let census = try arrangementCensus(trackName: trackName)
+        let census = try arrangementCensus(trackName: trackName, trackNumber: trackNumber)
         let before = census.targetRegions
         // Identify the region WITHOUT selecting it yet: the playhead has to be
         // parked first (see below), and parking touches the control bar, which
@@ -1403,12 +1469,23 @@ extension LogicAccessibility {
             if let startBar, entry["start_bar"] as? Int != startBar { return false }
             return true
         }
-        guard candidates.count == 1, let selection = candidates.first else {
-            throw LogicianError.parameterAmbiguous(
-                "region on '\(trackName)' (candidates: " + before.map {
-                    "\($0["name"] ?? "?")@bar\($0["start_bar"] ?? 0)"
-                }.joined(separator: ", ") + ")",
-                candidates.count
+        guard let selection = candidates.first else {
+            throw LogicianError.trackNotExposed(
+                requested: RegionAddressing.request(regionName: regionName, startBar: startBar)
+                    + " on '\(trackName)'",
+                exposed: "that row holds: "
+                    + (before.isEmpty
+                        ? "no regions"
+                        : RegionAddressing.candidates(before).joined(separator: ", "))
+                    + ". Nothing was split. A region's start_bar changes with every edit, so"
+                    + " re-read logic_list_regions rather than reusing an earlier one"
+            )
+        }
+        guard candidates.count == 1 else {
+            throw LogicianError.regionAmbiguous(
+                track: trackName,
+                requested: RegionAddressing.request(regionName: regionName, startBar: startBar),
+                candidates: RegionAddressing.candidates(candidates)
             )
         }
         // FAILURE MODE 1: a split point outside the region. Logic would
@@ -1456,7 +1533,7 @@ extension LogicAccessibility {
         let exclusive = try establishExclusiveRegionSelection(
             .split, plan: plan,
             trackName: trackName, regionName: selection["name"] as? String,
-            startBar: selection["start_bar"] as? Int
+            startBar: selection["start_bar"] as? Int, trackNumber: trackNumber
         )
         let anchor = exclusive.anchor
         try fireKeyCommand(KeyCommandRegistry.Name.splitRegionsAtPlayhead)
@@ -1472,7 +1549,8 @@ extension LogicAccessibility {
                 dialogAnswer = answerNotesCrossingSplit(choice: notesCrossing.lowercased())
                 break
             }
-            if (try? regionSnapshot(trackName: trackName))?.count ?? 0 > before.count { break }
+            if (try? regionSnapshot(trackName: trackName, trackNumber: trackNumber))?
+                .count ?? 0 > before.count { break }
         }
 
         // FAILURE MODE 3: the command fired and nothing happened. The
@@ -1484,7 +1562,7 @@ extension LogicAccessibility {
         var verdict = RegionEditGuard.DeltaVerdict.pending
         for _ in 0..<10 {
             Thread.sleep(forTimeInterval: 0.35)
-            afterCensus = try arrangementCensus(trackName: trackName)
+            afterCensus = try arrangementCensus(trackName: trackName, trackNumber: trackNumber)
             verdict = RegionEditGuard.delta(
                 expected: 1, before: census.totalRegions, after: afterCensus.totalRegions
             )
@@ -1630,8 +1708,11 @@ extension LogicAccessibility {
     /// selection commands all act on what is currently selected, so this
     /// selects the anchor exclusively first — the same primitive the region
     /// edits already guard on.
+    /// - Parameter trackNumber: addresses the anchor's ROW by number instead
+    ///   of trusting the name to be unique (see `resolveRegionRow`).
     func selectRegions(
-        mode: String, trackName: String?, regionName: String?, startBar: Int?
+        mode: String, trackName: String?, regionName: String?, startBar: Int?,
+        trackNumber: Int? = nil
     ) throws -> [String: Any] {
         guard let entry = LogicAccessibility.regionSelectionCommands[mode] else {
             throw LogicianError.invalidArguments(
@@ -1647,7 +1728,7 @@ extension LogicAccessibility {
                         + "start_bar when the track holds more than one region)"
                 )
             }
-            let regions = try regionSnapshot(trackName: trackName)
+            let regions = try regionSnapshot(trackName: trackName, trackNumber: trackNumber)
             // One region on the track needs no further identification; more
             // than one and the caller has to say which, exactly as
             // logic_select_region requires.
@@ -1655,12 +1736,13 @@ extension LogicAccessibility {
                 anchor = try selectRegion(
                     trackName: trackName, regionName: regions[0]["name"] as? String,
                     startBar: regions[0]["start_bar"] as? Int, exclusive: true,
-                    forKeyCommand: true
+                    trackNumber: trackNumber, forKeyCommand: true
                 )
             } else {
                 anchor = try selectRegion(
                     trackName: trackName, regionName: regionName,
-                    startBar: startBar, exclusive: true, forKeyCommand: true
+                    startBar: startBar, exclusive: true,
+                    trackNumber: trackNumber, forKeyCommand: true
                 )
             }
         }
@@ -1733,19 +1815,22 @@ extension LogicAccessibility {
     /// region's selection — both the same fictions `logic_delete_region` gave
     /// up on 2026-09-01. Exclusivity now comes from Logic's own project-wide
     /// `Deselect All`, proven to have landed; see `RegionEditGuard`.
+    /// - Parameter trackNumber: addresses the ROW by number instead of
+    ///   trusting the name to be unique (see `resolveRegionRow`).
     func moveRegion(
         trackName: String, regionName: String?, startBar: Int?,
-        byBars: Int, byBeats: Int
+        byBars: Int, byBeats: Int, trackNumber: Int? = nil
     ) throws -> [String: Any] {
         guard byBars != 0 || byBeats != 0 else {
             throw LogicianError.invalidArguments("pass a non-zero by_bars and/or by_beats")
         }
         // Before any write, so the refusal can say the project is untouched.
-        let before = try arrangementCensus(trackName: trackName)
+        let before = try arrangementCensus(trackName: trackName, trackNumber: trackNumber)
         let (coverage, plan) = try regionEditPlan(.nudge, regionRowNumbers: before.rowNumbers)
         let exclusive = try establishExclusiveRegionSelection(
             .nudge, plan: plan,
-            trackName: trackName, regionName: regionName, startBar: startBar
+            trackName: trackName, regionName: regionName, startBar: startBar,
+            trackNumber: trackNumber
         )
         let selection = exclusive.region
         let oldStart = selection["start_bar"] as? Int ?? 0
@@ -1765,7 +1850,7 @@ extension LogicAccessibility {
         // Whole-bar moves verify exactly; beat moves verify that the region
         // left its old slot (Logic's help text rounds to bars+beats). One
         // census walk answers both that and the project-wide count check below.
-        let after = try arrangementCensus(trackName: trackName)
+        let after = try arrangementCensus(trackName: trackName, trackNumber: trackNumber)
         let target = after.targetRegions.first {
             ($0["name"] as? String) == (selection["name"] as? String)
                 && ($0["selected"] as? Bool) == true
