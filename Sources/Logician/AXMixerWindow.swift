@@ -124,16 +124,11 @@ extension LogicAccessibility {
         (try? logicWindows())?.first { isMixerWindow($0) }
     }
 
-    /// Whether a window is a Mixer window. The view name follows the last
-    /// `" - "` in Logic's window titles (`"… - Tracks"`, `"… - Mixer: Tracks"`),
-    /// so the test is on that segment and a project called "Mixer Notes" does
-    /// not fool it.
+    /// Whether a window is a Mixer window — the title rule in
+    /// `LogicWindowKind.isMixerTitle`, which `logic_list_windows` publishes as
+    /// `kind: "mixer"` off the same test.
     func isMixerWindow(_ window: AXUIElement) -> Bool {
-        let title = stringAttribute(window, kAXTitleAttribute as String)
-        guard let view = title.components(
-            separatedBy: LogicUIStrings.Window.viewSeparator
-        ).last else { return false }
-        return view.hasPrefix(LogicUIStrings.Window.mixerViewPrefix)
+        LogicWindowKind.isMixerTitle(stringAttribute(window, kAXTitleAttribute as String))
     }
 
     /// Every channel strip an INSPECTOR is showing, by name — the strips the

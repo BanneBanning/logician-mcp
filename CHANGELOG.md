@@ -872,6 +872,42 @@ with every render coming back as audio the agent can listen to.
   agent had to look up. And `bridge_running` means what it means in `logic_health`: a daemon
   that answered just now. It used to be satisfied by a leftover `command.sock` FILE, which the
   daemon unlinks only at startup, so it read `true` permanently after any daemon death.
+- **`logic_list_tracks` stopped paying a quarter of its cost for a signal Logic never
+  publishes, and now joins the two facts it already knew.** The completeness probe asked
+  the Tracks area whether it can scroll — and to ask, it re-resolved the track header
+  group the header read had just finished with: a second depth-12 walk over ~172 nodes,
+  **25.4 ms of an 86.7 ms warm call and 379 of its 1 002 Accessibility reads**, for an
+  answer that never reached the result. The question itself takes 0.17 ms and two reads;
+  it is asked of the group the caller already holds now, and the project window is
+  resolved once instead of three times. Measured live on the sandbox, before and after in
+  the same session: **58.5–58.8 → 38.3–39.5 ms warm, a third of the call gone**, with the
+  same 19 rows and the same verdict. Cold is unchanged (~124 ms) because cold is macOS's
+  first Accessibility handshake, not this code. The probe stays, because it is the
+  only signal that can catch rows scrolled BELOW the viewport — but on this Logic it has
+  never fired: no vertical scroll bar is published on the Tracks area at all. That silence
+  used to look exactly like "everything fits", so the result now says
+  `scroll_signal: {state: "unavailable", reason: …}` in as many words. And where the
+  answer used to hand an agent two unrelated sentences — "tracks 10…19 are missing" and
+  "stack 9 “Drum Synth Kit” is collapsed" — it now says they are the same fact whenever
+  the rows in hand prove it: the gap begins at the row immediately after the only
+  collapsed stack, so `hidden_by` names that stack and the evidence sentence reads
+  "expand it". No extra Accessibility read, one fewer guess for the agent. The response
+  got **smaller while gaining both of those fields — 2 606 → 2 317 B, -11%**: the
+  570-byte standing note says everything it said in 399, and `selected` and `is_stack` are
+  omitted when false, the way `expanded` always has been.
+
+- **`logic_list_windows` no longer calls the Mixer a project window.** The tool is the
+  server's own window-identification oracle — the one a refusal points at by name — and it
+  derived `kind` from whether the window carried the project document, which is neither
+  necessary nor sufficient. With the Mixer open it reported TWO windows, both
+  `kind: "project"`, one of them the very window `projectWindow()` filters out and
+  `logic_set_mixer` warns can shadow the real one; a Drum Machine Designer dialog carries
+  the document too, and came back "project" while `logic_close_plugin_window` would close
+  it happily. `kind` is derived from the SUBROLE now — the same rule the close tools
+  enforce — and the Mixer is its own kind: `project`, `mixer`, `standard`,
+  `plugin_or_auxiliary` (AXDialog, document or not) and `other`. The description was the
+  last place in the repo still teaching the document rule. `AXDocument` is also read once
+  per window instead of twice.
 
 ### Known limitations (honest by design)
 

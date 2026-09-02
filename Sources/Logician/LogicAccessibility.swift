@@ -66,12 +66,20 @@ final class LogicAccessibility {
                 .map { stringAttribute($0, kAXTitleAttribute as String) }
             let cancelTitle = cancelButton(of: window)
                 .map { stringAttribute($0, kAXTitleAttribute as String) }
+            // Each attribute once. `document` was read twice — once for the
+            // field, once for a `kind` that should never have been derived
+            // from it (see LogicWindowKind).
+            let title = stringAttribute(window, kAXTitleAttribute as String)
+            let subrole = stringAttribute(window, kAXSubroleAttribute as String)
+            let document = documentPath(of: window)
             return [
-                "title": stringAttribute(window, kAXTitleAttribute as String),
-                "subrole": stringAttribute(window, kAXSubroleAttribute as String),
+                "title": title,
+                "subrole": subrole,
                 "is_main": stringAttribute(window, kAXMainAttribute as String) == "1",
-                "document": documentPath(of: window) ?? NSNull(),
-                "kind": documentPath(of: window) != nil ? "project" : "plugin_or_auxiliary",
+                "document": document ?? NSNull(),
+                "kind": LogicWindowKind.classify(
+                    subrole: subrole, title: title, hasDocument: document != nil
+                ),
                 "default_button": defaultTitle ?? NSNull(),
                 "cancel_button": cancelTitle ?? NSNull()
             ]
@@ -87,15 +95,33 @@ final class LogicAccessibility {
         throw LogicianError.windowNotFound("project window with AXDocument")
     }
 
+    /// ONE window resolution and ONE header-group walk answer all three of this
+    /// tool's questions.
+    ///
+    /// It used to take three and two. Measured 2026-09-02 on the reference
+    /// project (19 rendered rows): the scroll probe re-resolved the group the
+    /// header read had just finished with — **25.4 ms of an 86.7 ms warm call
+    /// and 379 of its 1 002 attribute reads, for a signal Logic does not even
+    /// publish** — and `projectDocumentPath()` walked the window list a third
+    /// time for a string this window already carries.
     func listTracks() throws -> [String: Any] {
-        let headers = try parsedTrackHeaders()
+        let window = try projectWindow()
+        let group = try trackHeaderGroup(in: window)
+        let headers = parsedTrackHeaders(in: group)
         let tracks: [[String: Any]] = headers.map { header in
+            // Defaults are omitted, the way `expanded` always has been:
+            // `"selected": false` ×18 and `"is_stack": false` ×16 were 22% of
+            // this response and said nothing a reader could not assume.
             var entry: [String: Any] = [
                 "track_number": header.number,
-                "track_name": header.name,
-                "selected": header.selected,
-                "is_stack": header.disclosure != nil
+                "track_name": header.name
             ]
+            if header.selected {
+                entry["selected"] = true
+            }
+            if header.disclosure != nil {
+                entry["is_stack"] = true
+            }
             if let expanded = header.expanded {
                 entry["expanded"] = expanded
             }
@@ -105,7 +131,7 @@ final class LogicAccessibility {
         // tell", never "yes" — see TrackListCompleteness for why, and for the
         // audit finding that made this the loudest field in the result instead
         // of a footnote on a successful one.
-        let scroll = tracksAreaScrollable()
+        let scroll = tracksAreaScrollable(from: group)
         let verdict = TrackListCompleteness.evaluate(
             rows: headers.map {
                 TrackListCompleteness.Row(
@@ -115,20 +141,34 @@ final class LogicAccessibility {
             },
             scrollable: scroll.scrollable
         )
+        // The window this whole read came from already carries the path; the
+        // fallback is for a project window with no AXDocument at all.
+        let document = documentPath(of: window) ?? (try? projectDocumentPath())
         var result: [String: Any] = [
-            "project_document": (try? projectDocumentPath()) ?? NSNull(),
+            "project_document": document ?? NSNull(),
             "tracks": tracks,
             "visible_tracks": tracks.count,
             "partial": verdict.partial,
             "completeness": verdict.completeness,
             "partial_evidence": verdict.evidence,
+            // Replaces `tracks_area_scrollable`, which was ABSENT exactly when
+            // the signal was missing — the one case a reader had to be told
+            // about rather than left to infer from silence.
+            "scroll_signal": [
+                "state": verdict.scrollSignal.state,
+                "reason": verdict.scrollSignal.reason
+            ],
             "note": TrackListCompleteness.standingNote
         ]
         if !verdict.missingTrackNumbers.isEmpty {
             result["missing_track_numbers"] = verdict.missingTrackNumbers
         }
-        if let scrollable = scroll.scrollable {
-            result["tracks_area_scrollable"] = scrollable
+        if let hidden = verdict.hiddenBy {
+            result["hidden_by"] = [
+                "track_number": hidden.trackNumber,
+                "track_name": hidden.trackName,
+                "track_numbers": hidden.trackNumbers
+            ]
         }
         return result
     }

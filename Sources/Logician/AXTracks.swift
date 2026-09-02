@@ -16,7 +16,14 @@ extension LogicAccessibility {
     }
 
     func parsedTrackHeaders() throws -> [TrackHeader] {
-        try trackHeaderItems().compactMap { item in
+        try parsedTrackHeaders(in: trackHeaderGroup())
+    }
+
+    /// The same parse against a header group the caller already resolved, so a
+    /// caller that also needs the scroll probe pays `trackHeaderGroup()` once
+    /// instead of twice (see `tracksAreaScrollable(from:)`).
+    func parsedTrackHeaders(in group: AXUIElement) -> [TrackHeader] {
+        trackHeaderItems(in: group).compactMap { item in
             guard let track = parseTrackDescription(stringAttribute(item, kAXDescriptionAttribute as String)) else {
                 return nil
             }
@@ -48,8 +55,20 @@ extension LogicAccessibility {
     /// publishes a disabled one; a scrolled or scrollable one publishes an
     /// enabled bar, and its `AXValue` (0…1) additionally says whether the top of
     /// the list is even on screen.
+    ///
+    /// **The probe itself is free; resolving the group for it was not.**
+    /// Measured 2026-09-02: the parent walk plus the `AXVerticalScrollBar` read
+    /// is **0.17 ms and 2 attribute reads**, while the `trackHeaderGroup()` this
+    /// used to open with cost **25.2 of its 25.4 ms** — a second copy of the
+    /// walk the caller had just finished. Callers that already hold the group
+    /// use `tracksAreaScrollable(from:)`.
     func tracksAreaScrollable() -> (scrollable: Bool?, position: Double?) {
         guard let group = try? trackHeaderGroup() else { return (nil, nil) }
+        return tracksAreaScrollable(from: group)
+    }
+
+    /// The scroll question asked of a header group the caller already resolved.
+    func tracksAreaScrollable(from group: AXUIElement) -> (scrollable: Bool?, position: Double?) {
         // Walk UP to the enclosing scroll area: the header column sits under
         // several split/layout wrappers whose depth is not worth hardcoding.
         var current: AXUIElement? = group
@@ -67,6 +86,14 @@ extension LogicAccessibility {
             // No bar published. That USUALLY means the content fits — but this
             // is exactly the inference that would turn "I cannot see" into "there
             // is nothing", so it stays unknown.
+            //
+            // And it is not the rare branch: measured 2026-09-02 on the
+            // reference project, Logic publishes NO vertical scroll bar on the
+            // Tracks scroll area at all, so this is the answer every call gets
+            // and the one completeness signal that catches rows below the
+            // viewport never fires. `TrackListCompleteness` reports that
+            // silence as `scroll_signal: unavailable` rather than letting it
+            // read as "everything fits".
             return (nil, nil)
         }
         let enabled = stringAttribute(bar, kAXEnabledAttribute as String)
