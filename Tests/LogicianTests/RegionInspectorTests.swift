@@ -424,6 +424,247 @@ final class RegionInspectorTests: XCTestCase {
         XCTAssertFalse(RegionInspector.popupValuesMatch("Out", "X (Crossfade)"))
     }
 
+    // MARK: - Logic's own two strings are refused as NAMES
+
+    /// The trap: the panel's name field is where Logic says whose parameters
+    /// are on screen AND the field `logic_rename_region` writes. A region
+    /// named "2 selected" reads as a two-region selection to every
+    /// Region-inspector tool, and the rename path reads the panel BEFORE it
+    /// writes — so the inverse call refuses too and this server can never
+    /// rename it back. Refused before the write instead.
+    func testTheStringsLogicPrintsForItselfAreRefusedAsRegionNames() {
+        XCTAssertNotNil(RegionInspector.reservedPanelNameReason("2 selected"))
+        XCTAssertNotNil(RegionInspector.reservedPanelNameReason("17 selected"))
+        XCTAssertNotNil(RegionInspector.reservedPanelNameReason("MIDI Defaults"))
+        XCTAssertNotNil(RegionInspector.reservedPanelNameReason("Audio Defaults"))
+        // Any " Defaults" the panel could print, not just Logic's two kinds.
+        XCTAssertNotNil(RegionInspector.reservedPanelNameReason("Sparkle Defaults"))
+        // Leading and trailing space does not smuggle one past the refusal:
+        // the write is trimmed, so the panel would read the reserved shape.
+        XCTAssertNotNil(RegionInspector.reservedPanelNameReason("  2 selected  "))
+    }
+
+    func testTheRefusalNamesWhichStringLogicReservedAndWhy() {
+        let reason = RegionInspector.reservedPanelNameReason("2 selected")
+        XCTAssertEqual(
+            reason,
+            "'2 selected' is the string Logic's Region inspector prints when 2 regions are selected"
+        )
+        XCTAssertEqual(
+            RegionInspector.reservedPanelNameReason("MIDI Defaults"),
+            "'MIDI Defaults' is the string Logic's Region inspector prints when NO region is "
+                + "selected and the panel is showing the track's MIDI region defaults"
+        )
+    }
+
+    func testOrdinaryNamesAndTheNearMissesAreNotRefused() {
+        XCTAssertNil(RegionInspector.reservedPanelNameReason("Crash"))
+        XCTAssertNil(RegionInspector.reservedPanelNameReason("Untitled_1#05.42"))
+        // The near misses the classification already allows: "Defaults" alone
+        // is not the two-word form, and "not selected" has no count.
+        XCTAssertNil(RegionInspector.reservedPanelNameReason("Defaults"))
+        XCTAssertNil(RegionInspector.reservedPanelNameReason("not selected"))
+        XCTAssertNil(RegionInspector.reservedPanelNameReason("2 selected takes"))
+    }
+
+    func testTheAlternativeTheRefusalOffersIsItselfSafe() {
+        // A refusal that names the alternative has to name a legal one.
+        for reserved in ["2 selected", "17 selected", "MIDI Defaults", "Audio Defaults"] {
+            let alternative = RegionInspector.unreservedAlternative(to: reserved)
+            XCTAssertNil(
+                RegionInspector.reservedPanelNameReason(alternative),
+                "the alternative offered for '\(reserved)' is reserved too"
+            )
+        }
+    }
+
+    // MARK: - A region already named like a selection state
+
+    /// The escape hatch for a region Logic's own UI (or an older build of this
+    /// server) named into the trap: the panel string alone cannot tell it from
+    /// the state, but the ARRANGEMENT can — one region selected, and the map's
+    /// name for it is that very string.
+    func testARegionNamedLikeASelectionStateIsStillARegion() {
+        XCTAssertEqual(
+            RegionInspector.panelSubject(
+                nameField: "2 selected",
+                evidence: .init(selectedCount: 1, addressedRegionName: "2 selected")
+            ),
+            .region(name: "2 selected")
+        )
+        XCTAssertEqual(
+            RegionInspector.panelSubject(
+                nameField: "MIDI Defaults",
+                evidence: .init(selectedCount: 1, addressedRegionName: "MIDI Defaults")
+            ),
+            .region(name: "MIDI Defaults")
+        )
+        // The map prints a muted region as "<name>, muted" while the panel
+        // shows the bare name; the tiebreak compares the bare names.
+        XCTAssertEqual(
+            RegionInspector.panelSubject(
+                nameField: "2 selected",
+                evidence: .init(selectedCount: 1, addressedRegionName: "2 selected, muted")
+            ),
+            .region(name: "2 selected")
+        )
+    }
+
+    func testNeitherHalfOfTheEvidenceOverrulesThePanelOnItsOwn() {
+        // A GENUINE two-region selection, one of which happens to be named
+        // "2 selected": the count says two are selected, so the panel stands.
+        XCTAssertEqual(
+            RegionInspector.panelSubject(
+                nameField: "2 selected",
+                evidence: .init(selectedCount: 2, addressedRegionName: "2 selected")
+            ),
+            .multiple(count: 2)
+        )
+        // One region selected, but it is NOT the one whose name looks like the
+        // state — so the panel is reporting a state, not showing a name.
+        XCTAssertEqual(
+            RegionInspector.panelSubject(
+                nameField: "2 selected",
+                evidence: .init(selectedCount: 1, addressedRegionName: "Crash")
+            ),
+            .multiple(count: 2)
+        )
+        // Nobody counted: the count sees rendered rows only, and a missing
+        // one is not a licence to write.
+        XCTAssertEqual(
+            RegionInspector.panelSubject(
+                nameField: "2 selected",
+                evidence: .init(addressedRegionName: "2 selected")
+            ),
+            .multiple(count: 2)
+        )
+        // And the defaults panel keeps its meaning when the addressed region
+        // is not the one it names.
+        XCTAssertEqual(
+            RegionInspector.panelSubject(
+                nameField: "MIDI Defaults",
+                evidence: .init(selectedCount: 1, addressedRegionName: "Crash")
+            ),
+            .defaults(kind: "MIDI")
+        )
+    }
+
+    func testWithNoEvidenceTheClassificationIsWhatItAlwaysWas() {
+        // The read path (`logic_get_region_params`) passes no evidence, and
+        // its behaviour is unchanged.
+        XCTAssertEqual(RegionInspector.panelSubject(nameField: "2 selected"), .multiple(count: 2))
+        XCTAssertEqual(
+            RegionInspector.panelSubject(nameField: "Audio Defaults"), .defaults(kind: "Audio")
+        )
+        XCTAssertEqual(RegionInspector.panelSubject(nameField: "Crash"), .region(name: "Crash"))
+    }
+
+    /// What the settle poll waits for. MEASURED 2026-09-02: the panel read
+    /// taken ~15 ms after an exclusive selection that cleared three regions on
+    /// another row came back "MIDI Defaults" — Logic had processed the
+    /// deselection and not yet the selection — so the write path polls this
+    /// until the panel names a region rather than refusing the first look.
+    func testOnlyARegionSubjectLetsAWritePastTheSettlePoll() {
+        XCTAssertTrue(RegionInspector.PanelSubject.region(name: "Crash").isRegion)
+        XCTAssertFalse(RegionInspector.PanelSubject.multiple(count: 3).isRegion)
+        XCTAssertFalse(RegionInspector.PanelSubject.defaults(kind: "MIDI").isRegion)
+    }
+
+    // MARK: - Both channels, exactly
+
+    /// The description promised the rename was verified TWICE; the panel
+    /// readback was taken (15 ms) and never compared, and the one comparison
+    /// there was was case-INSENSITIVE while the already-set short-circuit
+    /// above it was case-sensitive — so a case-only rename took the write path
+    /// and was then unverified in both channels.
+    func testBothChannelsHaveToCarryTheNewName() {
+        XCTAssertEqual(
+            LogicAccessibility.renameVerification(
+                wanted: "ProfRenamed", panelName: "ProfRenamed", mapName: "ProfRenamed"
+            ),
+            .verified
+        )
+        XCTAssertEqual(
+            LogicAccessibility.renameVerification(
+                wanted: "ProfRenamed", panelName: "ProfRenamed", mapName: "Crash"
+            ),
+            .mapDisagrees(mapName: "Crash", panelName: "ProfRenamed")
+        )
+        // The divergence the old code read and discarded: the map says the
+        // rename landed, Logic's own live view of the region says it did not.
+        XCTAssertEqual(
+            LogicAccessibility.renameVerification(
+                wanted: "ProfRenamed", panelName: "Crash", mapName: "ProfRenamed"
+            ),
+            .channelsDisagree(mapName: "ProfRenamed", panelName: "Crash")
+        )
+        XCTAssertEqual(
+            LogicAccessibility.renameVerification(
+                wanted: "ProfRenamed", panelName: "ProfRenamed", mapName: nil
+            ),
+            .noRegionAtThatPosition(panelName: "ProfRenamed")
+        )
+    }
+
+    func testACaseOnlyRenameIsVerifiedAsExactlyAsAnyOther() {
+        // "Crash" → "CRASH" is a real rename, and the compare that proves it
+        // has to see the difference.
+        XCTAssertEqual(
+            LogicAccessibility.renameVerification(
+                wanted: "CRASH", panelName: "CRASH", mapName: "CRASH"
+            ),
+            .verified
+        )
+        XCTAssertEqual(
+            LogicAccessibility.renameVerification(
+                wanted: "CRASH", panelName: "CRASH", mapName: "Crash"
+            ),
+            .mapDisagrees(mapName: "Crash", panelName: "CRASH")
+        )
+        XCTAssertEqual(
+            LogicAccessibility.renameVerification(
+                wanted: "CRASH", panelName: "crash", mapName: "CRASH"
+            ),
+            .channelsDisagree(mapName: "CRASH", panelName: "crash")
+        )
+    }
+
+    func testEveryRefusalSaysWhatBothChannelsRead() {
+        let disagreement = LogicAccessibility.renameVerification(
+            wanted: "CRASH", panelName: "Crash", mapName: "CRASH"
+        )
+        let mismatch = disagreement.mismatch ?? ""
+        XCTAssertTrue(mismatch.contains("'CRASH'"), mismatch)
+        XCTAssertTrue(mismatch.contains("'Crash'"), mismatch)
+        XCTAssertTrue(mismatch.contains("disagree"), mismatch)
+        XCTAssertNil(
+            LogicAccessibility.renameVerification(
+                wanted: "CRASH", panelName: "CRASH", mapName: "CRASH"
+            ).mismatch
+        )
+    }
+
+    func testTheChannelsAreComparedOnTheBareTrimmedName() {
+        XCTAssertEqual(LogicAccessibility.comparableName("Fills, muted"), "Fills")
+        XCTAssertEqual(LogicAccessibility.comparableName("  Fills  "), "Fills")
+        // Case survives: it is what a case-only rename changes.
+        XCTAssertEqual(LogicAccessibility.comparableName("FILLS"), "FILLS")
+    }
+
+    func testTheMapNameIsTheRegionAtTheAddressedBarAndBeat() {
+        let snapshot: [[String: Any]] = [
+            ["name": "Fills", "start_bar": 39, "start_beat": 4],
+            ["name": "CRASH, muted", "start_bar": 41, "start_beat": 3]
+        ]
+        XCTAssertEqual(
+            LogicAccessibility.mapName(in: snapshot, startBar: 41, startBeat: 3), "CRASH"
+        )
+        // The beat is part of the address: a region at the same bar on another
+        // beat is not the one that was renamed.
+        XCTAssertNil(LogicAccessibility.mapName(in: snapshot, startBar: 41, startBeat: 1))
+        XCTAssertNil(LogicAccessibility.mapName(in: snapshot, startBar: 20, startBeat: 3))
+    }
+
     // MARK: - The renumbering question
 
     func testARenameThatMovedNoOtherRegionReportsNoSideEffects() {

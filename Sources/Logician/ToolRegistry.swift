@@ -1082,7 +1082,7 @@ extension MCPServer {
             Tool(
                 name: "logic_rename_region",
                 title: "Rename a region",
-                description: "Rename ONE region. Logic's Region inspector publishes the region's name as an editable text field, so this is a single write and a confirm — no dialog, no key command, and the inspector's disclosure triangles are not even touched. The region is selected exclusively first (track_name plus region_name and/or start_bar; ambiguity is refused with the candidates listed) and the rename is verified TWICE: the inspector reads the new name back, and the arrangement map shows it on the region at that position. Names are the ARRANGEMENT's, not the audio file's — renaming an audio region never touches the file on disk, and Undo restores the old name. Compare-and-set with expected_current_name. Two notes worth knowing: a MUTED region reads as '<name>, muted' in the arrangement map while the inspector shows the bare name, and this tool compares the bare names; and if Logic renumbers OTHER regions on the track as a side effect (the way it renumbers default marker names by position), the ones that moved are reported in `also_renamed`. To rename a TRACK use logic_rename_track; to rename several regions call this once per region.",
+                description: "Rename ONE region, in about 0.18 s (measured 2026-09-02). Logic's Region inspector publishes the region's name as an editable text field, so this is a single write and a confirm — no dialog, no key command, and the inspector's disclosure triangles are not even touched. The region is selected exclusively first (track_name plus region_name and/or start_bar; ambiguity is refused with the candidates listed) and the rename is verified in BOTH channels before it reports success: the inspector reads the new name back AND the arrangement map shows it on the region at that position, compared exactly, case included — the two disagreeing is a verification_failed naming both. Names are the ARRANGEMENT's, not the audio file's — renaming an audio region never touches the file on disk, and Undo restores the old name. Compare-and-set with expected_current_name. Three notes worth knowing: a MUTED region reads as '<name>, muted' in the arrangement map while the inspector shows the bare name, and this tool compares the bare names; if Logic renumbers OTHER regions on the track as a side effect (the way it renumbers default marker names by position), the ones that moved are reported in `also_renamed`; and the two strings Logic prints in that name field for ITSELF — '2 selected', and the '... Defaults' it shows when no region is selected — are refused as names before anything is written, because a region carrying one reads as a selection state to every Region-inspector tool. To rename a TRACK use logic_rename_track; to rename several regions call this once per region.",
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -1098,9 +1098,17 @@ extension MCPServer {
                 ],
                 // Reversible by renaming back, and idempotent: a repeat with
                 // the same name is a verified no-op ("already_set").
+                //
+                // NOT `changesArrangement`, which is a claim about the SOUND:
+                // it attaches the standing instruction to bounce a range and
+                // listen across the seam for a displaced groove. A rename
+                // writes METADATA — the tool's own note says the file on disk
+                // is untouched — so that note sent the agent after a snare a
+                // name change cannot move, and it was 457 B of an 890 B
+                // response (51%), attached to the `already_set` no-op too.
+                // The tools that CAN displace a groove keep it.
                 safety: .write,
                 idempotent: true,
-                changesArrangement: true,
                 handler: MCPServer.handleRenameRegion
             ),
             Tool(

@@ -883,8 +883,18 @@ extension LogicAccessibility {
     /// reason as `selectRegion`: `listRegions(trackName:)` filters by NAME and
     /// would fold two namesake rows into one snapshot, which is exactly the
     /// shape that makes a paste look verified on the wrong track.
-    func regionSnapshot(trackName: String, trackNumber: Int? = nil) throws -> [[String: Any]] {
-        let rows = try regionRows()
+    ///
+    /// `alreadyWalkedRows` reuses a walk the caller has just taken, exactly as
+    /// `selectRegion`'s does and under the same condition — the walk must be
+    /// newer than the last write, because a write republishes the layout
+    /// items. It is what lets a tool that has to snapshot the row AND select
+    /// the region in it pay for one walk instead of two (64–74 ms each,
+    /// measured 2026-09-02). Default nil = walk fresh.
+    func regionSnapshot(
+        trackName: String, trackNumber: Int? = nil,
+        alreadyWalkedRows: [(number: Int, track: String, regions: [AXUIElement])]? = nil
+    ) throws -> [[String: Any]] {
+        let rows = try alreadyWalkedRows ?? regionRows()
         if rows.isEmpty {
             // Whether an arrangement with no rendered rows is EMPTY or merely
             // unreadable is `listRegions`' verdict, and it refuses on both —

@@ -26,6 +26,13 @@ enum RegionInspector {
         case multiple(count: Int)
         case defaults(kind: String)
 
+        /// Whether the panel is showing ONE region — the only subject a write
+        /// path may proceed on, and the condition the settle poll waits for.
+        var isRegion: Bool {
+            if case .region = self { return true }
+            return false
+        }
+
         var description: String {
             switch self {
             case .region(let name): return "the region '\(name)'"
@@ -35,10 +42,65 @@ enum RegionInspector {
         }
     }
 
+    /// What the caller knows about the selection from a channel the panel's
+    /// name field cannot forge.
+    ///
+    /// The name field is USER-WRITABLE — `logic_rename_region` writes exactly
+    /// that field — so classifying the panel by sniffing it alone reads
+    /// Logic's grammar out of a string a user chose. A region called
+    /// "2 selected" would report itself as a two-region selection to every
+    /// Region-inspector tool, and the write paths would refuse it forever.
+    /// This server refuses to CREATE such a name (`reservedPanelNameReason`),
+    /// but Logic's own UI does not, and a project that arrives carrying one
+    /// has to stay addressable. Evidence taken from the ARRANGEMENT breaks
+    /// the tie.
+    struct SelectionEvidence: Equatable {
+        /// How many regions a sweep of the arrangement found selected, or nil
+        /// when nobody counted. It sees RENDERED rows only (a collapsed
+        /// folder stack is invisible to it), so it is only ever allowed to
+        /// NARROW: on its own it can never talk the panel out of "several are
+        /// selected".
+        let selectedCount: Int?
+        /// The arrangement map's own name for the one region the caller
+        /// addressed — the independent channel that says a reserved-looking
+        /// panel string is really this region's name.
+        let addressedRegionName: String?
+
+        static let none = SelectionEvidence()
+
+        init(selectedCount: Int? = nil, addressedRegionName: String? = nil) {
+            self.selectedCount = selectedCount
+            self.addressedRegionName = addressedRegionName
+        }
+    }
+
     /// Classifies the panel's name field. `"2 selected"` and `"MIDI Defaults"`
     /// are Logic's own strings, measured; anything else is a region name.
-    static func panelSubject(nameField: String) -> PanelSubject {
+    ///
+    /// `evidence` is how a region NAMED like one of Logic's strings is told
+    /// apart from the state itself. Both halves are required to overrule the
+    /// string, and each covers the other's blind spot: the count proves this
+    /// is not a multi-selection of rendered regions, and the map name proves
+    /// the panel string is a name Logic is showing rather than a state it is
+    /// reporting. With no evidence the string stands on its own, which is the
+    /// read path's behaviour and was the only behaviour before 2026-09-02.
+    static func panelSubject(
+        nameField: String, evidence: SelectionEvidence = .none
+    ) -> PanelSubject {
         let text = nameField.trimmingCharacters(in: .whitespaces)
+        let sniffed = sniffedPanelSubject(text)
+        if case .region = sniffed { return sniffed }
+        if evidence.selectedCount == 1,
+           let addressed = evidence.addressedRegionName,
+           PrintedRegion.canonicalName(addressed).trimmingCharacters(in: .whitespaces) == text {
+            return .region(name: text)
+        }
+        return sniffed
+    }
+
+    /// The name field read as nothing but a string — Logic's grammar, with no
+    /// arrangement evidence to check it against.
+    private static func sniffedPanelSubject(_ text: String) -> PanelSubject {
         if text.hasSuffix(" Defaults") {
             return .defaults(kind: String(text.dropLast(" Defaults".count)))
         }
@@ -47,6 +109,41 @@ enum RegionInspector {
             return .multiple(count: count)
         }
         return .region(name: text)
+    }
+
+    /// Why a region must not be GIVEN this name — or nil when it is safe.
+    ///
+    /// Logic reserves two shapes of the Region inspector's name field for
+    /// itself, and the panel is the only place it says whose parameters are on
+    /// screen. A region named into one of those shapes reads as a selection
+    /// STATE: `logic_rename_region` and `logic_set_region_params` refuse it
+    /// (the refusal is honest-looking and describes a selection problem that
+    /// does not exist) and `logic_get_region_params` reports it as several
+    /// regions. Refused before the write instead, since the recovery would
+    /// otherwise be Logic's own UI.
+    ///
+    /// Derived from `panelSubject` rather than from a second copy of the
+    /// rules, so the refusal cannot drift from the sniffing it protects.
+    static func reservedPanelNameReason(_ name: String) -> String? {
+        let text = name.trimmingCharacters(in: .whitespaces)
+        switch panelSubject(nameField: text) {
+        case .region:
+            return nil
+        case .multiple(let count):
+            return "'\(text)' is the string Logic's Region inspector prints when \(count) regions "
+                + "are selected"
+        case .defaults(let kind):
+            return "'\(text)' is the string Logic's Region inspector prints when NO region is "
+                + "selected and the panel is showing the track's \(kind) region defaults"
+        }
+    }
+
+    /// A name close to the refused one that Logic does not reserve, so the
+    /// refusal can name the alternative instead of only the problem. Escaping
+    /// both shapes needs one character that is neither " selected" nor
+    /// " Defaults" at the end.
+    static func unreservedAlternative(to name: String) -> String {
+        name.trimmingCharacters(in: .whitespaces) + "_"
     }
 
     // MARK: - Rows

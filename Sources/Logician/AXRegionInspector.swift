@@ -1299,9 +1299,36 @@ extension LogicAccessibility {
     /// disclosure triangle is open or shut, so nothing is unfolded here and
     /// the inspector is left exactly as it was found.
     ///
-    /// Verified twice over: the panel reads the new name back, AND the
-    /// arrangement map shows it on the region at that position — the panel
-    /// alone would only prove that a text field accepted text.
+    /// Verified in BOTH channels, and case is part of the name: the panel
+    /// reads the new name back AND the arrangement map shows it on the region
+    /// at that position, each compared EXACTLY. The panel alone would only
+    /// prove that a text field accepted text; the map alone reads a parsed
+    /// `AXHelp` sentence rather than Logic's own live view of the selected
+    /// region, and the two disagreeing is the staleness class this family has
+    /// been fixing all week — so a disagreement is a `verification_failed`
+    /// naming both values. The compare used to be case-INSENSITIVE while the
+    /// already-set short-circuit was case-sensitive, which left a case-only
+    /// rename ("Crash" → "CRASH") taking the write path and then unverifiable
+    /// by the only check present.
+    ///
+    /// ONE arrangement walk before the write, not three (measured 2026-09-02:
+    /// a walk is 64–74 ms and this tool took four of them, 34% of an 816 ms
+    /// call). `selectRegion` is handed the walk instead of taking its own, the
+    /// before-snapshot is parsed out of the same rows, and the
+    /// `selectedRegionCount() == 1` walk is gone: it cost 72 ms to answer a
+    /// question the panel's own subject answers 7 ms later for free, and
+    /// answers project-wide — the count sees rendered rows only, so on this
+    /// project it was blind to the collapsed folder stack it claimed to cover.
+    /// What that walk was ALSO doing, unmeasured, was giving Logic's inspector
+    /// 72 ms to repaint after the selection write; that is now an explicit
+    /// look-first poll of the 7 ms panel read (see the settle loop below),
+    /// because a walk used as a delay is a delay nobody can find.
+    ///
+    /// No blind sleep after the confirm either: measured 2026-09-02, BOTH the
+    /// panel and the arrangement map already carried the new name on the first
+    /// look, 7 of 7, 1.2–3.0 ms after `kAXConfirmAction`. The readbacks ARE
+    /// the wait, and the 0.4 s budget below is only spent by a channel that
+    /// disagrees.
     /// - Parameter trackNumber: addresses the ROW by number instead of
     ///   trusting the name to be unique (see `resolveRegionRow`).
     func renameRegion(
@@ -1315,20 +1342,71 @@ extension LogicAccessibility {
         guard !newName.contains(where: \.isNewline) else {
             throw LogicianError.invalidArguments("new_name must be a single line")
         }
-
-        let before = try regionSnapshot(trackName: trackName, trackNumber: trackNumber)
-        let addressed = try selectRegion(
-            trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true,
-            trackNumber: trackNumber
-        )
-        guard try selectedRegionCount() == 1 else {
-            throw LogicianError.verificationFailed(
-                requested: "exactly one selected region before renaming",
-                actual: "the selection drifted; refusing", restored: true
+        // Logic's own two panel strings are refused as NAMES, before anything
+        // is written: the name field is where Logic says whose parameters are
+        // on screen, so a region called "2 selected" or "MIDI Defaults" reads
+        // as a selection state to every Region-inspector tool — this one
+        // included, which is why the write would be one this server could not
+        // undo.
+        if let reason = RegionInspector.reservedPanelNameReason(wanted) {
+            throw LogicianError.invalidArguments(
+                "new_name refused: \(reason). A region carrying it reads as a selection state "
+                    + "rather than a name, so this tool could not rename it back and "
+                    + "logic_set_region_params could not write its parameters. Nothing was "
+                    + "written. Use '\(RegionInspector.unreservedAlternative(to: wanted))' or any "
+                    + "other name Logic does not print for itself."
             )
         }
 
-        let panel = try regionInspectorPanel()
+        // ONE walk, shared: `selectRegion` is handed these rows, and the
+        // before-snapshot is parsed out of them. Parsed BEFORE the selection
+        // write, never after — a write republishes the layout items, and a
+        // held element re-read past one can answer stale.
+        let rows = try regionRows()
+        let before = try regionSnapshot(
+            trackName: trackName, trackNumber: trackNumber, alreadyWalkedRows: rows
+        )
+        let addressed = try selectRegion(
+            trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true,
+            trackNumber: trackNumber, alreadyWalkedRows: rows
+        )
+
+        // The panel can still be showing the selection this call REPLACED.
+        // MEASURED 2026-09-02: with three regions selected on another row, the
+        // read taken ~15 ms after `selectRegion`'s write came back
+        // "MIDI Defaults" — Logic had processed the DESELECTION of the three
+        // and not yet the selection of the target, and the tool refused a
+        // rename that was perfectly addressed. The 72 ms `selectedRegionCount`
+        // walk this fix removed was hiding that race by accident, which is
+        // what a walk used as a delay does. So the wait is a look at the CHEAP
+        // read (7 ms) instead: look first, poll only while the panel disagrees,
+        // and let a selection that genuinely did not take spend the budget and
+        // refuse. Zero cost on the honest call.
+        var panel = try regionInspectorPanel()
+        let settle = Date().addingTimeInterval(0.3)
+        while !panel.subject.isRegion, Date() < settle {
+            Thread.sleep(forTimeInterval: 0.01)
+            panel = try regionInspectorPanel()
+        }
+        switch panel.subject {
+        case .region:
+            // The ordinary case, and the cheap one: the panel names a region,
+            // which is a project-wide statement that exactly one is selected.
+            break
+        case .multiple, .defaults:
+            // The panel is showing one of Logic's own strings — OR a region
+            // whose NAME is one of them, made in Logic's UI or by an older
+            // build of this server. Only here is a count worth its 72 ms, and
+            // only the count plus the arrangement map's name for the region
+            // just selected can overrule the panel (see `SelectionEvidence`).
+            panel.subject = RegionInspector.panelSubject(
+                nameField: panel.panelName,
+                evidence: .init(
+                    selectedCount: try? selectedRegionCount(),
+                    addressedRegionName: addressed["name"] as? String
+                )
+            )
+        }
         switch panel.subject {
         case .defaults(let kind):
             throw LogicianError.preconditionUnmet(
@@ -1338,7 +1416,10 @@ extension LogicAccessibility {
         case .multiple(let count):
             throw LogicianError.preconditionUnmet(
                 "\(count) regions are selected, and the Region inspector's name field then reads "
-                    + "'\(count) selected' rather than a region name — nothing was renamed."
+                    + "'\(count) selected' rather than a region name — nothing was renamed. "
+                    + "(A region genuinely NAMED '\(count) selected' is renamed back normally: "
+                    + "the arrangement map's name for the selected region is what tells the two "
+                    + "apart, and here it did not match.)"
             )
         case .region:
             break
@@ -1348,7 +1429,7 @@ extension LogicAccessibility {
                 "the Region inspector published its title as static text, not as a name field"
             )
         }
-        let currentName = PrintedRegion.canonicalName(panel.panelName)
+        let currentName = Self.comparableName(panel.panelName)
         if let expectedCurrentName,
            currentName.compare(expectedCurrentName, options: .caseInsensitive) != .orderedSame {
             throw LogicianError.currentValueMismatch(
@@ -1378,23 +1459,33 @@ extension LogicAccessibility {
             )
         }
         _ = AXUIElementPerformAction(field, kAXConfirmAction as CFString)
-        Thread.sleep(forTimeInterval: 0.5)
 
-        let panelAfter = try regionInspectorPanel()
-        let panelName = PrintedRegion.canonicalName(panelAfter.panelName)
-        let after = try regionSnapshot(trackName: trackName, trackNumber: trackNumber)
+        // Look before sleeping, in both channels, and give a channel that
+        // disagrees a budget rather than charging every call for one. The
+        // panel is polled first because it is the cheap read (7–15 ms against
+        // the map's 68 ms arrangement walk) and it is Logic's own live view.
         let position = addressed["start_bar"] as? Int
         let beat = addressed["start_beat"] as? Int
-        let renamed = after.first {
-            ($0["start_bar"] as? Int) == position && ($0["start_beat"] as? Int) == beat
+        let deadline = Date().addingTimeInterval(0.4)
+        var panelName = Self.comparableName(try regionInspectorPanel().panelName)
+        while panelName != wanted, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.015)
+            panelName = Self.comparableName(try regionInspectorPanel().panelName)
         }
-        let mapName = (renamed?["name"] as? String).map(PrintedRegion.canonicalName)
-        guard mapName?.compare(wanted, options: .caseInsensitive) == .orderedSame else {
+        var after = try regionSnapshot(trackName: trackName, trackNumber: trackNumber)
+        var mapName = Self.mapName(in: after, startBar: position, startBeat: beat)
+        while mapName != wanted, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.015)
+            after = try regionSnapshot(trackName: trackName, trackNumber: trackNumber)
+            mapName = Self.mapName(in: after, startBar: position, startBeat: beat)
+        }
+        let verdict = Self.renameVerification(
+            wanted: wanted, panelName: panelName, mapName: mapName
+        )
+        if let mismatch = verdict.mismatch {
             throw LogicianError.verificationFailed(
                 requested: "the region at bar \(position.map(String.init) ?? "?") renamed to '\(wanted)'",
-                actual: "the arrangement map shows '\(mapName ?? "no region there")'"
-                    + " (the inspector reads '\(panelName)')",
-                restored: false
+                actual: mismatch, restored: false
             )
         }
 
@@ -1424,13 +1515,92 @@ extension LogicAccessibility {
         return result
     }
 
+    /// The region the call actually wrote, in every dimension it was addressed
+    /// by. `track_number` and `start_beat` are the two that used to be
+    /// resolved and then dropped: on a project with two rows of one name — this
+    /// one has two `Ivan Vocals` rows, and `logic_import_midi` manufactures
+    /// namesakes — a payload without the row number cannot say which of them
+    /// was renamed, and the region is addressed internally by bar AND beat.
     private static func addressedRegion(_ addressed: [String: Any]) -> [String: Any] {
         [
             "track_name": addressed["track_name"] ?? "",
+            "track_number": addressed["track_number"] ?? NSNull(),
             "start_bar": addressed["start_bar"] ?? NSNull(),
+            "start_beat": addressed["start_beat"] ?? NSNull(),
             "end_bar": addressed["end_bar"] ?? NSNull(),
             "type": addressed["type"] ?? NSNull()
         ]
+    }
+
+    /// What the two readbacks add up to. Pure, so the rename's verdict can be
+    /// asserted without an Accessibility tree — and one place where "verified"
+    /// is defined, rather than a compare in the middle of a 100-line function.
+    enum RenameVerification: Equatable {
+        case verified
+        /// Nothing is at the addressed bar+beat any more: a different failure
+        /// from a region with the wrong name, and worth its own sentence.
+        case noRegionAtThatPosition(panelName: String)
+        case mapDisagrees(mapName: String, panelName: String)
+        /// The map carries the new name and Logic's own live view of the
+        /// region does not. This is the class the region family has been
+        /// fixing all week (the stale LCD mirror, the republished layout
+        /// item), and the old code read the panel and threw the answer away.
+        case channelsDisagree(mapName: String, panelName: String)
+
+        /// What the channels actually read, for the refusal — nil when the
+        /// rename is proven.
+        var mismatch: String? {
+            switch self {
+            case .verified:
+                return nil
+            case .noRegionAtThatPosition(let panel):
+                return "the arrangement map shows no region there, and the Region inspector "
+                    + "reads '\(panel)'"
+            case .mapDisagrees(let map, let panel):
+                return "the arrangement map shows '\(map)' and the Region inspector reads "
+                    + "'\(panel)'"
+            case .channelsDisagree(let map, let panel):
+                return "the arrangement map shows '\(map)' but the Region inspector reads "
+                    + "'\(panel)' — the two channels disagree, so the rename is not proven"
+            }
+        }
+    }
+
+    /// Both channels, compared EXACTLY. Case is part of a name: a
+    /// case-insensitive compare would report a case-only rename as verified
+    /// whether or not Logic had taken it.
+    static func renameVerification(
+        wanted: String, panelName: String, mapName: String?
+    ) -> RenameVerification {
+        guard let mapName else { return .noRegionAtThatPosition(panelName: panelName) }
+        guard mapName == wanted else {
+            return .mapDisagrees(mapName: mapName, panelName: panelName)
+        }
+        guard panelName == wanted else {
+            return .channelsDisagree(mapName: mapName, panelName: panelName)
+        }
+        return .verified
+    }
+
+    /// The name two channels are compared BY: the muted suffix off (the
+    /// arrangement map prints "<name>, muted" where the inspector shows the
+    /// bare name) and the edge whitespace off (the write is trimmed, so a
+    /// readback that is not would differ by nothing). Case is deliberately
+    /// left alone — it is part of a name, and this comparison is the whole of
+    /// what "verified" means here.
+    static func comparableName(_ raw: String) -> String {
+        PrintedRegion.canonicalName(raw).trimmingCharacters(in: .whitespaces)
+    }
+
+    /// What the arrangement map calls the region at one bar+beat, or nil when
+    /// there is no region there at all — a real answer, and a different
+    /// failure from "a region with the wrong name".
+    static func mapName(in snapshot: [[String: Any]], startBar: Int?, startBeat: Int?) -> String? {
+        snapshot.first {
+            ($0["start_bar"] as? Int) == startBar && ($0["start_beat"] as? Int) == startBeat
+        }
+        .flatMap { $0["name"] as? String }
+        .map(comparableName)
     }
 
     /// Regions on the same track, other than the renamed one, whose name is
