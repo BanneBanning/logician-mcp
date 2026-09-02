@@ -1083,6 +1083,37 @@ with every render coming back as audio the agent can listen to.
   bridge is not running or Logic has never talked to it" while the bridge is running and
   Logic is fine — an idle surface is woken with one probe press, and the four faults that
   shared that one sentence now each name what was found and the repair for it.
+- **An automation read now reports the position it actually sampled — and a one-point read
+  costs 1.8 s instead of 5.8 s.** `logic_read_automation` used to park the playhead with a
+  `try?` and throw the failure away: the loop then read whatever the lane said wherever the
+  playhead really stood and filed it under the bar/beat that had been ASKED for. Measured on
+  the reference project: `{bar 2, beat 5, value -18.6}` came back — counted as readable, no
+  warning, `playhead_restored: true` — with the playhead standing at bar 4 beat 1. The
+  grid asked for a fifth beat of a four-beat bar because `beats_per_bar` came from the
+  control bar, which publishes the signature AT THE PLAYHEAD; the playhead sat 39 bars away
+  in a 5/4 bar, so where it happened to rest decided which positions the caller was given.
+  Both halves are fixed. Bar lengths come from the project's Signature List, per bar, so a
+  read across the 4/4→5/4 boundary asks for four beats in bar 40 and five in bar 41 and gets
+  all ten positions (proven live), with `meter_route` and `meter_changes_in_range` saying
+  where the lengths came from. And every point's bar/beat is now the position the park
+  VERIFIED on the control bar and the MCU display CONFIRMED — a park that fails puts the
+  position in `omitted_positions` with its reason instead of lending its value to a
+  neighbour, a park that lands elsewhere is reported where it landed, and a first position
+  that cannot be reached refuses the whole call rather than sampling a grid that does not
+  exist. `end_bar` is always sampled too: `{start 2, end 3, resolution 5}` returned ONE
+  point at bar 2 and never touched bar 3, which also meant the flat-line warning could not
+  fire; it now returns bar 2 and bar 3 with `final_interval_beats` naming the short last
+  hop. `automation_mode: null` stopped being a riddle — the label is re-read up to four
+  times (three of them at moments the call was already waiting, so the retries cost
+  nothing), and a null that survives travels with `automation_mode_unavailable` saying the
+  mode is UNKNOWN and not `Off`; `Stereo Out` reports `"Read"`, so the guide's claim that a
+  headerless strip always reads null is corrected. The speed came from the same place it
+  did for the plugin tools: the surface is handed over in the view the read used instead of
+  walking home to Pan, which was **77 % of a one-point call** (1 764 ms against 5 757 ms
+  measured, same project, same day) and also stops leaving a mode banner for the next
+  tool's `findChannel` to wait out (105 / 506 / 2 017 ms across three identical calls
+  before). A dense 17-point read is unchanged at 21.9 s: it is 62 % per-point settling, and
+  that wait is still doing its job.
 
 ### Known limitations (honest by design)
 
