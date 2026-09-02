@@ -168,8 +168,21 @@ extension LogicAccessibility {
     static let tracksHeaderGroupMissing = "Tracks header group"
 
     func trackHeaderGroup() throws -> AXUIElement {
-        let mainWindow = try projectWindow()
-        let headerGroup = firstDescendant(of: mainWindow, maximumDepth: AXDepth.trackHeaderGroup) { element in
+        try trackHeaderGroup(in: projectWindow())
+    }
+
+    /// The same search against a project window the caller ALREADY resolved.
+    ///
+    /// This walk is the most expensive read on the Accessibility plane and it
+    /// is paid per resolution, not per call: measured 2026-09-02 on the
+    /// reference project it is a depth-12 descent over ~172 nodes costing
+    /// **22–37 ms warm (96–118 ms while Logic is busy) and 379 of the 1 002
+    /// attribute reads** a `logic_list_tracks` call used to make. Any caller
+    /// that needs the group twice — headers and then the scroll probe — must
+    /// resolve it once and pass it down; nothing between two resolutions can
+    /// change the answer.
+    func trackHeaderGroup(in window: AXUIElement) throws -> AXUIElement {
+        let headerGroup = firstDescendant(of: window, maximumDepth: AXDepth.trackHeaderGroup) { element in
             stringAttribute(element, kAXRoleAttribute as String) == "AXGroup"
                 && stringAttribute(element, kAXDescriptionAttribute as String)
                     == LogicUIStrings.Element.tracksHeader
@@ -181,7 +194,14 @@ extension LogicAccessibility {
     }
 
     func trackHeaderItems() throws -> [AXUIElement] {
-        try children(of: trackHeaderGroup()).filter {
+        trackHeaderItems(in: try trackHeaderGroup())
+    }
+
+    /// The header rows of a group the caller already holds. One `AXChildren`
+    /// read and a role filter — 1.5 ms of the walk above, which is why the
+    /// group, not this list, is the thing worth passing around.
+    func trackHeaderItems(in group: AXUIElement) -> [AXUIElement] {
+        children(of: group).filter {
             stringAttribute($0, kAXRoleAttribute as String) == "AXLayoutItem"
         }
     }

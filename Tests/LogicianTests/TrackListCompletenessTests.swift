@@ -87,11 +87,127 @@ final class TrackListCompletenessTests: XCTestCase {
         XCTAssertEqual(verdict.missingTrackNumbers, [1, 2, 3, 5, 6])
     }
 
+    // MARK: - The join: which collapsed stack is hiding the missing numbers
+
+    /// The reference project's exact shape (measured 2026-09-02): 19 rendered
+    /// rows, 9 “Drum Synth Kit” the only collapsed stack, and the gap running
+    /// 10…19 immediately after it. The two facts used to ship as independent
+    /// sentences and the agent had to join them; the join costs no AX read.
+    func testTheGapIsAttributedToTheCollapsedStackItFollows() {
+        var rows: [TrackListCompleteness.Row] = (1...8).map {
+            TrackListCompleteness.Row(number: $0, name: "T\($0)", isStack: false, expanded: nil)
+        }
+        rows.append(
+            TrackListCompleteness.Row(
+                number: 9, name: "Drum Synth Kit", isStack: true, expanded: false
+            )
+        )
+        rows.append(contentsOf: (20...29).map {
+            TrackListCompleteness.Row(number: $0, name: "T\($0)", isStack: false, expanded: nil)
+        })
+        let verdict = TrackListCompleteness.evaluate(rows: rows, scrollable: nil)
+
+        XCTAssertEqual(verdict.missingTrackNumbers, Array(10...19))
+        XCTAssertEqual(verdict.hiddenBy?.trackNumber, 9)
+        XCTAssertEqual(verdict.hiddenBy?.trackName, "Drum Synth Kit")
+        XCTAssertEqual(verdict.hiddenBy?.trackNumbers, Array(10...19))
+        let gapSentence = verdict.evidence.first { $0.contains("fall inside the rendered range") }
+        XCTAssertNotNil(gapSentence)
+        XCTAssertTrue(gapSentence?.contains("Drum Synth Kit") == true)
+        XCTAssertTrue(gapSentence?.contains("logic_set_track_stack") == true)
+        // It is an inference and must read like one.
+        XCTAssertTrue(gapSentence?.contains("almost certainly") == true)
+    }
+
+    /// A gap that does NOT begin right after a collapsed stack keeps the old,
+    /// unattributed sentence. The join is only made when the rows in hand
+    /// support it.
+    func testAGapNotFollowingACollapsedStackIsNotAttributed() {
+        let rows = [
+            TrackListCompleteness.Row(number: 1, name: "Drums", isStack: true, expanded: false),
+            TrackListCompleteness.Row(number: 2, name: "Bass", isStack: false, expanded: nil),
+            TrackListCompleteness.Row(number: 5, name: "Vox", isStack: false, expanded: nil)
+        ]
+        let verdict = TrackListCompleteness.evaluate(rows: rows, scrollable: nil)
+        XCTAssertEqual(verdict.missingTrackNumbers, [3, 4])
+        XCTAssertNil(verdict.hiddenBy)
+        XCTAssertTrue(verdict.evidence.contains { $0.contains("hidden or scrolled out") })
+        // The stack is still named on its own — it just is not blamed.
+        XCTAssertTrue(verdict.evidence.contains { $0.contains("collapsed track stack(s) 1") })
+    }
+
+    /// An EXPANDED stack above a gap explains nothing: its subtracks are on
+    /// screen. Only `expanded == false` can be blamed.
+    func testAnExpandedStackAboveAGapIsNotBlamed() {
+        let rows = [
+            TrackListCompleteness.Row(number: 1, name: "Drums", isStack: true, expanded: true),
+            TrackListCompleteness.Row(number: 4, name: "Bass", isStack: false, expanded: nil)
+        ]
+        XCTAssertNil(TrackListCompleteness.evaluate(rows: rows, scrollable: nil).hiddenBy)
+    }
+
+    /// Only the run that starts at the gap's first number is claimed — a later,
+    /// separate gap has its own cause and the sentence says so.
+    func testOnlyTheRunTouchingTheStackIsClaimed() {
+        let rows = [
+            TrackListCompleteness.Row(number: 1, name: "Drums", isStack: true, expanded: false),
+            TrackListCompleteness.Row(number: 4, name: "Bass", isStack: false, expanded: nil),
+            TrackListCompleteness.Row(number: 7, name: "Vox", isStack: false, expanded: nil)
+        ]
+        let verdict = TrackListCompleteness.evaluate(rows: rows, scrollable: nil)
+        XCTAssertEqual(verdict.missingTrackNumbers, [2, 3, 5, 6])
+        XCTAssertEqual(verdict.hiddenBy?.trackNumbers, [2, 3])
+        let gapSentence = verdict.evidence.first { $0.contains("fall inside the rendered range") }
+        XCTAssertTrue(gapSentence?.contains("the rest are hidden or scrolled out") == true)
+        XCTAssertEqual(TrackListCompleteness.contiguousRun(from: [2, 3, 5, 6]), [2, 3])
+    }
+
+    // MARK: - The scroll signal, including the silence
+
+    /// D2: on the reference Logic the scroll bar is never published, so the one
+    /// signal that could catch rows BELOW the viewport with no numbering gap
+    /// never fires. Its absence must not read as "everything fits" — and it
+    /// must not make the verdict partial either, because nothing was proved.
+    func testAnUnavailableScrollBarSaysSoWithoutClaimingRowsAreMissing() {
+        let verdict = TrackListCompleteness.evaluate(rows: rows(Array(1...13)), scrollable: nil)
+        XCTAssertFalse(verdict.partial)
+        XCTAssertEqual(verdict.completeness, "unknown")
+        XCTAssertTrue(verdict.evidence.isEmpty)
+        XCTAssertEqual(verdict.scrollSignal.state, "unavailable")
+        XCTAssertTrue(verdict.scrollSignal.reason.contains("no vertical scroll bar"))
+        XCTAssertTrue(verdict.scrollSignal.reason.contains("this silence is not a fit"))
+        // It ships on every call, so it stays one sentence.
+        XCTAssertLessThan(verdict.scrollSignal.reason.utf8.count, 200)
+    }
+
+    func testTheScrollSignalReportsWhatTheBarActuallySaid() {
+        XCTAssertEqual(
+            TrackListCompleteness.evaluate(rows: rows([1]), scrollable: true).scrollSignal.state,
+            "scrollable"
+        )
+        XCTAssertEqual(
+            TrackListCompleteness.evaluate(rows: rows([1]), scrollable: false).scrollSignal.state,
+            "fits"
+        )
+        // Every state carries its reason — the field is never a bare enum a
+        // reader has to interpret.
+        for scrollable in [true, false, nil] as [Bool?] {
+            XCTAssertFalse(
+                TrackListCompleteness.evaluate(rows: rows([1]), scrollable: scrollable)
+                    .scrollSignal.reason.isEmpty
+            )
+        }
+    }
+
     /// The standing note must keep saying the two things an agent forgets: this
     /// is not a census, and headerless strips are never in it.
     func testStandingNoteNamesBothLimits() {
         XCTAssertTrue(TrackListCompleteness.standingNote.contains("never listed here"))
         XCTAssertTrue(TrackListCompleteness.standingNote.contains("Stereo Out"))
         XCTAssertTrue(TrackListCompleteness.standingNote.contains("partial: false"))
+        // …and it must keep saying them SHORT. It was 570 bytes, 22% of a
+        // 2 597-byte response, byte-identical on every call ever made; it is
+        // 399 now, and this is the line that stops it growing back.
+        XCTAssertLessThan(TrackListCompleteness.standingNote.utf8.count, 450)
     }
 }
