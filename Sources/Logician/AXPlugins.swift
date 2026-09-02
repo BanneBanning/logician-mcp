@@ -57,10 +57,16 @@ extension LogicAccessibility {
 
     @discardableResult
     func chooseFromPluginMenu(pluginName: String, format: String) throws -> String {
+        // Look FIRST, then every 25 ms: the press that opened this menu is
+        // not answered until the menu is DOWN again, so by the time control
+        // reaches here the menu is up (measured 8/8 at ~30 ms on the setting
+        // pop-up, 2026-09-02). The 2 s budget is unchanged.
         var menu: AXUIElement?
-        for _ in 0..<20 {
-            Thread.sleep(forTimeInterval: 0.1)
+        let deadline = Date().addingTimeInterval(2.0)
+        while true {
             if let found = pluginChooserMenu() { menu = found; break }
+            if Date() >= deadline { break }
+            Thread.sleep(forTimeInterval: Self.trackingMenuPressInterval)
         }
         guard let chooser = menu else {
             throw LogicianError.openVerificationFailed("the plugin chooser menu did not open")
@@ -194,7 +200,13 @@ extension LogicAccessibility {
             // track-header controls) — a hit-test-guarded click opens it.
             try clickElement(appendSlot, describedAs: "the empty audio plug-in slot")
         } else {
-            _ = AXUIElementPerformAction(appendSlot, kAXPressAction as CFString) // opens the chooser
+            // The chooser is a TRACKING menu: this press cannot be answered
+            // while it is up and would otherwise sit out the whole messaging
+            // timeout (measured 1.5 s on the identically shaped setting
+            // pop-up, 2026-09-02) before reporting failure on a press that
+            // worked. `chooseFromPluginMenu` finds the menu, which is the only
+            // judge here and always was.
+            pressOpeningTrackingMenu(appendSlot)
         }
         let chosenFormat = try chooseFromPluginMenu(pluginName: pluginName, format: format)
 
@@ -258,7 +270,8 @@ extension LogicAccessibility {
             )
         }
         try ensureLogicFrontmost(for: "the plugin chooser") // activating later would close the menu
-        _ = AXUIElementPerformAction(listButton, kAXPressAction as CFString)
+        // A tracking menu, like the append slot's — see `addPlugin`.
+        pressOpeningTrackingMenu(listButton)
         try chooseFromPluginMenu(pluginName: "No Plug-in", format: "")
 
         for _ in 0..<30 {

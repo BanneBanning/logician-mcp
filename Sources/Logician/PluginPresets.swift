@@ -77,6 +77,17 @@ struct PresetEntry: Equatable {
     }
 }
 
+/// What one `select` menu cycle did: the menu it read, the entry the request
+/// resolved to, whether it pressed, and the header label the press settled
+/// on. `pressed == false` is the `already_loaded_by_name` fast path — the
+/// entry is resolved and nothing was touched.
+struct PresetSelection {
+    let entries: [PresetEntry]
+    let entry: PresetEntry
+    let pressed: Bool
+    let label: String?
+}
+
 /// The command block above the settings is fixed, English, and the same in
 /// every plugin's menu. `Delete` is its last entry, which makes it the anchor.
 let presetMenuCommandTitles: Set<String> = [
@@ -119,28 +130,57 @@ func presetRegionStart(_ items: [PresetMenuItem]) -> Int {
     return 0
 }
 
+/// Where one setting sits in the menu Accessibility handed over: which
+/// top-level item, and — for a category — which of its children.
+///
+/// This exists so the press can reuse the elements the READ produced. The
+/// Accessibility side keeps one AXUIElement per menu node; running the same
+/// traversal over both trees lines the elements up with the entries
+/// index-for-index, which is what lets `select` read, match and press inside
+/// ONE menu cycle instead of opening the identical menu twice
+/// (measured 2026-09-02: the second cycle cost 3 144 ms of a 6 234 ms call).
+struct PresetMenuPosition: Equatable {
+    /// Index into the top-level items, as `presetRegionStart` counts them.
+    let item: Int
+    /// Index into that item's `children`, or nil when the setting IS the
+    /// top-level item (a plugin that lists its settings flat, like Limiter).
+    let child: Int?
+}
+
+/// Where every setting sits, in menu order — the single traversal both
+/// `flattenPresetMenu` and the Accessibility element table are built from.
+func flattenPresetMenuPositions(_ items: [PresetMenuItem]) -> [PresetMenuPosition] {
+    var positions: [PresetMenuPosition] = []
+    for index in presetRegionStart(items)..<items.count {
+        let item = items[index]
+        guard !item.isSeparator else { continue }
+        if item.children.isEmpty {
+            positions.append(PresetMenuPosition(item: index, child: nil))
+        } else {
+            for (childIndex, leaf) in item.children.enumerated() where !leaf.isSeparator {
+                positions.append(PresetMenuPosition(item: index, child: childIndex))
+            }
+        }
+    }
+    return positions
+}
+
 /// Every setting in the menu, categories flattened, in menu order.
 ///
 /// Categories keep their names rather than being dropped, because a caller
 /// that wants to jump to `Rock Bass` under `03 Guitars` needs the path, and
 /// two categories of one plugin can hold settings with the same name.
 func flattenPresetMenu(_ items: [PresetMenuItem]) -> [PresetEntry] {
-    var entries: [PresetEntry] = []
-    for item in items[presetRegionStart(items)...] {
-        guard !item.isSeparator else { continue }
-        if item.children.isEmpty {
-            entries.append(PresetEntry(
-                name: item.title, category: nil, active: !item.markChar.isEmpty
-            ))
-        } else {
-            for leaf in item.children where !leaf.isSeparator {
-                entries.append(PresetEntry(
-                    name: leaf.title, category: item.title, active: !leaf.markChar.isEmpty
-                ))
-            }
+    flattenPresetMenuPositions(items).map { position in
+        let item = items[position.item]
+        guard let child = position.child else {
+            return PresetEntry(name: item.title, category: nil, active: !item.markChar.isEmpty)
         }
+        let leaf = item.children[child]
+        return PresetEntry(
+            name: leaf.title, category: item.title, active: !leaf.markChar.isEmpty
+        )
     }
-    return entries
 }
 
 /// What matching a requested name against the menu produced.
@@ -218,6 +258,92 @@ let presetOverwriteWarning =
     + " tool again with action 'undo' — the setting menu's own Undo, which restores the"
     + " parameter STATE (verified 2026-08-28: it brought back all eight of a Limiter's"
     + " parameters exactly, from a named setting to the unnamed state it started in)."
+
+/// Does the plugin window's header LABEL name this setting? A name
+/// comparison and nothing more — kept as one function because both the
+/// `select` fast path and the post-press verdict ask exactly this question,
+/// and the fast path's honesty depends on the answer not being read as more
+/// than it is (see `presetNameMatchWarning`).
+func presetLabelNames(_ label: String?, _ entry: PresetEntry) -> Bool {
+    label?.compare(entry.name, options: [.caseInsensitive, .diacriticInsensitive])
+        == .orderedSame
+}
+
+/// The `state` token for a `select` that pressed nothing because the header
+/// already named the setting asked for. Deliberately NOT `already_loaded`:
+/// it is in the `already_*` family (a verified no-op, no reason to retry),
+/// and the `_by_name` half is the part a caller has to read.
+let presetNameMatchState = "already_loaded_by_name"
+
+/// What the `already_loaded_by_name` fast path does NOT claim.
+///
+/// MEASURED 2026-09-02 on track `808`'s Channel EQ: the header read
+/// `Synth Sub Bass Enhancer` and Logic's own ✓ sat on that very entry, yet
+/// after selecting away and back to that exact name
+/// `logic_list_plugin_parameters` differed from the pre-flight capture in
+/// **3 of 26 parameters** (Low Shelf Gain +0.9 → +4.5 dB, Peak 3 Frequency
+/// 610 → 750 Hz, Peak 3 Gain −1.8 → 0.0 dB). So the project was carrying
+/// unnamed tweaks on top of a setting Logic still ticked as loaded, and a
+/// caller who asked for the factory values would have kept the tweaks and
+/// been told `verified: true`.
+///
+/// Skipping the press is still the right default — it is what protects those
+/// tweaks — so the fix is to say what the match was, and to offer the press
+/// as an explicit request (`reload: true`).
+let presetNameMatchWarning =
+    "Nothing was pressed: this is a NAME match on the plugin window's setting header, not a"
+    + " check of the plugin's parameters. A header naming a setting does not mean the plugin"
+    + " holds that setting's values — measured 2026-09-02 on a Channel EQ that Logic itself"
+    + " still ticked, 3 of 26 parameters sat away from the factory values. Pass reload: true"
+    + " to press the entry anyway and verify the load (this OVERWRITES every parameter, so"
+    + " any tweak on top is lost), or read logic_list_plugin_parameters to see the state."
+
+/// The `select` result for a plugin whose header already NAMES the requested
+/// setting. Pure, so what this fast path claims is testable without Logic.
+func presetNameMatchPayload(entry: PresetEntry, label: String?) -> [String: Any] {
+    var payload: [String: Any] = [
+        "success": true,
+        // The name on the header was read back, and that is all `verified`
+        // covers here; `state` and `warning` say so in the same breath.
+        "verified": true,
+        "state": presetNameMatchState,
+        "pressed": false,
+        "verified_by": "the setting name on the plugin window header (not the parameters)",
+        "preset": entry.qualifiedName,
+        "preset_category": entry.category.map { $0 as Any } ?? NSNull() as Any,
+        "preset_before": label.map { $0 as Any } ?? NSNull() as Any,
+        "preset_after": label.map { $0 as Any } ?? NSNull() as Any,
+        "note": "The header already names '\(entry.name)', so nothing was pressed — which is"
+            + " what protects a tweak made on top of it. Ask for reload: true when you need the"
+            + " setting's own values loaded and verified."
+    ]
+    appendWarning(presetNameMatchWarning, to: &payload)
+    return payload
+}
+
+/// What `action: "undo"` tells a caller about finding its way back.
+///
+/// MEASURED 2026-09-02 on track `808`'s Channel EQ: four writes needed
+/// exactly four `undo` presses to come back byte-for-byte (0 of 26
+/// parameters differing from the pre-flight capture) — but the intermediate
+/// states did NOT walk backwards monotonically. After undo #1, 24 of 26
+/// parameters differed from baseline; after #2, 23; after #3 the parameters
+/// were IDENTICAL to the state after #1; after #4, baseline. So the history
+/// repeats states while this tool can only report `label_changed`, and an
+/// agent counting on the label cannot tell "one more" from "I have
+/// overshot". The one thing that actually proved the restore was diffing
+/// `logic_list_plugin_parameters` against a capture taken before the first
+/// write.
+let presetUndoNote =
+    "Pressed the plugin window's own Setting ▸ Undo — Logic's per-plugin history, which"
+    + " restores the parameter STATE, not a setting name. The label is reported but proves"
+    + " nothing on its own: an undo between two unnamed states leaves it unchanged. THE RULE,"
+    + " measured 2026-09-02: ONE undo per write you want to take back — four writes needed"
+    + " exactly four calls. Do not step by feel; the intermediate states are not monotonic"
+    + " (the state after the 3rd undo was identical to the state after the 1st), so repeated"
+    + " calls can oscillate and this tool cannot tell you where in the history you are."
+    + " Capture logic_list_plugin_parameters BEFORE the first write and diff it after each"
+    + " undo — that comparison is the only proof of a restore."
 
 /// The setting menu's own Undo item. Index 2 of the fixed 20-entry command
 /// block every observed plugin's setting menu opens with, but matched by

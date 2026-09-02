@@ -1059,6 +1059,32 @@ with every render coming back as audio the agent can listen to.
   `logic_list_signatures` refuses outright — a meter map that dropped a signature change would
   place every later bar confidently wrong.
 
+- **A preset change stops sitting out an Accessibility timeout twice, and says what
+  `already loaded` really means.** Loading a plugin setting was a 6.1 s call in which
+  0.5% of the time was the tool's actual job. Half of it was two Accessibility presses
+  waiting for a reply Logic never sends: a press that opens a menu is not answered until
+  the menu is DOWN again, so each one sat out the full messaging timeout (measured
+  1 500–1 510 ms, 8 of 8) and then reported failure on a press that had already opened
+  the menu ~30 ms in. The press is now bounded and the menu itself remains the only proof,
+  the plugin chooser behind `logic_add_plugin` and `logic_remove_plugin` gets the same
+  treatment, and `select` reads, matches and presses inside ONE menu cycle instead of
+  opening the identical menu a second time to find the leaf it had just read. Three blind
+  sleeps that were waiting for things already true became polls that look first. Measured
+  end to end on the same Channel EQ, same project, same day: `select` 6.1 s → **1.1-1.3 s**,
+  `list` 3.4 s → **1.2-1.9 s**, `step` 1.7 s → **0.33 s**, with the same verification and
+  the same retry ladders behind it. The honesty half: a `select` of the setting
+  the header already names pressed nothing and called it `already_loaded` — a NAME match
+  sold as a state match. On the profiled Channel EQ that header (with Logic's own tick on
+  it) sat over 3 of 26 parameters that were away from the factory values, so a caller
+  asking for those values kept the tweaks and was told `verified: true`. The no-op stays,
+  because it is what protects those tweaks, but it now answers `already_loaded_by_name`
+  with a warning that says what was and was not checked — and `reload: true` presses and
+  verifies the load when the values are what you actually wanted. `action: "undo"` carries
+  the measured rule with it: one undo per write, and diff `logic_list_plugin_parameters`
+  against a capture taken before the first write, because the per-plugin history repeats
+  states (the state after the third undo was identical to the state after the first) and
+  nothing in the label can tell you where in it you are.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.
