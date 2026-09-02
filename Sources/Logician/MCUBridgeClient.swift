@@ -4,10 +4,13 @@ import Foundation
 import LogicMCUBridge
 
 enum MCUBridge {
-    static var directory: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/LogicMCPMCU")
-    }
+    /// `static let`, not a computed property. It used to rebuild itself from
+    /// `homeDirectoryForCurrentUser` on EVERY access: twice per `status()`
+    /// call — 53 % of that tool's warm handler, measured 2026-09-02 — once
+    /// per socket transaction in `sendOnce`, and at seven on-disk cache
+    /// sites. The daemon's own copy (Bridge.swift:16) has always been a `let`.
+    static let directory: URL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/LogicMCPMCU")
 
     /// The state FILE mirror, not the socket — the fallback when the daemon
     /// cannot be reached, and the body of the `logic_mcu_status` tool result.
@@ -26,10 +29,41 @@ enum MCUBridge {
                 "note": "no state file yet; the bridge starts automatically - call logic_health, which starts it and audits the rest of the setup"
             ]
         }
-        let updated = object["updated"] as? Double ?? 0
-        object["bridge_running"] = Date().timeIntervalSince1970 - updated < 15
-            || FileManager.default.fileExists(atPath: directory.appendingPathComponent("command.sock").path)
+        // ASK the daemon rather than looking for its socket FILE, which is
+        // what this line used to do. The daemon unlinks that path only at
+        // startup, before binding (Bridge.swift:857) — nothing removes it on
+        // SIGTERM or on a crash — so a bound AF_UNIX path still exists() and
+        // still passes S_ISSOCK after the process owning it is SIGKILLed,
+        // while connect() gives ECONNREFUSED (proven locally 2026-09-02).
+        // `bridge_running` therefore read true PERMANENTLY after any daemon
+        // death. A ping is 0.36 ms when it answers and a failed connect when
+        // it does not, and it is the same question `logic_health` asks under
+        // this same field name — two meanings for one key was the defect.
+        object["bridge_running"] = daemonAnswers()
         return object
+    }
+
+    /// Whether the daemon answers a ping RIGHT NOW. Exempt from the
+    /// self-healing retry in `transact` by construction (a ping is how
+    /// `ensureRunning()` looks), so this is one connect attempt and no more.
+    static func daemonAnswers() -> Bool {
+        (try? send(.ping))?.ok == true
+    }
+
+    /// Whether a bridge daemon PROCESS exists, from the pid it wrote into its
+    /// own lockfile. `nil` when there is no pid to check — no lockfile, or one
+    /// left by a daemon old enough to predate the pid file.
+    ///
+    /// Only worth asking once the socket has already gone unanswered: it is
+    /// what tells "no daemon at all" apart from "a daemon that stopped
+    /// answering", which need different fixes.
+    static func daemonPidAlive() -> Bool? {
+        let lockURL = directory.appendingPathComponent(BridgeProcess.lockFileName)
+        guard let contents = try? String(contentsOf: lockURL, encoding: .utf8),
+              let pid = BridgeProcess.parsePidFile(contents) else { return nil }
+        // EPERM means the pid is taken by a process this user may not signal —
+        // still alive, still an answer.
+        return kill(pid, 0) == 0 || errno == EPERM
     }
 
     /// What `ensureRunning()` had to do.

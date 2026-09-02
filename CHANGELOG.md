@@ -856,6 +856,22 @@ with every render coming back as audio the agent can listen to.
   left, and answering that by turning the vpot back until some read agrees put an `Abbey Road`
   plug-in on a track that had asked for `ARP 2600 V3`. `edit_page_after_confirm` also stopped
   passing off a row of dashes, or the channel-names row, as the parameter page it advertises.
+- **The control surface reads live, and says how old it is when it cannot.** `logic_mcu_status`
+  read the bridge's state FILE and nothing else. That file is rewritten only when Logic sends
+  something, and its `online` flag is computed the moment it is written — so a written file
+  says `online: true` by construction and keeps saying it after Logic goes quiet. Measured
+  2026-09-02: mirrors 117 s, 177 s and 197 s old, served in silence, all claiming the surface
+  was online while the daemon's live answer to the same question, seconds later in the same
+  session, was no. The tool now asks the daemon's socket first, exactly as the server does for
+  its own reads, and that costs nothing (0.36–0.60 ms socket against 0.35–2.42 ms file). Every
+  result names the plane that answered (`source`) and how old the snapshot is (`age_seconds`),
+  `online` is recomputed at read time from when Logic actually last spoke, and a mirror served
+  because the daemon went missing carries a warning with its age in seconds and a fix. The
+  assignment display comes decoded — `assignment_view` in words, plus the leaked-plugin-edit
+  and send-view flags the two standing hazards are about — instead of a two-letter code the
+  agent had to look up. And `bridge_running` means what it means in `logic_health`: a daemon
+  that answered just now. It used to be satisfied by a leftover `command.sock` FILE, which the
+  daemon unlinks only at startup, so it read `true` permanently after any daemon death.
 
 ### Known limitations (honest by design)
 
