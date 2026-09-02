@@ -168,7 +168,7 @@ extension LogicAccessibility {
         // control-surface restore has to be paid before anything else happens:
         // a plugin-edit view left standing on the surface makes Logic auto-open
         // plugin windows on the next track selection (the hazard recorded on
-        // MCUController.hotPluginView). Unconditional rather than
+        // MCUController.hotEditView). Unconditional rather than
         // strip-matched, because "which strip the leaked view belongs to" is
         // not what decides whether Logic opens the windows — that a selection
         // changed at all is. Free on the path this deferral exists for: a

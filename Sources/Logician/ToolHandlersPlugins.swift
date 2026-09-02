@@ -609,7 +609,9 @@ extension MCPServer {
         // choreography. `setPluginParameter` re-checks the live assignment code
         // against this slot before it trusts any of it, so a surface that moved
         // in between costs a re-entry, never a write to the wrong plugin.
-        MCUController.hotPluginView = (target.name, slot, slotName)
+        MCUController.hotEditView = MCUController.HotEditView(
+            track: target.name, slot: .insert(slot), cacheKey: slotName
+        )
         MCUController.deferSurfaceRestore(
             MCUController.SurfaceDebt(strip: target.name, view: "plugin_edit", slot: slot)
         )
@@ -660,56 +662,105 @@ extension MCPServer {
         return result
     }
 
+    /// The instrument slot's name as a HUMAN reads it, off the Accessibility
+    /// channel strip — `Trilian`, not the 6-character LCD cell `Trilan`.
+    ///
+    /// The surface has only the abbreviation, and this tool used to return it
+    /// as `instrument`, which is a problem of its own kind:
+    /// `logic_load_instrument`'s description sends agents here to verify a
+    /// load, and the name that came back was not the name they passed in, with
+    /// nothing saying it had been cut to six characters. nil when the strip
+    /// cannot be read at all, and the caller then says so rather than dressing
+    /// the abbreviation up as a name.
+    private func instrumentSlotDisplayName(track: String) -> String? {
+        guard let strip = try? logic.inspectorStrip(named: track) else { return nil }
+        let reading = ChannelStrip.read(children: logic.stripChildren(of: strip))
+        guard let name = reading.instrument, !name.isEmpty else { return nil }
+        return name
+    }
+
     func handleMcuInstrumentParameters(_ arguments: [String: Any]) throws -> Any {
         // Instruments live on tracks, not on outputs — but the routing is the
         // same call everywhere so a headerless name gets the same honest
         // error instead of "no visible track header matches".
-        _ = try selectStripTarget(arguments)
+        let target = try selectStripTarget(
+            arguments, expectedProjectPath: arguments["expected_project_path"] as? String
+        )
+        let trackName = try requiredString("track_name", in: arguments)
         let instrumentMaxPages = arguments["max_pages"] as? Int ?? 12
-        guard let entered = try MCUController.enterInstrumentEdit(
-            trackName: requiredString("track_name", in: arguments)
-        ), let capped = try MCUController.parameterPagesCapped(
-            cacheKey: "instrument:" + entered.name,
+        let entered: (channel: Int, name: String)
+        switch try MCUController.instrumentEditView(trackName: trackName) {
+        case .missed(let miss):
+            throw MCUController.instrumentEditError(miss, trackName: trackName)
+        case .entered(let channel, let name, _):
+            entered = (channel, name)
+        }
+        guard let capped = try MCUController.parameterPagesCapped(
+            cacheKey: MCUController.instrumentCacheKey(entered.name),
             maxPages: instrumentMaxPages
         ) else {
-            MCUController.exitToPan()
-            throw LogicianError.trackNotExposed(
-                requested: "MCU instrument parameters",
-                exposed: "no instrument in the slot, or the edit mode could not be entered"
+            MCUController.deferSurfaceRestore(MCUController.instrumentEditDebt(strip: target.name))
+            throw LogicianError.openVerificationFailed(
+                "'\(trackName)''s instrument parameter pages are open but would not settle into a"
+                    + " readable row; nothing was changed"
             )
         }
-        MCUController.exitToPan()
+        // The edit view stays up, and is handed to the next call as a HOT view
+        // rather than merely as a debt: reading an instrument's parameters is
+        // what an agent does immediately before writing one of them, and that
+        // write can now skip the whole assign_instrument + vpot-press entry.
+        // `instrumentEditView` re-checks the live LCD before it trusts any of
+        // it, so a surface that moved in between costs a re-entry, never a
+        // write to the wrong instrument.
+        MCUController.hotEditView = MCUController.HotEditView(
+            track: target.name, slot: .instrument(channel: entered.channel), cacheKey: entered.name
+        )
+        MCUController.deferSurfaceRestore(MCUController.instrumentEditDebt(strip: target.name))
+        let displayName = instrumentSlotDisplayName(track: target.name)
         var instrumentPayload: [String: Any] = [
-            "track": try requiredString("track_name", in: arguments),
+            "success": true,
+            "verified": true,
+            "state": "read",
+            "track": target.name,
+            "track_name": target.name,
+            "route_used": "mcu",
             "slot_type": "instrument",
-            "instrument": entered.name,
+            "instrument": displayName ?? entered.name,
+            "instrument_lcd": entered.name,
+            "instrument_name_source": displayName == nil
+                ? "mcu_lcd_abbreviation" : "ax_channel_strip",
             "pages": capped.pages.count,
             "pages_total": capped.total,
             "parameters": capped.pages.enumerated().flatMap { pageIndex, page in
                 page.map { ["name": $0.name, "value": $0.value, "page": pageIndex + 1] }
             }
         ]
+        instrumentPayload.merge(target.resultFields) { current, _ in current }
         if capped.truncated {
             instrumentPayload["truncated"] = true
-            instrumentPayload["note"] = "Showing \(capped.pages.count) of \(capped.total) pages (each uncached page costs ~1.7 s of LCD indicator fade). Pass max_pages for more."
+            instrumentPayload["note"] = "Showing \(capped.pages.count) of \(capped.total) pages (each page this build has not read before costs ~2.1 s of LCD indicator fade; the pages it did read are cached, so the same call is cheap next time). Pass max_pages for more."
         }
         return instrumentPayload
     }
 
     func handleMcuSetInstrumentParameter(_ arguments: [String: Any]) throws -> Any {
-        _ = try selectStripTarget(arguments)
-        guard let result = try MCUController.setInstrumentParameter(
+        let target = try selectStripTarget(
+            arguments, expectedProjectPath: arguments["expected_project_path"] as? String
+        )
+        guard var result = try MCUController.setInstrumentParameter(
             trackName: requiredString("track_name", in: arguments),
             parameter: requiredString("parameter", in: arguments),
             targetValue: requiredString("target_value", in: arguments),
             expectedCurrentValue: arguments["expected_current_value"] as? String,
             tolerance: arguments["tolerance"] as? Double
         ) else {
-            throw LogicianError.trackNotExposed(
-                requested: "MCU instrument parameter control",
-                exposed: "no instrument in the slot, or the edit mode could not be entered"
+            throw LogicianError.openVerificationFailed(
+                "the instrument's parameter pages are open but would not settle into a readable"
+                    + " row, so no vpot was turned; nothing was changed"
             )
         }
+        result["route_used"] = "mcu"
+        result.merge(target.resultFields) { current, _ in current }
         return result
     }
 }

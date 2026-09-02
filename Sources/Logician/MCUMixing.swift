@@ -291,7 +291,7 @@ extension MCUController {
     /// `exitToPan` only so the rule can be asserted without a surface: a debt
     /// that survived a restore would make the next tool skip a restore it needs.
     static func forgetSurfaceViews() {
-        hotPluginView = nil
+        hotEditView = nil
         surfaceDebt = nil
     }
 

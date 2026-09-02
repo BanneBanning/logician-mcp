@@ -34,7 +34,7 @@ extension MCUController {
     /// Diagnostic only: the reason the most recent `findChannel` gave the
     /// answer it did, so a caller that turns nil into an error can name what
     /// was observed. Never a routing input — the routing value is the return
-    /// value. (Single-threaded server loop, like `hotPluginView`.)
+    /// value. (Single-threaded server loop, like `hotEditView`.)
     nonisolated(unsafe) static var lastChannelResolution: ChannelResolution = .unavailable(reason: "no resolution attempted yet")
 
     /// Characters Logic fills a channel-name cell with before it starts

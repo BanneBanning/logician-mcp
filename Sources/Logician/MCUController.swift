@@ -9,18 +9,77 @@ import LogicMCUBridge
 /// on verified success, and throws when a write happened but verification
 /// failed (never silently fall back after a partial write).
 enum MCUController {
-    /// Hot-view cache: which track/slot the plugin-edit view currently
-    /// shows, so consecutive parameter writes skip the whole select +
-    /// view-switch choreography.
+    /// Which SLOT of a strip a parameter-edit view belongs to.
+    ///
+    /// The eight audio-effect inserts are numbered and Logic gives each its
+    /// own assignment code (`P1`…`P8`), so an insert view names itself. The
+    /// INSTRUMENT slot is not an insert: it has no number, it is reached with
+    /// `assign_instrument` plus a vpot press rather than through the insert
+    /// list, and its parameter pages share the `IN` assignment code with the
+    /// instrument BANK view they were opened from. The channel is carried
+    /// along because that shared code is exactly what makes the bank row the
+    /// thing to rule out (`instrumentBankRowShowing`).
+    enum HotSlot: Equatable {
+        case insert(Int)
+        case instrument(channel: Int)
+    }
+
+    /// Hot-view cache: which track/slot the parameter-edit view currently
+    /// shows, so consecutive parameter reads and writes skip the whole select
+    /// + view-switch choreography.
     ///
     /// This cache is NOT authoritative and is not cleared by every view
     /// change — bank scans, send/instrument views and the automation paths
     /// all leave it set. What makes that safe is that the read path
-    /// re-verifies the live LCD assignment code against the cached slot
-    /// before trusting it (see setPluginParameter), and callers re-select
-    /// the track anyway. exitToPan() clears it explicitly on shutdown so a
-    /// leaked hot view cannot make Logic auto-open plugin windows later.
-    nonisolated(unsafe) static var hotPluginView: (track: String, slot: Int, cacheKey: String?)? // single-threaded server loop
+    /// re-verifies the live LCD against the cached slot before trusting it
+    /// (see `hotViewStanding`), and callers re-select the track anyway.
+    /// exitToPan() clears it explicitly on shutdown so a leaked hot view
+    /// cannot make Logic auto-open plugin windows later.
+    struct HotEditView: Equatable {
+        let track: String
+        let slot: HotSlot
+        /// Logic's 6-character LCD name for whatever is in that slot
+        /// (`Cha EQ`, `Q-Samp`) — the parameter name-cache key, not a display
+        /// name. nil when the cell could not be read.
+        let cacheKey: String?
+    }
+
+    nonisolated(unsafe) static var hotEditView: HotEditView? // single-threaded server loop
+
+    /// Is the surface STILL showing the hot view this process left behind?
+    ///
+    /// The record says what we did; this says what the LCD says now, and only
+    /// the second one may be acted on. An insert view proves itself with its
+    /// own assignment code. The instrument slot's parameter pages share `IN`
+    /// with the bank view, so the proof is the assignment code plus the one
+    /// thing that tells those two views apart: the bank view names the STRIP
+    /// in the top row cell of its own channel (that is
+    /// `ensureInstrumentBankView`'s own `mcu_in_bank_named_strip` evidence),
+    /// while the parameter pages paint parameter names there.
+    static func hotViewStanding(_ hot: HotEditView) -> Bool {
+        guard let status = freshStatus(),
+              let assignment = status["assignment"] as? String else { return false }
+        switch hot.slot {
+        case .insert(let slot):
+            return assignment == MCULCDStrings.Assignment.insertSlot(slot)
+        case .instrument(let channel):
+            guard assignment == MCULCDStrings.Assignment.instrument,
+                  let top = status["lcd_top"] as? String else { return false }
+            return !instrumentBankRowShowing(top: top, channel: channel, trackName: hot.track)
+        }
+    }
+
+    /// True when an `IN` view's top row names this strip in its own channel
+    /// cell — the signature of the instrument BANK view (and of a browse
+    /// running in it). Pure, so the rule that separates the two views sharing
+    /// the `IN` code is tested without a surface. Erring toward "bank view"
+    /// costs one re-entry; erring the other way would search a browser row
+    /// for parameter names.
+    static func instrumentBankRowShowing(top: String, channel: Int, trackName: String) -> Bool {
+        let cells = lcdFields(top)
+        guard cells.indices.contains(channel) else { return false }
+        return lcdAbbreviationPlausible(track: trackName, lcd: cells[channel])
+    }
 
     /// A view this server switched the surface INTO and has not switched back
     /// out of — the debt left behind when a plugin tool skips its `exitToPan`.
@@ -51,7 +110,8 @@ enum MCUController {
     struct SurfaceDebt: Equatable {
         /// The strip whose view is showing, when the view belongs to one.
         let strip: String?
-        /// What is on the LCD: "plugin_list" or "plugin_edit".
+        /// What is on the LCD: "plugin_list", "plugin_edit", "send",
+        /// "instrument_bank" or "instrument_edit".
         let view: String
         /// The MCU physical insert slot, for a plugin-edit view.
         let slot: Int?

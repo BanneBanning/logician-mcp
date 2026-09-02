@@ -17,6 +17,12 @@ extension MCUController {
     /// cursor press. Returns nil when no indicator is visible.
     static func pageIndicator() -> (current: Int, total: Int)? {
         guard let status = freshStatus(), let top = status["lcd_top"] as? String else { return nil }
+        return pageIndicator(in: top)
+    }
+
+    /// The same read, from a row already in hand. Pure, so what the indicator
+    /// is allowed to prove can be tested without a surface.
+    static func pageIndicator(in top: String) -> (current: Int, total: Int)? {
         guard let range = top.range(
             of: MCULCDStrings.pageIndicatorPattern, options: .regularExpression
         ) else {
@@ -27,6 +33,12 @@ extension MCUController {
             return nil
         }
         return (current, total)
+    }
+
+    /// Is this LCD cell (part of) the transient "Page x/y" indicator rather
+    /// than a parameter name?
+    static func isPageIndicatorCell(_ cell: String) -> Bool {
+        cell.range(of: MCULCDStrings.pageIndicatorCellPattern, options: .regularExpression) != nil
     }
 
     /// Waits for the page indicator to fade so all 8 fields hold parameters.
@@ -48,10 +60,18 @@ extension MCUController {
         return parameterPage()
     }
 
-    /// Normalizes the edit view to page 1 and returns the page count, using a
-    /// harmless cursor_left press to surface the "Page x/y" indicator
-    /// (cursor_left on page 1 keeps the parameters unchanged; verified).
-    static func normalizeToPageOne() throws -> Int {
+    /// Where the edit view actually IS, using a harmless cursor_left press to
+    /// surface the "Page x/y" indicator (cursor_left on page 1 keeps the
+    /// parameters unchanged; verified). The press itself is a page step, so
+    /// what comes back is the position AFTER it.
+    ///
+    /// Logic remembers the page a plugin was last left on, so this is the
+    /// difference between navigating and guessing: measured 2026-09-02, a
+    /// call that follows a 9-page read starts on page 9 and used to walk 8
+    /// cursor presses home (472 ms) before stepping back out again. Callers
+    /// that need page 1 say so (`normalizeToPageOne`); callers that know
+    /// which page they want step straight there (`walkToPage`).
+    static func pageProbe() throws -> (current: Int, total: Int) {
         try pressNote(0x62)
         // The "Page x/y" indicator is drawn in a later sysex than the first
         // redraw event, so wait for it explicitly rather than for any event.
@@ -60,14 +80,35 @@ extension MCUController {
                 .range(of: MCULCDStrings.pageIndicatorPresentPattern, options: .regularExpression) != nil
         }
         guard let indicator = pageIndicator() else {
-            return 1 // single-page plugins may show no indicator at all
+            return (1, 1) // single-page plugins may show no indicator at all
         }
-        for _ in 0..<(indicator.current - 1) {
+        return indicator
+    }
+
+    /// How many cursor presses, and in which direction, get from one page to
+    /// another. Pure. No wrap: whether cursor-right rolls over from the last
+    /// page to the first is UNMEASURED, and a wrong guess would land the
+    /// write on a page the caller never named — the landing proof would catch
+    /// it, at the price of the 2.1 s fade it exists to avoid.
+    static func pageStepPlan(from current: Int, to page: Int) -> (steps: Int, forward: Bool) {
+        (steps: abs(page - current), forward: page > current)
+    }
+
+    /// Steps the cursor from `current` to `page`, event-driven per press.
+    static func walkToPage(_ page: Int, from current: Int) throws {
+        let plan = pageStepPlan(from: current, to: page)
+        for _ in 0..<plan.steps {
             let events = freshStatus()?["received_events"] as? Int ?? -1
-            try pressNote(0x62)
+            try pressNote(plan.forward ? 0x63 : 0x62)
             _ = awaitEvents(since: events, timeoutMs: 250)
         }
-        return indicator.total
+    }
+
+    /// Normalizes the edit view to page 1 and returns the page count.
+    static func normalizeToPageOne() throws -> Int {
+        let position = try pageProbe()
+        try walkToPage(1, from: position.current)
+        return position.total
     }
 
     static func pageRight() throws {
@@ -227,11 +268,12 @@ extension MCUController {
     /// write on the same plugin dropped a perfectly good cache and re-walked
     /// every page: 9.2 s instead of 0.5 s, for a display artefact.
     static func landOnCachedPage(
-        _ hit: CachedParameterLocation, cachedRow: [String]
+        _ hit: CachedParameterLocation, cachedRow: [String],
+        from currentPage: Int = 1, totalPages: Int
     ) throws -> [(name: String, value: String)]? {
         guard cachedRow.count == 8, (0..<8).contains(hit.index) else { return nil }
-        for _ in 0..<(hit.page - 1) { try pageRight() }
-        if hit.index < 6, let fast = fastLandingCheck(hit, cachedRow: cachedRow) {
+        try walkToPage(hit.page, from: currentPage)
+        if let fast = fastLandingCheck(hit, cachedRow: cachedRow, totalPages: totalPages) {
             return fast
         }
         guard let settled = settledParameterPage(),
@@ -242,22 +284,50 @@ extension MCUController {
         return settled
     }
 
+    /// Does the live top row prove the cached row well enough to turn the
+    /// encoder at `hit.index`? Pure.
+    ///
+    /// Cells 1-6 are repainted immediately, so the ordinary proof is an exact
+    /// match on the cell about to move plus agreement on every other cell
+    /// that is readable at all.
+    ///
+    /// Cells 7-8 are where Logic draws the transient "Page x/y" indicator, so
+    /// the cell about to move CANNOT be read there for ~2.1 s — and waiting
+    /// for it was measured 2026-09-02 at 2 092 ms against 156 ms for cell 2,
+    /// paid on every warm write to a quarter of an instrument's parameters.
+    /// What stands in for the unreadable cell is the indicator itself: it
+    /// states, in Logic's own paint, WHICH page of how many is showing. A row
+    /// whose six readable cells match the cached page AND whose indicator
+    /// names that same page out of the same total the cache holds IS that
+    /// page — the identical witness `pageProbe` already trusts to navigate.
+    /// Anything less (no indicator, a different page, a cell that differs for
+    /// some other reason) still falls through to the full fade.
+    static func cachedRowProvesCell(
+        hit: CachedParameterLocation, cachedRow: [String], live: [String],
+        indicator: (current: Int, total: Int)?, totalPages: Int
+    ) -> Bool {
+        guard cachedRow.count == 8, live.count == 8, (0..<8).contains(hit.index) else { return false }
+        for index in 0..<6 where live[index] != cachedRow[index] {
+            guard isPageIndicatorCell(live[index]) else { return false }
+        }
+        if live[hit.index] == cachedRow[hit.index] { return true }
+        guard hit.index >= 6, isPageIndicatorCell(live[hit.index]), let indicator else { return false }
+        return indicator.current == hit.page && indicator.total == totalPages
+    }
+
     /// The 150 ms half of `landOnCachedPage`: cached names paired with live
-    /// values, or nil when the always-visible fields do not back them up.
+    /// values, or nil when the live row does not back them up.
     private static func fastLandingCheck(
-        _ hit: CachedParameterLocation, cachedRow: [String]
+        _ hit: CachedParameterLocation, cachedRow: [String], totalPages: Int
     ) -> [(name: String, value: String)]? {
         _ = quiescentStatus()
         guard let status = freshStatus(),
               let top = status["lcd_top"] as? String,
               let bottom = status["lcd_bottom"] as? String else { return nil }
-        let live = lcdFields(top)
-        guard live.count == 8, live[hit.index] == cachedRow[hit.index] else { return nil }
-        for index in 0..<6 where live[index] != cachedRow[index] {
-            guard live[index].range(
-                of: MCULCDStrings.pageIndicatorCellPattern, options: .regularExpression
-            ) != nil else { return nil }
-        }
+        guard cachedRowProvesCell(
+            hit: hit, cachedRow: cachedRow, live: lcdFields(top),
+            indicator: pageIndicator(in: top), totalPages: totalPages
+        ) else { return nil }
         return zip(cachedRow, lcdValueFields(bottom)).map { ($0, $1) }
     }
 
@@ -281,6 +351,54 @@ extension MCUController {
             rows.append(names)
         }
         return rows
+    }
+
+    // MARK: Partial (capped) cache entries
+    //
+    // A cache entry is an array of one row per page of the plugin, and a row
+    // is either eight fields (this build has read that page) or empty (it has
+    // not). The LENGTH is therefore always the plugin's true page count, which
+    // is what every "does this entry still describe this plugin?" check
+    // compares against, and the empty rows are what makes a capped read
+    // cacheable at all.
+    //
+    // Before this, `parameterPagesCapped` wrote nothing when it hit the cap
+    // (`limit >= max(total, 1)`), so an instrument with more pages than
+    // `max_pages` had no warm case for ever: measured 2026-09-02, two
+    // consecutive default reads of `Bas`/Trilian (64 pages, cap 12) cost
+    // 30 973 ms and 30 744 ms and left the cache empty both times. The honesty
+    // goal that gate protected — never pair page 13's values with names nobody
+    // read — is kept by the empty rows themselves: `locateParameter` refuses
+    // any entry with a row it cannot index, and the fast walk is only run over
+    // the known prefix.
+
+    /// How many leading pages of an entry are actually known.
+    static func cachedNameRowPrefix(_ rows: [[String]]) -> Int {
+        rows.prefix { $0.count == 8 }.count
+    }
+
+    /// Whether an entry holds every page of the plugin.
+    static func cachedNameRowsComplete(_ rows: [[String]]) -> Bool {
+        !rows.isEmpty && cachedNameRowPrefix(rows) == rows.count
+    }
+
+    /// The rows a walk read, padded out to the plugin's real page count so the
+    /// entry says how much of the plugin it does NOT hold.
+    static func paddedNameRows(_ rows: [[String]], total: Int) -> [[String]] {
+        guard total > rows.count else { return rows }
+        return rows + Array(repeating: [], count: total - rows.count)
+    }
+
+    /// What to store when a fresh walk meets an entry that is already there.
+    /// Pure — this is the rule that lets a later, larger read COMPLETE a
+    /// partial entry instead of replacing it, and stops a small capped read
+    /// from throwing away pages a big one already paid for.
+    ///
+    /// A page-count change is not a merge but a different plugin (or a
+    /// different version of one): the fresher walk wins outright.
+    static func mergedNameRows(existing: [[String]]?, incoming: [[String]]) -> [[String]] {
+        guard let existing, existing.count == incoming.count else { return incoming }
+        return zip(existing, incoming).map { old, new in new.count == 8 ? new : old }
     }
 
     /// One fade-waited read of page 1, compared against the cache before any
@@ -311,35 +429,39 @@ extension MCUController {
         return pages
     }
 
-    /// Cold read capped at maxPages: each page costs ~1.7 s (Logic's own
-    /// "Page x/y" indicator fade), so an 80-page instrument like Augmented
-    /// takes minutes uncapped — and floods the caller with hundreds of
-    /// parameters it rarely needs at once. Returns the total page count so
-    /// truncation is always explicit. Full (uncapped) reads still populate
-    /// the name cache; capped reads do not, so later full reads stay honest.
+    /// Cold read capped at maxPages: each page costs ~2.1 s (Logic's own
+    /// "Page x/y" indicator fade, measured at 2 137 ms over n=16 on
+    /// 2026-09-02), so an 80-page instrument like Augmented takes minutes
+    /// uncapped — and floods the caller with hundreds of parameters it rarely
+    /// needs at once. Returns the total page count so truncation is always
+    /// explicit, and caches the pages it actually read (see the partial-entry
+    /// note above) so the SAME capped read is warm next time.
     static func parameterPagesCapped(
         cacheKey: String?, maxPages: Int
     ) throws -> (pages: [[(name: String, value: String)]], total: Int, truncated: Bool)? {
         // Resolve the project once: the read below and the write further down
         // must agree on which project's cache they are touching.
         let projectPath = currentProjectPath()
-        // A complete cached name set makes even the full read cheap — use it.
+        // Cached name rows make the read cheap — use as many as we hold.
         if let key = cacheKey, let cachedNames = loadNameCache(projectPath: projectPath)[key] {
             // max(,1) mirrors the slow path below: an agent-supplied max_pages
             // of 0 must not turn into an empty walk (or a 1...0 range).
             let walk = min(max(maxPages, 1), cachedNames.count)
-            if let fast = (try? rawParameterPagesFast(cachedNames: cachedNames, limit: walk)) ?? nil {
-                // End-overlap dedup only applies when the true last page was read.
-                let pages = walk == cachedNames.count
-                    ? dedupedPages(fast)
-                    : fast.map { page in page.filter { !$0.name.isEmpty } }
-                return (pages, cachedNames.count, walk < cachedNames.count)
+            if walk <= cachedNameRowPrefix(cachedNames) {
+                if let fast = (try? rawParameterPagesFast(cachedNames: cachedNames, limit: walk)) ?? nil {
+                    // End-overlap dedup only applies when the true last page was read.
+                    let pages = walk == cachedNames.count
+                        ? dedupedPages(fast)
+                        : fast.map { page in page.filter { !$0.name.isEmpty } }
+                    return (pages, cachedNames.count, walk < cachedNames.count)
+                }
+                // The live LCD contradicted the cached names (or the page count
+                // moved): forget the entry before falling through, so the same
+                // lie cannot be told again on the next call.
+                dropNameCache(key: key, projectPath: projectPath)
             }
-            // The live LCD contradicted the cached names (or the page count
-            // moved): forget the entry before falling through. A capped slow
-            // read does not rewrite the cache, so without this the same lie
-            // would be told again on the next call.
-            dropNameCache(key: key, projectPath: projectPath)
+            // Otherwise the entry is honest, it just does not reach that far:
+            // keep it, read the pages the slow way, and merge the two below.
         }
         let total = try normalizeToPageOne()
         let limit = min(max(total, 1), max(maxPages, 1))
@@ -351,12 +473,68 @@ extension MCUController {
                 try pageRight()
             }
         }
-        if limit >= max(total, 1), let key = cacheKey, let rows = cacheableNameRows(pages) {
+        if let key = cacheKey, let rows = cacheableNameRows(pages) {
             var cache = loadNameCache(projectPath: projectPath)
-            cache[key] = rows
+            cache[key] = mergedNameRows(
+                existing: cache[key], incoming: paddedNameRows(rows, total: max(total, 1))
+            )
             saveNameCache(cache, projectPath: projectPath)
         }
-        return (dedupedPages(pages), max(total, 1), limit < max(total, 1))
+        // End-overlap dedup only applies when the true last page was read —
+        // the same rule the cached branch above follows. Logic end-aligns the
+        // LAST page, so stripping a "repeat" from page 12 of 64 would delete
+        // parameters that are really there.
+        let visible = limit >= max(total, 1)
+            ? dedupedPages(pages)
+            : pages.map { page in page.filter { !$0.name.isEmpty } }
+        return (visible, max(total, 1), limit < max(total, 1))
+    }
+
+    /// Whether a live top row is already showing the page whose cached names
+    /// these are. The same comparison the walk performs three lines later —
+    /// fields 0-5, with a cell the "Page x/y" indicator is sitting on counting
+    /// as no evidence either way. Pure.
+    static func cachedRowVisible(cached: [String], live: [String]) -> Bool {
+        guard cached.count == 8, live.count == 8 else { return false }
+        for index in 0..<6 where live[index] != cached[index] {
+            guard isPageIndicatorCell(live[index]) else { return false }
+        }
+        return true
+    }
+
+    /// Waits for a page step to LAND, proved by what Logic painted rather than
+    /// by a fixed silence.
+    ///
+    /// This was `_ = quiescentStatus()`, a 150 ms window that — measured
+    /// 16/16 on 2026-09-02, 150.9-159.9 ms with zero variance — ALWAYS timed
+    /// out: Logic had finished the repaint before the call, so the whole
+    /// 151 ms was dead time, 29% of a warm page walk and rising linearly with
+    /// the page count. What it stood in for is still needed, because cached
+    /// NAMES are about to be paired with the LIVE value row and a row read one
+    /// frame early pairs them with the previous page's values. So the wait is
+    /// now positive: it returns as soon as the new page's own names are on the
+    /// top row AND Logic has then been silent for `confirmMs` (the pairing
+    /// proof — the value row cannot still be in flight through a gap that
+    /// long), and otherwise spends the same 150 ms it always did, after which
+    /// the caller's unchanged per-cell check rejects the row exactly as before.
+    static func settleOnCachedRow(
+        expecting names: [String], budgetMs: Int = 150, confirmMs: Int = 40
+    ) {
+        let deadline = Date().addingTimeInterval(Double(budgetMs) / 1000)
+        while true {
+            guard let status = freshStatus(), let top = status["lcd_top"] as? String else { return }
+            let events = status["received_events"] as? Int ?? -1
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining <= 0 { return }
+            let window = min(confirmMs, max(1, Int(remaining * 1000)))
+            if cachedRowVisible(cached: names, live: lcdFields(top)) {
+                if awaitEvents(since: events, timeoutMs: window)?["timed_out"] as? Bool == true {
+                    return
+                }
+            } else {
+                _ = awaitEvents(since: events, timeoutMs: window)
+            }
+        }
     }
 
     /// Raw pages using cached name rows: waits only for the redraw burst per
@@ -383,14 +561,14 @@ extension MCUController {
         if walkCount > 1 {
             try pageRight()
             for pageNumber in 2...walkCount {
-                _ = quiescentStatus() // burst settle only
+                let names = cachedNames[pageNumber - 1]
+                guard names.count == 8 else { return nil }
+                settleOnCachedRow(expecting: names)
                 guard let status = freshStatus(),
                       let top = status["lcd_top"] as? String,
                       let bottom = status["lcd_bottom"] as? String else { return nil }
                 let liveNames = lcdFields(top)
                 let values = lcdValueFields(bottom)
-                let names = cachedNames[pageNumber - 1]
-                guard names.count == 8 else { return nil }
                 for index in 0..<6
                 where liveNames[index] != names[index]
                     && liveNames[index].range(
@@ -526,21 +704,20 @@ extension MCUController {
         var resolvedBy: String?
 
         /// The hot view IS the (strip, slot) -> plugin-name cache this route
-        /// needs, held in memory and re-proved against the live assignment
-        /// code on every use. A caller who named the plugin the surface is
-        /// already showing therefore pays nothing at all to be pointed at it.
-        func hotMatchesRequest() -> Bool {
-            guard let trackName, let hot = hotPluginView, hot.track == trackName else { return false }
-            if let slot { return hot.slot == slot }
+        /// needs, held in memory and re-proved against the live LCD on every
+        /// use. A caller who named the plugin the surface is already showing
+        /// therefore pays nothing at all to be pointed at it.
+        func hotMatchesRequest(_ hot: HotEditView) -> Bool {
+            guard let trackName, hot.track == trackName,
+                  case .insert(let hotSlot) = hot.slot else { return false }
+            if let slot { return hotSlot == slot }
             guard let pluginName, let key = hot.cacheKey else { return false }
             return !insertSlotsMatching(pluginName: pluginName, cells: [key]).isEmpty
         }
-        let isHot = hotMatchesRequest()
-            && (freshStatus()?["assignment"] as? String)
-                == MCULCDStrings.Assignment.insertSlot(hotPluginView?.slot ?? -1)
-        if isHot, let hot = hotPluginView {
+        if let hot = hotEditView, hotMatchesRequest(hot), hotViewStanding(hot),
+           case .insert(let hotSlot) = hot.slot {
             slotName = hot.cacheKey
-            resolvedSlot = hot.slot
+            resolvedSlot = hotSlot
             if slot == nil { resolvedBy = "hot_view" }
         } else {
             guard let listStatus = try ensurePluginList() else { return nil }
@@ -581,8 +758,10 @@ extension MCUController {
         // the debt is settled by the first operation that needs the names row
         // (or at shutdown) rather than by this call.
         if let trackName {
-            hotPluginView = (trackName, finalSlot,
-                             slotName.flatMap { $0.isEmpty || $0 == MCULCDStrings.emptySlot ? nil : $0 })
+            hotEditView = HotEditView(
+                track: trackName, slot: .insert(finalSlot),
+                cacheKey: slotName.flatMap { $0.isEmpty || $0 == MCULCDStrings.emptySlot ? nil : $0 }
+            )
             deferSurfaceRestore(SurfaceDebt(strip: trackName, view: "plugin_edit", slot: finalSlot))
         }
         guard var result = try searchAndSetParameter(
@@ -592,7 +771,7 @@ extension MCUController {
             tolerance: tolerance,
             cacheKey: slotName.flatMap { $0.isEmpty || $0 == MCULCDStrings.emptySlot ? nil : $0 }
         ) else {
-            hotPluginView = nil
+            hotEditView = nil
             exitToPan()
             return nil
         }

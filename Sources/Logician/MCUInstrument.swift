@@ -6,21 +6,142 @@ import LogicMCUBridge
 extension MCUController {
     // MARK: Instrument slot (assign_instrument, assignment code "IN")
 
+    /// Why an attempt to open a track's instrument parameter pages did not get
+    /// there. Six distinct situations that used to share one sentence — and an
+    /// agent has to answer them differently: an empty slot is a permanent fact
+    /// about the project (load an instrument), a view that would not switch is
+    /// worth retrying, and a dead bridge is neither.
+    enum InstrumentEditMiss: Equatable {
+        case bridgeUnavailable
+        case stripUnresolved(ChannelResolution)
+        case bankViewUnreachable
+        case emptySlot
+        case vpotPressRejected(String)
+        case editViewUnreachable
+    }
+
+    enum InstrumentEditEntry {
+        /// `hot` = the view was already standing and nothing had to be pressed.
+        case entered(channel: Int, name: String, hot: Bool)
+        case missed(InstrumentEditMiss)
+    }
+
+    /// The refusal each miss deserves, in the caller's words. Pure, so the
+    /// wording is pinned by tests rather than by whoever reads it next.
+    static func instrumentEditError(
+        _ miss: InstrumentEditMiss, trackName: String
+    ) -> LogicianError {
+        switch miss {
+        case .bridgeUnavailable:
+            return .trackNotExposed(
+                requested: "the instrument slot of '\(trackName)'",
+                exposed: "the Mackie Control bridge is not running or Logic has never talked to it"
+                    + " (see logic_health). There is no Accessibility route to the instrument slot,"
+                    + " so nothing was read or written"
+            )
+        case .stripUnresolved(let resolution):
+            switch resolution {
+            case .ambiguous(let cells):
+                return .stripAmbiguous(name: trackName, cells: cells)
+            case .notFound(let cells):
+                return .stripNotFound(name: trackName, tracks: [], cells: cells)
+            case .unavailable(let reason):
+                return .trackNotExposed(
+                    requested: "the instrument slot of '\(trackName)'",
+                    exposed: "the control surface could not be pointed at that strip: \(reason)."
+                        + " Nothing was read or written"
+                )
+            case .resolved:
+                // `findChannel` returned nil, so this cannot be the resolution
+                // it recorded — answer it honestly rather than by guessing.
+                return .trackNotExposed(
+                    requested: "the instrument slot of '\(trackName)'",
+                    exposed: "the control surface would not name the strip it had just resolved."
+                        + " Nothing was read or written"
+                )
+            }
+        case .bankViewUnreachable:
+            return .trackNotExposed(
+                requested: "the instrument slot of '\(trackName)'",
+                exposed: "the control surface did not switch to its instrument (IN) view within 2 s."
+                    + " Nothing was read or written — retry, or check that Logic still shows the"
+                    + " Mackie Control online (logic_mcu_status)"
+            )
+        case .emptySlot:
+            return .preconditionUnmet(
+                "'\(trackName)' has no software instrument in its instrument slot (the control"
+                    + " surface shows '--'). This is a fact about the project, not a transient"
+                    + " failure: load one with logic_load_instrument, or name a track that already"
+                    + " has one. Nothing was read or written."
+            )
+        case .vpotPressRejected(let detail):
+            return .writeFailed(
+                "the control surface refused the vpot press that opens '\(trackName)''s instrument"
+                    + " parameter pages (\(detail)). Nothing was read or written"
+            )
+        case .editViewUnreachable:
+            return .openVerificationFailed(
+                "'\(trackName)''s instrument parameter pages did not appear within 2.5 s of opening"
+                    + " the slot; the surface is still on the instrument bank view and nothing was"
+                    + " read or written. Retry"
+            )
+        }
+    }
+
+    /// The parameter-page cache key for an instrument slot. Namespaced so a
+    /// plugin and an instrument that abbreviate alike cannot share rows.
+    ///
+    /// The key is Logic's 6-character LCD abbreviation (`Q-Samp`, `Trilan`),
+    /// which is lossy — and that is fine for a KEY, because the entry is
+    /// already scoped to this build and this project and is verified against
+    /// the live row before a single cached name is trusted. It is not fine as
+    /// a NAME, which is why the tools no longer report it as one.
+    static func instrumentCacheKey(_ lcdName: String) -> String { "instrument:" + lcdName }
+
+    /// The instrument edit view for a track: the one this process already has
+    /// standing, or a fresh entry.
+    ///
+    /// The hot half is what package #1 gave the insert twin and this route
+    /// never got. Measured 2026-09-02, three consecutive writes to the same
+    /// instrument each re-paid the full 489 ms entry — `findChannel` (which
+    /// needs the Pan-names view, ~371 ms), `assign_instrument`, a vpot press —
+    /// for a view that was already on the LCD. The record is only ever set
+    /// after a verified entry, an Accessibility selection that MOVES settles
+    /// it away (`settleSurfaceDebt`), and `hotViewStanding` re-proves it
+    /// against the live LCD before it is used.
+    static func instrumentEditView(trackName: String) throws -> InstrumentEditEntry {
+        if let hot = hotEditView, hot.track == trackName,
+           case .instrument(let channel) = hot.slot, let name = hot.cacheKey,
+           hotViewStanding(hot) {
+            return .entered(channel: channel, name: name, hot: true)
+        }
+        return try enterInstrumentEdit(trackName: trackName)
+    }
+
     /// Enters the instrument edit mode for a track: bank to the track's
     /// channel in the pan view, switch to the instrument bank view, then
     /// vpot-press the channel. Never turns vpots in the bank view (that is
-    /// the instrument browser). Returns nil when unavailable/no instrument.
-    static func enterInstrumentEdit(trackName: String) throws -> (channel: Int, name: String)? {
-        guard freshStatus() != nil else { return nil }
-        guard let channel = try findChannel(trackName: trackName) else { return nil }
+    /// the instrument browser).
+    ///
+    /// A failure AFTER the IN view was reached records the bank view as a
+    /// SurfaceDebt instead of walking home to Pan. Measured 2026-09-02, that
+    /// walk cost 3 310 ms of a 5 371 ms "the slot is empty" refusal — a
+    /// restore of a view whose only change was one assignment press, paid
+    /// synchronously after nothing at all had been written.
+    static func enterInstrumentEdit(trackName: String) throws -> InstrumentEditEntry {
+        guard freshStatus() != nil else { return .missed(.bridgeUnavailable) }
+        guard let channel = try findChannel(trackName: trackName) else {
+            return .missed(.stripUnresolved(lastChannelResolution))
+        }
         try press("assign_instrument")
         guard let inView = waitFor(seconds: 2.0, {
             ($0["assignment"] as? String) == MCULCDStrings.Assignment.instrument
         }),
               let instrumentBankTop = inView["lcd_top"] as? String else {
             exitToPan()
-            return nil
+            return .missed(.bankViewUnreachable)
         }
+        deferSurfaceRestore(instrumentBankDebt(strip: trackName))
         // Empty instrument slot shows "--"; entering it would be pointless.
         var instrumentName = ""
         if let status = freshStatus(), let bottom = status["lcd_bottom"] as? String {
@@ -28,24 +149,32 @@ extension MCUController {
                 in: CharacterSet(charactersIn: MCULCDStrings.bypassMarker)
             )
             if instrumentName.isEmpty || instrumentName == MCULCDStrings.emptySlot {
-                exitToPan()
-                return nil
+                return .missed(.emptySlot)
             }
         }
         let response = try MCUBridge.send(.vpotPress(index: channel))
         guard response.ok else {
-            exitToPan()
-            return nil
+            return .missed(.vpotPressRejected(response.error ?? "no reason given"))
         }
         if waitFor(seconds: 2.5, { status in
             guard (status["assignment"] as? String) == MCULCDStrings.Assignment.instrument,
                   let top = status["lcd_top"] as? String else { return false }
             return top != instrumentBankTop
         }) != nil {
-            return (channel, instrumentName)
+            return .entered(channel: channel, name: instrumentName, hot: false)
         }
-        exitToPan()
-        return nil
+        return .missed(.editViewUnreachable)
+    }
+
+    /// The IN bank view, left standing. Same shape `logic_load_instrument`
+    /// records (MCULoadInstrument.swift) — one debt vocabulary, not two.
+    static func instrumentBankDebt(strip: String) -> SurfaceDebt {
+        SurfaceDebt(strip: strip, view: "instrument_bank", slot: nil)
+    }
+
+    /// The instrument's parameter pages, left standing.
+    static func instrumentEditDebt(strip: String) -> SurfaceDebt {
+        SurfaceDebt(strip: strip, view: "instrument_edit", slot: nil)
     }
 
     static func setInstrumentParameter(
@@ -55,16 +184,39 @@ extension MCUController {
         expectedCurrentValue: String?,
         tolerance: Double?
     ) throws -> [String: Any]? {
-        guard let entered = try enterInstrumentEdit(trackName: trackName) else { return nil }
-        defer { exitToPan() }
+        let entered: (channel: Int, name: String, hot: Bool)
+        switch try instrumentEditView(trackName: trackName) {
+        case .missed(let miss):
+            throw instrumentEditError(miss, trackName: trackName)
+        case .entered(let channel, let name, let hot):
+            entered = (channel, name, hot)
+        }
+        // The view is deliberately LEFT in instrument-edit mode afterwards,
+        // exactly as the insert twin leaves its plugin-edit view: consecutive
+        // writes on the same instrument then skip the entry, and the debt is
+        // settled by the first operation that needs the Pan names row (or at
+        // shutdown) rather than by this call. K1 and K2 of the profile only
+        // pay together — deferring the exit alone would hand the saving
+        // straight back to the next call's `findChannel`, which needs the very
+        // view this one stopped restoring.
+        hotEditView = HotEditView(
+            track: trackName, slot: .instrument(channel: entered.channel), cacheKey: entered.name
+        )
+        deferSurfaceRestore(instrumentEditDebt(strip: trackName))
         guard var result = try searchAndSetParameter(
             parameter: parameter,
             targetValue: targetValue,
             expectedCurrentValue: expectedCurrentValue,
             tolerance: tolerance,
-            cacheKey: "instrument:" + entered.name
-        ) else { return nil }
+            cacheKey: instrumentCacheKey(entered.name)
+        ) else {
+            hotEditView = nil
+            exitToPan()
+            return nil
+        }
         result["slot_type"] = "instrument"
+        result["instrument_lcd"] = entered.name
+        result["view_entry"] = entered.hot ? "hot_instrument_edit" : "entered_instrument_edit"
         return result
     }
 
@@ -115,11 +267,20 @@ extension MCUController {
         cacheKey: String? = nil
     ) throws -> [String: Any]? {
         // Search all parameter pages; remember where the match lives.
-        let totalPages = try normalizeToPageOne()
+        //
+        // Logic remembers the page this plugin was last left on, so the view
+        // is probed rather than assumed: the fast path below steps from where
+        // the surface IS to the match's page, and only the live walk (which
+        // has to read every page in order) walks home to page 1 first.
+        let position = try pageProbe()
+        let totalPages = position.total
         let projectPath = currentProjectPath()
         var trustedKey = cacheKey
         var match: (page: Int, index: Int, name: String)?
         var landedPage: [(name: String, value: String)]?
+        /// Where the surface stands, for the live walk that has to start at
+        /// page 1.
+        var currentPage = position.current
 
         // FAST PATH — resolve the address from the cached name rows and go
         // straight there.
@@ -140,7 +301,10 @@ extension MCUController {
         if let key = cacheKey, let cachedNames = loadNameCache(projectPath: projectPath)[key],
            cachedNames.count == max(totalPages, 1),
            let hit = locateParameter(parameter, in: cachedNames) {
-            if let landed = try landOnCachedPage(hit, cachedRow: cachedNames[hit.page - 1]) {
+            if let landed = try landOnCachedPage(
+                hit, cachedRow: cachedNames[hit.page - 1],
+                from: position.current, totalPages: totalPages
+            ) {
                 match = (hit.page, hit.index, hit.name)
                 landedPage = landed
             } else {
@@ -151,10 +315,12 @@ extension MCUController {
                 dropNameCache(key: key, projectPath: projectPath)
                 trustedKey = nil
                 _ = try normalizeToPageOne()
+                currentPage = 1
             }
         }
 
         if match == nil {
+            try walkToPage(1, from: currentPage)
             // This function does not merely REPORT cached names, it picks a
             // vpot index from them and turns it. Spot-check the cache against
             // the live LCD once, up front, before a single cached row is
@@ -228,7 +394,7 @@ extension MCUController {
                livePages.count == max(totalPages, 1),
                let rows = cacheableNameRows(livePages) {
                 var cache = loadNameCache(projectPath: projectPath)
-                cache[key] = rows
+                cache[key] = mergedNameRows(existing: cache[key], incoming: rows)
                 saveNameCache(cache, projectPath: projectPath)
             }
             guard duplicates == 0, let hit = found else {
@@ -240,24 +406,18 @@ extension MCUController {
             // Navigate back to the match's page (we are on the last page now).
             //
             // Event-driven, exactly like the two other cursor-key walks in this
-            // codebase: `normalizeToPageOne` presses the SAME note (0x62) in the
-            // same kind of loop and waits on `awaitEvents`, and `pageRight` does
-            // the mirror press (0x63) the same way. This loop was the odd one out
-            // with a blind 250 ms sleep, and it is the only one of the three that
-            // is paid PER PAGE on every parameter write. Measured 2026-08-31 on
-            // Bas / Channel EQ (6 pages, match on page 1): the five sleeps cost
-            // 1.27 s of the 5.96 s call, while the identical wait in
-            // `normalizeToPageOne` returned in ~1 ms per press — Logic answers a
-            // cursor press immediately. The read that follows is still settle-
-            // gated (`pageForSearch` opens with `quiescentStatus`) and still
-            // verified (the `landed[match.index].name == match.name` guard below
-            // throws if the surface is not on the page we think it is), so
-            // nothing here rests on the wait alone.
-            for _ in 0..<(max(totalPages, 1) - hit.page) {
-                let events = freshStatus()?["received_events"] as? Int ?? -1
-                try pressNote(0x62)
-                _ = awaitEvents(since: events, timeoutMs: 250)
-            }
+            // codebase — `walkToPage` is the shared one. This loop was the odd
+            // one out with a blind 250 ms sleep, and it is the only one of the
+            // three that is paid PER PAGE on every parameter write. Measured
+            // 2026-08-31 on Bas / Channel EQ (6 pages, match on page 1): the
+            // five sleeps cost 1.27 s of the 5.96 s call, while the identical
+            // wait in the cursor walk returned in ~1 ms per press — Logic
+            // answers a cursor press immediately. The read that follows is
+            // still settle-gated and still verified (the
+            // `landed[match.index].name == match.name` guard below throws if
+            // the surface is not on the page we think it is), so nothing here
+            // rests on the wait alone.
+            try walkToPage(hit.page, from: max(totalPages, 1))
             guard let landed = pageForSearch(
                       cacheKey: trustedKey, projectPath: projectPath,
                       pageNumber: hit.page, totalPages: totalPages
