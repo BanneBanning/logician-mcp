@@ -223,6 +223,42 @@ extension MCUController {
         (0..<8).filter { ledLit(0x08 + $0, in: status) }
     }
 
+    /// The Mackie Control "rude solo" indicator — the ONE solo signal on this
+    /// surface that is not bank-relative.
+    ///
+    /// Every other solo read here describes eight strips: notes 0x08…0x0F are
+    /// the showing bank's, so a project wider than one bank needs a walk. Note
+    /// 0x73 is different — Logic lights it while ANY channel in the project is
+    /// soloed and clears it when the last one goes.
+    ///
+    /// Measured live 2026-09-02 on `Testlåt Copy` (19 rendered headers,
+    /// 26 strips): soloing `Kick Tight` — track 10, inside the COLLAPSED
+    /// `Drum Synth Kit` stack, so it publishes no track header AND occupies no
+    /// surface strip — lit note 115, and unsoloing it cleared it. That makes
+    /// this the only whole-project solo answer either plane can give.
+    ///
+    /// It is STEADY, not blinking, which is what lets a single read decide:
+    /// 15 consecutive status reads across 2.5 s of a standing solo all had it
+    /// lit, while the per-strip mute LEDs the same solo makes blink came and
+    /// went inside that very sample. (Contrast `recBlinkWindow`, where the
+    /// blinking is why a single read is not allowed to answer.)
+    static let rudeSoloLED = 0x73
+
+    /// Whether ANY channel in the project is soloed, from a status snapshot.
+    /// Pure, so the rule is tested without a surface.
+    static func anySoloedStrip(in status: [String: Any]) -> Bool {
+        ledLit(rudeSoloLED, in: status)
+    }
+
+    /// The same question, asked of the live surface. `nil` means the surface
+    /// could not be asked, which is NEVER the same answer as `false` — the
+    /// caller that treats it as "nothing is soloed" is the bug this exists to
+    /// prevent.
+    static func anySoloedStripOnSurface() -> Bool? {
+        guard let status = freshStatus() else { return nil }
+        return anySoloedStrip(in: status)
+    }
+
     /// Logic's own per-strip meter feed for the bank currently showing, or nil
     /// when the daemon does not publish it.
     ///

@@ -269,6 +269,47 @@ extension MCUController {
         }
     }
 
+    /// Is the surface ALREADY showing the bank a cached map put this channel
+    /// in, given a live name row that may be carrying Logic's press banner?
+    ///
+    /// THE BANNER. Logic overwrites the touched strip's NAME cell with the name
+    /// of the control it just saw and leaves it there: press solo on `Bas` and
+    /// the row reads `LofPad Solo   808    Inst 2 …` where the bank map says
+    /// `LofPad Bas    808    Inst 2 …`. It does not clear on a short timer —
+    /// measured 2026-09-02 on `Testlåt Copy`, a 600 ms wait for the mapped
+    /// row to come back never once succeeded, and what actually repainted the
+    /// cell was the next thing to touch the surface.
+    ///
+    /// WHAT IT COST. A byte-exact row comparison was the only way to answer
+    /// "am I already banked here?", so that one transient cell sent every solo
+    /// of a stem run into a full re-navigation OF THE BANK IT WAS ALREADY ON —
+    /// `resetToLeftmostBank` presses bank_left eight times blind and, at the
+    /// left edge, Logic answers each press with nothing at all, so every press
+    /// burns its whole 150 ms event wait. Measured: 1 993 and 2 000 ms for the
+    /// two solos that met a banner against 105 ms for the four that met a clean
+    /// row — 51% of `logic_export_stems`, spent walking back to where the
+    /// surface stood.
+    ///
+    /// WHY THIS IS MORE PROOF, NOT LESS. The exact row is still accepted first
+    /// and unchanged. The second clause asks for something the exact-row test
+    /// never asked at all: that the cell this call is about to WRITE reads its
+    /// own mapped name on the LIVE display — the row test only ever proved the
+    /// row and then trusted the cached map for the channel. On top of that at
+    /// most one OTHER cell may differ, which is the banner's exact signature.
+    /// A different bank cannot slip through: banks are contiguous windows of
+    /// the strip list, so a neighbouring one is SHIFTED and differs in seven or
+    /// eight cells (see `clampOverlap`), and passing would need seven
+    /// duplicate names in seven aligned positions.
+    static func bankedAtMatch(live: String, cached: String, channel: Int) -> Bool {
+        if live == cached { return true }
+        let liveCells = lcdFields(live)
+        let cachedCells = lcdFields(cached)
+        guard liveCells.count == cachedCells.count,
+              liveCells.indices.contains(channel),
+              liveCells[channel] == cachedCells[channel] else { return false }
+        return zip(liveCells, cachedCells).filter(!=).count == 1
+    }
+
     /// Navigates to a bank by index (from leftmost) and verifies the expected
     /// LCD content. Returns false on mismatch (stale cache).
     static func navigateToBank(_ index: Int, expecting expectedTop: String) throws -> Bool {
@@ -317,8 +358,11 @@ extension MCUController {
         if let cachedTops = loadBankCache(projectPath: projectPath) {
             let matches = channelMatches(name: trackName, bankTops: cachedTops)
             if matches.count == 1, let match = matches.first {
-                // Fastest path: the surface is already banked at the match.
-                if let top = freshStatus()?["lcd_top"] as? String, top == cachedTops[match.bank] {
+                // Fastest path: the surface is already banked at the match —
+                // including when Logic is still showing the press banner over
+                // some OTHER strip's name cell (see `bankedAtMatch`).
+                if let top = freshStatus()?["lcd_top"] as? String,
+                   bankedAtMatch(live: top, cached: cachedTops[match.bank], channel: match.channel) {
                     return .resolved(match.channel)
                 }
                 if try navigateToBank(match.bank, expecting: cachedTops[match.bank]) {

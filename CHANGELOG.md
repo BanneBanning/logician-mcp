@@ -425,6 +425,26 @@ with every render coming back as audio the agent can listen to.
   verified reset could have failed its "no dialog left on screen" check on the strength of
   it. A blank title is not a button an alert offers.
 
+- **A stem set now sees every soloed track, and takes 42% less time to make.**
+  `logic_export_stems` refuses to run when anything is already soloed, because every
+  stem would quietly contain that track — but it asked Logic's track headers, which
+  publish only the rows currently on screen. A track soloed inside a collapsed stack
+  was invisible to it: the run went ahead, the track landed in all three files, and
+  the result still said `verified: true`. It asks the control surface's project-wide
+  solo indicator as well now — that one sees the whole project, hidden rows included —
+  and refuses with the reason named; if the surface cannot be read, the stems still
+  render and `verified` comes back false rather than claiming a cleanliness nobody
+  could check. And a stem that both failed to unsolo and came back silent reports
+  both, instead of the second sentence overwriting the first.
+  The speed came out of the same file: Logic paints the word `Solo` over the strip's
+  name on the control-surface display and leaves it there, and the "am I already on
+  this bank?" test read that as the wrong bank — so every solo re-walked the surface
+  back to the bank it was already standing on, eight blind button presses that Logic
+  answers with silence, 1.9 s each. The check tolerates the banner and proves the
+  strip by name instead. Three stems over two bars: **10.5 s → 6.1 s**, and each
+  bounce also stopped re-reading the track list to rediscover the solo the export had
+  just written.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

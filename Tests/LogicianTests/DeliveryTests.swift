@@ -100,6 +100,124 @@ final class DeliveryTests: XCTestCase {
         XCTAssertTrue(StemExport.contentsNote.contains("logic_render_track"))
     }
 
+    // MARK: - Stems: the solo census
+
+    private func census(headers: [String]?, surface: Bool?) -> StemExport.SoloCensus {
+        StemExport.SoloCensus(namedByHeaders: headers, surfaceSaysSoloed: surface)
+    }
+
+    func testStemsRunOnlyWhenTheSurfaceSaysTheProjectIsSoloClean() {
+        XCTAssertNil(StemExport.soloRefusal(census(headers: [], surface: false)))
+    }
+
+    func testStemsRefuseARenderedSoloAndNameIt() {
+        let reason = StemExport.soloRefusal(census(headers: ["Bas", "808"], surface: true))
+        XCTAssertNotNil(reason)
+        XCTAssertTrue(reason!.contains("Bas"), reason!)
+        XCTAssertTrue(reason!.contains("808"), reason!)
+        XCTAssertTrue(reason!.contains("Nothing was bounced"), reason!)
+    }
+
+    /// The defect this census exists for: a soloed track Logic has not
+    /// rendered. No header names it, so the old check saw an empty list and
+    /// bounced a whole stem set with that track in every file.
+    func testStemsRefuseASoloOnlyTheSurfaceCanSee() {
+        let reason = StemExport.soloRefusal(census(headers: [], surface: true))
+        XCTAssertNotNil(reason)
+        XCTAssertTrue(reason!.contains("collapsed track stack"), reason!)
+        XCTAssertTrue(reason!.contains("Nothing was bounced"), reason!)
+    }
+
+    func testStemsRefuseWhenNeitherPlaneCanBeAsked() {
+        let reason = StemExport.soloRefusal(census(headers: nil, surface: nil))
+        XCTAssertNotNil(reason)
+        XCTAssertTrue(reason!.contains("logic_health"), reason!)
+    }
+
+    /// An unreadable Tracks area is not a refusal on its own — the surface
+    /// covers the whole project and has answered.
+    func testStemsRunWhenOnlyTheHeadersAreUnreadable() {
+        XCTAssertNil(StemExport.soloRefusal(census(headers: nil, surface: false)))
+    }
+
+    /// A surface that cannot be asked leaves the census unproven, and the run
+    /// still starts — the headers found nothing and that is a reason to warn,
+    /// not to refuse. What it must never do is come back verified.
+    func testStemsRunUnverifiedWhenOnlyTheSurfaceIsUnreadable() {
+        let unproven = census(headers: [], surface: nil)
+        XCTAssertNil(StemExport.soloRefusal(unproven))
+        XCTAssertFalse(unproven.provenClear)
+    }
+
+    func testOnlyTheSurfaceCanProveTheProjectSoloClean() {
+        XCTAssertTrue(census(headers: [], surface: false).provenClear)
+        // An empty header walk is evidence, never proof.
+        XCTAssertFalse(census(headers: [], surface: nil).provenClear)
+        XCTAssertFalse(census(headers: [], surface: true).provenClear)
+        XCTAssertFalse(census(headers: nil, surface: nil).provenClear)
+    }
+
+    func testAProvenCleanCensusSaysNothing() {
+        XCTAssertEqual(StemExport.soloWarnings(after: census(headers: [], surface: false)), [])
+    }
+
+    func testAHiddenSoloAfterTheRunIsNamedAsHidden() {
+        let warnings = StemExport.soloWarnings(after: census(headers: [], surface: true))
+        XCTAssertEqual(warnings.count, 1)
+        XCTAssertTrue(warnings[0].contains("not showing"), warnings[0])
+    }
+
+    func testAnUnreadableSurfaceAfterTheRunIsSaidOutLoud() {
+        let warnings = StemExport.soloWarnings(after: census(headers: [], surface: nil))
+        XCTAssertEqual(warnings.count, 1)
+        XCTAssertTrue(warnings[0].contains("UNKNOWN"), warnings[0])
+    }
+
+    func testBothPlanesUnreadableAfterTheRunReportsBoth() {
+        XCTAssertEqual(StemExport.soloWarnings(after: census(headers: nil, surface: nil)).count, 2)
+    }
+
+    func testTheCensusEvidenceDistinguishesClearFromUnavailable() {
+        let clear = census(headers: [], surface: false).evidence
+        XCTAssertEqual(clear["surface_indicator"] as? String, "clear")
+        let blind = census(headers: nil, surface: nil).evidence
+        XCTAssertEqual(blind["surface_indicator"] as? String, "unavailable")
+        XCTAssertEqual(blind["rendered_headers_soloed"] as? String, "unavailable")
+    }
+
+    // MARK: - Stems: the per-stem warning
+
+    func testAStemWithNothingWrongCarriesNoWarning() {
+        XCTAssertNil(StemExport.stemWarning(track: "Bas", soloRestored: true, silentRms: nil))
+    }
+
+    func testASilentStemSaysSo() {
+        let warning = StemExport.stemWarning(track: "Bas", soloRestored: true, silentRms: [-140, -140])
+        XCTAssertEqual(warning, "this stem is SILENT (rms [-140.0, -140.0] dB)")
+    }
+
+    /// The overwrite: the silent-RMS branch used to assign the same key the
+    /// unsolo failure had just written, so the more serious of the two was the
+    /// one that disappeared — and they co-occur exactly when it matters.
+    func testAStemThatFailedToUnsoloAndCameBackSilentReportsBoth() {
+        let warning = StemExport.stemWarning(
+            track: "Bas", soloRestored: false, silentRms: [-140, -140]
+        )
+        XCTAssertNotNil(warning)
+        XCTAssertTrue(warning!.contains("could NOT be switched off"), warning!)
+        XCTAssertTrue(warning!.contains("SILENT"), warning!)
+        // The unsolo failure leads: it is what makes the NEXT stems wrong.
+        XCTAssertTrue(warning!.hasPrefix("the solo on 'Bas'"), warning!)
+    }
+
+    func testSilenceIsJudgedOnEveryChannelAndOnlyOnRealMetrics() {
+        XCTAssertNotNil(StemExport.silentRms(["rms_db": [-70.0, -80.0]]))
+        XCTAssertNil(StemExport.silentRms(["rms_db": [-70.0, -12.0]]))
+        XCTAssertNil(StemExport.silentRms(["rms_db": [Double]()]))
+        XCTAssertNil(StemExport.silentRms(nil))
+        XCTAssertNil(StemExport.silentRms([:]))
+    }
+
     // MARK: - Remove Silence preview
 
     func testPreviewCountReadsLogicsOwnWording() {

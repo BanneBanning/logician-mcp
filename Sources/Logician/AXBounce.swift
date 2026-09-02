@@ -673,13 +673,22 @@ extension LogicAccessibility {
         return nil
     }
 
+    /// - Parameter deliberatelySoloed: the tracks the CALLER soloed on purpose
+    ///   before asking for this bounce. `nil` (the default) is a bounce that
+    ///   has to find out for itself and walks the track headers to do it.
+    ///   Non-nil replaces that walk: the caller already knows, and it is not
+    ///   about to be warned about a solo it wrote itself one line earlier.
+    ///   `logic_export_stems` passes the one track of the stem — the walk cost
+    ///   ~51 ms of `parsedTrackHeaders()` inside EVERY stem, N per export
+    ///   (measured 2026-09-02), purely to produce a warning that loop discards.
     func bounceRange(
         startBar: Int,
         endBar: Int,
         label: String,
         expectedProjectPath: String?,
         options: [String: String] = [:],
-        includeAudioTail: Bool? = nil
+        includeAudioTail: Bool? = nil,
+        deliberatelySoloed: [String]? = nil
     ) throws -> [String: Any] {
         try verifyProjectPath(expectedProjectPath)
         guard endBar > startBar else {
@@ -1014,8 +1023,13 @@ extension LogicAccessibility {
                 result["warning"] = "THE BOUNCE IS SILENT (rms \(rms) dB). A leftover solo on a quiet track, or an empty bar range, produces exactly this - fix the cause and bounce again; do not analyze this file."
             }
         }
-        let soloed = soloedTrackNamesIfReadable()
-        if let soloed, !soloed.isEmpty {
+        // A caller that soloed on purpose already knows, and asking Logic again
+        // is a full rendered-header walk per bounce for an answer it discards.
+        let soloed = deliberatelySoloed ?? soloedTrackNamesIfReadable()
+        if let deliberatelySoloed {
+            result["soloed_tracks"] = deliberatelySoloed
+            result["soloed_tracks_source"] = "caller"
+        } else if let soloed, !soloed.isEmpty {
             result["soloed_tracks"] = soloed
             if result["warning"] == nil {
                 result["warning"] = "Tracks currently SOLOED: \(soloed.joined(separator: ", ")). This bounce contains ONLY those tracks - unsolo first if you meant to bounce the full mix."

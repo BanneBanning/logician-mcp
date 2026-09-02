@@ -61,15 +61,24 @@ extension MCPServer {
         // is the same failure logic_bounce_range warns about after the fact -
         // here it is a refusal before the first render, because the whole
         // point of a stem set is that each file holds ONE track.
-        // `nil` is NOT `[]` here: an unreadable Tracks area used to answer
-        // "is anything soloed?" with "no" and walk straight past this
-        // refusal — the one check that makes a stem set stems.
-        let preSoloed = logic.soloedTrackNamesIfReadable()
-        if let preSoloed, !preSoloed.isEmpty {
+        //
+        // ASKED OF BOTH PLANES, because the Tracks area is not a census. It
+        // publishes only the track headers Logic has RENDERED, so a solo on a
+        // hidden row or inside a collapsed stack walked straight past this
+        // refusal - measured live 2026-09-02: `Kick Tight` soloed inside the
+        // collapsed `Drum Synth Kit` stack, the stem set bounced anyway, and
+        // the result came back `verified: true` with that track in every file.
+        // The control surface's project-wide solo indicator sees it, so the
+        // surface is what gets to say "clear" and the headers are what say
+        // WHICH. See StemExport.SoloCensus.
+        let preCensus = StemExport.SoloCensus(
+            namedByHeaders: logic.soloedTrackNamesIfReadable(),
+            surfaceSaysSoloed: MCUController.anySoloedStripOnSurface()
+        )
+        if let refusal = StemExport.soloRefusal(preCensus) {
             throw LogicianError.currentValueMismatch(
-                expected: "no track soloed before the stem run",
-                actual: "\(preSoloed.joined(separator: ", ")) already soloed. Nothing was bounced - "
-                    + "every stem would have contained those tracks too. Unsolo and call again."
+                expected: "no track soloed anywhere in the project before the stem run",
+                actual: refusal
             )
         }
 
@@ -108,7 +117,14 @@ extension MCPServer {
                     try logic.bounceRange(
                         startBar: startBar, endBar: endBar,
                         label: "\(prefix)-\(sanitizedFilenameComponent(track, fallback: "track"))",
-                        expectedProjectPath: nil
+                        expectedProjectPath: nil,
+                        // This loop PUT the solo there one line ago. Letting
+                        // the bounce rediscover it cost a full rendered-header
+                        // walk per stem (~51 ms, N per export) to produce a
+                        // "Tracks currently SOLOED" warning this loop throws
+                        // away - and which would be wrong here anyway, because
+                        // that solo is the product, not an accident.
+                        deliberatelySoloed: [track]
                     )
                 }
             } catch {
@@ -135,13 +151,19 @@ extension MCPServer {
                 "metrics": metrics ?? NSNull(),
                 "solo_restored": soloRestored
             ]
+            let silent = StemExport.silentRms(metrics)
             if !soloRestored {
-                stem["warning"] = "the solo on '\(track)' could NOT be switched off again"
                 warnings.append("'\(track)' is still soloed - every later bounce contains only it until that is fixed.")
             }
-            if let rms = metrics?["rms_db"] as? [Double], rms.allSatisfy({ $0 <= -65 }) {
-                stem["warning"] = "this stem is SILENT (rms \(rms) dB)"
+            if silent != nil {
                 warnings.append("'\(track)' bounced silent - it is muted, empty across bars \(startBar)-\(endBar), or not the track you meant.")
+            }
+            // Composed, not assigned twice: a stem that both failed to unsolo
+            // AND came back silent used to report only the silence.
+            if let warning = StemExport.stemWarning(
+                track: track, soloRestored: soloRestored, silentRms: silent
+            ) {
+                stem["warning"] = warning
             }
             stems.append(stem)
         }
@@ -149,25 +171,27 @@ extension MCPServer {
 
         // The stems are only stems if they line up.
         let alignment = StemExport.frameAlignment(frames)
-        let leftSoloed = logic.soloedTrackNamesIfReadable()
-        if let leftSoloed, !leftSoloed.isEmpty {
-            warnings.append("Tracks still SOLOED after the run: \(leftSoloed.joined(separator: ", ")). Fix before any further bounce.")
-        } else if leftSoloed == nil {
-            warnings.append("Logic's track headers could not be read after the run, so whether a solo was left up is UNKNOWN - check the mixer before any further bounce.")
-        }
-        // Only a track list that was actually READ and came back empty clears
-        // this; an unreadable one leaves `verified` false rather than claiming
-        // a solo-clean project nobody looked at.
-        let soloClear = leftSoloed?.isEmpty ?? false
+        let postCensus = StemExport.SoloCensus(
+            namedByHeaders: logic.soloedTrackNamesIfReadable(),
+            surfaceSaysSoloed: MCUController.anySoloedStripOnSurface()
+        )
+        warnings.append(contentsOf: StemExport.soloWarnings(after: postCensus))
+        // Only the SURFACE clears this. A rendered-header walk that came back
+        // empty is evidence, never proof - it cannot see a hidden row at all -
+        // and `verified: true` on this tool is a promise that each file holds
+        // one track. An unreadable surface leaves `verified` false with the
+        // partiality named rather than claiming a solo-clean project nobody
+        // could look at.
         var result: [String: Any] = [
             "success": true,
-            "verified": alignment.aligned && soloClear,
+            "verified": alignment.aligned && postCensus.provenClear,
             "state": "exported",
             "range": ["start_bar": startBar, "end_bar": endBar],
             "count": stems.count,
             "stems": stems,
             "aligned": alignment.aligned,
             "alignment_note": alignment.note,
+            "solo_census": postCensus.evidence,
             "note": StemExport.contentsNote
                 + " Verification: " + alignment.note
                 + " No audio is attached - a stem set is far too much base64 for one result; open the paths with your client's file viewer, or logic_get_audio_clip one at a time."

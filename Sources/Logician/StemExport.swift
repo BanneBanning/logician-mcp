@@ -61,6 +61,155 @@ enum StemExport {
         return (true, "all \(known.count) stems are \(first) frames long.")
     }
 
+    // MARK: - Is anything soloed? (the question this tool exists to answer)
+
+    /// The solo state of the WHOLE project, assembled from the two planes that
+    /// can be asked and honest about what each one proves.
+    ///
+    /// The reason this is a type rather than a boolean: the two planes do not
+    /// see the same project. `parsedTrackHeaders()` publishes only the track
+    /// headers Logic has currently RENDERED, so a solo on a hidden track, a
+    /// scrolled-out row, or a subtrack of a collapsed stack is invisible to it —
+    /// and that used to be the whole census. Measured live 2026-09-02 on
+    /// `Testlåt Copy`: `Kick Tight` (track 10, inside the collapsed
+    /// `Drum Synth Kit` stack) soloed, the stack collapsed, and
+    /// `logic_export_stems` walked past its own pre-flight refusal, bounced a
+    /// stem containing both tracks, and returned `verified: true` — on the one
+    /// tool whose entire contract is one track per file.
+    ///
+    /// The control surface's rude-solo indicator does see the whole project
+    /// (`MCUController.rudeSoloLED`), so it is the plane that gets to say
+    /// "clear". The headers are kept because they are the only plane that can
+    /// say WHICH tracks — a name is what an agent needs to fix the problem.
+    struct SoloCensus: Equatable {
+        /// Names read from the rendered track headers. `nil` means the Tracks
+        /// area could not be read at all, which is never `[]`.
+        let namedByHeaders: [String]?
+        /// The surface's project-wide solo indicator: `true` something is
+        /// soloed somewhere, `false` nothing is anywhere, `nil` the surface
+        /// could not be asked.
+        let surfaceSaysSoloed: Bool?
+
+        /// Positive evidence that a solo is up somewhere. Either plane can
+        /// raise it; neither is required to.
+        var soloed: Bool { surfaceSaysSoloed == true || !(namedByHeaders ?? []).isEmpty }
+
+        /// Neither plane answered, so nothing at all is known.
+        var blind: Bool { surfaceSaysSoloed == nil && namedByHeaders == nil }
+
+        /// The only thing that counts as PROOF the project is solo-clean. A
+        /// header walk cannot supply it at any length: absence of evidence
+        /// there is not evidence of absence (see `TrackListCompleteness`).
+        var provenClear: Bool { surfaceSaysSoloed == false }
+
+        /// A solo the surface can see and the Tracks area cannot — the exact
+        /// hole this census was added to close.
+        var hiddenSolo: Bool { surfaceSaysSoloed == true && (namedByHeaders ?? []).isEmpty }
+
+        /// The evidence block a result carries, so the verdict can be audited
+        /// rather than believed.
+        var evidence: [String: Any] {
+            [
+                "surface_indicator": surfaceSaysSoloed
+                    .map { $0 ? "soloed" : "clear" } ?? "unavailable",
+                "rendered_headers_soloed": namedByHeaders as Any? ?? "unavailable",
+                "route": "mcu_rude_solo_led + ax_track_headers",
+                "note": "Only surface_indicator covers the whole project; the header list"
+                    + " covers only the rows Logic has currently rendered."
+            ]
+        }
+    }
+
+    /// Why the run must not start, or nil to go ahead. Pure, so the decision is
+    /// tested without Logic.
+    static func soloRefusal(_ census: SoloCensus) -> String? {
+        if let named = census.namedByHeaders, !named.isEmpty {
+            var reason = "\(named.joined(separator: ", ")) already soloed."
+            if census.surfaceSaysSoloed == nil {
+                reason += " (The control surface could not be asked, so there may be more.)"
+            }
+            return reason + " Nothing was bounced - every stem would have contained those"
+                + " tracks too. Unsolo and call again."
+        }
+        if census.hiddenSolo {
+            return "the control surface's project-wide solo indicator is LIT while no RENDERED"
+                + " track header is soloed - so the soloed track is one Logic is not showing:"
+                + " hidden, scrolled out of the Tracks area, or inside a collapsed track stack."
+                + " Nothing was bounced; every stem would have contained it. logic_list_tracks"
+                + " names the rows that are missing, logic_set_track_stack expands a stack, and"
+                + " logic_list_strips walks every strip the surface can reach - unsolo it there"
+                + " and call again."
+        }
+        if census.blind {
+            return "neither Logic's track headers nor the control surface could be asked whether"
+                + " anything is soloed. Nothing was bounced - a stem set whose one-track-per-file"
+                + " claim cannot be checked is worse than no stem set. Run logic_health and call"
+                + " again."
+        }
+        return nil
+    }
+
+    /// What the post-run census has to say out loud. Empty when the surface
+    /// proved the project solo-clean; otherwise one sentence per problem, in
+    /// the words the result carries.
+    static func soloWarnings(after census: SoloCensus) -> [String] {
+        var warnings: [String] = []
+        if let named = census.namedByHeaders, !named.isEmpty {
+            warnings.append(
+                "Tracks still SOLOED after the run: \(named.joined(separator: ", "))."
+                    + " Fix before any further bounce."
+            )
+        } else if census.hiddenSolo {
+            warnings.append(
+                "A solo is STILL UP somewhere after the run: the control surface's project-wide"
+                    + " indicator is lit though no rendered track header shows one, so it is on a"
+                    + " track Logic is not showing. Fix before any further bounce."
+            )
+        }
+        if census.surfaceSaysSoloed == nil {
+            warnings.append(
+                "The control surface's project-wide solo indicator could not be read after the"
+                    + " run, so whether a solo is still up ANYWHERE is UNKNOWN and verified is"
+                    + " false. Logic's track headers only cover the rows it has rendered - check"
+                    + " the mixer before any further bounce."
+            )
+        }
+        if census.namedByHeaders == nil {
+            warnings.append(
+                "Logic's track headers could not be read after the run, so no soloed track could"
+                    + " be NAMED."
+            )
+        }
+        return warnings
+    }
+
+    /// The per-stem `warning`, composed rather than overwritten.
+    ///
+    /// The two conditions used to write the same key one after the other, so a
+    /// stem that both failed to unsolo AND came back silent reported only the
+    /// silence — and they co-occur exactly when it matters, because a solo that
+    /// will not switch off is what makes the NEXT stems wrong while a silent
+    /// stem is what an agent stops to investigate. The more serious sentence
+    /// leads and neither is lost.
+    static func stemWarning(track: String, soloRestored: Bool, silentRms: [Double]?) -> String? {
+        var parts: [String] = []
+        if !soloRestored {
+            parts.append("the solo on '\(track)' could NOT be switched off again")
+        }
+        if let silentRms {
+            parts.append("this stem is SILENT (rms \(silentRms) dB)")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " ALSO: ")
+    }
+
+    /// Whether a stem's channel RMS values mean silence. One place, so the
+    /// per-stem warning and the top-level one cannot drift apart.
+    static func silentRms(_ metrics: [String: Any]?) -> [Double]? {
+        guard let rms = metrics?["rms_db"] as? [Double], !rms.isEmpty,
+              rms.allSatisfy({ $0 <= -65 }) else { return nil }
+        return rms
+    }
+
     /// What a solo-bounced stem actually contains. One sentence, in one place,
     /// because it is the thing an agent will get wrong: these are not
     /// per-track renders, they are the MASTER OUTPUT heard one track at a time.
