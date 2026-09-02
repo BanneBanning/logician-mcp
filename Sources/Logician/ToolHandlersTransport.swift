@@ -20,6 +20,17 @@ extension MCPServer {
     /// cache the control bar could not vouch for as `verified: true,
     /// read_route: "tempo_list"` — a stale map served as a verified live read,
     /// which is the one failure mode this server exists to prevent.
+    /// What a tempo map the control bar could not vouch for obliges its result
+    /// to say. One constant because two tools now carry it — `logic_tempo_events`
+    /// and `logic_project_snapshot`'s `tempo_map` section — and a caveat that
+    /// exists twice is a caveat that drifts.
+    static let tempoCacheWarning = "SERVED FROM CACHE, UNVERIFIED: these events are this server's"
+        + " cached read of the Tempo List, and the control bar's tempo could not be read"
+        + " to cross-check them against the live project (on a non-English Logic UI the"
+        + " control bar is unreadable — logic_health names the language). If the tempo"
+        + " track was edited in Logic since the cached read, this map is stale and"
+        + " nothing in this call could tell."
+
     static func tempoEventsListPayload(
         map: TempoMap, liveCrossChecked: Bool
     ) -> [String: Any] {
@@ -34,14 +45,7 @@ extension MCPServer {
             "sub_beat_positions": map.subBeatPositions,
             "read_route": liveCrossChecked ? "tempo_list" : "tempo_list_cache"
         ]
-        if !liveCrossChecked {
-            payload["warning"] = "SERVED FROM CACHE, UNVERIFIED: these events are this server's"
-                + " cached read of the Tempo List, and the control bar's tempo could not be read"
-                + " to cross-check them against the live project (on a non-English Logic UI the"
-                + " control bar is unreadable — logic_health names the language). If the tempo"
-                + " track was edited in Logic since the cached read, this map is stale and"
-                + " nothing in this call could tell."
-        }
+        if !liveCrossChecked { payload["warning"] = MCPServer.tempoCacheWarning }
         return payload
     }
 

@@ -1083,6 +1083,26 @@ with every render coming back as audio the agent can listen to.
   bridge is not running or Logic has never talked to it" while the bridge is running and
   Logic is fine — an idle surface is woken with one probe press, and the four faults that
   shared that one sentence now each name what was found and the repair for it.
+- **A snapshot stops calling itself complete when it knows it is not — and it is 30% faster on
+  the first one of a session.** `logic_project_snapshot` is the truth document you diff a
+  BEFORE against an AFTER with, and `complete` is the field that says whether it is the whole
+  project. It counted only sections whose reader crashed, so on the reference project every
+  single call returned `complete: true` with no warning while carrying, inside the same
+  document, `tracks.partial: true` and `missing_track_numbers: [10…19]` — ten track rows and
+  every region on them hidden behind a collapsed stack, in a document that called itself whole.
+  `complete` now answers the question it is named after: false when a section failed
+  (`unavailable_sections`, unchanged — those two conditions are different and both stay
+  visible) and false when a section that DID read can prove there is more (`partial_sections`,
+  with the numbers in `missing_track_numbers`), with the sections and their evidence in the
+  top-level `warning`. The same promotion reaches the map caches: a `tempo_map` or `meter_map`
+  served out of this server's earlier read is named in `cached_sections`, drops `verified` to
+  false and carries its SERVED-FROM-CACHE caveat at the top level instead of one level down —
+  and `tempo_map` now reports its `read_route` and cross-check verdict the way
+  `logic_tempo_events` does. It also got quicker while it got honester: the three list-editor
+  sections now share ONE List Editors pane cycle instead of opening and closing the pane three
+  times, so the first snapshot of a session — the one that actually reads both maps — went from
+  **2.62 s to 1.60 s** (measured live 2026-09-02), a warm repeat call is unchanged at ~1 s, and
+  the meter map's cache check stops re-reading a transport the same call already has.
 
 ### Known limitations (honest by design)
 

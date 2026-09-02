@@ -6,6 +6,12 @@ import LogicMCUBridge
 final class LogicAccessibility {
     let bundleIdentifier = "com.apple.logic10"
 
+    /// The List Editors pane this CALL is holding open, if any — set only by
+    /// `withListEditorsPaneHeld`, which always clears it again on the way out.
+    /// A per-call scope rather than the session-level debt the Region inspector
+    /// keeps, and `ListEditorsPaneHold` argues why it must stay that way.
+    var listEditorsPaneHold: ListEditorsPaneHold?
+
     /// Everything `logic_health` needs off the process and Accessibility
     /// planes, gathered in ONE pass: one `runningApplications` lookup, one
     /// window walk, and the resolved process handed back so the UI-language

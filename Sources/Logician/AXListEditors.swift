@@ -80,12 +80,106 @@ struct ListEditorTable {
     var count: Int { declaredCount ?? rows.count }
 }
 
+/// A List Editors pane one CALL keeps open across several tab reads.
+///
+/// WHY. `withListEditorsTab` opens the pane, reads one tab and closes it again,
+/// which is right for a tool that reads one list and wrong for a call that reads
+/// three. Measured 2026-09-02 (`logic_project_snapshot` profile §5): a cycle
+/// costs **765–790 ms** with the pane closed at rest against **383–390 ms** with
+/// it already open, and the −380 ms is exactly the open press (73–94 ms), the
+/// pane settle (211–244 ms) and the close press (73–95 ms). A snapshot with both
+/// map caches cold paid that three times back to back, on the same pane, in one
+/// call: **2 615 ms measured live**, of which ~760 ms was a pane it kept
+/// reopening.
+///
+/// IT IS LAZY, and that is the whole design. The hold opens NOTHING: the first
+/// nested read that finds the pane closed opens it as it always did, hands the
+/// hold its strip, and skips its own close and tab restore; the hold pays those
+/// once on the way out. That matters because the sections are usually served
+/// from their file caches, so the warm snapshot enters the pane exactly ONCE
+/// (for the Marker List) and a hold that opened the pane eagerly paid an
+/// open/settle/close for two sections that never came — measured live
+/// 2026-09-02: eager 1 004–1 013 ms against 893–895 ms unheld, i.e. +110 ms for
+/// nothing. Lazily, the warm call is parity (interleaved live pairs:
+/// 1 025 / 1 073 / 1 117 ms held against 1 050 / 1 060 / 1 326 ms unheld) and
+/// the cold-cache call, the one that really does read three tabs, went from
+/// **2 615 ms to 1 603 ms (−1.0 s, −39%)**.
+///
+/// WHAT IT IS NOT: a session-level debt. The Region inspector's `InspectorDebt`
+/// leaves its disclosure triangles open between calls, and that argument does
+/// NOT carry here — the List Editors pane takes its height from the arrangement
+/// area, so leaving it open shrinks the Tracks viewport and makes
+/// `logic_list_tracks` and `logic_list_regions` report MORE rows missing than
+/// the user has. A performance debt that degrades another reader's completeness
+/// is not a debt, it is a bug. So the hold is scoped to one call and to the
+/// contiguous run of sections that need it, and the pane is closed again before
+/// the track and region walks run.
+struct ListEditorsPaneHold {
+    /// A nested read opened the pane under this hold, so this hold closes it.
+    /// A pane the user left open stays open — the rule `withListEditorsTab` has
+    /// always applied, unchanged.
+    var openedByUs = false
+    /// The tab strip, walked once by the first nested read and reused by the
+    /// rest: 54–58 ms a walk for four radio buttons already in hand. The
+    /// `selected` flags in it go stale as soon as a tab is pressed, so a read
+    /// served from here presses its target unconditionally rather than trusting
+    /// them — one 102 ms press at worst, and only when a snapshot reads the
+    /// same tab twice, which none does.
+    var tabs: [(name: String, element: AXUIElement, selected: Bool)]?
+    /// The radio button of the tab Logic was resting on when the hold's first
+    /// read found the pane (`Event`, 15/15 measured) — in hand, so the one
+    /// restore this hold owes needs no second walk.
+    var restingTabElement: AXUIElement?
+    /// Did any nested read press a different tab? Nothing moved means nothing
+    /// to put back, and the press costs 102 ms.
+    var pressedATab = false
+}
+
 extension LogicAccessibility {
+
+    /// Runs `body` with Logic's List Editors pane held open across every
+    /// `withListEditorsTab` inside it: the first one opens the pane as usual,
+    /// the rest cost a tab press, its settle and the read, and the pane and its
+    /// remembered tab are put back ONCE, here, on the way out.
+    ///
+    /// See `ListEditorsPaneHold` for the measurement, for why the hold is lazy,
+    /// and for why it is a per-CALL scope rather than the session-level debt the
+    /// Region inspector keeps.
+    ///
+    /// Degrades to exactly the old behaviour, never to a failure: a nested read
+    /// that cannot open the pane reports its own `paneUnavailable` as before and
+    /// leaves nothing owed, and a hold nested inside a hold is a no-op.
+    @discardableResult
+    func withListEditorsPaneHeld<Value>(_ body: () throws -> Value) rethrows -> Value {
+        guard listEditorsPaneHold == nil else { return try body() }
+        listEditorsPaneHold = ListEditorsPaneHold()
+        defer {
+            let hold = listEditorsPaneHold
+            listEditorsPaneHold = nil
+            // Tab first, then the pane — the restore order `withListEditorsTab`
+            // established, and for the same reason: the strip only exists while
+            // the pane is open.
+            if hold?.pressedATab == true, let element = hold?.restingTabElement {
+                _ = AXUIElementPerformAction(element, kAXPressAction as CFString)
+            }
+            if hold?.openedByUs == true {
+                try? pressMenuItem(
+                    containing: LogicUIStrings.Menu.listEditors,
+                    underMenu: LogicUIStrings.Menu.view
+                )
+            }
+        }
+        return try body()
+    }
 
     /// Opens the List Editors pane if it is closed, switches to `tab`, runs
     /// `body`, and puts BOTH back: the previously selected tab is re-pressed and
     /// the pane is closed again — but only if this call was the one that opened
     /// it, so a pane the user left open stays open.
+    ///
+    /// Inside a `withListEditorsPaneHeld` scope the pane is already open, so
+    /// neither the open nor the close branch runs, and the tab restore is the
+    /// HOLD's — paid once on the way out instead of once per read.
     ///
     /// This is the discipline `readTempoMap` established live on 2026-08-27,
     /// lifted out unchanged so the Event, Marker and Signature tabs cannot each
@@ -108,8 +202,11 @@ extension LogicAccessibility {
         // readable list sat one window over (FINDINGS 2026-08-28, finding 9).
         guard let window = try? projectWindow() else { return (nil, .paneUnavailable) }
         // This walk is BOTH "is the pane open?" and, when it is, the tab strip
-        // itself — the same four radio buttons, read once instead of twice.
-        var tabs = tempoListTabs(in: window)
+        // itself — the same four radio buttons, read once instead of twice. A
+        // hold that already walked it hands it over instead (54–58 ms), and
+        // answers "open?" by owning the pane.
+        let heldStrip = listEditorsPaneHold?.tabs
+        var tabs = heldStrip ?? tempoListTabs(in: window)
         let wasOpen = tabs.isEmpty == false
         if !wasOpen {
             guard (try? pressMenuItem(
@@ -120,9 +217,19 @@ extension LogicAccessibility {
             // The settle polls for the strip and HANDS IT BACK, so the walk
             // that used to follow it is gone too.
             tabs = settleForListEditorsPane(tab: tab, in: window)
+            // Under a hold it is the HOLD that closes what this read opened,
+            // once, after the last of them.
+            listEditorsPaneHold?.openedByUs = true
         }
+        // The first read under a hold hands over what it found: the strip, and
+        // the tab Logic was resting on before anything was pressed.
+        if listEditorsPaneHold != nil, heldStrip == nil, !tabs.isEmpty {
+            listEditorsPaneHold?.tabs = tabs
+            listEditorsPaneHold?.restingTabElement = tabs.first(where: \.selected)?.element
+        }
+        let holding = listEditorsPaneHold != nil
         defer {
-            if !wasOpen {
+            if !wasOpen, !holding {
                 try? pressMenuItem(
                     containing: LogicUIStrings.Menu.listEditors, underMenu: LogicUIStrings.Menu.view
                 )
@@ -132,9 +239,14 @@ extension LogicAccessibility {
             return (nil, .tabNotFound(tab))
         }
         let previous = tabs.first(where: \.selected)?.name
-        if !target.selected {
+        // A strip served by the hold carries the `selected` flags of the read
+        // BEFORE it, so it cannot say whether the target is already showing:
+        // press, rather than trust a flag that may be one tab out of date.
+        if !target.selected || heldStrip != nil {
             _ = AXUIElementPerformAction(target.element, kAXPressAction as CFString)
             settleForListEditors(tab: tab, in: window)
+            // The hold owes the restore now, and owes exactly one.
+            listEditorsPaneHold?.pressedATab = true
         }
         // The element to press on the way out is one we are ALREADY HOLDING:
         // `tabs` was read with the pane open, the pane does not close until
@@ -142,7 +254,7 @@ extension LogicAccessibility {
         // the strip. Re-walking the window for it cost 214–230 ms against a ~100 ms
         // press (measured 2026-09-02, `logic_list_signatures` profile §6/C4) —
         // a whole tree walk to find something already in hand.
-        let restore = previous.flatMap { name in
+        let restore = holding ? nil : previous.flatMap { name in
             name == tab ? nil : tabs.first(where: { $0.name == name })
         }
         defer {
