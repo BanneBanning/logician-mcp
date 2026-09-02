@@ -107,6 +107,71 @@ final class SurfaceDecodingTests: XCTestCase {
         XCTAssertEqual(MCUController.selectedStrips(in: [:]), [])
     }
 
+    /// Note 0x73 is the whole-project answer: it is lit while ANY channel is
+    /// soloed, including one with no strip in the showing bank and one with no
+    /// track header at all. Every other solo read here is bank-relative.
+    func testTheRudeSoloIndicatorIsReadWholeProject() {
+        XCTAssertEqual(MCUController.rudeSoloLED, 0x73)
+        // A soloed strip in the showing bank lights both.
+        let visible: [String: Any] = ["leds_lit": [0x08, 0x73]]
+        XCTAssertTrue(MCUController.anySoloedStrip(in: visible))
+        XCTAssertEqual(MCUController.soloedStrips(in: visible), [0])
+        // A soloed track OUTSIDE the showing bank lights only 0x73 — this is
+        // the case the per-strip read cannot see and a stem set must not miss.
+        let hidden: [String: Any] = ["leds_lit": [0x73]]
+        XCTAssertTrue(MCUController.anySoloedStrip(in: hidden))
+        XCTAssertEqual(MCUController.soloedStrips(in: hidden), [])
+        XCTAssertFalse(MCUController.anySoloedStrip(in: ["leds_lit": [0x08 + 8, 0x72]]))
+        XCTAssertFalse(MCUController.anySoloedStrip(in: [:]))
+    }
+
+    // MARK: - Bank rows
+
+    /// The transient press banner: Logic paints the name of the control it just
+    /// saw over the touched strip's NAME cell (`Bas` → `Solo`) and leaves it
+    /// there until something else repaints the row. Read off the live surface
+    /// 2026-09-02.
+    private let mappedBank = "LofPad Bas    808    Inst 2 Drums  Fill   AckSlg IvnSlg "
+    private let bannerBank = "LofPad Solo   808    Inst 2 Drums  Fill   AckSlg IvnSlg "
+
+    func testAnExactRowIsStillTheFirstAnswer() {
+        XCTAssertTrue(MCUController.bankedAtMatch(live: mappedBank, cached: mappedBank, channel: 1))
+    }
+
+    /// The banner sits on strip 2 while the call is about strip 3 — the bank is
+    /// the right one and the target cell reads its own name, so this must not
+    /// pay a full re-navigation to the bank it is already on.
+    func testAPressBannerOnAnotherStripDoesNotHideTheBank() {
+        XCTAssertTrue(MCUController.bankedAtMatch(live: bannerBank, cached: mappedBank, channel: 2))
+    }
+
+    /// The banner sits on the very cell about to be written: the live display
+    /// cannot confirm the target strip, so this falls through to the walk.
+    func testABannerOnTheTargetCellIsNotAccepted() {
+        XCTAssertFalse(MCUController.bankedAtMatch(live: bannerBank, cached: mappedBank, channel: 1))
+    }
+
+    func testADifferentBankIsNeverMistakenForABanner() {
+        for (index, bank) in referenceBanks.enumerated() where index > 0 {
+            XCTAssertFalse(
+                MCUController.bankedAtMatch(live: bank, cached: referenceBanks[0], channel: 0),
+                "bank \(index) passed as bank 0"
+            )
+        }
+        // The clamped rightmost bank is the previous one SHIFTED, which is the
+        // nearest thing to a near-miss this surface produces.
+        XCTAssertFalse(
+            MCUController.bankedAtMatch(
+                live: referenceBanks[3], cached: referenceBanks[2], channel: 1
+            )
+        )
+    }
+
+    func testTwoCellsOutIsAStaleMapAndTakesTheWalk() {
+        let twoOut = "LofPad Solo   Mute   Inst 2 Drums  Fill   AckSlg IvnSlg "
+        XCTAssertFalse(MCUController.bankedAtMatch(live: twoOut, cached: mappedBank, channel: 3))
+    }
+
     // MARK: - Instrument browser entries
 
     func testSplitsLogicsChannelFormatOffAnEntry() {
