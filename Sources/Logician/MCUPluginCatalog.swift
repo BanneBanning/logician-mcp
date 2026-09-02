@@ -210,6 +210,42 @@ extension MCUController {
     /// within ~0.4 s and then deleted.
     static let browseJumpGraceSteps = 6
 
+    /// How far short of the No Plug-in boundary a REMOVAL's backward jump
+    /// deliberately stops, in entries.
+    ///
+    /// Four, and the asymmetry with `browseJumpUndershootEntries` (zero) is
+    /// the whole reason this is a separate constant. Landing short of an ADD's
+    /// target costs one step forward; landing past the `--` origin wraps into
+    /// the far end of a 590+-entry catalog, and the walk home from there is the
+    /// whole list. The error in a cached ordinal can only be downward (see
+    /// `PluginCatalogMap`), so an exact or short hint cannot overshoot at all —
+    /// this margin is insurance against the one thing that could, a map whose
+    /// install scope matched when it should not have. Four entries cost ~0.2 s
+    /// of paced walking and buy the difference between a fast removal and a
+    /// 20-second one.
+    static let browseRemovalUndershootEntries = 4
+
+    /// The wall clock a backward walk to the No Plug-in boundary gets.
+    ///
+    /// Twice `browseSearchBudget`, because it bounds something different. An
+    /// add's budget bounds a search for an entry that may not exist at all; a
+    /// removal's destination provably DOES exist, at ordinal 0, and the
+    /// distance to it is the removed plug-in's own ordinal — so the walk always
+    /// terminates and the only open question is how deep the plug-in sits. At
+    /// the paced rate (~40 ms/entry) 30 s covers this install's whole
+    /// 590+-entry catalog from cold, which is exactly what the old 400-MESSAGE
+    /// bound could not do: measured 2026-09-02 on the unpaced loop, 15-23% of
+    /// messages were swallowed and 400 of them reached only ~330 entries, so a
+    /// plug-in sitting deeper than that could not be removed by the mouse-free
+    /// route AT ALL — and the refusal said it had looked at 400 steps without
+    /// saying it had never been near the boundary.
+    static let browseRemovalBudget: TimeInterval = 30
+
+    /// How many of the last entries a failed backward walk reads back in its
+    /// refusal. Enough to say where the browse actually was — which is the
+    /// difference between "not found" and "never got near it".
+    static let browseRemovalTailEntries = 6
+
     /// Blocks until Logic stops sending, or the deadline. `quiescentStatus`
     /// answers nil for "more arrived, ask again" rather than looping itself, so
     /// this is the loop — the positive proof that a multi-entry repaint has
