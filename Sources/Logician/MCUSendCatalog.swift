@@ -357,10 +357,29 @@ extension MCUController {
         return Int(name[digits])
     }
 
-    /// How many entries short of home a removal's jump deliberately stops, so
-    /// that the paced backward walk is always the thing that finds the
-    /// No-Send boundary.
-    static let sendRemovalHomeMargin = 8
+    /// How many entries short of home a removal's jump deliberately stops.
+    ///
+    /// It was 8, so that the paced backward walk was always the thing that
+    /// found the No-Send boundary. Measured 2026-09-02, that margin was the
+    /// single most expensive thing in `logic_remove_send`: the eight steps
+    /// cost 791 ms on a deep bus, and on a NEAR one (`Bus 2`, ordinal 10) the
+    /// margin left too little to be worth jumping at all, so the removal
+    /// walked all ten entries home — 2 045 ms, ten times the cost of the one
+    /// message that covers the same distance.
+    ///
+    /// Nothing was buying that. The catalog CLAMPS at both ends (measured
+    /// 2026-08-31, and re-confirmed here: a jump past the far end lands on
+    /// `Output 7-8`, never wraps), and the near end of it is the No-Send entry
+    /// itself — which is exactly where the removal is going. So a jump of the
+    /// destination's whole ordinal lands ON the boundary, an over-jump lands
+    /// on it too, and an UNDER-jump is what the walk below is for. The walk is
+    /// still the finder; it just has almost nothing left to find.
+    ///
+    /// The margin stays a named constant because the safety argument is about
+    /// its DIRECTION, not its size: nothing here can produce a wrong removal,
+    /// only a slow one — the press is gated on the No-Send entry being SHOWN
+    /// in a settled frame, never on this arithmetic being right.
+    static let sendRemovalHomeMargin = 0
 
     /// How far back a removal jumps before it starts walking, or nil where it
     /// should just walk. Negative, because home is behind the browse.

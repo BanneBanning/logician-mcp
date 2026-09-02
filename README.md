@@ -129,6 +129,7 @@ I stopwatch everything against a live reference project (25 mixer strips, 19 tra
 | Compose a MIDI arrangement by import — multi-track, note-diff verified | ~8 s, +~6 s per track routed onto an existing track |
 | Perform MIDI (notes, CC, pitch bend) through the track's instrument, render-verified | real time + ~10 s |
 | Automation curve (volume), recorded and playhead-chase verified | ~20 s |
+| Create a send to a bus with its level set, verified — and remove one the same way | ~6 s / ~4 s (~9 s each back to back) |
 | Read the whole mixer in one call — every strip's dB, mute/solo/arm, pan (25 strips) | ~16–17 s |
 | The same read as part of a `mix`-scope project snapshot (adds the track/strip census) | ~23 s |
 | Structured snapshot of the whole project (transport, regions, markers, tempo/meter maps) | ~2 s |

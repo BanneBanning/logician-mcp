@@ -83,6 +83,43 @@ final class SurfaceDeferralTests: XCTestCase {
         XCTAssertNil(MCUController.hotPluginView)
     }
 
+    // MARK: - The send view's debt
+
+    /// A finished send write records the same kind of debt a plugin read
+    /// does, on the strip it wrote to — so the next tool on that strip reuses
+    /// the standing send view instead of paying `ensurePanNames` twice over.
+    func testAFinishedSendWriteRecordsItsViewAgainstItsStrip() {
+        MCUController.deferSurfaceRestore(MCUController.sendViewDebt(strip: "Sweeps"))
+        XCTAssertEqual(
+            MCUController.surfaceDebt,
+            MCUController.SurfaceDebt(strip: "Sweeps", view: "send", slot: nil)
+        )
+        XCTAssertFalse(MCUController.settleSurfaceDebt(before: "Sweeps"))
+        XCTAssertNotNil(MCUController.surfaceDebt)
+    }
+
+    /// The send view is a SAFER thing to leave standing than the plugin views
+    /// the debt pattern was invented for: `SE` is not a plugin-edit
+    /// assignment, so it cannot make Logic auto-open a plug-in window on the
+    /// next track selection. Pinned here because that is the whole argument
+    /// for deferring in the send tools at all.
+    func testAStandingSendViewIsNotTheAutoOpenHazard() {
+        XCTAssertFalse(MCUController.isPluginEditAssignment("SE"))
+    }
+
+    /// A write on a strip this build could not name (`logic_mcu_set_send` on a
+    /// headerless strip resolved by number) still records a debt — an unnamed
+    /// one, which every later selection settles rather than reuses. Erring
+    /// toward one extra restore, never toward a view left standing behind an
+    /// unknown strip.
+    func testAnUnnamedStripsDebtIsSettledByTheNextSelection() {
+        MCUController.deferSurfaceRestore(MCUController.sendViewDebt(strip: nil))
+        XCTAssertEqual(
+            MCUController.surfaceDebt,
+            MCUController.SurfaceDebt(strip: nil, view: "send", slot: nil)
+        )
+    }
+
     // MARK: - Resolving a plugin_name to an insert slot
 
     /// The reference project's `Bas`, as the LCD paints it: two Channel EQs,

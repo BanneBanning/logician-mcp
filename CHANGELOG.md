@@ -309,6 +309,36 @@ with every render coming back as audio the agent can listen to.
   other region's selection. One count now, the tested value in the message, and a
   `restored` flag that matches what the call actually left behind.
 
+- **Creating and removing a send stopped taking eleven seconds.** A person adds a send in
+  two or three; `logic_add_send` took ~11 s and `logic_remove_send` ~10 s, and profiling
+  them phase by phase (2026-09-02, live on the reference project) found almost none of it
+  in the writing. One add now lands in **6.0 s** from a neutral surface and a removal in
+  **~4 s**; back to back, an add-read-remove-read round trip is **21 s where it was 31**,
+  and `logic_mcu_sends` — the read a mix flow starts with — is **1.3 s where it was 5.0**.
+  Five measured waits went, and no verification with them. The send tools stop walking the
+  surface home to the Pan view at the end of every call (1.3–3.4 s each): the restore is
+  recorded as a debt and paid by the next tool that actually needs that view, exactly as the
+  plug-in tools have done since the first efficiency package. The walk to the send view's
+  first page reads the page's own labels and steps back exactly that far — a row saying
+  `Sen5In` is two cursor-lefts from home — instead of pressing four blind ones (~1.0 s, and
+  every call paid it two or three times, including on pages it was already standing on
+  because Logic's browse banner hides the first cell's label). A removal jumps the whole way
+  back to the No-Send entry instead of stopping eight entries short and walking the rest
+  (2.0 s on a near bus, 0.8 s on a deep one; the catalog clamps at that end, and the paced
+  walk still finds the boundary when a jump lands short). The flat second after the removing
+  press became a check on the row Logic repaints to answer it (measured at 46–60 ms in four
+  removals). And the two 0.3 s settles before the confirming presses became a proof of
+  silence, ~155 ms: the entry did not drift once in twelve measured browses, and the drift
+  check that would catch it if it ever does is untouched — as are the settle-verified name,
+  the view gate on every message, and the send-list readback that has the last word.
+  Two things stayed, on the evidence: the silence proof between the jump's 63-entry chunks
+  (it already returns in ~180 ms, so the 1.5 s it is allowed is a deadline nobody meets),
+  and the per-step settle inside the browse. And one thing got slower on purpose — a send
+  list read within ~2 s of a level write now waits for Logic's own post-write overlay to
+  fade instead of reading through it, because that overlay paints the destination's aux
+  name over the position label and lets the dB value spill into the cell underneath, which
+  is how a send at `PosPan` could be reported as sitting at `B`.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.
