@@ -126,10 +126,9 @@ I stopwatch everything against a live reference project (25 mixer strips, 19 tra
 | The same A/B via `method: "bounce"` (master output rather than a track freeze) | ~20 s |
 | A/B on tracks freeze refuses (stack subtracks, shared channels) via `method: "solo_bounce"` | 157 s measured; **est.** ~50 s since the bounce-position fix |
 | Set any plugin parameter, verified via LCD echo, incl. third-party | ~1.5–1.9 s warm (~3.8 s first call) |
-| Compose a MIDI arrangement by import — multi-track, note-diff verified | ~3.3 s (1 track) / ~4 s (4 tracks), +~2.6 s per track routed onto an existing track, +~4 s for the note diff, +126 ms per bar the playhead has to travel |
+| Compose a MIDI arrangement by import — multi-track, note-diff verified | ~8 s, +~6 s per track routed onto an existing track |
 | Perform MIDI (notes, CC, pitch bend) through the track's instrument, render-verified | real time + ~10 s |
 | Automation curve (volume), recorded and playhead-chase verified | ~20 s |
-| Create a send to a bus with its level set, verified — and remove one the same way | ~6 s / ~4 s (~9 s each back to back) |
 | Read the whole mixer in one call — every strip's dB, mute/solo/arm, pan (25 strips) | ~16–17 s |
 | The same read as part of a `mix`-scope project snapshot (adds the track/strip census) | ~23 s |
 | Structured snapshot of the whole project (transport, regions, markers, tempo/meter maps) | ~2 s |
