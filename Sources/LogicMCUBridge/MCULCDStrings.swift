@@ -118,6 +118,35 @@ public enum MCULCDStrings {
         "Send \(sendNumber)"
     }
 
+    /// The names Logic paints over a strip's NAME cell when it sees that
+    /// strip's control pressed on the surface — press solo on `Bas` and the
+    /// row reads `LofPad Solo   808 …` where the bank map says
+    /// `LofPad Bas    808 …`.
+    ///
+    /// It stands for about two seconds and then clears itself: measured
+    /// 2026-09-02 on `Testlåt Copy` by polling the LCD mirror every 50 ms
+    /// across a solo and an unsolo of `Bas`, the cell appeared 0.22 s into the
+    /// call and cleared 1.94 s and 1.99 s later. A bank change does NOT clear
+    /// it — the same day a banner rode through three consecutive bank steps.
+    /// (`bankedAtMatch`'s note that a 600 ms wait never recovered the row is
+    /// right about 600 ms and wrong about the cause.) The bank census checks
+    /// every bank's row against this list, because a banner standing there
+    /// would otherwise be published as a strip's name and written to the bank
+    /// cache, where the next `findChannel` misses that track, deletes the
+    /// cache and pays a full rescan.
+    ///
+    /// Only `Solo` is measured. The others are the same mechanism on the other
+    /// per-strip buttons and are listed so the check does not have to be
+    /// rediscovered one banner at a time; a missing entry costs one banner
+    /// read as a name, and an entry that is also a real strip name costs one
+    /// forced repaint and nothing else — the check re-reads and believes what
+    /// the repainted row says.
+    ///
+    /// Per locale, re-measure: solo a track and read `lcd_top`. These ARE
+    /// Logic's words for its own controls, so unlike the mode banners (which
+    /// stayed English under a French UI) they are expected to translate.
+    public static let controlNameBanners = ["Solo", "Mute", "Select", "Rec/Rdy"]
+
     /// The word in the transient page indicator Logic flashes over the top row
     /// after a cursor-left/right press: `Page 3/12`. The indicator hides
     /// fields 6-7 while it is up, so half the parameter-page machinery is

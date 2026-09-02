@@ -261,12 +261,141 @@ extension MCUController {
         loadScopedCache(bankCacheURL, projectPath: projectPath, as: [String].self)
     }
 
-    static func resetToLeftmostBank() throws {
-        for _ in 0..<8 {
-            let before = freshStatus()?["received_events"] as? Int ?? -1
-            try press("bank_left")
-            _ = awaitEvents(since: before, timeoutMs: 150)
+    // MARK: The left edge
+
+    /// What a walk to the leftmost bank actually established.
+    ///
+    /// This helper used to be `for _ in 0..<8 { press("bank_left") }` with no
+    /// return value at all, and that made it wrong in both directions:
+    ///
+    /// * **On a big project it did not reach the edge.** Eight presses is 64
+    ///   strips. From bank 12 it landed on bank 4, and everything downstream —
+    ///   the census's bank/strip numbers, `bank-cache.json`, and therefore
+    ///   every later write resolved through `navigateToBank` — was SHIFTED by
+    ///   the distance it had not travelled. Silently, with `success: true`.
+    /// * **On a small one it paid for presses that did nothing.** A press that
+    ///   moves a bank costs 57 ms (Logic answers, the wait returns at once); a
+    ///   press at the edge costs 207 ms, because the whole 150 ms event wait
+    ///   times out. Measured 2026-09-02: 1 245 ms from bank 4 and **1 703 ms
+    ///   from the leftmost bank** — 48–56% of `logic_list_strips`, and the
+    ///   call was half a second MORE expensive when the surface was already
+    ///   where it wanted to be.
+    ///
+    /// Both are the same defect: a COUNT standing in for a proof. The walk now
+    /// stops on the edge's own evidence and says whether it got there.
+    enum LeftmostBankProof: Equatable {
+        /// The surface is at the leftmost bank, and the edge itself said so
+        /// (see `bankLeftLooksLikeEdge` and `leftEdgeConfirmed`).
+        case atLeftEdge(presses: Int)
+        /// The edge never proved itself. Callers must NOT read a bank map from
+        /// here — where the surface is standing is unknown, which is the one
+        /// state that makes a census point at the wrong channels.
+        case unproven(presses: Int, reason: String)
+    }
+
+    /// The guard against pressing forever, not a distance. The walk stops on
+    /// the edge's proof, so this only bounds a surface that has stopped
+    /// behaving: 64 banks is 512 strips, eight times the old blind count, and
+    /// reaching it is reported rather than mistaken for having arrived.
+    static let leftEdgeWalkCap = 64
+
+    /// The event wait after one `bank_left`. Logic answers a press that moved
+    /// a bank in ~4 ms (57 ms round trip against a 53 ms press), so this is
+    /// already generous; it is the cost of the ONE press that finds the edge.
+    static let leftEdgePressWaitMs = 150
+
+    /// The second, confirming window after a press that looked like the edge.
+    static let leftEdgeConfirmMs = 150
+
+    /// How long an unmoving name row is proof on its own, when Logic will not
+    /// go quiet (a record-armed strip blinks its LED forever — LED traffic
+    /// never touches the LCD). Same constant and same reasoning as
+    /// `ensurePanNames`'s `stableState` and `settledTop`.
+    static let motionlessRowProofSeconds = 1.0
+
+    /// Does one `bank_left` press LOOK like it hit the left edge?
+    ///
+    /// Two independent facts, BOTH required: Logic answered the press with no
+    /// MIDI at all, and the channel-name row is byte-identical across it.
+    ///
+    /// `timed_out` alone is not proof, and this is exactly what the
+    /// `logic_export_stems` fix judged an early exit on it too risky for: a
+    /// bank change Logic answers LATE would look like an edge, end the walk
+    /// early, and start the census mid-project — a wrong-channel write hazard,
+    /// which is worse than the second it saves. The row is the second witness
+    /// (a bank that moved cannot show the same eight names, see
+    /// `clampOverlap`), and `leftEdgeConfirmed` is the third: it waits out the
+    /// late answer before believing either of them.
+    static func bankLeftLooksLikeEdge(rowBefore: String, rowAfter: String, answered: Bool) -> Bool {
+        !answered && rowBefore == rowAfter
+    }
+
+    /// The confirming look, after a press that looked like the edge: the row
+    /// is still the one we pressed from, and either nothing arrived in a
+    /// second quiet window (the late answer never came) or the row has held
+    /// still long enough that Logic's ongoing chatter cannot be about it.
+    static func leftEdgeConfirmed(
+        rowBefore: String, rowNow: String, quiet: Bool, unchangedFor: TimeInterval
+    ) -> Bool {
+        guard rowNow == rowBefore else { return false }
+        return quiet || unchangedFor >= motionlessRowProofSeconds
+    }
+
+    /// Spends one more window proving the press that looked like an edge did
+    /// not simply get a late answer. True = the edge is proven.
+    private static func confirmLeftEdge(row: String, since: Int) -> Bool {
+        let unchangedSince = Date()
+        let deadline = unchangedSince.addingTimeInterval(motionlessRowProofSeconds + 0.5)
+        var events = since
+        while true {
+            let quiet = awaitEvents(since: events, timeoutMs: leftEdgeConfirmMs)?["timed_out"] as? Bool == true
+            guard let now = freshStatus(), let rowNow = now["lcd_top"] as? String else { return false }
+            events = now["received_events"] as? Int ?? events
+            if leftEdgeConfirmed(
+                rowBefore: row, rowNow: rowNow, quiet: quiet,
+                unchangedFor: Date().timeIntervalSince(unchangedSince)
+            ) { return true }
+            // The row moved: the press DID change the bank and Logic was just
+            // slow to say so. Keep walking.
+            if rowNow != row { return false }
+            if Date() >= deadline { return false }
         }
+    }
+
+    /// Walks to the leftmost bank and proves it got there.
+    static func resetToLeftmostBank() throws -> LeftmostBankProof {
+        var presses = 0
+        while presses < leftEdgeWalkCap {
+            guard let before = freshStatus(), let rowBefore = before["lcd_top"] as? String else {
+                return .unproven(
+                    presses: presses,
+                    reason: "the control-surface mirror stopped answering during the walk to the leftmost bank"
+                )
+            }
+            let beforeEvents = before["received_events"] as? Int ?? -1
+            try press("bank_left")
+            presses += 1
+            let answered = awaitEvents(
+                since: beforeEvents, timeoutMs: leftEdgePressWaitMs
+            )?["timed_out"] as? Bool != true
+            guard let after = freshStatus(), let rowAfter = after["lcd_top"] as? String else {
+                return .unproven(
+                    presses: presses,
+                    reason: "the control-surface mirror stopped answering during the walk to the leftmost bank"
+                )
+            }
+            guard bankLeftLooksLikeEdge(rowBefore: rowBefore, rowAfter: rowAfter, answered: answered) else {
+                continue
+            }
+            if confirmLeftEdge(row: rowBefore, since: after["received_events"] as? Int ?? -1) {
+                return .atLeftEdge(presses: presses)
+            }
+        }
+        return .unproven(
+            presses: presses,
+            reason: "\(leftEdgeWalkCap) bank_left presses never reached an edge that proved itself — "
+                + "the surface kept moving or kept answering, so which bank it is standing on is unknown"
+        )
     }
 
     /// Is the surface ALREADY showing the bank a cached map put this channel
@@ -277,8 +406,12 @@ extension MCUController {
     /// the row reads `LofPad Solo   808    Inst 2 …` where the bank map says
     /// `LofPad Bas    808    Inst 2 …`. It does not clear on a short timer —
     /// measured 2026-09-02 on `Testlåt Copy`, a 600 ms wait for the mapped
-    /// row to come back never once succeeded, and what actually repainted the
-    /// cell was the next thing to touch the surface.
+    /// row to come back never once succeeded. (Re-measured the same day at
+    /// 50 ms resolution: it is a timed transient of **1.94–1.99 s**, and a
+    /// bank change does not clear it — see `controlBannerFadeBudget`. So this
+    /// tolerant match is still the right answer here, because waiting two
+    /// seconds to confirm a bank the surface is already standing on would cost
+    /// more than the navigation it saves.)
     ///
     /// WHAT IT COST. A byte-exact row comparison was the only way to answer
     /// "am I already banked here?", so that one transient cell sent every solo
@@ -313,7 +446,14 @@ extension MCUController {
     /// Navigates to a bank by index (from leftmost) and verifies the expected
     /// LCD content. Returns false on mismatch (stale cache).
     static func navigateToBank(_ index: Int, expecting expectedTop: String) throws -> Bool {
-        try resetToLeftmostBank()
+        // Counting right from an UNPROVEN left edge lands on bank
+        // `index + (however far the walk fell short)`, and the row check below
+        // would then have to catch it — which it does, but only after paying
+        // the whole navigation. Refuse at the start instead.
+        if case .unproven(let presses, let reason) = try resetToLeftmostBank() {
+            debugLog("navigateToBank(\(index)): \(reason) after \(presses) presses")
+            return false
+        }
         for _ in 0..<index {
             let before = freshStatus()?["received_events"] as? Int ?? -1
             try press("bank_right")
@@ -372,7 +512,13 @@ extension MCUController {
             try? FileManager.default.removeItem(at: bankCacheURL)
         }
 
-        try resetToLeftmostBank()
+        if case .unproven(let presses, let reason) = try resetToLeftmostBank() {
+            debugLog("resolveChannel: \(reason)")
+            return .unavailable(
+                reason: "the surface would not walk to its leftmost bank (\(reason), \(presses) presses), "
+                    + "and a scan that starts on an unknown bank would resolve the name to the wrong channel"
+            )
+        }
         // The single-channel Pan view ("Pan    -      -   ...") looks like a
         // transient display to settledTop (>= 4 dash fields) and would time
         // out the whole scan - re-enter the multi-channel names view and
@@ -388,15 +534,29 @@ extension MCUController {
             return .unavailable(reason: "the surface's channel-name row never settled")
         }
         var bankTops: [String] = []
-        for _ in 0..<10 {
-            if bankTops.last == top { break }
+        var reachedRightmost = false
+        scan: while bankTops.count < bankScanCap {
             bankTops.append(top)
+            let beforeEvents = freshStatus()?["received_events"] as? Int ?? -1
             try press("bank_right")
-            guard let next = try settledTop(previous: top) else {
+            switch try settledTopOutcome(previous: top, eventsBeforePress: beforeEvents) {
+            case .settled(let next):
+                top = next
+            case .unchanged:
+                reachedRightmost = true
+                break scan
+            case .neverSettled, .surfaceUnreadable:
                 debugLog("no settled top in scan")
                 return .unavailable(reason: "a bank's channel-name row never settled during the scan")
             }
-            top = next
+        }
+        guard reachedRightmost else {
+            // Same cap, same reasoning as `scanBanks`: a map that stops where
+            // the loop ran out is a map that answers for the wrong channel.
+            return .unavailable(
+                reason: "the surface was still showing new banks after \(bankScanCap) of them "
+                    + "(\(bankScanCap * 8) strips), so the bank map would be truncated; nothing was cached"
+            )
         }
         saveScopedCache(bankTops, to: bankCacheURL, projectPath: projectPath)
         let matches = channelMatches(name: trackName, bankTops: bankTops)
@@ -427,11 +587,71 @@ extension MCUController {
         return .unavailable(reason: "the surface would not bank back to the matching bank")
     }
 
+    /// The bound on a bank walk to the RIGHT. Like `leftEdgeWalkCap` this is
+    /// the guard against walking forever, not the expected length: a scan
+    /// stops when the surface PROVES the list ended (the rightmost bank clamps
+    /// and the row stops changing, `SettledTopOutcome.unchanged`). The old
+    /// bound was 10 with no branch for running out, so a project past 80
+    /// strips was silently truncated and still reported `success: true`;
+    /// 128 banks is 1 024 strips and reaching it is a refusal.
+    static let bankScanCap = 128
+
+    /// What a wait for a settled channel-name row established. The three
+    /// non-`settled` cases were all one `nil`-or-`previous` return before, and
+    /// a bank walk cannot tell them apart from the outside — which is how "the
+    /// row never settled" came to mean "the project ends here".
+    enum SettledTopOutcome: Equatable {
+        /// A stable, non-transient row, and a DIFFERENT one from `previous`
+        /// where a previous was given.
+        case settled(String)
+        /// `previous` came back and held through the silence proof: this row
+        /// will not change. On a bank walk that is the rightmost bank's clamp,
+        /// and it is the only PROOF a scan has that the strip list ended.
+        case unchanged(String)
+        /// The budget ran out with the row still moving. NOT an end of list —
+        /// a walk that treats it as one truncates itself in silence.
+        case neverSettled
+        /// The mirror stopped answering.
+        case surfaceUnreadable
+    }
+
+    /// How many 200 ms silence rounds prove "this row is not going to change".
+    ///
+    /// Two, normally: a row that still equals `previous` is only evidence that
+    /// nothing has repainted YET. But when the caller can say the press that
+    /// preceded this wait produced NO MIDI EVENT AT ALL, the second round buys
+    /// nothing — there was never anything in flight to wait for. That matters
+    /// because this is the end-of-scan probe: the last step of a bank walk
+    /// cost 480 ms against 182 ms for a real one, 19% of `logic_list_strips`
+    /// (measured 2026-09-02). One round instead of two, −200 ms per walk.
+    static func quietRoundsRequired(eventsBeforePress: Int?, eventsNow: Int) -> Int {
+        guard let before = eventsBeforePress, before >= 0, eventsNow == before else { return 2 }
+        return 1
+    }
+
     /// Waits until the LCD top row holds stable, non-transient channel content
     /// (two consecutive identical reads that are not a "-      " banner), and
     /// differs from `previous` when given (returns previous content on timeout,
     /// which scan loops interpret as "rightmost bank reached").
+    ///
+    /// The optional-String reading of `settledTopOutcome`, kept for the callers
+    /// that only ever want a row. A walk that has to tell "the list ended"
+    /// apart from "the row never settled" asks the outcome directly.
     static func settledTop(previous: String? = nil) throws -> String? {
+        switch try settledTopOutcome(previous: previous) {
+        case .settled(let row), .unchanged(let row): return row
+        case .neverSettled: return previous
+        case .surfaceUnreadable: return nil
+        }
+    }
+
+    /// - Parameter eventsBeforePress: the mirror's event count from
+    ///   immediately BEFORE the press this wait is settling — the evidence
+    ///   `quietRoundsRequired` uses to charge one silence round instead of two
+    ///   for a press Logic ignored entirely.
+    static func settledTopOutcome(
+        previous: String? = nil, eventsBeforePress: Int? = nil
+    ) throws -> SettledTopOutcome {
         let deadline = Date().addingTimeInterval(3.0)
         var quietRepeats = 0
         // Same hazard as `stableState`: a record-armed strip's blinking LED is
@@ -440,7 +660,9 @@ extension MCUController {
         var unchangedSince: Date?
         var lastSeenTop: String?
         while Date() < deadline {
-            guard let status = freshStatus(), let top = status["lcd_top"] as? String else { return nil }
+            guard let status = freshStatus(), let top = status["lcd_top"] as? String else {
+                return .surfaceUnreadable
+            }
             let events = status["received_events"] as? Int ?? -1
             if top == lastSeenTop {
                 if unchangedSince == nil { unchangedSince = Date() }
@@ -459,26 +681,32 @@ extension MCUController {
                     // stable = 120 ms without new MIDI from Logic, or a row
                     // that has not moved for a second while Logic keeps
                     // blinking a record LED at us.
-                    if heldASecond { return top }
+                    if heldASecond { return .settled(top) }
                     if let after = awaitEvents(since: events, timeoutMs: 120),
                        after["timed_out"] as? Bool == true {
-                        return top
+                        return .settled(top)
                     }
                     continue
                 }
-                // same as previous: two quiet rounds means the display will not
-                // change (e.g. rightmost bank reached)
-                if heldASecond { return previous }
+                // Same as previous: silence means the display will not change
+                // (e.g. rightmost bank reached). Normally two rounds; one when
+                // the press produced no event at all — see
+                // `quietRoundsRequired`.
+                guard let previous else { continue }
+                if heldASecond { return .unchanged(previous) }
                 if let after = awaitEvents(since: events, timeoutMs: 200),
                    after["timed_out"] as? Bool == true {
                     quietRepeats += 1
-                    if quietRepeats >= 2 { return previous }
+                    let needed = quietRoundsRequired(
+                        eventsBeforePress: eventsBeforePress, eventsNow: events
+                    )
+                    if quietRepeats >= needed { return .unchanged(previous) }
                 }
                 continue
             }
             _ = awaitEvents(since: events, timeoutMs: 250)
         }
-        return previous
+        return .neverSettled
     }
 
 }

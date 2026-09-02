@@ -6,7 +6,9 @@ import LogicMCUBridge
 // The census and the one-call mixer read.
 //
 // `logic_list_tracks` answers with the track headers Logic has RENDERED — 20 of
-// the reference project's 26 strips on 2026-08-28, reported as a plain success.
+// the reference project's 26 strips on 2026-08-28, reported as a plain success;
+// 19 of 25 on 2026-09-02, the project having lost an aux in between. The strip
+// count moves, the blind spot does not.
 // The control surface has no such blind spot: every strip in the project is an
 // ordinary bank channel, the bank scan already walks all of them, and the mirror
 // already carries the faders, the lit LED note numbers and the vpot rings. What
@@ -81,7 +83,36 @@ extension MCUController {
         let rings: [Int]
     }
 
-    /// Walks every bank in the pan-names view and reads it.
+    /// Everything one bank walk established — the banks, and the one caveat
+    /// that can survive a walk that otherwise succeeded.
+    struct BankScan {
+        let banks: [BankReading]
+        /// A cell that has the exact spelling of a control-surface banner
+        /// (`Solo`, `Mute`, …) and was STILL there after the fade budget. The
+        /// name may be Logic's banner rather than the strip's — nothing can
+        /// tell a stuck banner from a strip somebody really called `Solo` — so
+        /// the map is not cached and the caller says so. nil in the ordinary
+        /// case, including the ordinary banner, which fades in about two
+        /// seconds and is simply waited out.
+        let standingBanner: String?
+    }
+
+    /// The bank walk, with both of its ends PROVEN rather than counted.
+    ///
+    /// Where it starts: `resetToLeftmostBank` now returns whether the left
+    /// edge proved itself, and this refuses rather than reading a map from an
+    /// unknown starting bank — the census's `bank`/`strip` numbers and the
+    /// `bank-cache.json` written from them are what every later WRITE resolves
+    /// through, so a map that begins in the wrong place aims writes at the
+    /// wrong channels. Before 2026-09-02 the walk was eight blind presses, so
+    /// any project past 64 strips got exactly that, silently, with
+    /// `success: true`.
+    ///
+    /// Where it ends: the rightmost bank CLAMPS (it re-shows the previous
+    /// bank's tail), so pressing past it leaves the row unchanged — that is
+    /// the surface proving the list ended, and `SettledTopOutcome.unchanged`
+    /// is the only exit that means it. Running out of loop and a row that
+    /// never settles are separate answers now, and both refuse.
     ///
     /// DELIBERATELY never reads the bank cache. The cache exists to make
     /// `findChannel` fast, and a stale entry there costs one failed lookup that
@@ -92,7 +123,7 @@ extension MCUController {
     /// every value from that strip rightwards to its neighbour. Reading is what
     /// these two tools are FOR, so they pay for the scan and refresh the cache
     /// for everyone else.
-    static func scanBanks() throws -> [BankReading] {
+    static func scanBanks() throws -> BankScan {
         let projectPath = currentProjectPath()
         guard try ensurePanNames() else {
             throw LogicianError.trackNotExposed(
@@ -100,7 +131,15 @@ extension MCUController {
                 exposed: "the pan-names view could not be reached, so the strips cannot be read"
             )
         }
-        try resetToLeftmostBank()
+        if case .unproven(let presses, let reason) = try resetToLeftmostBank() {
+            throw LogicianError.trackNotExposed(
+                requested: "the leftmost bank, which is where a census has to start counting",
+                exposed: "\(reason) (\(presses) bank_left presses). Numbering the strips from an "
+                    + "unknown bank would misname every one of them and poison the bank map every "
+                    + "later write resolves through, so nothing was read and nothing was cached — "
+                    + "check logic_health and try again"
+            )
+        }
         var settled = try settledTop()
         if settled == nil {
             _ = try ensurePanNames()
@@ -112,25 +151,134 @@ extension MCUController {
                 exposed: "the surface's name row never settled; nothing was read"
             )
         }
+        var standingBanner: String?
         var banks: [BankReading] = []
-        for _ in 0..<10 {
+        var reachedRightmostBank = false
+        scan: while banks.count < bankScanCap {
             // The pass-1 bank walk. No progress here — the caller reports on a
             // scale this loop does not know the size of — but it is a real
             // multi-second wait, so it takes the cancellation check.
             try checkCancelled()
-            if banks.last?.top == top { break }
+            // THE BANNER, on every bank's row and not just the first: it
+            // outlived three consecutive bank steps when this was measured.
+            switch try rowWithoutControlBanner(top) {
+            case .clear(let clean):
+                top = clean
+            case .standing(let row, let cell):
+                top = row
+                standingBanner = standingBanner ?? cell
+            }
             let status = freshStatus()
             banks.append(BankReading(
                 top: top,
                 bottom: status?["lcd_bottom"] as? String ?? "",
                 rings: status?["vpot_rings"] as? [Int] ?? []
             ))
+            let beforeEvents = status?["received_events"] as? Int ?? -1
             try press("bank_right")
-            guard let next = try settledTop(previous: top) else { break }
-            top = next
+            switch try settledTopOutcome(previous: top, eventsBeforePress: beforeEvents) {
+            case .settled(let next):
+                top = next
+            case .unchanged:
+                reachedRightmostBank = true
+                break scan
+            case .neverSettled:
+                throw LogicianError.trackNotExposed(
+                    requested: "bank \(banks.count + 1)'s channel-name row",
+                    exposed: "the row never settled after the bank step, so the surface could not be "
+                        + "read past bank \(banks.count). A census that stopped there would look "
+                        + "complete, so nothing was cached"
+                )
+            case .surfaceUnreadable:
+                throw LogicianError.trackNotExposed(
+                    requested: "bank \(banks.count + 1)'s channel-name row",
+                    exposed: "the control-surface mirror stopped answering during the scan; "
+                        + "nothing was cached (see logic_health)"
+                )
+            }
         }
-        saveScopedCache(banks.map(\.top), to: bankCacheURL, projectPath: projectPath)
-        return banks
+        guard reachedRightmostBank else {
+            throw LogicianError.trackNotExposed(
+                requested: "every bank in the project",
+                exposed: "the surface was still showing new banks after \(bankScanCap) of them "
+                    + "(\(bankScanCap * 8) strips), so the census would be truncated without "
+                    + "saying so; nothing was cached"
+            )
+        }
+        // A row that may still be carrying a banner is not a map: cache it and
+        // every later `findChannel` resolves that strip by a name Logic never
+        // gave it.
+        if standingBanner == nil {
+            saveScopedCache(banks.map(\.top), to: bankCacheURL, projectPath: projectPath)
+        }
+        return BankScan(banks: banks, standingBanner: standingBanner)
+    }
+
+    /// The first cell of `row` that has the exact spelling of one of the
+    /// control names Logic paints over a strip's name (`MCULCDStrings.controlNameBanners`).
+    static func controlBannerCell(in row: String) -> String? {
+        lcdFields(row)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { MCULCDStrings.controlNameBanners.contains($0) }
+    }
+
+    /// What a look at a row carrying a control-name cell settled on.
+    enum ControlBannerLook: Equatable {
+        /// The row, with no cell spelling a control name — either it never had
+        /// one, or the banner faded and this is what Logic painted underneath.
+        case clear(String)
+        /// The cell was still there when the budget ran out. Either Logic is
+        /// holding a banner far longer than it has ever been measured to, or
+        /// the strip really is called that; nothing on the surface can tell
+        /// those apart, so the caller stops trusting the row instead.
+        case standing(String, cell: String)
+    }
+
+    /// How long to let a control banner fade before giving up on it.
+    ///
+    /// MEASURED 2026-09-02 on `Testlåt Copy`, polling the LCD mirror every
+    /// 50 ms across a solo of `Bas`: the `Solo` cell appeared 0.22 s after the
+    /// call started and cleared **1.94 s** later; the unsolo repeated it at
+    /// **1.99 s**. So it is a timed transient of roughly two seconds — the
+    /// `bankedAtMatch` note that "a 600 ms wait never recovered it" was right
+    /// about 600 ms and wrong to conclude that only a repaint clears it. A
+    /// bank change does NOT clear it: measured the same day, a banner rode
+    /// through three consecutive bank steps and was gone on the fourth purely
+    /// because two seconds had passed.
+    ///
+    /// The budget is 1.5× the longest stand measured, counted from the moment
+    /// the banner is FIRST SEEN — by then it has already spent part of its
+    /// life, so the real headroom is larger.
+    static let controlBannerFadeBudget = 3.0
+
+    /// Waits out a control banner standing over a strip's name cell, and costs
+    /// nothing at all when there is none — the check is one pure string
+    /// comparison per bank.
+    ///
+    /// This became load-bearing when the bank walk got fast. The old walk spent
+    /// 1.7 s on blind `bank_left` presses before it read anything, which
+    /// happened to outlast the banner; measured 2026-09-02, the same
+    /// solo-then-census experiment came back clean on the old build and, on
+    /// the fast one, published `Solo` as a strip name in THREE banks and a
+    /// strip count of 32 instead of 25 (the banner breaks `clampOverlap` too).
+    /// An accidental wait is not a guard, so this is the real one.
+    static func rowWithoutControlBanner(_ row: String) throws -> ControlBannerLook {
+        guard let cell = controlBannerCell(in: row) else { return .clear(row) }
+        let deadline = Date().addingTimeInterval(controlBannerFadeBudget)
+        var latest = row
+        while Date() < deadline {
+            guard let status = freshStatus(), let now = status["lcd_top"] as? String else { break }
+            latest = now
+            if controlBannerCell(in: now) == nil {
+                // Logic has just repainted the cell; take the row through the
+                // usual settle so a half-painted one cannot be published.
+                let settled = (try settledTop()) ?? now
+                guard let stillThere = controlBannerCell(in: settled) else { return .clear(settled) }
+                return .standing(settled, cell: stillThere)
+            }
+            _ = awaitEvents(since: status["received_events"] as? Int ?? -1, timeoutMs: 150)
+        }
+        return .standing(latest, cell: cell)
     }
 
     /// The census. Cross-checks every strip against the track headers
@@ -144,8 +292,8 @@ extension MCUController {
                 exposed: "the bridge is not running or Logic has never talked to it (see logic_health)"
             )
         }
-        let banks = try scanBanks()
-        let bankTops = banks.map(\.top)
+        let scan = try scanBanks()
+        let bankTops = scan.banks.map(\.top)
         let inventory = stripInventory(bankTops: bankTops)
         let headers = (try? logic.parsedTrackHeaders()) ?? []
         var strips: [[String: Any]] = []
@@ -175,7 +323,7 @@ extension MCUController {
             }
             strips.append(row)
         }
-        return [
+        var result: [String: Any] = [
             "success": true,
             "strips": strips,
             "strip_count": strips.count,
@@ -185,6 +333,16 @@ extension MCUController {
             "rendered_track_headers": headers.count,
             "note": "Every strip the control surface can reach, in project order — outputs, auxes and buses included, and independent of what the Tracks area has scrolled into view. `lcd_name` is Logic's own 6-character abbreviation; `track_name` is filled in only where exactly one RENDERED track header abbreviates to that cell, so `kind: unresolved` means 'not a visible track header' (an output/aux/bus, or a track scrolled out) and never 'does not exist'. Address any strip by its full Mixer name, not by the abbreviation."
         ]
+        if let banner = scan.standingBanner {
+            result["warning"] = "A strip's name cell reads '\(banner)', which is exactly how Logic "
+                + "spells the control it last saw pressed when it paints that name over the strip's "
+                + "own name — and it was still there after \(Int(controlBannerFadeBudget)) seconds, "
+                + "where that banner clears itself in about two. So either the strip really is "
+                + "called '\(banner)' or the surface is holding a banner far longer than it has "
+                + "ever been measured to; the bank map was NOT cached either way. Re-run to see "
+                + "which."
+        }
+        return result
     }
 
     // MARK: Mixer snapshot
@@ -326,7 +484,8 @@ extension MCUController {
         }
         // Pass 1: names, pan and the pan-view vpot rings, in one settled read
         // per bank.
-        let banks = try scanBanks()
+        let scan = try scanBanks()
+        let banks = scan.banks
         let bankTops = banks.map(\.top)
         let inventory = stripInventory(bankTops: bankTops)
         guard !inventory.isEmpty else {
@@ -342,8 +501,18 @@ extension MCUController {
             ringsByBank[bank] = reading.rings
         }
 
-        // Pass 2: dB, faders and the LED states, bank by bank.
-        try resetToLeftmostBank()
+        // Pass 2: dB, faders and the LED states, bank by bank. Pass 1's
+        // identities are paired with these values by bank index, so a walk
+        // that fell short of the left edge would pair every strip with its
+        // neighbour's dB — the same wrong-channel hazard as a shifted census.
+        if case .unproven(let presses, let reason) = try resetToLeftmostBank() {
+            _ = try? ensurePanNames()
+            throw LogicianError.trackNotExposed(
+                requested: "the leftmost bank, to start the second (dB and LED) walk",
+                exposed: "\(reason) (\(presses) bank_left presses). The values would be paired "
+                    + "with the wrong strips, so nothing was read"
+            )
+        }
         guard try ensureVolumeView() else {
             _ = try? ensurePanNames()
             throw LogicianError.trackNotExposed(
@@ -400,7 +569,7 @@ extension MCUController {
         let assignment = freshStatus()?["assignment"] as? String
         // Leave the surface where every other tool expects to find it.
         _ = try? ensurePanNames()
-        try? resetToLeftmostBank()
+        _ = try? resetToLeftmostBank()
 
         let headers = (try? logic.parsedTrackHeaders()) ?? []
         var strips: [[String: Any]] = []
