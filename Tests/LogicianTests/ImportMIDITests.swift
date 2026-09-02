@@ -486,4 +486,130 @@ final class ImportMIDITests: XCTestCase {
             [ImportMIDI.TrackHeader(number: 2, name: "Bas")]
         )
     }
+
+    // MARK: - Which region `verify: "events"` reads back
+
+    /// The project after two unrouted imports: BOTH new tracks are called
+    /// `Studio Grand`, because Logic names them after the default patch it
+    /// loaded and not after the SMF track. This is the shape the note
+    /// verification got wrong live (2026-09-02) — it addressed the read by
+    /// track NAME, resolved the FIRST namesake, and reported a mismatch about
+    /// the region it had not read.
+    private let twoStudioGrands = [
+        ImportMIDI.RegionCensus.Entry(
+            trackNumber: 32, trackName: "Studio Grand", name: "IMPPROF-C1", startBar: 1),
+        ImportMIDI.RegionCensus.Entry(
+            trackNumber: 33, trackName: "Studio Grand", name: "IMPPROF-E1", startBar: 1)
+    ]
+
+    func testTheVerifyTargetIsAddressedByTrackNumberNotByTheSharedTrackName() {
+        XCTAssertEqual(
+            ImportMIDI.verifyTarget(forTrackNamed: "IMPPROF-E1", in: twoStudioGrands),
+            ImportMIDI.VerifyTarget(
+                regionName: "IMPPROF-E1", trackName: "Studio Grand",
+                trackNumber: 33, startBar: 1),
+            "the row this import created, not the namesake the earlier one left behind"
+        )
+        XCTAssertEqual(
+            ImportMIDI.verifyTarget(forTrackNamed: "IMPPROF-C1", in: twoStudioGrands)?.trackNumber,
+            32
+        )
+    }
+
+    /// A routed part is read on the track it was MOVED to, which is the entry
+    /// the routing phase rewrote into the census.
+    func testARoutedRegionIsVerifiedOnItsDestinationRow() {
+        let landed = [
+            ImportMIDI.RegionCensus.Entry(
+                trackNumber: 2, trackName: "Bas", name: "Bass Line", startBar: 9)
+        ]
+        XCTAssertEqual(
+            ImportMIDI.verifyTarget(forTrackNamed: "bass line", in: landed),
+            ImportMIDI.VerifyTarget(
+                regionName: "Bass Line", trackName: "Bas", trackNumber: 2, startBar: 9),
+            "matched case-insensitively, the way every other name in this tool is"
+        )
+    }
+
+    func testAWrittenTrackWithNoLandedRegionHasNoTargetRatherThanTheWrongOne() {
+        XCTAssertNil(ImportMIDI.verifyTarget(forTrackNamed: "IMPPROF-X", in: twoStudioGrands))
+    }
+
+    // MARK: The verdict: unverified is not mismatched
+
+    func testEverythingReadAndMatchingIsVerifiedWithNoWarning() {
+        let verdict = ImportMIDI.noteVerdict([.matched, .matched])
+        XCTAssertTrue(verdict.verified)
+        XCTAssertNil(verdict.warning)
+    }
+
+    /// The measured lie: three attempts failed to READ the region and the tool
+    /// warned that the notes "do not all match". Notes nobody read are
+    /// UNVERIFIED, and the warning has to say so.
+    func testNotesThatWereNeverReadAreUnverifiedAndNotAMismatch() {
+        let verdict = ImportMIDI.noteVerdict([.matched, .unverified])
+        XCTAssertFalse(verdict.verified, "an unread region is not a verified one either")
+        let warning = verdict.warning ?? ""
+        XCTAssertTrue(warning.contains("UNVERIFIED"), warning)
+        XCTAssertFalse(warning.contains("do not match"), warning)
+    }
+
+    func testNotesThatWereReadAndDifferAreReportedAsAMismatch() {
+        let warning = ImportMIDI.noteVerdict([.mismatched]).warning ?? ""
+        XCTAssertTrue(warning.contains("do not match"), warning)
+        XCTAssertFalse(warning.contains("UNVERIFIED"), warning)
+    }
+
+    /// Both kinds in one call get both sentences, with their own counts —
+    /// they ask the caller to do different things.
+    func testAMixedPassSaysBothThingsSeparately() {
+        let warning = ImportMIDI.noteVerdict([.mismatched, .unverified, .matched]).warning ?? ""
+        XCTAssertTrue(warning.contains("1 of them do not match"), warning)
+        XCTAssertTrue(warning.contains("1 region(s) could not be READ BACK"), warning)
+    }
+
+    // MARK: - Proving a dialog is gone
+
+    /// Only an INVALID element is a closed one. `cannotComplete` is Logic busy
+    /// instantiating the instruments the import just made — reading that as
+    /// "the panel closed" would report a modal still on screen as dismissed.
+    func testOnlyAnInvalidElementCountsAsGone() {
+        XCTAssertTrue(ImportMIDI.elementIsGone(.invalidUIElement))
+        for status: AXError in [.success, .cannotComplete, .notImplemented, .attributeUnsupported,
+                                .noValue, .apiDisabled] {
+            XCTAssertFalse(ImportMIDI.elementIsGone(status), "\(status.rawValue)")
+        }
+    }
+
+    /// The cheap probe answers and the expensive tree search is never paid.
+    func testTheRetainedElementProbeShortCircuitsTheSearch() {
+        var searches = 0
+        XCTAssertTrue(waitForDisappearance(
+            timeout: 5, patience: 0,
+            probe: { true }, confirm: { searches += 1; return true }
+        ))
+        XCTAssertEqual(searches, 0, "a dead element needs no walk of the tree to prove it")
+    }
+
+    /// A panel AppKit closed but KEPT — its element stays valid, so the probe
+    /// never fires and the search has to be the one that decides.
+    func testTheSearchStillDecidesWhenTheElementStaysValid() {
+        var searches = 0
+        XCTAssertTrue(waitForDisappearance(
+            timeout: 5, patience: 0,
+            probe: { false }, confirm: { searches += 1; return true }
+        ))
+        XCTAssertEqual(searches, 1)
+    }
+
+    /// And it gets the LAST word: a dialog that is genuinely still standing is
+    /// searched for once more before this reports failure.
+    func testTheSearchIsAskedOnceMoreBeforeReportingADialogStillStanding() {
+        var searches = 0
+        XCTAssertFalse(waitForDisappearance(
+            timeout: 0, patience: 60,
+            probe: { false }, confirm: { searches += 1; return false }
+        ))
+        XCTAssertEqual(searches, 1, "even with the slow clock nowhere near due")
+    }
 }

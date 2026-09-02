@@ -77,6 +77,21 @@ extension MCPServer {
             firstTrack: tracks.first?.name, timestamp: Int(Date().timeIntervalSince1970)
         ))
         let bytes = try writer.write(to: file)
+        // THE FILE LIVES AS LONG AS THE CALL. It is a byte-for-byte function of
+        // the arguments — the same `tracks` regenerate it exactly — and one was
+        // being left behind per call with nothing that ever removed them
+        // (measured 2026-09-02: 17 of them from a single session, in the
+        // directory that also holds the user's renders). Discarded explicitly
+        // once the importer is done with it, so the result can report what
+        // actually happened rather than what was intended; the `defer` is the
+        // net under every earlier exit, including the ones that throw.
+        var fileRemoved = false
+        func discardGeneratedFile() {
+            guard !fileRemoved else { return }
+            _ = try? FileManager.default.removeItem(at: file)
+            fileRemoved = !FileManager.default.fileExists(atPath: file.path)
+        }
+        defer { discardGeneratedFile() }
         reportProgress("wrote \(bytes) bytes of Standard MIDI File", percent: 5)
 
         // FRONTMOST BEFORE THE CENSUS, not just before the panel. Measured
@@ -124,6 +139,7 @@ extension MCPServer {
             // needs, and an error string cannot carry it.
             let cleanup = logic.dismissImportPanel()
             let rollback = rollbackImportedTracks(since: tracksBefore)
+            discardGeneratedFile()
             return [
                 "success": false,
                 "verified": false,
@@ -133,12 +149,15 @@ extension MCPServer {
                 "cleanup": cleanup,
                 "restored": rollback,
                 "file": file.path,
+                "file_removed": fileRemoved,
                 "at_bar": atBar,
                 "tracks_before": tracksBefore.count,
                 "tracks_after": trackRows().count
             ]
         }
         reportProgress("verifying what landed", percent: 70)
+        // Logic has read the file; nothing after this point needs it.
+        discardGeneratedFile()
 
         if importTempo {
             // A tempo-map WRITE happened. The cached map describes the project
@@ -164,6 +183,7 @@ extension MCPServer {
 
         var result: [String: Any] = [
             "file": file.path,
+            "file_removed": fileRemoved,
             "file_bytes": bytes,
             "at_bar": atBar,
             "requested_tracks": tracks.count,
@@ -181,8 +201,9 @@ extension MCPServer {
             "note": "Logic names the new TRACKS after whatever default patch it loaded"
                 + " ('Studio Grand', 'Epic Cloud Formation'); the SMF track names come back on the"
                 + " REGIONS, which is what this result verified against. Rename the tracks with"
-                + " logic_rename_track if the names matter. The .mid is left at `file` — re-import"
-                + " it, or hand it to another tool."
+                + " logic_rename_track if the names matter. The .mid this call generated was at"
+                + " `file` and has been REMOVED again (it is a byte-for-byte function of these"
+                + " arguments — call this tool with the same `tracks` to regenerate it)."
                 + (plan.isEmpty
                     ? ""
                     : " Tracks with a `to_track` were moved off the temp track Logic made for them"
@@ -207,7 +228,8 @@ extension MCPServer {
             result["error"] = "Logic imported NOTHING: the track census is unchanged"
                 + " (\(tracksBefore.count) before, \(tracksAfter.count) after) and no new region"
                 + " appeared. A file Logic cannot read fails silently — there is no error dialog —"
-                + " so this is what that looks like. The file this call wrote is at \(file.path)."
+                + " so this is what that looks like. The \(bytes)-byte file this call wrote was"
+                + " removed with it; the same `tracks` regenerate it byte for byte."
             return result
         }
         if !missing.isEmpty || !atWrongBar.isEmpty {
@@ -296,20 +318,14 @@ extension MCPServer {
         result["verified"] = true
         if verify == "events" {
             let events = verifyImportedNotes(tracks: tracks, landed: landed)
+            let verdict = ImportMIDI.noteVerdict(events.checks)
             result["note_verification"] = events.perTrack
-            result["verified"] = events.allMatch
-            if !events.allMatch {
-                appendWarning(
-                    "The regions landed, but the NOTES in them do not all match what was written"
-                        + " — see note_verification. The import itself completed; nothing was"
-                        + " rolled back.",
-                    to: &result
-                )
-            }
+            result["verified"] = verdict.verified
+            appendWarning(verdict.warning, to: &result)
         } else {
             result["note_verification"] = "not run (verify: 'census'). Pass verify: 'events' to"
                 + " read every new region's notes back out of Logic's Event List and diff them"
-                + " against what was written (~2 s per region)."
+                + " against what was written (measured +3.9 s for one region)."
         }
         if importTempo {
             appendWarning(
@@ -410,10 +426,14 @@ extension MCPServer {
     /// selecting a region is not selecting its track.
     ///
     /// Two phases, deliberately. Every region is moved first, then the empty
-    /// temp tracks go one at a time with a two-second gap: `Delete Track` fails
-    /// at its own 8.5 s timeout when it is fired less than ~2 s after the
-    /// previous delete (R2 §7). Deleting highest-numbered first keeps the
-    /// numbers read here valid all the way down.
+    /// temp tracks go one at a time, BACK TO BACK. The two-second gap this used
+    /// to leave between deletes was justified by "`Delete Track` fails at its
+    /// own 8.5 s timeout when it is fired less than ~2 s after the previous
+    /// delete (R2 §7)", and that constant is dead: measured 2026-09-02,
+    /// seventeen consecutive `logic_delete_track` calls with NO gap at all
+    /// succeeded 17/17 in 643-980 ms each, every one of them answering the
+    /// "Delete Track and Regions?" alert. Deleting highest-numbered first keeps
+    /// the numbers read here valid all the way down.
     func relocateImportedRegions(
         plan: [ImportDestination], landed: [ImportMIDI.RegionCensus.Entry], atBar: Int
     ) -> RelocationOutcome {
@@ -495,8 +515,7 @@ extension MCPServer {
         // The temp tracks, now empty. An empty track deletes without Logic's
         // "Delete Track and Regions?" alert; `handleDeleteTrack` answers it
         // either way and refuses if the selection stops naming the track.
-        for (index, temp) in emptied.sorted(by: { $0.number > $1.number }).enumerated() {
-            if index > 0 { Thread.sleep(forTimeInterval: 2.0) }
+        for temp in emptied.sorted(by: { $0.number > $1.number }) {
             try? logic.ensureLogicFrontmost(for: "removing the temp track '\(temp.name)'")
             let outcomeOfDelete = try? handleDeleteTrack(
                 ["track_name": temp.name, "track_number": temp.number]
@@ -521,8 +540,18 @@ extension MCPServer {
     // MARK: - Note-level verification
 
     /// Reads each new region's notes back out of Logic's Event List and diffs
-    /// them against what was written. ~2 s per region: the Event List opens and
-    /// restores the List Editors pane on every read.
+    /// them against what was written. Measured 2026-09-02: +3 942 ms for one
+    /// region against the same import with `verify: "census"` (a 1.5 s settle
+    /// plus the read) — the Event List opens and restores the List Editors pane
+    /// on every read. The description used to advertise "+~2 s".
+    ///
+    /// ADDRESSED BY TRACK NUMBER, never by track name. Logic names every
+    /// unrouted import's new track after the default patch it loaded, so a
+    /// project that has been imported into twice holds two tracks called
+    /// `Studio Grand` and the name resolves the WRONG one (measured 2026-09-02:
+    /// it read the previous import's region and then reported a mismatch in
+    /// notes it had never seen). `ImportMIDI.verifyTarget` carries the row
+    /// number out of the census diff, and `selectRegion` addresses the row.
     ///
     /// RETRIED, because the first read after an import is taken while Logic is
     /// still busy. Measured 2026-08-30: the tempo prompt closes as soon as the
@@ -533,28 +562,46 @@ extension MCPServer {
     /// is not running") on a Logic that was perfectly healthy. Both attempts
     /// came back clean a second apart. So: settle, then up to three tries a
     /// second and a half apart, each preceded by the frontmost escalation.
+    ///
+    /// A read that never happened is reported as `unverified` WITH ITS REASON,
+    /// and never as a mismatch: `matches: false` is a claim about bytes, and
+    /// this pass may only make it about bytes it actually read.
     private func verifyImportedNotes(
         tracks: [SMFTrack], landed: [ImportMIDI.RegionCensus.Entry]
-    ) -> (perTrack: [[String: Any]], allMatch: Bool) {
+    ) -> (perTrack: [[String: Any]], checks: [ImportMIDI.NoteCheck]) {
         var reports: [[String: Any]] = []
-        var allMatch = true
+        var checks: [ImportMIDI.NoteCheck] = []
         Thread.sleep(forTimeInterval: 1.5)
         for track in tracks {
-            guard let name = track.name,
-                  let region = landed.first(where: {
-                      $0.name.caseInsensitiveCompare(name) == .orderedSame
-                  }) else { continue }
+            guard let name = track.name else { continue }
+            guard let target = ImportMIDI.verifyTarget(forTrackNamed: name, in: landed) else {
+                // Unreachable — the census guard above refuses an import whose
+                // regions did not all arrive — but a silent skip would be a
+                // track counted as verified because nobody looked for it.
+                reports.append([
+                    "region": name, "read": false,
+                    "verification": ImportMIDI.NoteCheck.unverified.rawValue,
+                    "reason": "no imported region named '\(name)' was in the census diff"
+                ])
+                checks.append(.unverified)
+                continue
+            }
             var payload: [String: Any] = [
-                "region": region.name, "read": false,
+                "region": target.regionName,
+                "track_name": target.trackName,
+                "track_number": target.trackNumber,
+                "read": false,
+                "verification": ImportMIDI.NoteCheck.unverified.rawValue,
                 "reason": "not attempted"
             ]
             for attempt in 0..<3 {
                 if attempt > 0 { Thread.sleep(forTimeInterval: 1.5) }
-                try? logic.ensureLogicFrontmost(for: "reading '\(region.name)' back")
+                try? logic.ensureLogicFrontmost(for: "reading '\(target.regionName)' back")
                 do {
                     _ = try logic.selectRegion(
-                        trackName: region.trackName, regionName: region.name,
-                        startBar: region.startBar, exclusive: true
+                        trackName: target.trackName, regionName: target.regionName,
+                        startBar: target.startBar, exclusive: true,
+                        trackNumber: target.trackNumber
                     )
                     let read = logic.readEventList()
                     guard let events = read.events else {
@@ -568,31 +615,37 @@ extension MCPServer {
                     )
                     let diff = ImportMIDI.diff(expected: track.notes, observed: rows)
                     payload = diff.payload
-                    payload["region"] = region.name
-                    payload["track_name"] = region.trackName
+                    payload["region"] = target.regionName
+                    payload["track_name"] = target.trackName
+                    payload["track_number"] = target.trackNumber
                     payload["read"] = true
+                    payload["verification"] = (diff.matches
+                        ? ImportMIDI.NoteCheck.matched : .mismatched).rawValue
                     if attempt > 0 { payload["attempts"] = attempt + 1 }
                     break
                 } catch {
                     payload["reason"] = error.localizedDescription
                 }
             }
-            if payload["read"] as? Bool != true || payload["matches"] as? Bool != true {
-                allMatch = false
-            }
+            let check: ImportMIDI.NoteCheck = payload["read"] as? Bool == true
+                ? (payload["matches"] as? Bool == true ? .matched : .mismatched)
+                : .unverified
+            checks.append(check)
             reports.append(payload)
         }
-        return (reports, allMatch)
+        return (reports, checks)
     }
 
     // MARK: - Rollback
 
     /// Deletes every track that appeared since `before`, newest number first.
     ///
-    /// One at a time, with a two-second gap and Logic frontmost for each:
-    /// `Delete Track` fails at its own 8.5 s timeout when Logic is not
-    /// frontmost, and when it is fired less than ~2 s after the previous delete
-    /// (measured — deleting three tracks as one batch failed on all three).
+    /// One at a time and Logic frontmost for each — `Delete Track` fails at its
+    /// own 8.5 s timeout when Logic is not frontmost — but with NO gap between
+    /// them. The two-second pause that used to sit here came from the same
+    /// dead R2 §7 constant as the routing phase's: seventeen consecutive
+    /// deletes back to back, 17/17 at 643-980 ms (measured 2026-09-02). A
+    /// four-track rollback is six seconds shorter for it.
     private func rollbackImportedTracks(since before: [[String: Any]]) -> [String: Any] {
         let after = trackRows()
         let numbers = ImportMIDI.addedTrackNumbers(before: before, after: after)
@@ -603,8 +656,7 @@ extension MCPServer {
         var failed: [String] = []
         // Highest number first: deleting the last track never renumbers the
         // ones above it, so the numbers read here stay valid all the way down.
-        for (index, number) in numbers.sorted(by: >).enumerated() {
-            if index > 0 { Thread.sleep(forTimeInterval: 2.0) }
+        for number in numbers.sorted(by: >) {
             let current = trackRows()
             guard let row = current.first(where: { $0["track_number"] as? Int == number }),
                   let name = row["track_name"] as? String else { continue }

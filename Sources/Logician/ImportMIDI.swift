@@ -1,3 +1,4 @@
+import ApplicationServices
 import Foundation
 
 // MARK: - logic_import_midi, everything about it that is not Logic
@@ -494,5 +495,138 @@ enum ImportMIDI {
             missing: missing, unexpected: unexpected.sorted(),
             velocityMismatches: velocityMismatches.sorted()
         )
+    }
+}
+
+// MARK: - Reading the RIGHT region back
+
+extension ImportMIDI {
+
+    /// Which region a `verify: "events"` pass must read for one written track,
+    /// and the ADDRESS to read it by.
+    ///
+    /// The track NUMBER is the whole point. An unrouted import lands on a track
+    /// Logic names after the default patch it loaded, so EVERY unrouted import
+    /// in a project produces another track called `Studio Grand` — twelve of
+    /// them in one measured session. Addressing the read by track NAME
+    /// therefore resolves the wrong region from the second import onwards
+    /// (measured 2026-09-02: the pass read `IMPPROF-C1` while claiming to check
+    /// `IMPPROF-E1`, and then reported a mismatch in notes it had never
+    /// looked at). The census diff already carries the number; this is where it
+    /// gets used.
+    struct VerifyTarget: Equatable {
+        let regionName: String
+        let trackName: String
+        let trackNumber: Int
+        let startBar: Int?
+    }
+
+    /// The landed region carrying this written track's name, addressed by row.
+    /// `nil` when nothing landed under that name — which the census guard has
+    /// already refused, so it means "report it unverified", never "skip it
+    /// quietly".
+    static func verifyTarget(
+        forTrackNamed name: String, in landed: [RegionCensus.Entry]
+    ) -> VerifyTarget? {
+        guard let entry = landed.first(where: {
+            $0.name.caseInsensitiveCompare(name) == .orderedSame
+        }) else { return nil }
+        return VerifyTarget(
+            regionName: entry.name, trackName: entry.trackName,
+            trackNumber: entry.trackNumber, startBar: entry.startBar
+        )
+    }
+
+    /// How one region's note check came out.
+    ///
+    /// `unverified` is NOT `mismatched`, and keeping the two apart is the fix
+    /// for a measured lie: the tool warned that "the NOTES do not all match"
+    /// about notes no read had ever returned. A read that did not happen is a
+    /// gap in the evidence, not evidence of a difference.
+    enum NoteCheck: String {
+        case matched
+        case mismatched
+        case unverified
+    }
+
+    /// The verdict a `verify: "events"` pass reports, and the warning that goes
+    /// with it — separate sentences for "these are wrong" and "these were never
+    /// read", because they ask the caller to do different things.
+    static func noteVerdict(_ checks: [NoteCheck]) -> (verified: Bool, warning: String?) {
+        let wrong = checks.filter { $0 == .mismatched }.count
+        let unread = checks.filter { $0 == .unverified }.count
+        guard wrong > 0 || unread > 0 else { return (true, nil) }
+        var sentences: [String] = []
+        if wrong > 0 {
+            sentences.append(
+                "The regions landed, but the NOTES in \(wrong) of them do not match what was"
+                    + " written — see note_verification. The import itself completed; nothing"
+                    + " was rolled back."
+            )
+        }
+        if unread > 0 {
+            sentences.append(
+                "\(unread) region(s) could not be READ BACK, so their notes are UNVERIFIED —"
+                    + " note_verification says why for each. That is a gap in the evidence and"
+                    + " not a mismatch: the census still proved the regions are there, at the"
+                    + " bar they were asked for."
+            )
+        }
+        return (false, sentences.joined(separator: " "))
+    }
+}
+
+// MARK: - Waiting for a dialog to go away
+
+extension ImportMIDI {
+
+    /// Whether an Accessibility read means "this element no longer exists".
+    ///
+    /// Split out from the AX call so the RULE is pinned by a test: only
+    /// `.invalidUIElement` is gone. `.cannotComplete` (the app is busy, which
+    /// is exactly what Logic is during an import) and `.notImplemented` are
+    /// elements that did not ANSWER, and calling those "closed" would report a
+    /// dialog still on screen as dismissed.
+    static func elementIsGone(_ status: AXError) -> Bool {
+        status == .invalidUIElement
+    }
+}
+
+/// Waits for a dialog the caller HOLDS to leave the screen: the cheap probe on
+/// the retained element every `interval`, the expensive search no more often
+/// than every `patience`, and the search always gets the last word.
+///
+/// Why two clocks (measured 2026-09-02). Searching the tree for something that
+/// is ALREADY GONE cannot early-exit, so it walks everything under the root
+/// every single time it is asked — 1 811-1 980 ms for the Go-to-Folder sheet
+/// and 565-580 ms for the panel window, per look. Asking the retained element
+/// for one attribute is a single round trip that answers `invalidUIElement`
+/// the moment the window is destroyed.
+///
+/// But an AppKit panel can be closed and KEPT (its element stays valid), and a
+/// probe that never fires must not turn a dismissed dialog into a verification
+/// failure. So `confirm` — the search — remains the authority: it runs on the
+/// slow clock while waiting, and once more before this returns `false`.
+///
+/// - Returns: `true` when the dialog is gone, by either witness.
+func waitForDisappearance(
+    timeout: Double,
+    patience: Double,
+    interval: Double = 0.1,
+    probe: () -> Bool,
+    confirm: () -> Bool
+) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    var nextConfirm = Date().addingTimeInterval(patience)
+    while true {
+        if probe() { return true }
+        var confirmedJustNow = false
+        if Date() >= nextConfirm {
+            if confirm() { return true }
+            confirmedJustNow = true
+            nextConfirm = Date().addingTimeInterval(patience)
+        }
+        if Date() >= deadline { return confirmedJustNow ? false : confirm() }
+        Thread.sleep(forTimeInterval: interval)
     }
 }

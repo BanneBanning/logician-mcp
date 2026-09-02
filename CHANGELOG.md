@@ -674,6 +674,34 @@ with every render coming back as audio the agent can listen to.
   unchanged); and one `exclusive: true` cleared all four (`deselected: 4`) for a single
   selected region, exactly as before. 90–181 ms per call.
 
+- **Importing an arrangement is two and a half times faster, and its note check now reads the
+  region it just imported.** `logic_import_midi` spent 65% of every call looking for four
+  buttons. Logic's import panel publishes its Go-to-Folder sheet, its path field and its
+  Import button within three levels of the window, but the window's first child is the file
+  browser — the user's own filesystem, thousands of elements deep — and the search walked all
+  of that first, 1.3–2.0 s per lookup. It now searches breadth-first, nearest the panel
+  first, exactly as the bounce save panel already did. Proving a dialog CLOSED was the other
+  half: re-searching the tree for something already gone cannot stop early, so it walked
+  everything, twice a call; the panel and the sheet are now asked directly whether they still
+  exist, with the search kept as the authority that gets the last word. Measured live
+  2026-09-02 on the sandbox project, before and after, same arrangement: **one track
+  8 814 ms → 3 285 ms, four tracks 8 249 ms → 4 020 ms**, and a `to_track` import onto an
+  existing track 5 837 ms all in. The failure path was run too — a panel that refuses the
+  path is still closed, sheet first, with `dialog_left_standing: false` and the census
+  unchanged. Separately, `verify: "events"` was reading the WRONG region: every unrouted
+  import leaves behind a track Logic names after its default patch, so the second one makes
+  two tracks called `Studio Grand`, and the read addressed them by name — it resolved the
+  earlier import's region, surfaced a plugin-parameter error out of a region resolver, and
+  then warned that "the NOTES do not all match" having read none of them. It now addresses
+  the row by NUMBER (with six `Studio Grand` tracks in the project, the check read track 35
+  and matched 4 of 4 notes), and a region whose notes could not be read comes back
+  `verification: "unverified"` with the reason instead of being called a mismatch. Two dead
+  two-second sleeps between track deletes are gone (twelve consecutive deletes this session,
+  no gap, 868–1 640 ms each, 12/12), the `.mid` each call generates is now removed again
+  rather than accumulating one file per call in the captures directory, and the documented
+  costs were corrected against measurement: the note diff is +3.9 s for one region rather
+  than "+~2 s", and a routed track ~2.6 s rather than 5.9 s.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

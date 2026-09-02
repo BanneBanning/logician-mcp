@@ -124,6 +124,73 @@ final class AXTreeWalkTests: XCTestCase {
         XCTAssertNil(nearestNode(from: wide, maximumDepth: 1, children: { $0.children }) { $0.name == "deep7" })
     }
 
+    // MARK: - The import panel's shape, which is why the rule matters
+
+    /// Logic's MIDI import panel, as the live tree has it: the window's FIRST
+    /// child is the file browser's outline (thousands of rows, and it is the
+    /// user's own filesystem, so its depth is not this server's to predict),
+    /// and every control this tool presses — the Go-to-Folder sheet, Import,
+    /// Cancel — is a shallow sibling BEHIND it.
+    ///
+    /// Pre-order pays for the whole browser before it reaches the button
+    /// (measured 2026-09-02: 1 266-2 000 ms a lookup, four lookups an import,
+    /// 65% of the tool). Breadth-first finds the same button without
+    /// descending it. This pins the decision that produced that fix.
+    /// Both copies of the button answer to the identifier the code searches
+    /// for; only the suffix — which the production predicate cannot see —
+    /// says which one a walk came back with.
+    private func importPanel(browserDepth: Int) -> Node {
+        func browserRow(_ depth: Int) -> Node {
+            depth == 0
+                ? Node(name: "browser-row", children: [Node(name: "OKButton@browser")])
+                : Node(name: "browser-\(depth)", children: [browserRow(depth - 1)])
+        }
+        return Node(name: "open-panel", children: [
+            Node(name: "browser", children: [browserRow(browserDepth)]),
+            Node(name: "split-group", children: [
+                Node(name: "OKButton@panel"), Node(name: "CancelButton@panel")
+            ])
+        ])
+    }
+
+    private func isOKButton(_ node: Node) -> Bool { node.name.hasPrefix("OKButton") }
+
+    func testThePanelsButtonIsFoundNearestTheRootAndNotDownTheFileBrowser() {
+        let panel = importPanel(browserDepth: 3)
+        var breadthFirstLooks = 0
+        let nearest = nearestNode(
+            from: panel, maximumDepth: AXDepth.importPanelControl, children: { $0.children }
+        ) { breadthFirstLooks += 1; return self.isOKButton($0) }
+        var preOrderLooks = 0
+        let preOrder = firstNode(
+            from: panel, maximumDepth: AXDepth.importPanelControl, children: { $0.children }
+        ) { preOrderLooks += 1; return self.isOKButton($0) }
+        XCTAssertEqual(nearest?.name, "OKButton@panel")
+        XCTAssertEqual(
+            preOrder?.name, "OKButton@browser",
+            "pre-order finds the browser's copy first — it is down the first sibling, which is"
+                + " the user's filesystem, and that walk is what cost 1.3-2.0 s a lookup"
+        )
+        XCTAssertLessThan(breadthFirstLooks, preOrderLooks)
+    }
+
+    /// The risk this fix had to close: a same-identifier element inside the
+    /// browser must not outrank the panel's own. It cannot — the panel's
+    /// button is strictly shallower — and that holds however deep the user's
+    /// filesystem happens to be.
+    func testTheShallowControlWinsAtEveryBrowserDepth() {
+        for depth in 0...3 {
+            let panel = importPanel(browserDepth: depth)
+            let match = nearestNode(
+                from: panel, maximumDepth: AXDepth.importPanelControl, children: { $0.children }
+            ) { self.isOKButton($0) }
+            XCTAssertEqual(
+                match?.name, "OKButton@panel",
+                "browser depth \(depth): the panel's own button, every time"
+            )
+        }
+    }
+
     // MARK: - Depth semantics (root is 0, cap is inclusive)
 
     func testMaximumDepthZeroVisitsOnlyTheRoot() {

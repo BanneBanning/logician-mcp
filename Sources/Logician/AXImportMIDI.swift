@@ -153,10 +153,38 @@ extension LogicAccessibility {
     /// A control inside the panel, by the identifier the research measured.
     /// `OKButton` and `CancelButton` are children of the panel's split group,
     /// not of the window, so this is a walk rather than a `children(of:)`.
+    ///
+    /// FOUND BREADTH-FIRST, and this is 65% of the whole tool. Every control
+    /// here — the Go-to-Folder sheet, its path field, Import, Cancel, the
+    /// sheet's Close — is within three levels of its root, but the panel's
+    /// FIRST child is the file browser, whose outline is thousands of elements
+    /// deep, and a pre-order walk descends all of it first. Measured
+    /// 2026-09-02, four lookups per import: **1 266-2 000 ms each pre-order,
+    /// 1-203 ms breadth-first**, and the import as a whole went from
+    /// 8 549-8 789 ms to 2 983-3 589 ms with this one word changed. Same cap,
+    /// same predicate, same one control — exactly the finding
+    /// `savePanelCommitButton` shipped for the bounce panel a day earlier.
+    ///
+    /// "Nearest the root" is the right rule here because these identifiers are
+    /// AppKit's own and there is one of each per root: the sheet is searched
+    /// from the SHEET, the panel's buttons from the PANEL, so a shallower
+    /// namesake cannot outrank the control that is wanted.
     func importPanelControl(_ root: AXUIElement, identifier: String) -> AXUIElement? {
-        firstDescendant(of: root, maximumDepth: AXDepth.importPanelControl) {
-            stringAttribute($0, kAXIdentifierAttribute as String) == identifier
+        nearestDescendant(of: root, maximumDepth: AXDepth.importPanelControl) {
+            self.stringAttribute($0, kAXIdentifierAttribute as String) == identifier
         }
+    }
+
+    /// Whether an element this call HOLDS has left the Accessibility plane.
+    ///
+    /// ONLY `.invalidUIElement` counts as gone. `.cannotComplete` is an app
+    /// that is busy — which is precisely what Logic is while it instantiates
+    /// the instruments an import just created — and reading that as "the
+    /// dialog closed" would report a panel still on screen as dismissed.
+    func elementIsGone(_ element: AXUIElement) -> Bool {
+        var value: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value)
+        return ImportMIDI.elementIsGone(status)
     }
 
     /// Points the panel at one absolute FILE path through the Go-to-Folder
@@ -195,10 +223,12 @@ extension LogicAccessibility {
         // unfocused (measured).
         _ = AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         try postKeystroke(virtualKey: 36, flags: []) // Return — AXConfirm no-ops here
-        for _ in 0..<40 {
-            Thread.sleep(forTimeInterval: 0.1)
-            if goToFolderSheet(in: panel, timeout: 0) == nil { return }
-        }
+        let accepted = waitForDisappearance(
+            timeout: 4, patience: 0.5,
+            probe: { self.elementIsGone(sheet) },
+            confirm: { self.goToFolderSheet(in: panel, timeout: 0) == nil }
+        )
+        if accepted { return }
         throw LogicianError.verificationFailed(
             requested: "the Go to Folder sheet accepting '\(path)'",
             actual: "the sheet was still open 4 s after the path was set and Return posted",
@@ -235,18 +265,20 @@ extension LogicAccessibility {
             Thread.sleep(forTimeInterval: 0.05)
         }
         _ = AXUIElementPerformAction(ok, kAXPressAction as CFString)
-        // A good press closes the panel in ~600 ms.
-        for _ in 0..<15 {
-            Thread.sleep(forTimeInterval: 0.1)
-            if importPanel() == nil { return }
-        }
+        // A good press closes the panel in ~600 ms — and measured 2026-09-02,
+        // 3/3, the panel is already off the Accessibility plane the instant
+        // the press returns, so the probe usually answers on its first look.
+        if waitForDisappearance(
+            timeout: 1.5, patience: 0.3,
+            probe: { self.elementIsGone(panel) }, confirm: { self.importPanel() == nil }
+        ) { return }
         // Measured: one run in ~12 needed a second press, which then worked
         // immediately.
         _ = AXUIElementPerformAction(ok, kAXPressAction as CFString)
-        for _ in 0..<40 {
-            Thread.sleep(forTimeInterval: 0.1)
-            if importPanel() == nil { return }
-        }
+        if waitForDisappearance(
+            timeout: 4, patience: 0.5,
+            probe: { self.elementIsGone(panel) }, confirm: { self.importPanel() == nil }
+        ) { return }
         throw LogicianError.verificationFailed(
             requested: "the import panel committing",
             actual: "the panel was still open after two presses of Import"
@@ -310,16 +342,21 @@ extension LogicAccessibility {
                    sheet, identifier: LogicUIStrings.Identifier.closeButton
                ) {
                 _ = AXUIElementPerformAction(close, kAXPressAction as CFString)
-                Thread.sleep(forTimeInterval: 0.2)
+                _ = waitForDisappearance(
+                    timeout: 1, patience: 0.3,
+                    probe: { self.elementIsGone(sheet) },
+                    confirm: { self.goToFolderSheet(in: panel, timeout: 0) == nil }
+                )
                 closed.append("the Go to Folder sheet")
             }
             if let cancel = importPanelControl(
                 panel, identifier: LogicUIStrings.Identifier.cancelButton
             ) {
                 _ = AXUIElementPerformAction(cancel, kAXPressAction as CFString)
-                for _ in 0..<20 where importPanel() != nil {
-                    Thread.sleep(forTimeInterval: 0.1)
-                }
+                _ = waitForDisappearance(
+                    timeout: 2, patience: 0.5,
+                    probe: { self.elementIsGone(panel) }, confirm: { self.importPanel() == nil }
+                )
                 closed.append("the import panel")
             }
         }
