@@ -653,6 +653,26 @@ with every render coming back as audio the agent can listen to.
   a window is open it now names that window in the fix and lists it in `open_dialogs`, and
   when no window is open it says so, so the MIDI-port remedy is only offered to the people
   it is actually for.
+- **`logic_select_region {exclusive: false}` now actually ADDS a region to the selection.**
+  The schema has advertised additive selection since it was written and it never worked:
+  three non-exclusive selects in a row left exactly one region selected — the last — on
+  MIDI and audio regions alike, each call reporting `success: true, verified: true`,
+  because the only thing verified was the region named in that call. The cause was one
+  line at the end of the write: an unconditional keyboard-focus write, added as a
+  best-effort extra for key commands. Measured on the sandbox, that write ALONE — with no
+  selection write anywhere in the call — took a four-region selection spread across four
+  tracks down to the one focused region; Logic reads focus as a plain click. Selection
+  writes on their own are genuinely additive (1 → 2 → 3 → 4 over four consecutive writes),
+  so the focus write is now sent on the exclusive path only, where collapsing onto the
+  target is what was asked for anyway. Additive selection is PROVEN, not assumed: the
+  arrangement is counted again after the write and the result carries `selected_before`
+  and `selected_count`, so a selection that did not grow comes back with a warning naming
+  what was lost and pointing at `logic_select_regions`, instead of a silent success. Live,
+  after: `exclusive: true` then three `exclusive: false` calls across three tracks read
+  `selected_count` 2, 3, 4 and `logic_list_regions` showed all four selected; adding a
+  region that was already in the selection is a no-op (`already_selected`, count
+  unchanged); and one `exclusive: true` cleared all four (`deselected: 4`) for a single
+  selected region, exactly as before. 90–181 ms per call.
 
 ### Known limitations (honest by design)
 

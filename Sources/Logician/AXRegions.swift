@@ -182,6 +182,13 @@ extension LogicAccessibility {
     /// written to it, `state` reads `already_selected`, and the `exclusive:`
     /// contract is still honoured (the siblings are cleared either way). See
     /// `regionSelectionPlan` for why that read has to come first.
+    ///
+    /// `exclusive: false` ADDS the region to the selection and says so with
+    /// `selected_before`/`selected_count` counted off the rendered rows. It
+    /// only works because the keyboard-focus write is skipped on that path —
+    /// see `regionSelectionPlan` for the measurement — and it is verified,
+    /// not assumed: a selection that came back SHORT is a `warning` naming
+    /// what was lost and pointing at `logic_select_regions`.
     func selectRegion(
         trackName: String, regionName: String?, startBar: Int?, exclusive: Bool,
         trackNumber: Int? = nil, forKeyCommand: Bool = false
@@ -226,14 +233,16 @@ extension LogicAccessibility {
             ? ensureTracksAreaKeyFocus(trackName: row.track, trackNumber: row.number)
             : nil
         // ONE read of the selection, taken BEFORE anything is written: the
-        // target's own state and the siblings the `exclusive:` contract has to
-        // clear come out of the same sweep the clear used to do on its own.
+        // target's own state and the other selected regions come out of the
+        // same sweep the exclusive clear used to do on its own. Both
+        // exclusivity settings need the sweep, for opposite reasons —
+        // `exclusive: true` clears those regions, `exclusive: false` has to
+        // prove they are STILL selected when it returns.
         var targetSelected = false
         var selectedSiblings: [AXUIElement] = []
         for otherRow in rows {
             for region in otherRow.regions {
                 let isTarget = CFEqual(region, hit.0)
-                guard isTarget || exclusive else { continue }
                 guard stringAttribute(region, "AXSelected") == "1" else { continue }
                 if isTarget { targetSelected = true } else { selectedSiblings.append(region) }
             }
@@ -283,11 +292,38 @@ extension LogicAccessibility {
                 restored: false
             )
         }
-        // Hand the region keyboard focus (best effort). This is NOT what makes
-        // the key commands work — measured 2026-09-01, this write ran on every
-        // one of three copies that fired Copy/Paste and changed nothing — so
-        // it is a cheap extra, and `forKeyCommand` above is the real guard.
-        _ = AXUIElementSetAttributeValue(hit.0, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        // Hand the region keyboard focus. On the EXCLUSIVE path only, and that
+        // is the whole of D2: measured 2026-09-02, writing `kAXFocused = true`
+        // onto a region COLLAPSES Logic's region selection onto that one
+        // region — four selected regions on four tracks went to one, with no
+        // `AXSelected` write of any kind in the same call. It is Logic reading
+        // focus as a plain click. On the exclusive path that is aligned with
+        // the contract (the siblings were just cleared anyway) and it is not
+        // removed; what it is NOT is the thing that makes key commands work —
+        // measured 2026-09-01, it ran on all three copies that fired
+        // Copy/Paste and changed nothing there, so `forKeyCommand` above stays
+        // the real guard.
+        if plan.focusTarget {
+            _ = AXUIElementSetAttributeValue(hit.0, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        }
+        // The additive path owes the caller the thing it claims to have done.
+        // Counted off a FRESH walk, never off the sibling elements read before
+        // the write: a write republishes the layout items, so a re-read of a
+        // held element can say "not selected" about a region that is — the
+        // same staleness the read-before-write fix was dodging. Polled and
+        // look-first, so the honest case costs one walk.
+        var additive: LogicAccessibility.AdditiveSelectionOutcome?
+        if !exclusive {
+            let expected = selectedSiblings.count + 1
+            var observed = expected
+            if plan.provePriorSelection {
+                observed = (try? pollSelectedRegionCount(reaching: expected, budget: 0.3))
+                    ?? expected
+            }
+            additive = LogicAccessibility.additiveSelectionOutcome(
+                expected: expected, observed: observed
+            )
+        }
         var result = parseRegion(hit.0)
         result["success"] = true
         result["verified"] = true
@@ -296,6 +332,15 @@ extension LogicAccessibility {
         result["track_name"] = row.track
         result["exclusive"] = exclusive
         if exclusive { result["deselected"] = plan.siblingsToClear }
+        if let additive {
+            result["selected_before"] = selectedSiblings.count + (targetSelected ? 1 : 0)
+            result["selected_count"] = additive.selectedCount
+            result["note"] = "exclusive: false ADDED this region to the selection; the counts see "
+                + "VISIBLE track rows only (logic_list_regions has the same limit) while the "
+                + "selection itself is project-wide. For a whole track, everything after a point, "
+                + "or the whole project, logic_select_regions does it in one Logic command."
+            if let warning = additive.warning { result["warning"] = warning }
+        }
         if let keyFocus { result["key_focus"] = keyFocus.dictionary }
         return result
     }
@@ -309,6 +354,20 @@ extension LogicAccessibility {
         while true {
             if stringAttribute(region, "AXSelected") == "1" { return true }
             if Date() >= deadline { return false }
+            Thread.sleep(forTimeInterval: interval)
+        }
+    }
+
+    /// Re-walks the arrangement until it counts `reaching` selected regions,
+    /// looking BEFORE it sleeps. Returns the last count it read when the
+    /// budget runs out, so the caller can report what Logic actually
+    /// published rather than what it hoped for.
+    func pollSelectedRegionCount(reaching target: Int, budget: TimeInterval,
+                                 interval: TimeInterval = 0.02) throws -> Int {
+        let deadline = Date().addingTimeInterval(budget)
+        while true {
+            let count = try selectedRegionCount()
+            if count >= target || Date() >= deadline { return count }
             Thread.sleep(forTimeInterval: interval)
         }
     }
@@ -329,6 +388,44 @@ extension LogicAccessibility {
         /// writes to the same rendered rows, so a "already selected" verdict
         /// taken before it may only stand on a second read taken after it.
         let reproveAfterClear: Bool
+        /// Whether `kAXFocused = true` may be written to the target. NOT on the
+        /// additive path: measured 2026-09-02, that write on its own collapses
+        /// Logic's whole region selection onto the focused region.
+        let focusTarget: Bool
+        /// Whether the regions that were selected BEFORE this call have to be
+        /// counted again afterwards. Only the additive path owes that proof,
+        /// and only when it actually wrote something that could have taken
+        /// them away.
+        let provePriorSelection: Bool
+    }
+
+    /// What an `exclusive: false` call is worth reporting once the arrangement
+    /// has been counted again.
+    ///
+    /// `expected` is the regions that were selected before plus this one;
+    /// `observed` is what a fresh walk of the rendered rows found. A count that
+    /// came up SHORT is the defect this contract exists to catch — the caller
+    /// asked to add a region and Logic replaced the selection instead — and it
+    /// is a warning on a call that did select its target, never a silent
+    /// success and never a throw.
+    struct AdditiveSelectionOutcome: Equatable {
+        let selectedCount: Int
+        let warning: String?
+    }
+
+    static func additiveSelectionOutcome(expected: Int, observed: Int) -> AdditiveSelectionOutcome {
+        guard observed < expected else {
+            return AdditiveSelectionOutcome(selectedCount: observed, warning: nil)
+        }
+        return AdditiveSelectionOutcome(
+            selectedCount: observed,
+            warning: "This region IS selected, but the selection did not GROW: \(expected) "
+                + "region(s) should be selected across the rendered rows and Logic published "
+                + "\(observed) — \(expected - observed) that were selected before this call are "
+                + "not any more. Treat the selection as this region alone, and use "
+                + "logic_select_regions (mode 'track'/'following'/'following_same_track'/'all') "
+                + "for a multi-region selection Logic makes with its own command."
+        )
     }
 
     /// Read `AXSelected` before writing it — the whole of D1.
@@ -353,6 +450,24 @@ extension LogicAccessibility {
     /// two siblings still selected), on a region that was NOT selected
     /// 1158–1174 → 857–866 ms, and `logic_select_region` itself 402–465 →
     /// 90–163 ms.
+    /// The second half is D2, measured 2026-09-02 on the same project: the
+    /// unconditional `kAXFocused = true` at the end of the write made
+    /// `exclusive: false` a LIE. The schema advertised an additive selection
+    /// and three sequential non-exclusive selects left exactly one region
+    /// selected, the last, on MIDI and audio regions alike — each call
+    /// reporting `success: true, verified: true`, because the only thing
+    /// verified was the target. Isolated: `AXFocused = true` written ALONE,
+    /// with no `AXSelected` write in the call at all, took a four-region
+    /// selection spread over four tracks down to the one focused region.
+    /// `AXSelected = true` written alone is genuinely additive — 1 → 2 → 3 → 4
+    /// over four consecutive writes. So the focus write is the whole defect,
+    /// and dropping it on the additive path is the whole cure; the exclusive
+    /// path keeps it, where a collapse onto the target is what the contract
+    /// asked for anyway.
+    ///
+    /// (`AXSelectedChildren` is published on the track row's layout area and on
+    /// the `Tracks contents` group, and is NOT settable on either — read-only
+    /// mirrors, not a second write route.)
     static func regionSelectionPlan(
         targetSelected: Bool, exclusive: Bool, otherSelectedCount: Int
     ) -> RegionSelectionPlan {
@@ -361,7 +476,9 @@ extension LogicAccessibility {
             clearSiblings: exclusive,
             siblingsToClear: exclusive ? otherSelectedCount : 0,
             writeTarget: !targetSelected,
-            reproveAfterClear: targetSelected && clearing
+            reproveAfterClear: targetSelected && clearing,
+            focusTarget: exclusive,
+            provePriorSelection: !exclusive && !targetSelected && otherSelectedCount > 0
         )
     }
 
