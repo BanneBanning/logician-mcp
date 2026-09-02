@@ -162,7 +162,7 @@ extension MCPServer {
         guard let level, let slot = addedSend["send"] as? Int else { return sendPayload }
         do {
             guard let levelled = try MCUController.setSendLevel(
-                sendNumber: slot, targetDb: level, expectedCurrentValue: nil
+                sendNumber: slot, targetDb: level, expectedCurrentValue: nil, strip: track
             ) else {
                 // `setSendLevel` restores the view from its own defer, but
                 // it can refuse before registering one. Exiting twice is a
@@ -224,12 +224,19 @@ extension MCPServer {
         let target = try selectStripTarget(
             arguments, expectedProjectPath: arguments["expected_project_path"] as? String
         )
-        guard let sends = try MCUController.readSends() else {
+        // The read keeps the send view standing and records the debt, like the
+        // send WRITES do: measured 2026-09-02, walking the surface home was
+        // 3.4 s of this call's 5.0 s — two thirds of a read spent putting the
+        // surface back so the next call could take it somewhere else again.
+        // A failure still restores explicitly.
+        guard let sends = try MCUController.readSends(restoringView: false) else {
+            MCUController.exitToPan()
             throw LogicianError.trackNotExposed(
                 requested: "MCU send view",
                 exposed: "the MCU bridge is unavailable or the send view did not appear"
             )
         }
+        MCUController.deferSurfaceRestore(MCUController.sendViewDebt(strip: target.name))
         var sendsPayload: [String: Any] = [
             "track": target.name,
             "track_name": target.name,
@@ -255,7 +262,8 @@ extension MCPServer {
         guard var sendResult = try MCUController.setSendLevel(
             sendNumber: send,
             targetDb: targetDb,
-            expectedCurrentValue: arguments["expected_current_value"] as? String
+            expectedCurrentValue: arguments["expected_current_value"] as? String,
+            strip: target.name
         ) else {
             throw LogicianError.trackNotExposed(
                 requested: "MCU send level write",

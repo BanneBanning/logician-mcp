@@ -225,11 +225,16 @@ final class SendCatalogTests: XCTestCase {
         )
     }
 
-    /// The jump stops deliberately short of home: the paced walk, not the
-    /// jump, is what finds the No-Send boundary.
-    func testTheJumpStopsShortOfHomeSoTheWalkFindsTheBoundary() {
+    /// The jump aims at the boundary itself. It used to stop eight entries
+    /// short so the paced walk would be what found the No-Send entry, and
+    /// measuring that (2026-09-02) priced the courtesy at 791 ms on a deep bus
+    /// and 2 045 ms on a near one. The catalog clamps at both ends and its
+    /// near end IS the No-Send entry, so the walk below the jump is now the
+    /// correction for an under-jump rather than the route home.
+    func testTheJumpAimsAtTheBoundaryItself() {
         let entries = MCUController.sendRemovalHomeJump(requested: "Bus 200", listed: "B 200")!
         XCTAssertEqual(208 + entries, MCUController.sendRemovalHomeMargin)
+        XCTAssertEqual(entries, -208)
         XCTAssertLessThan(entries, 0, "home is behind the browse")
     }
 
@@ -246,20 +251,26 @@ final class SendCatalogTests: XCTestCase {
         )
     }
 
-    /// Addressed by slot alone there is no spelling to prefer, and a
-    /// destination near the top of the catalog is walked rather than jumped —
-    /// `Bus 1` sits one entry outside the margin, and buying that one entry
-    /// with a message and a silence proof costs more than stepping it. Both
-    /// are "just walk", which is always correct and never the slow case.
-    func testNothingToPlaceAndNothingWorthJumpingBothWalk() {
+    /// A name this build cannot place is walked — there is no spelling to do
+    /// arithmetic on, and the walk is always correct. So is a destination
+    /// sitting within two entries of home, where a message plus its silence
+    /// proof costs more than the steps it would save.
+    func testANameThisBuildCannotPlaceIsWalked() {
         XCTAssertNil(MCUController.sendRemovalHomeJump(requested: nil, listed: "Stereo Out"))
-        XCTAssertNil(MCUController.sendRemovalHomeJump(requested: "Bus 1", listed: "Bus 1"))
-        XCTAssertNil(MCUController.sendRemovalHomeJump(requested: "Output 8", listed: "Out 8"))
-        // The first destination far enough out to be worth a jump.
-        XCTAssertEqual(
-            MCUController.sendRemovalHomeJump(requested: "Bus 3", listed: "Bus 3"),
-            -MCUController.sendBrowseMinJumpEntries
-        )
+        XCTAssertNil(MCUController.sendRemovalHomeJump(requested: "Output 1", listed: "Out 1"))
+        XCTAssertNil(MCUController.sendRemovalHomeJump(requested: "Output 2", listed: "Out 2"))
+    }
+
+    /// Everything the arithmetic CAN place is now jumped the whole way, and
+    /// `Bus 1` and `Bus 2` are the removals that used to pay for the margin
+    /// twice over: no jump at all (their distance minus 8 was under the
+    /// minimum), and then nine or ten paced steps home — 2 045 ms measured on
+    /// `Bus 2`, against ~200 ms for the one message that covers it.
+    func testTheNearBusesThatUsedToWalkHomeNowJump() {
+        XCTAssertEqual(MCUController.sendRemovalHomeJump(requested: "Output 3", listed: "Out 3"), -3)
+        XCTAssertEqual(MCUController.sendRemovalHomeJump(requested: "Bus 1", listed: "Bus 1"), -9)
+        XCTAssertEqual(MCUController.sendRemovalHomeJump(requested: "Bus 2", listed: "Bus 2"), -10)
+        XCTAssertEqual(MCUController.sendRemovalHomeJump(requested: "Bus 3", listed: "Bus 3"), -11)
     }
 
     /// An unmeasured spelling from the caller does not poison the fallback:

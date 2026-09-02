@@ -57,6 +57,32 @@ extension MCUController {
         return digit
     }
 
+    /// How many cursor-lefts separate the page this row belongs to from the
+    /// first page — read off the page's own name. A page carries slots
+    /// `2p+1` and `2p+2`, so ANY cell that names a slot places the whole row:
+    /// `Sen5In` and `Sen6Mu` both say page 3, two steps from home.
+    ///
+    /// It scans the row rather than reading cell 0 because of the browse
+    /// BANNER. Measured live 2026-09-02: right after a confirming press the
+    /// top row reads `Send 1 Instantiate   -      Sen2De …` — the banner
+    /// covers the first three cells while the fourth already carries the
+    /// slot's own label. Cell 0 alone therefore says "this row names no page"
+    /// about a row that plainly does, and the four blind cursor-lefts that
+    /// answer costs ~1.0 s on every readback an add or a removal makes.
+    ///
+    /// Pure, and one-sided in the same way as its neighbours: the banner
+    /// spells the word out (`Send 1`), whose fourth character is not a digit,
+    /// so a banner cell can never name a page; the number this returns is only
+    /// ever used to press a key that is a no-op past the first page; and the
+    /// landing is proven by the page's own label before anything is read or
+    /// written on it.
+    static func sendViewPageBacksteps(inRow top: String) -> Int? {
+        for cell in lcdFields(top) {
+            if let slot = sendSlotNumber(inFieldLabel: cell) { return (slot - 1) / 2 }
+        }
+        return nil
+    }
+
     /// True when the slot's own field labels are painted at its field group -
     /// the positive proof that a destination press was taken and Logic has
     /// left the browse banner. Pure, for the same reason as
@@ -86,12 +112,20 @@ extension MCUController {
     }
 
     /// The positive check, taken twice around one quiescence window: the row
-    /// must say first-page AND still say it after the display goes quiet, so a
-    /// frame caught mid-repaint cannot skip the walk.
+    /// must name the FIRST page AND still name it after the display goes
+    /// quiet, so a frame caught mid-repaint cannot skip the walk.
+    ///
+    /// It asks the whole row (`sendViewPageBacksteps`), not cell 0, for the
+    /// reason that function carries: the browse banner covers the first cells
+    /// of the page it is editing, and a row whose fourth cell reads `Sen2De`
+    /// is page 1 however its first cell is painted. Reading cell 0 alone sent
+    /// every post-press readback on a ~1.0 s walk to the page it was already
+    /// standing on (measured 2026-09-02, on all eight of that session's
+    /// readbacks).
     static func sendViewIsLeftmost() -> Bool {
         func showsFirstPage() -> Bool {
             guard let top = freshStatus()?["lcd_top"] as? String else { return false }
-            return sendViewTopIsFirstPage(top)
+            return sendViewPageBacksteps(inRow: top) == 0
         }
         guard showsFirstPage() else { return false }
         _ = quiescentStatus()
@@ -99,13 +133,30 @@ extension MCUController {
     }
 
     static func sendViewLeftmost() throws {
-        // Four blind cursor-lefts cost ~990 ms and this function is called up
-        // to three times in one `logic_add_send`, which is ~3 s of walking to
-        // a page the surface is usually already on (measured 2026-08-31: the
-        // send view was ALREADY leftmost on every one of the six readback
-        // calls in that session). So ask the row first, and only walk when it
-        // does not answer with the first page.
+        // Four blind cursor-lefts cost ~1.0 s (measured 2026-08-31 and again
+        // 2026-09-02) and this function runs twice in one `logic_add_send` and
+        // three times in one `logic_remove_send`. So: ask the row first, and
+        // when it is not the first page, ask it HOW FAR it is instead of
+        // walking blind.
         if sendViewIsLeftmost() { return }
+        // The row that is not the first page NAMES the page it is: a cell
+        // reading `Sen5In` puts the whole row on page 3, exactly two steps
+        // from home. Step back that far, each press proven by the page it was
+        // supposed to land on rather than by a 150 ms sleep — and keep the
+        // four blind lefts for the row that names nothing at all.
+        if let backsteps = (freshStatus()?["lcd_top"] as? String)
+            .flatMap({ sendViewPageBacksteps(inRow: $0) }),
+           backsteps > 0 {
+            for page in stride(from: backsteps - 1, through: 0, by: -1) {
+                try pressNote(0x62)
+                let firstSlot = page * 2 + 1
+                _ = waitFor(seconds: 0.6) { status in
+                    guard let top = status["lcd_top"] as? String else { return false }
+                    return sendViewPageBacksteps(inRow: top) == (firstSlot - 1) / 2
+                }
+            }
+            if sendViewIsLeftmost() { return }
+        }
         for _ in 0..<4 {
             try pressNote(0x62)
             Thread.sleep(forTimeInterval: 0.15)
@@ -137,24 +188,70 @@ extension MCUController {
         return rows()
     }
 
-    /// The send view's fields once `settledSendViewRows` agrees AND the first
-    /// cell's label names the expected slot. The label check is what defeats
-    /// the stale mirror: after a swallowed page press the mirror holds the OLD
-    /// page perfectly stably, so two agreeing frames alone prove nothing —
-    /// only the new page's own slot number says the page is the one the
-    /// caller thinks it is reading. Returns nil when the view is not
-    /// standing, the mirror is unreadable, or that page never shows.
+    /// True when an OCCUPIED slot on this page is showing its own four field
+    /// labels — the proof that the values under them are that slot's values.
+    ///
+    /// Logic paints two states over a settled send page, and both were caught
+    /// live 2026-09-02 handing out other cells' text as a send's fields:
+    ///
+    /// * the post-write OVERLAY. For about two seconds after a level write
+    ///   (1.76-2.01 s, sampled every 250 ms) Logic replaces the position label
+    ///   with the destination's own aux name and lets the dB value spill into
+    ///   the cell underneath — `Sen1In Send 1  Aux 2 Sen1Mu` over
+    ///   `Bus 2  -11,8 dB      active`. Read as a settled row that says
+    ///   position `B`.
+    /// * the browse BANNER, which covers the first cells of the page it is
+    ///   editing.
+    ///
+    /// An UNOCCUPIED slot is required to show nothing but its destination
+    /// label, which is all Logic labels there.
+    ///
+    /// Pure, so both measured frames can be exercised without a surface.
+    static func sendPageShowsSettledFields(_ fields: [(name: String, value: String)]) -> Bool {
+        for half in 0..<2 {
+            let base = half * 4
+            guard fields.indices.contains(base + 3) else { return false }
+            let destination = fields[base].value
+            guard !destination.isEmpty, destination != MCULCDStrings.emptySlot else { continue }
+            guard let slot = sendSlotNumber(inFieldLabel: fields[base].name),
+                  sendSlotNumber(inFieldLabel: fields[base + 2].name) == slot,
+                  sendSlotNumber(inFieldLabel: fields[base + 3].name) == slot else { return false }
+        }
+        return true
+    }
+
+    /// How long a page read waits for Logic to finish painting over it. Sized
+    /// from the measured overlay above (~2 s) plus margin; a page that is
+    /// already settled — every read that is not hard on the heels of a write —
+    /// pays one status read and none of this.
+    static let sendPageSettleBudget: TimeInterval = 3.0
+
+    /// The send view's fields once `settledSendViewRows` agrees, the first
+    /// cell's label names the expected slot, AND the page is showing its own
+    /// field labels rather than one of Logic's overlays.
+    ///
+    /// The label check is what defeats the stale mirror: after a swallowed
+    /// page press the mirror holds the OLD page perfectly stably, so two
+    /// agreeing frames alone prove nothing — only the new page's own slot
+    /// number says the page is the one the caller thinks it is reading. The
+    /// overlay check is what defeats the opposite failure: a frame that is
+    /// stable, current, correctly numbered, and still not the row whose values
+    /// the caller wants (`sendPageShowsSettledFields`). Returns nil when the
+    /// view is not standing, the mirror is unreadable, or the page never
+    /// settles inside `sendPageSettleBudget`.
     static func settledSendPage(
         expectingFirstSlot slot: Int
     ) -> [(name: String, value: String)]? {
-        for _ in 0..<3 {
+        let deadline = Date().addingTimeInterval(sendPageSettleBudget)
+        repeat {
             guard sendViewStanding(in: freshStatus()) else { return nil }
             guard let rows = settledSendViewRows() else { return nil }
             let fields = zip(lcdFields(rows.top), lcdValueFields(rows.bottom))
                 .map { ($0, $1) }
-            if sendSlotNumber(inFieldLabel: fields[0].0) == slot { return fields }
+            if sendSlotNumber(inFieldLabel: fields[0].0) == slot,
+               sendPageShowsSettledFields(fields) { return fields }
             _ = quiescentStatus()
-        }
+        } while Date() < deadline
         return nil
     }
 
@@ -179,6 +276,33 @@ extension MCUController {
             if let fields = settledSendPage(expectingFirstSlot: slot) { return fields }
         }
         return nil
+    }
+
+    /// The debt a finished send write leaves behind instead of walking the
+    /// surface home.
+    ///
+    /// Returning to the Pan-names view costs 1.3-3.4 s (`ensurePanNames`), and
+    /// the send tools paid it at the END of every call — putting the surface
+    /// back so the next call could take it somewhere else again. The plug-in
+    /// tools stopped doing that in package #1; the send tools are a SAFER
+    /// place to defer than the plug-in tools were, because a standing send
+    /// view is not a plugin-edit assignment (`isPluginEditAssignment` is false
+    /// for `SE`), so it cannot make Logic auto-open a plug-in window on the
+    /// next track selection — the one hazard the debt pattern was invented to
+    /// contain.
+    ///
+    /// What settles it is unchanged and unmemorised: `ensurePanNames` clears
+    /// the record the moment the names view is verified, and every tool that
+    /// needs that view already calls it — `findChannel` first of all, which is
+    /// why a send call FOLLOWING a send call pays the same restore it always
+    /// paid, just at its own start instead of its predecessor's end. What the
+    /// deferral actually buys is the call's own latency and the sequences that
+    /// end somewhere else, which is most of them.
+    ///
+    /// FAILURE paths do not use this. A refusal restores explicitly, so a
+    /// caller reading "nothing was written" also gets the surface back.
+    static func sendViewDebt(strip: String?) -> SurfaceDebt {
+        SurfaceDebt(strip: strip, view: "send", slot: nil)
     }
 
     /// Creates a send by browsing the destination field of the first empty
@@ -291,11 +415,20 @@ extension MCUController {
         }
         let confirm: BridgeResponse
         do {
-            guard try browseToSendDestination(destIndex: destIndex, destination: destination) else {
+            guard try browseToSendDestination(
+                destIndex: destIndex, destination: destination
+            ) else {
                 return nil
             }
-            Thread.sleep(forTimeInterval: 0.3)
-            _ = quiescentStatus()
+            // Let the display go QUIET before the drift check reads it, with
+            // the old blind 0.3 s as the deadline rather than the duration.
+            // The sleep was buying a settled cell; a proven 150 ms of silence
+            // is the same thing measured instead of assumed, and it costs
+            // ~155 ms where the sleep-plus-quiescence cost 465 ms (measured
+            // 2026-09-02 across eight adds and removals, in which the entry
+            // never drifted once — the check that would catch it is
+            // untouched below).
+            waitForSurfaceQuiet(seconds: 0.5)
             // Settle and view check from ONE frame: the entry that is about
             // to be confirmed and the view that gives the press its meaning
             // must be facts about the same instant.
@@ -346,6 +479,20 @@ extension MCUController {
                 requested: destination, listed: lcdValueFields(bottom)[destIndex]
             )
         }
+        // And the browse BANNER has to be gone before the send list is read.
+        // The two waits above are satisfied while Logic is still painting
+        // `Send 1  Instantiate` over the first three cells, and a readback
+        // that starts there cannot prove which page it is on: measured
+        // 2026-09-02, its first pass through `settledSendPage` burned ~930 ms
+        // failing to see slot 1's label, returned "no sends", and the
+        // stale-frame guard then paid another 0.4 s and read the whole page
+        // again — 1.9 s of reading a banner, twice. Waiting for the row to
+        // name a page costs nothing the readback was not already paying, and
+        // the readback below stays exactly as strict as it was.
+        _ = waitFor(seconds: 2.5) { status in
+            guard let top = status["lcd_top"] as? String else { return false }
+            return sendSlotNumber(inFieldLabel: lcdFields(top)[0]) != nil
+        }
         let sends = try readSends(restoringView: false)
         let listed = sends?.first { ($0["send"] as? Int) == slot }?["destination"] as? String
         guard let listed,
@@ -363,7 +510,11 @@ extension MCUController {
                 restored: false
             )
         }
-        restoreOnExit = restoringView
+        // The write is done and verified. Nobody has to walk the surface home
+        // for that to stay true, so the restore is RECORDED rather than paid:
+        // see `sendViewDebt`.
+        restoreOnExit = false
+        if restoringView { deferSurfaceRestore(sendViewDebt(strip: trackName)) }
         return [
             "success": true, "verified": true, "state": "added",
             "send": slot, "destination": destination,
@@ -791,13 +942,17 @@ extension MCUController {
     /// echo, with the same compare-and-set/readback discipline as the plugin
     /// parameters. Touches ONLY the level vpot, never the destination.
     static func setSendLevel(
-        sendNumber: Int, targetDb: Double, expectedCurrentValue: String?
+        sendNumber: Int, targetDb: Double, expectedCurrentValue: String?,
+        strip: String? = nil
     ) throws -> [String: Any]? {
         guard (1...8).contains(sendNumber) else {
             throw LogicianError.invalidArguments("send must be 1-8")
         }
         guard try ensureSendView() else { return nil }
-        defer { exitToPan() }
+        // Every failure walks home; the verified write records the debt
+        // instead (`sendViewDebt`).
+        var restoreOnExit = true
+        defer { if restoreOnExit { exitToPan() } }
         try sendViewToPage(forSend: sendNumber)
         guard let fields = settledSendPage(
             expectingFirstSlot: ((sendNumber - 1) / 2) * 2 + 1
@@ -847,6 +1002,8 @@ extension MCUController {
                 turn: turn
             )
         }
+        restoreOnExit = false
+        deferSurfaceRestore(sendViewDebt(strip: strip))
         return [
             "success": true,
             "verified": true,
@@ -1093,14 +1250,19 @@ extension MCUController {
         // ONE walk home for the whole call, however it exits: the read below,
         // the page walk, the browse and the readback all inherit the send
         // view (`restoringView: false`), and this defer is the only exit —
-        // the pattern the add-and-level path already runs on.
-        defer { exitToPan() }
+        // the pattern the add-and-level path already runs on. A verified
+        // removal RECORDS that restore instead of paying it (`sendViewDebt`);
+        // every refusal still walks home before it reports.
+        var restoreOnExit = true
+        defer { if restoreOnExit { exitToPan() } }
         guard let beforeList = try readSends(restoringView: false) else { return nil }
         let before = sendListEntries(beforeList)
         switch try resolveSendRemoval(
             sendNumber: sendNumber, destination: destination, sends: before
         ) {
         case .alreadyRemoved(let detail):
+            restoreOnExit = false
+            deferSurfaceRestore(sendViewDebt(strip: trackName))
             return [
                 "success": true, "verified": true, "state": "already_removed",
                 "sends": beforeList,
@@ -1166,6 +1328,7 @@ extension MCUController {
             // overshoots into a wrap) costs steps, which the raised cap now has
             // room for.
             let confirm: BridgeResponse
+            var rowAtConfirmation = ""
             do {
                 // Which SPELLING of the name the jump arithmetic is given
                 // decides whether the jump happens at all — the send list
@@ -1180,7 +1343,15 @@ extension MCUController {
                 }
                 var reached = false
                 var blankReads = 0
-                for _ in 0..<sendBrowseEntryCap {
+                var stepsHome = 0
+                // LOOK before stepping. The jump above now aims at the
+                // boundary itself rather than eight entries short of it, so
+                // the walk's ordinary case is that it is already there — and a
+                // walk that always stepped first would step PAST the entry it
+                // came for. (Past it is only the clamp, so the old shape was
+                // safe; it was just a step nobody needed.)
+                reached = shownName() == MCULCDStrings.emptySlot
+                while !reached, stepsHome < sendBrowseEntryCap {
                     // The view gate rides the same status read that anchors
                     // the event wait — a step sent after the view has dropped
                     // is a pan write (measured 2026-08-31, this exact walk).
@@ -1193,6 +1364,7 @@ extension MCUController {
                     guard response.ok else { return nil }
                     _ = awaitEvents(since: beforeEvents, timeoutMs: 300)
                     _ = quiescentStatus()
+                    stepsHome += 1
                     let name = shownName()
                     if name == MCULCDStrings.emptySlot { reached = true; break }
                     if sendBrowseReadIsEntry(name) {
@@ -1223,8 +1395,12 @@ extension MCUController {
                 // REWRITING the send to whatever entry a repaint left showing.
                 // Corrections walk forward: past the boundary is the wrapped far
                 // end of the list, and forward from there comes back to it.
-                Thread.sleep(forTimeInterval: 0.3)
-                _ = quiescentStatus()
+                // The same settle the add makes, and the same measurement
+                // behind it: a proven 150 ms of silence in place of a blind
+                // 0.3 s, with 0.5 s as the deadline. The boundary re-check
+                // below is untouched — it is what stands between this call and
+                // rewriting the send to whatever a repaint left showing.
+                waitForSurfaceQuiet(seconds: 0.5)
                 var corrections = 0
                 while shownName() != MCULCDStrings.emptySlot, corrections < 4 {
                     let status = freshStatus()
@@ -1244,6 +1420,9 @@ extension MCUController {
                       sendViewStanding(in: confirmationFrame) else {
                     throw sendViewDroppedError(confirmationFrame, before: "the confirming press")
                 }
+                // Kept for the commit check below: the row the press was sent
+                // into is what the repaint that answers it has to differ from.
+                rowAtConfirmation = top
                 let boundary = sendDestinationCell(top: top, bottom: bottom, destIndex: destIndex)
                 guard boundary == MCULCDStrings.emptySlot else {
                     throw LogicianError.verificationFailed(
@@ -1257,11 +1436,19 @@ extension MCUController {
                 try abandonedBrowse(error)
             }
             guard confirm.ok else { return nil }
-            // What the slot repaints to after a REMOVAL has not been captured
-            // live the way the add's commit frame was, so there is no content
-            // to wait for yet: wait the flat second the plugin removal waits
-            // and let the send-list readback be the verdict.
-            Thread.sleep(forTimeInterval: 1.0)
+            // The press is answered by Logic REPAINTING the slot's field
+            // group, exactly as the add's is — captured live 2026-09-02, which
+            // the code that waited a flat second here could not yet say: the
+            // top row changed 46, 49, 49 and 60 ms after the press (the
+            // browsed slot's labels flipping, `Sen2In` -> `Sen2De`), while the
+            // destination cell stayed on the No-Send entry it was confirmed
+            // on. So wait for the ROW to move, with the same one second as the
+            // deadline instead of the duration: a slower Logic gets exactly as
+            // long as before, and the send-list readback below — the actual
+            // verification — is untouched and keeps the last word.
+            _ = waitFor(seconds: 1.0) { status in
+                (status["lcd_top"] as? String) != rowAtConfirmation
+            }
             _ = quiescentStatus()
             guard let afterList = try readSends(restoringView: false) else { return nil }
             let verdict = sendRemovalVerdict(
@@ -1275,6 +1462,8 @@ extension MCUController {
                     restored: false
                 )
             }
+            restoreOnExit = false
+            deferSurfaceRestore(sendViewDebt(strip: trackName))
             var result: [String: Any] = [
                 "success": true, "verified": true, "state": "removed",
                 "send": slot, "destination": listedDestination,
