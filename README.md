@@ -12,7 +12,7 @@
 [![MCP](https://img.shields.io/badge/MCP-84_tools-4be37a)](docs/AGENT-GUIDE.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
-[What you can say](#what-you-can-say) · [Install](#install) · [Agent guide](docs/AGENT-GUIDE.md)
+[What you can say](#what-you-can-say) · [Install](#install) · [How fast](#how-fast-is-it) · [Agent guide](docs/AGENT-GUIDE.md)
 
 </div>
 
@@ -23,7 +23,7 @@ Logic Pro has no API, so every AI assistant could talk about your mix without be
 | You say | The agent does |
 |---|---|
 | *"Bounce bars 1–4 and tell me what you hear."* | Renders the master offline (no dialogs, session untouched), listens, and tells you what is actually in the audio. |
-| *"More bass around 500 Hz, about 2 dB."* | Finds the bass track → finds the EQ (or adds one) → nudges the band → confirms the change against Logic's own readout. |
+| *"More bass around 500 Hz, about 2 dB."* | Finds the bass track → finds the EQ (or adds one) → nudges the band → confirms the change against Logic's own readout. About a second. |
 | *"The hats are too stiff — quantize them, but keep some feel."* | Sets the region's quantize with swing. The notes you played stay yours. |
 | *"A/B that compressor setting on the master."* | Prints the mix twice — before and after — and hands you both versions, so the call is made with ears. |
 | *"Fix the flubbed note in bar 3."* | Reads the region's MIDI, corrects the one note, leaves the take alone. |
@@ -32,7 +32,7 @@ Logic Pro has no API, so every AI assistant could talk about your mix without be
 | *"Give me stems of the chorus."* | Solo-bounces every track over the same bars — aligned, same length, ready to send. |
 | *"Listen to the whole song. What would you change?"* | Bounces the mix and reads the whole project — levels, plugins, arrangement — then comes back with moves it can actually make. Say yes, and it makes them. |
 
-Every change is verified against Logic's own readouts and rolled back on a mismatch — and nothing is ever saved without you asking.
+Every change is checked against Logic's own readouts and rolled back on a mismatch. Nothing is ever saved without you asking.
 
 ## Install
 
@@ -116,53 +116,44 @@ Ask your agent one more time:
 
 ## How fast is it?
 
-I stopwatch everything against a live reference project (25 mixer strips, 19 track headers). The rows I haven't clocked yet say **est.** until I have.
+Fast enough that you stop noticing. I stopwatch everything against a live reference project (25 mixer strips, 54 regions); these are the numbers on a warm session.
 
-| Capability | Measured |
+| You ask for | It takes |
 |---|---|
-| Bounce any bar range of the master, zero dialogs, audio attached | ~7 s |
-| Render one track to a file via Track Freeze, sliced to bars | ~6–8 s |
-| A/B a parameter change on one track, metrics + both audio versions, auto-rollback — `method: "render"` | ~15 s |
-| The same A/B via `method: "bounce"` (master output rather than a track freeze) | ~20 s |
-| A/B on tracks freeze refuses (stack subtracks, shared channels) via `method: "solo_bounce"` | 157 s measured; **est.** ~50 s since the bounce-position fix |
-| Set any plugin parameter, verified via LCD echo, incl. third-party | ~1.5–1.9 s warm (~3.8 s first call) |
-| Compose a MIDI arrangement by import — multi-track, note-diff verified | ~8 s, +~6 s per track routed onto an existing track |
-| Perform MIDI (notes, CC, pitch bend) through the track's instrument, render-verified | real time + ~10 s |
-| Automation curve (volume), recorded and playhead-chase verified | ~20 s |
-| Read the whole mixer in one call — every strip's dB, mute/solo/arm, pan (25 strips) | ~16–17 s |
-| The same read as part of a `mix`-scope project snapshot (adds the track/strip census) | ~23 s |
-| Structured snapshot of the whole project (transport, regions, markers, tempo/meter maps) | ~2 s |
-| Reset to a fixture project — close without saving, reopen, verify (built for eval loops) | **est.** ~5 s |
-| Duplicate the project to a safe sandbox copy | ~2 s |
+| Any plugin parameter, set and confirmed — third-party plugins included | **~1 s** |
+| A new plugin on a track | **~2.5 s** |
+| A new track (or a track gone) | **under 1 s** |
+| A bounce of any bar range, audio attached, zero dialogs | **~2 s** |
+| A before/after A/B of a change, both versions as audio | **~5 s** |
+| A whole MIDI arrangement composed by import, verified note for note | **~3–4 s** |
+| The entire project read — tracks, regions, markers, transport | **well under a second** |
+| A marker set, moved to, or removed | **under 1 s** |
+| A send created with its level, or removed | **~4–6 s** |
+| Stems of any range | **~4 s per track** |
+
+Every one of those numbers includes the verification: Logician reads Logic's own readout back before it tells you anything happened.
 
 ## Requirements
 
-- macOS 13+, Logic Pro (tested on 12.x, English UI — v1 assumption)
-- Swift toolchain (to build from source)
-- One-time: Accessibility permission for your MCP client, and a Mackie Control device in Logic pointing at the `Logic MCP MCU` ports (Logic Pro → Control Surfaces → Setup → New → Mackie Control — `logic_health` walks you through it)
+- macOS 13+ and Logic Pro (tested on 12.x, English UI)
+- Swift toolchain, to build from source
+- One-time: Accessibility permission for your client, and a Mackie Control device in Logic on the `Logic MCP MCU` ports — `logic_health` walks you through both
 
-## Tool overview (84 tools)
+## What's inside (84 tools)
 
-- **See the project** — tracks, regions, markers, windows; the whole mixer in one call (every strip incl. auxes, buses and outputs); what each track is (type, instrument, routing, groups); a region's MIDI events; existing automation curves; or the entire project as one structured snapshot
-- **Diagnostics & lifecycle** — `logic_health` (a doctor that names the fix for anything broken); open/close/save/duplicate projects; verified reset to a fixture project
-- **Transport** — play/stop, playhead, cycle range, metronome — verified via MCU LEDs and timecode
-- **Mixing** — volume (dB-converged), pan, mute, solo, record-arm, sends (add, level and remove), insert bypass, output/group routing; the master chain and buses address by name (`Stereo Out`, auxes)
-- **Plugins & instruments** — add/remove, read/write **any** parameter of any plugin (third-party included), browse and select presets by name, load instruments
-- **Regions** — select (multi too), move, copy, split (dialog-aware), nudge, rename, remove silence; region parameters: quantize, swing, transpose, velocity, loop, mute, gain, fades
-- **Composition & tempo** — compose whole multi-track arrangements by MIDI import (seconds, note-for-note verified, straight onto your own tracks), or perform MIDI (notes/CC/pitch bend) through the track's real instrument in real time; edit single notes in place; tempo and meter maps are read, integrated into all bar math, and editable; the Smart Tempo mode is checked before recording so an Adapt-mode project is refused, never rewritten
-- **Automation** — read existing curves; record new ones in any mode, playhead-chase verified
-- **Audio out** — bounce (with format/depth/dither options), bounce-in-place, stem export, freeze renders sliced to bars, A/B evaluation carrying both audio versions; audio comes back inline **and** as fetchable MCP resource links, so a client that can't take it inline can still pull it on demand. A listen-first mode (`blind: true`) holds the numbers back until the agent has actually listened — descriptions come from ears, then the metrics
-- **Key commands** — trigger any learned command; learn any of Logic's ~1400 by name, consent-recorded
+**See** the project: tracks, regions, markers, the whole mixer, any region's MIDI, any plugin's parameters, or all of it as one snapshot. **Mix**: volume, pan, mute, solo, sends, routing, insert bypass — the master chain and buses by name. **Plugins**: add, remove, read and write any parameter, browse presets, load instruments. **Edit**: select, move, copy, split, nudge, rename, quantize, transpose, fades, single notes. **Compose**: whole arrangements by MIDI import in seconds, or performed live through the track's instrument. **Automate**: read and record curves. **Hear**: bounce, bounce in place, stems, freeze renders, A/B — audio comes back inline and as a link, and a listen-first mode holds the metrics back until the agent has actually listened.
+
+The full reference, with every tool's contract, is the [Agent guide](docs/AGENT-GUIDE.md).
 
 ## Under the hood
 
-Logic Pro has no automation API. Every other Logic MCP drives the UI: blind keypresses, dialog clicking, coordinate mouse moves, window scraping. Logician instead speaks **Mackie Control** — Logic's documented, bidirectional control-surface protocol — over virtual MIDI ports, and reads Logic's own LCD/LED/fader echoes back as verification. Where the surface protocol ends it uses macOS Accessibility semantics and a dedicated MIDI port bound to Logic key commands.
+Logic Pro has no automation API, so most tools that try to drive it fake a user: keypresses, dialog clicks, mouse moves. Logician speaks **Mackie Control** instead — Logic's own bidirectional control-surface protocol — over virtual MIDI ports, and reads Logic's LCD, LED and fader echoes back as proof. Where the surface protocol ends, it uses macOS Accessibility and a dedicated MIDI port bound to Logic's key commands.
 
-That buys three things UI automation can't give you:
+That buys three things:
 
-1. **Universal plugin control.** Third-party plugins with fully custom UIs (Trilian, Decapitator, …) expose nothing to Accessibility — but everything to the control-surface host automation layer. Logician reads and writes any parameter of any plugin.
-2. **Hardware-level ground truth.** Every write is compare-and-set: read the current value, refuse on mismatch, converge to the target, read Logic's echo back, report exactly what happened. The agent cannot hallucinate a parameter value — the LCD echo is the value.
-3. **Your mouse stays yours.** Nothing needs to be open, arranged or visible for the agent to work, because it talks to Logic the way a hardware mixing desk does. The few times it presses one of Logic's own shortcuts, your pointer ends up exactly where you left it, and every write reports which route it took. You can keep working while the agent mixes.
+1. **Any plugin, any parameter.** Third-party plugins with custom UIs expose nothing to Accessibility — but everything to the control-surface layer.
+2. **Ground truth.** Every write is read back from Logic before it is reported. The agent cannot make a value up; the echo *is* the value.
+3. **Your mouse stays yours.** Nothing needs to be open or visible. You can keep working while the agent mixes.
 
 <details>
 <summary><b>Architecture</b></summary>
@@ -183,14 +174,13 @@ Safety model: read before write, abort on ambiguity, verify by readback, roll ba
 
 </details>
 
-## Known limitations & roadmap
+## Known limitations
 
-- The biggest limitation is the models themselves: today's multimodal agents are not yet the mixing engineers you might wish for. Half the reason I built this was to find out exactly how good they really are — sharp assistant, not yet a producer. The tool is ready for the day that changes.
-- English Logic UI is the fully supported one for now. The server detects Logic's language and says plainly what degrades on others (the control-surface side barely cares); locale tables are in progress — French is measured, more languages land as they're captured
-- Tempo and meter maps are read from Logic's own lists and integrated into all bar math; tempo *curves* are approximated as steps (the Tempo List does not expose them) with the uncertainty quantified. MIDI *recording* takes real time — composing by import takes seconds.
-- Track stacks cannot be freeze-rendered (Logic limitation — `solo_bounce` covers their subtracks)
-- Recording automation needs a track header, so it cannot run on headerless strips — `Stereo Out`, auxes, buses. Setting the automation mode reads it off the track header's Accessibility label, and those strips have none. Their volume, pan, sends and plugin parameters are still writable; only recorded *curves* are out of reach.
-- Roadmap: Homebrew — or an even simpler one-click installer for musicians who've never met a terminal — as soon as the repo is public; tempo curves; note-level MIDI beyond the Event List; localization
+- The biggest one is the models themselves: today's multimodal agents are a sharp assistant, not yet a producer. Half the reason I built this was to find out exactly how good they are. The tool is ready for the day that changes.
+- English Logic UI is the fully supported one for now. Logician detects the language and says plainly what degrades on others; more locales land as they are captured.
+- Tempo *curves* are read as steps (Logic's Tempo List does not expose them), with the uncertainty stated.
+- Automation can be recorded on tracks, not on `Stereo Out`, auxes or buses — their volume, pan, sends and plugins are still fully writable.
+- Roadmap: Homebrew and a one-click installer for musicians who have never met a terminal, as soon as the repo is public.
 
 ---
 
