@@ -42,7 +42,10 @@ enum ProjectReset {
     /// stable identity: Logic's alerts carry no AXIdentifier, their titles are
     /// empty, and their button sets overlap (`Cancel` is on all of them).
     struct DialogGrammar {
-        /// Lowercased substring that identifies the alert.
+        /// The substring that identifies the alert, matched
+        /// case-INSENSITIVELY: `match` lowercases both sides, so a marker may
+        /// be spelled the way Logic spells it. "Create New Track" is
+        /// title-cased in Logic and in `LogicUIStrings.AlertMarker`.
         let marker: String
         /// Button titles that answer it, in preference order — Logic spells
         /// the apostrophe as U+2019, but a straight one is accepted so a
@@ -61,6 +64,21 @@ enum ProjectReset {
         /// caller just asked to keep. For that close the alert is an unknown
         /// grammar: reported, never pressed.
         let requiresDiscardContract: Bool
+        /// Does Logic's AppleScript suite BLOCK while this alert is up?
+        ///
+        /// A MEASURED property of the individual alert, not of alerts in
+        /// general, and the only thing `recognisedAlertOnScreen` — the gate in
+        /// front of every document-list read — is entitled to ask. The
+        /// save-changes and recovery prompts block: a read under them waits out
+        /// AppleScript's ~120 s timeout, far past any of these tools'
+        /// deadlines. The Create New Track sheet does NOT — measured live
+        /// 2026-09-02, the open poll's list read returned in 264–400 ms with
+        /// that sheet standing, on 6 creates out of 6. Calling it blocking
+        /// would shut the gate on a plane that is answering perfectly well and
+        /// turn every create into a 30 s timeout; calling it non-blocking is
+        /// what lets the open be PROVED and the sheet then be answered on the
+        /// Accessibility plane, where it actually lives.
+        let blocksAppleScript: Bool
     }
 
     /// Every dialog this tool knows how to answer. Anything else is reported,
@@ -71,15 +89,58 @@ enum ProjectReset {
             marker: LogicUIStrings.AlertMarker.saveChanges,
             answers: LogicUIStrings.Button.dontSaveSpellings,
             effect: "discarded the open project's unsaved changes (the contract of this tool)",
-            requiresDiscardContract: true
+            requiresDiscardContract: true,
+            blocksAppleScript: true
         ),
         DialogGrammar(
             marker: LogicUIStrings.AlertMarker.autoSaved,
             answers: [LogicUIStrings.Button.saved],
             effect: "opened the last SAVED version rather than the auto-saved one",
-            requiresDiscardContract: false
-        )
+            requiresDiscardContract: false,
+            blocksAppleScript: true
+        ),
+        createNewTrack
     ]
+
+    /// The sheet an EMPTY project raises the moment it opens — "Create New
+    /// Track", the MIDI/Pattern/Session Player/Audio chooser, Details, "Number
+    /// of tracks to create:", Create and Cancel.
+    ///
+    /// THIS entry is the CLOSE's answer, and it is Cancel. The open's answer is
+    /// the opposite button and lives in `createTrackOpenAnswer`, because
+    /// measured live 2026-09-02 the two buttons do very different things and
+    /// each operation wants the other one:
+    ///
+    /// **Cancel does not dismiss the sheet — it abandons the project.** Three
+    /// times out of three (two `logic_new_project` creates and one
+    /// `logic_reset_to` into an empty template, this worktree's binary),
+    /// pressing Cancel left `logic_list_windows` reporting **no windows at
+    /// all**: the document Logic had just opened was gone, the document list
+    /// was empty, and Logic eventually put up its "Choose a Project" template
+    /// chooser. Logic does not keep a project with no tracks on screen; the
+    /// sheet is a REQUIRED step of opening one, not a suggestion.
+    ///
+    /// For a close, that is exactly the right button: the project is on its way
+    /// out, an empty project has nothing in it to lose, and Cancel is Logic's
+    /// own way out of a modal sheet — pressing Create instead would add a track
+    /// to a project that is being closed, and on `saving: "yes"` would write
+    /// it. So the close cancels, whatever its save contract.
+    ///
+    /// Measured live 2026-09-02 (`Logician-archive/profiles/logic_new_project.md`,
+    /// D-NP1): EVERY successful `logic_new_project` left this sheet standing
+    /// and unreported, because `openProject` never looked for it and this table
+    /// did not know it. The next call, in a fresh process, reported it as
+    /// "UNKNOWN dialog grammar — nothing was pressed".
+    static let createNewTrack = DialogGrammar(
+        marker: LogicUIStrings.AlertMarker.createNewTrack,
+        answers: [LogicUIStrings.Button.cancel],
+        effect: "cancelled the Create New Track sheet, which closes the empty project it"
+            + " belongs to — which is what this close was doing anyway",
+        // Cancel is right for a close that discards AND for one that saves: the
+        // project it abandons is one with no tracks in it.
+        requiresDiscardContract: false,
+        blocksAppleScript: false
+    )
 
     /// Which button answers this alert, or nil when the grammar is unknown —
     /// or known but not ours to answer. `texts` are the alert's static texts,
@@ -90,14 +151,87 @@ enum ProjectReset {
     static func answer(
         forTexts texts: [String], buttons: [String], discardingChanges: Bool
     ) -> (button: String, effect: String)? {
-        let haystack = texts.joined(separator: " ").lowercased()
-        for grammar in knownDialogs
-        where haystack.contains(grammar.marker)
-            && (discardingChanges || !grammar.requiresDiscardContract) {
-            guard let button = grammar.answers.first(where: buttons.contains) else { continue }
+        for grammar in knownDialogs {
+            guard let button = match(
+                grammar, texts: texts, buttons: buttons, discardingChanges: discardingChanges
+            ) else { continue }
             return (button, grammar.effect)
         }
         return nil
+    }
+
+    /// The button that answers THIS grammar on an alert with these texts and
+    /// these offered buttons, or nil. Both halves are required: the marker has
+    /// to be in the text, and the button we would press has to be on screen —
+    /// a recognised alert whose answer is missing is left alone rather than
+    /// answered with whatever else it offers.
+    private static func match(
+        _ grammar: DialogGrammar, texts: [String], buttons: [String], discardingChanges: Bool
+    ) -> String? {
+        guard discardingChanges || !grammar.requiresDiscardContract else { return nil }
+        let haystack = texts.joined(separator: " ").lowercased()
+        guard haystack.contains(grammar.marker.lowercased()) else { return nil }
+        return grammar.answers.first(where: buttons.contains)
+    }
+
+    /// The OPEN's answer to the same sheet: **Create**.
+    ///
+    /// Narrow on purpose — the open answers the save-changes prompt itself,
+    /// from the caller's explicit `if_current_modified` decision, and must
+    /// never press Don't Save out of the table by accident.
+    ///
+    /// Create, because Cancel abandons the project (see `createNewTrack`), and
+    /// a tool whose contract is "the project is open and verified" may not hand
+    /// back a Logic with nothing open. The cost is honest and reported: the
+    /// project gets ONE track, of whichever kind the sheet is showing — Logic
+    /// remembers the last one used, and it was Audio on the machine this was
+    /// measured on. `logic_list_tracks` names it, and the alternative was no
+    /// project at all.
+    ///
+    /// There is a better fix upstream, deliberately not taken here: a bundled
+    /// `EmptyProject.logicx` that already contains one track would never raise
+    /// the sheet. That is a change to a 136 KB binary resource that has to be
+    /// authored in Logic, and it does not belong in the same commit as the code
+    /// that copes with the sheet.
+    static func createTrackOpenAnswer(
+        forTexts texts: [String], buttons: [String]
+    ) -> (button: String, effect: String)? {
+        guard let button = match(
+            createTrackOnOpen, texts: texts, buttons: buttons, discardingChanges: false
+        ) else { return nil }
+        return (button, createTrackOnOpen.effect)
+    }
+
+    /// The open's grammar for the sheet — same marker, the other button. Not in
+    /// `knownDialogs`: the close walks that table, and the close wants Cancel.
+    static let createTrackOnOpen = DialogGrammar(
+        marker: LogicUIStrings.AlertMarker.createNewTrack,
+        answers: [LogicUIStrings.Button.create],
+        effect: "answered Logic's Create New Track sheet with Create, so the project STAYED"
+            + " OPEN and now has ONE track of the kind the sheet offered (Logic will not keep"
+            + " a project with no tracks on screen — measured live 2026-09-02, Cancel closes"
+            + " it). logic_list_tracks names the track; logic_delete_track removes it.",
+        requiresDiscardContract: false,
+        blocksAppleScript: false
+    )
+
+    /// Is this sheet the Create New Track sheet at all, whatever buttons it
+    /// offers? The dismissal check, which must not depend on the button we
+    /// meant to press still being there.
+    static func isCreateTrackSheet(texts: [String]) -> Bool {
+        texts.joined(separator: " ").lowercased()
+            .contains(LogicUIStrings.AlertMarker.createNewTrack.lowercased())
+    }
+
+    /// Would an Apple Event block on this alert? The MODALITY question, which
+    /// is not the same question as "is this alert one we know": the Create New
+    /// Track sheet is known AND non-blocking, and reading those two as one fact
+    /// is what would strand the open poll behind a sheet it can simply dismiss.
+    static func blocksAppleScript(forTexts texts: [String], buttons: [String]) -> Bool {
+        knownDialogs.contains { grammar in
+            grammar.blocksAppleScript
+                && match(grammar, texts: texts, buttons: buttons, discardingChanges: true) != nil
+        }
     }
 
     // MARK: - The target path
@@ -259,22 +393,92 @@ extension LogicAccessibility {
         return found
     }
 
-    /// Is Logic showing an alert whose grammar this server RECOGNISES — the
+    /// Is Logic showing an alert that would BLOCK an Apple Event — the
     /// save-changes prompt or the auto-save recovery prompt?
     ///
-    /// Read-only, AppleScript-free, ~1–2 ms, and it is a MODALITY test rather
-    /// than a permission to press: `discardingChanges: true` deliberately
-    /// widens recognition to both grammars, because the question is "would an
-    /// Apple Event block right now", not "may this button be clicked". The
-    /// open poll asks it before every document-list read
-    /// (`ProjectOpen.mayAskDocumentList`) — Logic's AppleScript suite blocks
-    /// while a modal is up, and a poll stuck inside that read cannot answer
-    /// the prompt it is waiting for.
+    /// Read-only, AppleScript-free, ~1–2 ms, and a MODALITY test rather than a
+    /// permission to press: `discardingChanges: true` deliberately widens the
+    /// match to both grammars, because the question is "would an Apple Event
+    /// block right now", not "may this button be clicked". The open poll asks
+    /// it before every document-list read (`ProjectOpen.mayAskDocumentList`) —
+    /// a poll stuck inside that read cannot answer the prompt it is waiting
+    /// for.
+    ///
+    /// It asks `ProjectReset.blocksAppleScript` rather than "is this alert
+    /// known", because since 2026-09-02 those are different questions. The
+    /// Create New Track sheet is in the answer table (the close answers it, the
+    /// open answers it, nothing logs it as an unknown grammar any more) and it
+    /// is MEASURED not to block: reading the table's mere recognition as
+    /// modality would shut this gate on every empty-template open and time the
+    /// create out at 30 s while the document list was answering in 265 ms.
     func recognisedAlertOnScreen() -> Bool {
         visibleDialogs().contains { dialog in
-            ProjectReset.answer(
-                forTexts: dialog.texts, buttons: dialog.buttons, discardingChanges: true
-            ) != nil
+            ProjectReset.blocksAppleScript(forTexts: dialog.texts, buttons: dialog.buttons)
+        }
+    }
+
+    /// Answers the "Create New Track" sheet an EMPTY project raises on open,
+    /// and PROVES it is gone. Returns the log entry for `dialogs_answered`, or
+    /// nil when no such sheet appeared within `waitingUpTo` seconds.
+    ///
+    /// `waitingUpTo: 0` still LOOKS once (one Accessibility window walk, 5–10
+    /// ms) — the budget paces the retries, it does not gate the first look, so
+    /// an open that raises no sheet pays a walk and nothing else.
+    ///
+    /// CREATE is pressed, not Cancel: Cancel abandons the project Logic has
+    /// just opened (measured 3/3, `ProjectReset.createNewTrack`), and an open
+    /// that answers its own sheet by throwing the project away would be a worse
+    /// lie than the sheet it was left standing. The one track that costs is
+    /// named in the entry's `effect`.
+    func answerCreateTrackSheet(waitingUpTo budget: TimeInterval) -> [String: Any]? {
+        let deadline = Date().addingTimeInterval(budget)
+        while true {
+            for dialog in visibleDialogs() {
+                guard let answer = ProjectReset.createTrackOpenAnswer(
+                    forTexts: dialog.texts, buttons: dialog.buttons
+                ) else { continue }
+                let pressed = pressDialogButton(answer.button, in: dialog.element)
+                // The press is not the proof. An AXPress that reports success
+                // on a sheet still standing is exactly the failure this whole
+                // fix exists for, so look again — cheaply, and only until the
+                // sheet is actually gone.
+                let gone = pressed && !createTrackSheetIsOnScreen(
+                    waitingUpTo: ProjectOpen.createTrackSheetDismissalSeconds
+                )
+                var entry: [String: Any] = [
+                    "phase": "open",
+                    "dialog": "create_new_track",
+                    "texts": dialog.texts,
+                    "buttons": dialog.buttons,
+                    "answered_with": answer.button,
+                    "press_succeeded": pressed,
+                    "verified_gone": gone
+                ]
+                entry["effect"] = gone
+                    ? answer.effect
+                    : "the Create New Track sheet was found and '\(answer.button)' was pressed,"
+                        + " but it is STILL on screen — answer it in Logic before the next call"
+                return entry
+            }
+            guard Date() < deadline else { return nil }
+            Thread.sleep(forTimeInterval: ProjectOpen.pollIntervalSeconds)
+        }
+    }
+
+    /// Is the Create New Track sheet on screen? Looks first, then paces, up to
+    /// `budget` — used to confirm a dismissal, where the answer we want is
+    /// "no" and the first look usually gives it.
+    private func createTrackSheetIsOnScreen(waitingUpTo budget: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(budget)
+        while true {
+            // By MARKER, not by "is there a button we could press": a sheet
+            // that lost its Create button is still a sheet on screen.
+            let standing = visibleDialogs().contains { dialog in
+                ProjectReset.isCreateTrackSheet(texts: dialog.texts)
+            }
+            if !standing { return false }
+            guard Date() < deadline else { return true }
+            Thread.sleep(forTimeInterval: ProjectOpen.pollIntervalSeconds)
         }
     }
 
@@ -649,6 +853,18 @@ extension MCPServer {
             detail: "logic_health reports logic_running="
                 + String(describing: health["logic_running"] ?? "unknown")
         ))
+        // One last look for the Create New Track sheet, which a reset INTO AN
+        // EMPTY TEMPLATE raises. `openProject` answers it before it returns;
+        // this catches the one that arrived late — while the frontmost path was
+        // settling, or during the document-list read above — because the check
+        // on the next line would otherwise fail a reset that worked, and the
+        // failure would be a sheet nobody had been asked about. A single 5–10 ms
+        // Accessibility walk when there is nothing there.
+        if let sheet = logic.answerCreateTrackSheet(waitingUpTo: 0) {
+            var entry = sheet
+            entry["phase"] = "verify"
+            dialogLog.append(entry)
+        }
         let leftover = logic.describeVisibleDialogs()
         checks.append(ProjectReset.Check(
             name: "no_dialog_left_on_screen",

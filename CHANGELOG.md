@@ -908,6 +908,33 @@ with every render coming back as audio the agent can listen to.
   `plugin_or_auxiliary` (AXDialog, document or not) and `other`. The description was the
   last place in the repo still teaching the document rule. `AXDocument` is also read once
   per window instead of twice.
+- **A new project arrives ready to work in, and a fresh project starts with fresh caches.**
+  Logic puts its "Create New Track" sheet over every empty project, so `logic_new_project`
+  — which creates from a bundled empty template — handed back `success: true,
+  verified: true` with a modal standing on the screen it had just made, on every single
+  call, and never mentioned it: the next tool call met a dialog it could not name, and
+  `logic_reset_to` into an empty template would have failed its own "no dialog left on
+  screen" check on a reset that worked. The sheet is now answered, the dismissal PROVEN
+  rather than assumed, and the answer reported in `dialogs_answered`. Which button took
+  measuring: **Cancel does not dismiss that sheet, it abandons the project** — three times
+  out of three it left Logic with no window, no open document and its own template chooser
+  on screen, because Logic will not show a project with no tracks. So the open answers
+  **Create** and says so: a new project arrives with ONE track of the kind the sheet
+  offered, named by `logic_list_tracks`, which beats the alternative of no project at all.
+  A close answers Cancel — the project is on its way out anyway. `logic_close_project` and
+  `logic_reset_to` know the grammar too, so it is no longer logged as "UNKNOWN dialog
+  grammar", and the poll that proves the open does not sit behind it: the sheet is measured
+  not to block Apple Events (the document-list read returned in 264–400 ms underneath it,
+  6 creates out of 6), so recognising it costs nothing. Alongside it, `logic_new_project` and `logic_open_project`
+  now clear the four per-project caches and report `caches_cleared`, as the close and the
+  reset already did — their scope stamp is version-plus-path, which cannot tell a project
+  from a different project created at a path you deleted, and that is exactly what an eval
+  loop does. And the open stopped paying for an answer nobody reads: with
+  `if_current_modified: 'save'` or `'dont_save'` the decision is already made, so the
+  document-list read in front of it is skipped — **~265 ms off every create, open,
+  `logic_reset_to` and `logic_duplicate_project {open_copy: true}` that carries a decision,
+  13% of a warm call** — and kept exactly where it still decides something, the default
+  `'fail'`, where it is also the early diagnosis for a list that will not answer.
 
 ### Known limitations (honest by design)
 

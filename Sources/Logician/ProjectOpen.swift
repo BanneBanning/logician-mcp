@@ -84,6 +84,74 @@ enum ProjectOpen {
         )
     }
 
+    /// Does the open have to READ Logic's document list before it may write
+    /// anything? Only when the caller has made no explicit decision about the
+    /// current project's unsaved changes.
+    ///
+    /// This mirrors `currentModifiedRefusal`'s third guard, and it exists
+    /// because the read it skips is not cheap: **260–412 ms, one Apple Event,
+    /// 13–16% of a warm 1.6–2.1 s call** (measured live 2026-09-02,
+    /// `Logician-archive/profiles/logic_new_project.md` §2 phase 2). With
+    /// `save` or `dont_save` the refusal returns nil no matter what the list
+    /// says, and nothing else in `openProject` reads it — so the call was
+    /// buying an answer it then discarded, on every
+    /// `logic_open_project {if_current_modified: …}`, every `logic_reset_to`
+    /// (which passes `dont_save`) and every
+    /// `logic_duplicate_project {open_copy: true}`.
+    ///
+    /// The read is KEPT for `fail` — the default, and the one decision where
+    /// the answer is load-bearing. It doubles there as an early diagnosis: a
+    /// document list that will not answer refuses in 300 ms with the dialogs
+    /// on screen named, instead of timing out 30 s later. That diagnosis is
+    /// kept exactly where the read is the only thing providing it; on the
+    /// explicit-decision path the poll's own read reaches the same verdict.
+    static func needsCurrentDocumentList(ifCurrentModified: String) -> Bool {
+        ifCurrentModified != "save" && ifCurrentModified != "dont_save"
+    }
+
+    // MARK: - The sheet an empty project raises
+
+    /// How long the open waits for the "Create New Track" sheet after a
+    /// TEMPLATE create, before concluding this Logic does not raise one.
+    ///
+    /// Spent only when the sheet has not appeared yet. Measured live
+    /// 2026-09-02: on this Logic the sheet is already standing when the
+    /// document-list read that proves the open returns (that read alone costs
+    /// 264–400 ms after the load), so the first look finds it and the budget
+    /// is never touched. It is small on purpose — a Logic version that stops
+    /// prompting must cost the create a look, not a wait.
+    static let createTrackSheetBudgetSeconds: TimeInterval = 1.5
+
+    /// How long to keep looking for the sheet to GO AWAY after it is answered,
+    /// before reporting it as still standing. A dismissal that has not happened
+    /// in a second is a dismissal that did not happen.
+    static let createTrackSheetDismissalSeconds: TimeInterval = 1.0
+
+    /// What the caller is told about the project they now have. It differs by
+    /// exactly one fact — whether Logic demanded a first track on the way in —
+    /// and that fact must not be buried in the dialog log, because it is the
+    /// difference between an empty project and a project with a track in it.
+    static func openNote(created: Bool, answeredCreateTrackSheet: Bool) -> String {
+        guard created else {
+            return answeredCreateTrackSheet
+                ? "Opened. It had no tracks, so Logic demanded one before it would show the"
+                    + " project: its Create New Track sheet was answered with Create and this"
+                    + " project now has ONE more track than the file on disk does"
+                    + " (`dialogs_answered` says so; logic_list_tracks names it)."
+                : "Opened."
+        }
+        return answeredCreateTrackSheet
+            ? "Created from the bundled empty template and opened; already saved on disk."
+                + " Logic will not show a project with no tracks, so its Create New Track sheet"
+                + " was answered with Create: the project has ONE track, of the kind that sheet"
+                + " offered (Logic remembers the last kind used — logic_list_tracks names it,"
+                + " logic_delete_track removes it). Cancelling instead would have closed the"
+                + " project Logic had just opened — measured, not guessed."
+            : "Created from the bundled empty template and opened; already saved on disk."
+                + " Logic raised no Create New Track sheet, so the project is EMPTY — add"
+                + " tracks with logic_create_track."
+    }
+
     // MARK: - When the expensive read may be spent
 
     /// Whether this poll tick may ask Logic's document list.

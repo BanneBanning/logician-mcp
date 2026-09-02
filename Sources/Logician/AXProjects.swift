@@ -288,6 +288,21 @@ extension LogicAccessibility {
     ///
     /// The same edit retires the `Thread.sleep(0.5)` that ran before the first
     /// look: the loop looks first and paces at the close's measured 200 ms.
+    ///
+    /// It also OWNS the sheet it raises. An empty project — every
+    /// `logic_new_project`, by construction, and any reset into an empty
+    /// template — makes Logic put up "Create New Track" the moment it opens,
+    /// and until 2026-09-02 this function returned `success: true,
+    /// verified: true` with that sheet standing over the project it had just
+    /// handed the caller (measured live, D-NP1): the next tool call met a modal
+    /// it could not name, and `logic_reset_to` would have failed its own
+    /// `no_dialog_left_on_screen` check on a reset that worked. The sheet is
+    /// now answered — with CREATE, because measured live 2026-09-02 Cancel does
+    /// not dismiss it but abandons the project Logic just opened (3/3: no
+    /// windows, no documents, Logic's template chooser) — and reported in
+    /// `dialogs_answered`, including the one track that answer costs. It is
+    /// answered on the Accessibility plane, after the open is proved: the sheet
+    /// does not block Apple Events (measured), so it never stalls the poll.
     func openProject(
         path: String, createFromTemplate: Bool, ifCurrentModified: String
     ) throws -> [String: Any] {
@@ -331,21 +346,30 @@ extension LogicAccessibility {
         // Single-project guard: a modified current project needs an explicit
         // decision — so a document list that will not answer must refuse
         // rather than sail past the guard on an empty list it never read.
-        guard let current = readOpenDocuments() else {
-            throw ProjectClose.unreadableDocumentList(
-                whileTryingTo: "the open-document list, before opening '\(target.lastPathComponent)'",
-                dialogsOnScreen: describeVisibleDialogs()
-            )
-        }
-        if let refusal = ProjectOpen.currentModifiedRefusal(
-            current: current,
-            targetPath: target.path,
-            targetName: target.lastPathComponent,
-            ifCurrentModified: ifCurrentModified,
-            creating: createFromTemplate,
-            normalize: normalizedPath
-        ) {
-            throw refusal
+        //
+        // Asked only when the answer can change the outcome. With
+        // `if_current_modified: "save"` or `"dont_save"` the decision is
+        // already made and `currentModifiedRefusal` returns nil whatever the
+        // list holds, so this 260–412 ms Apple Event was computing a value the
+        // next line discarded — 13% of a warm call, on four tools
+        // (`ProjectOpen.needsCurrentDocumentList`).
+        if ProjectOpen.needsCurrentDocumentList(ifCurrentModified: ifCurrentModified) {
+            guard let current = readOpenDocuments() else {
+                throw ProjectClose.unreadableDocumentList(
+                    whileTryingTo: "the open-document list, before opening '\(target.lastPathComponent)'",
+                    dialogsOnScreen: describeVisibleDialogs()
+                )
+            }
+            if let refusal = ProjectOpen.currentModifiedRefusal(
+                current: current,
+                targetPath: target.path,
+                targetName: target.lastPathComponent,
+                ifCurrentModified: ifCurrentModified,
+                creating: createFromTemplate,
+                normalize: normalizedPath
+            ) {
+                throw refusal
+            }
         }
         // Refusals are behind us; now the write.
         if let template {
@@ -412,6 +436,17 @@ extension LogicAccessibility {
                    let opened = ProjectOpen.openedDocument(
                        in: docs, targetPath: expectedPath, normalize: normalizedPath
                    ) {
+                    // The project is open and PROVEN. Before handing it over,
+                    // clear the sheet an empty project raises — a create always
+                    // raises it, so that one waits briefly for it to appear;
+                    // any other open pays a single 5–10 ms look and finds
+                    // nothing.
+                    if let sheet = answerCreateTrackSheet(
+                        waitingUpTo: createFromTemplate
+                            ? ProjectOpen.createTrackSheetBudgetSeconds : 0
+                    ) {
+                        dialogsAnswered.append(sheet)
+                    }
                     var payload: [String: Any] = [
                         "success": true, "verified": true,
                         "state": createFromTemplate ? "created" : "opened",
@@ -422,11 +457,27 @@ extension LogicAccessibility {
                         // required.
                         "verified_by": "document_list_path",
                         "frontmost_document": frontmost ?? NSNull(),
-                        "note": createFromTemplate
-                            ? "Created from the bundled empty template and opened; already saved on disk."
-                            : "Opened."
+                        "note": ProjectOpen.openNote(
+                            created: createFromTemplate,
+                            answeredCreateTrackSheet: dialogsAnswered.contains {
+                                $0["dialog"] as? String == "create_new_track"
+                            }
+                        )
                     ]
-                    if !dialogsAnswered.isEmpty { payload["dialogs_answered"] = dialogsAnswered }
+                    // Always present, empty list included: "no dialog stood in
+                    // the way" is a fact worth stating on a tool whose whole
+                    // defect was a sheet nobody mentioned.
+                    payload["dialogs_answered"] = dialogsAnswered
+                    if dialogsAnswered.contains(where: { $0["verified_gone"] as? Bool == false }) {
+                        appendWarning(
+                            "'\(opened.name)' is open and verified, but Logic's Create New Track"
+                                + " sheet is STILL on screen after it was answered. Anything that"
+                                + " presses keys or menu items will go into the sheet, not the"
+                                + " project — answer it in Logic, or read logic_list_windows,"
+                                + " before the next call.",
+                            to: &payload
+                        )
+                    }
                     return payload
                 }
             }
