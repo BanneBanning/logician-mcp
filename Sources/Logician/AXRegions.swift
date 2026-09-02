@@ -431,14 +431,21 @@ extension LogicAccessibility {
     /// see `regionSelectionPlan` for the measurement — and it is verified,
     /// not assumed: a selection that came back SHORT is a `warning` naming
     /// what was lost and pointing at `logic_select_regions`.
+    /// `alreadyWalkedRows` reuses an arrangement walk the caller has just
+    /// taken (`arrangementCensus().rows`) instead of taking a second one — worth
+    /// 55-60 ms of the 386 ms `logic_move_region` spent walking one tree six
+    /// times, and sound ONLY while nothing has been written since that walk: a
+    /// write republishes the layout items, which is the staleness the
+    /// read-before-write fix in this file was dodging. Default nil = walk fresh.
     func selectRegion(
         trackName: String, regionName: String?, startBar: Int?, exclusive: Bool,
-        trackNumber: Int? = nil, forKeyCommand: Bool = false
+        trackNumber: Int? = nil, forKeyCommand: Bool = false,
+        alreadyWalkedRows: [(number: Int, track: String, regions: [AXUIElement])]? = nil
     ) throws -> [String: Any] {
         guard regionName != nil || startBar != nil else {
             throw LogicianError.invalidArguments("pass region_name and/or start_bar")
         }
-        let rows = try regionRows()
+        let rows = try alreadyWalkedRows ?? regionRows()
         let row = try resolveRegionRow(rows, trackName: trackName, trackNumber: trackNumber)
         let annotated = row.regions.map { ($0, parseRegion($0)) }
         let hits = annotated.filter { _, info in
@@ -928,6 +935,14 @@ extension LogicAccessibility {
         let totalRegions: Int
         let selectedRegions: Int
         let targetRegions: [[String: Any]]
+        /// The walk itself, kept so the next reader does not have to repeat it.
+        /// `logic_move_region` hands these to `selectRegion`'s anchor pass,
+        /// which used to walk the same tree 53 ms later with nothing but two
+        /// reads in between (measured 2026-09-02: six walks of one tree,
+        /// 386 ms, 34% of the call). Only safe until something is WRITTEN — a
+        /// write republishes the layout items and a held element then answers
+        /// for a region that has moved on.
+        let rows: [(number: Int, track: String, regions: [AXUIElement])]
     }
 
     func arrangementCensus(trackName: String, trackNumber: Int? = nil) throws -> ArrangementCensus {
@@ -943,7 +958,8 @@ extension LogicAccessibility {
             rowNumbers: rows.map(\.number),
             totalRegions: total,
             selectedRegions: selected,
-            targetRegions: target.regions.map(parseRegion)
+            targetRegions: target.regions.map(parseRegion),
+            rows: rows
         )
     }
 
@@ -1069,13 +1085,19 @@ extension LogicAccessibility {
     /// 1.98 s → 2.78 s) and there is no path that may skip it as provably
     /// unnecessary — see `RegionEditGuard.plan` for why that fast path cannot
     /// exist.
+    /// `alreadyWalkedRows` is passed to the ANCHOR pass only, and only by a
+    /// caller that has walked the arrangement and written nothing since. The
+    /// reselect below always walks fresh: `Deselect All` has written to every
+    /// rendered row by then, and a held element after a write is exactly what
+    /// this family got burned by.
     func establishExclusiveRegionSelection(
         _ command: RegionEditGuard.Command, plan: RegionEditGuard.Plan,
-        trackName: String, regionName: String?, startBar: Int?, trackNumber: Int? = nil
+        trackName: String, regionName: String?, startBar: Int?, trackNumber: Int? = nil,
+        alreadyWalkedRows: [(number: Int, track: String, regions: [AXUIElement])]? = nil
     ) throws -> ExclusiveRegionSelection {
         let anchor = try selectRegion(
             trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true,
-            trackNumber: trackNumber, forKeyCommand: true
+            trackNumber: trackNumber, forKeyCommand: true, alreadyWalkedRows: alreadyWalkedRows
         )
         guard case .projectWideClear = plan else {
             // ONE count, not two. The value the guard TESTED is the value the
@@ -1815,6 +1837,16 @@ extension LogicAccessibility {
     /// region's selection — both the same fictions `logic_delete_region` gave
     /// up on 2026-09-01. Exclusivity now comes from Logic's own project-wide
     /// `Deselect All`, proven to have landed; see `RegionEditGuard`.
+    /// WHAT IT VERIFIES, since 2026-09-02: the region's bar AND its beat
+    /// against the arrangement map, every time — the old check was gated on
+    /// `byBeats == 0` and there was no beat check anywhere, so a beat nudge
+    /// that did nothing came back `verified: true` and one beat switched the
+    /// bar comparison off as well. Plus the target row's other regions, span
+    /// for span, because Logic TRIMS whatever a nudged region is laid over and
+    /// a trim leaves the region total untouched. Both checks read evidence this
+    /// call already holds; see `RegionEditGuard.nudgeVerdict` and
+    /// `neighbourVerdict`.
+    ///
     /// - Parameter trackNumber: addresses the ROW by number instead of
     ///   trusting the name to be unique (see `resolveRegionRow`).
     func moveRegion(
@@ -1830,51 +1862,152 @@ extension LogicAccessibility {
         let exclusive = try establishExclusiveRegionSelection(
             .nudge, plan: plan,
             trackName: trackName, regionName: regionName, startBar: startBar,
-            trackNumber: trackNumber
+            trackNumber: trackNumber,
+            // The census above walked the arrangement 53 ms ago and NOTHING has
+            // been written since (`regionEditPlan` is two reads), so the anchor
+            // pass gets those rows instead of walking the same tree again:
+            // -55 to -60 ms of the 386 ms this call used to spend on six walks
+            // of one tree. The reselect pass inside deliberately walks fresh —
+            // it comes after `Deselect All` has written to every rendered row,
+            // which is exactly the staleness this family got burned by.
+            alreadyWalkedRows: before.rows
         )
         let selection = exclusive.region
+        let movedName = selection["name"] as? String
         let oldStart = selection["start_bar"] as? Int ?? 0
-        for _ in 0..<abs(byBars) {
-            try fireKeyCommand(byBars > 0
-                ? KeyCommandRegistry.Name.nudgeRightByBar
-                : KeyCommandRegistry.Name.nudgeLeftByBar)
-            Thread.sleep(forTimeInterval: 0.15)
+        // Beat 1 when the map published none: `parseRegion` omits `start_beat`
+        // on the bar line, and reading absent as "unknown" is what left the
+        // beat unverified in the first place.
+        let oldBeat = selection["start_beat"] as? Int ?? 1
+        func targetRegion(in census: ArrangementCensus) -> [String: Any]? {
+            census.targetRegions.first {
+                ($0["name"] as? String) == movedName && ($0["selected"] as? Bool) == true
+            }
         }
-        for _ in 0..<abs(byBeats) {
-            try fireKeyCommand(byBeats > 0
-                ? KeyCommandRegistry.Name.nudgeRightByBeat
-                : KeyCommandRegistry.Name.nudgeLeftByBeat)
-            Thread.sleep(forTimeInterval: 0.15)
+        func position(of region: [String: Any]) -> (bar: Int, beat: Int)? {
+            guard let bar = region["start_bar"] as? Int else { return nil }
+            return (bar, region["start_beat"] as? Int ?? 1)
         }
-        Thread.sleep(forTimeInterval: 0.4)
-        // Whole-bar moves verify exactly; beat moves verify that the region
-        // left its old slot (Logic's help text rounds to bars+beats). One
-        // census walk answers both that and the project-wide count check below.
-        let after = try arrangementCensus(trackName: trackName, trackNumber: trackNumber)
-        let target = after.targetRegions.first {
-            ($0["name"] as? String) == (selection["name"] as? String)
-                && ($0["selected"] as? Bool) == true
+        let commands =
+            Array(
+                repeating: byBars > 0
+                    ? KeyCommandRegistry.Name.nudgeRightByBar
+                    : KeyCommandRegistry.Name.nudgeLeftByBar,
+                count: abs(byBars)
+            )
+            + Array(
+                repeating: byBeats > 0
+                    ? KeyCommandRegistry.Name.nudgeRightByBeat
+                    : KeyCommandRegistry.Name.nudgeLeftByBeat,
+                count: abs(byBeats)
+            )
+        // PACE BY THE EFFECT, not by the clock. This loop used to sleep 0.15 s
+        // blind after every step: profiled 2026-09-02, that was 72% of the
+        // distance term (209 ms a step, of which 50 ms is the key command) and
+        // 2.4 s of a 4.3 s sixteen-bar move. A census costs 60-105 ms and it is
+        // VERIFICATION rather than waiting — every step is watched landing, and
+        // the next one fires the moment it has. Measured the same day, the two
+        // loops back to back on one region: 201 ms -> 154 ms a step, with the
+        // effect readable on the FIRST look in 15 of 15 steps (1, 3, 4 and 7
+        // step moves). The 0.15 s stays as the BUDGET for a step whose effect
+        // is not readable — a nudge Logic clamps at the project start moves
+        // nothing at all — so the worst case is about what every step used to
+        // cost.
+        var latest = before
+        var lastSeen = (bar: oldStart, beat: oldBeat)
+        var stepsConfirmed = 0
+        for command in commands {
+            try fireKeyCommand(command)
+            let stepDeadline = Date().addingTimeInterval(0.15)
+            step: while true {
+                latest = try arrangementCensus(trackName: trackName, trackNumber: trackNumber)
+                if let here = targetRegion(in: latest).flatMap(position), here != lastSeen {
+                    lastSeen = here
+                    stepsConfirmed += 1
+                    break step
+                }
+                if Date() >= stepDeadline { break step }
+                Thread.sleep(forTimeInterval: 0.025)
+            }
         }
-        guard let moved = target else {
+        // No blind sleep here either. The 0.4 s that used to sit between the
+        // last Nudge and the census below was 411 ms — 36% of a short move —
+        // and it was pure waiting on every success: measured 2026-09-02 with a
+        // probe taken immediately after the last Nudge, the region was already
+        // at its new bar and still selected on the FIRST census in 8 of 8
+        // runs. Same fix as `copyRegion`'s paste wait and `deleteRegion`'s
+        // delete wait. The last step's own census IS the look, so the poll
+        // below only runs when the move has not been proven yet.
+        //
+        // BOTH TERMS ARE CHECKED, always. This used to gate its only positional
+        // check on `byBeats == 0`, so a beat nudge was verified by nothing but
+        // "the region exists and is still selected" and a mixed bar+beat nudge
+        // switched the exact bar comparison off as well — see
+        // `RegionEditGuard.nudgeVerdict`, which also explains why the project's
+        // meter is not read to do it.
+        var verdict = RegionEditGuard.NudgeVerdict.unmoved
+        var found: [String: Any]?
+        let deadline = Date().addingTimeInterval(2.0)
+        poll: while true {
+            found = targetRegion(in: latest)
+            if let here = found, let at = position(of: here) {
+                verdict = RegionEditGuard.nudgeVerdict(
+                    byBars: byBars, byBeats: byBeats,
+                    fromBar: oldStart, fromBeat: oldBeat, toBar: at.bar, toBeat: at.beat
+                )
+                switch verdict {
+                case .exact, .carried: break poll
+                case .unmoved, .wrongPosition: break
+                }
+            }
+            if Date() >= deadline { break poll }
+            Thread.sleep(forTimeInterval: 0.05)
+            latest = try arrangementCensus(trackName: trackName, trackNumber: trackNumber)
+        }
+        let after = latest
+        guard let moved = found else {
             throw LogicianError.verificationFailed(
                 requested: "the moved region still selected at its new position",
                 actual: "could not find it in the arrangement map",
                 restored: false
             )
         }
-        if byBeats == 0, let newBar = moved["start_bar"] as? Int, newBar != oldStart + byBars {
+        guard let landed = position(of: moved) else {
             throw LogicianError.verificationFailed(
-                requested: "region at bar \(oldStart + byBars)",
-                actual: "region at bar \(newBar)"
-                    + (newBar == oldStart
-                        // The region did not move AT ALL, which is what a Nudge
-                        // fired without Tracks-area keyboard focus looks like
-                        // (measured 2026-09-01: by_bars: 1 reported "requested
-                        // bar 42, found bar 41" three times in a row while the
-                        // focus sat on the control bar).
-                        ? " - it did not move at all. "
-                            + TracksAreaFocus.summary(inSelectionResult: selection)
-                        : ""),
+                requested: "where the nudge left '\(movedName ?? "?")'",
+                actual: "the region is there and still selected, but Logic published no start bar "
+                    + "for it, so where it ended up cannot be proven. Read logic_list_regions",
+                restored: false
+            )
+        }
+        let requested = "'\(movedName ?? "?")' "
+            + RegionEditGuard.nudgeRequestSentence(byBars: byBars, byBeats: byBeats)
+            + " from bar \(oldStart) beat \(oldBeat)"
+        switch verdict {
+        case .exact, .carried:
+            break
+        case .unmoved:
+            throw LogicianError.verificationFailed(
+                requested: requested,
+                actual: RegionEditGuard.nudgeSentence(
+                    verdict: verdict, byBars: byBars, byBeats: byBeats,
+                    fromBar: oldStart, fromBeat: oldBeat, toBar: landed.bar, toBeat: landed.beat
+                )
+                    // What a Nudge fired without Tracks-area keyboard focus
+                    // looks like every time (measured 2026-09-01: by_bars: 1
+                    // reported "requested bar 42, found bar 41" three times in
+                    // a row while the focus sat on the control bar).
+                    + " " + TracksAreaFocus.summary(inSelectionResult: selection)
+                    + " " + TracksAreaFocus.dialogSentence(modalWindowTitles()),
+                restored: false
+            )
+        case .wrongPosition:
+            throw LogicianError.verificationFailed(
+                requested: requested,
+                actual: RegionEditGuard.nudgeSentence(
+                    verdict: verdict, byBars: byBars, byBeats: byBeats,
+                    fromBar: oldStart, fromBeat: oldBeat, toBar: landed.bar, toBeat: landed.beat
+                ),
                 restored: false
             )
         }
@@ -1898,21 +2031,91 @@ extension LogicAccessibility {
                 restored: false
             )
         }
+        // And what the count cannot see AT ALL is the likelier damage: Logic
+        // TRIMS whatever a nudged region is laid over, so the neighbour that
+        // was there loses the overlapped part — its start or end moves and the
+        // region total does not budge. Both snapshots of the row are already in
+        // hand, so comparing the SPANS either side of the nudge costs no AX
+        // work whatever, and it is the change being verified rather than the
+        // container it happened in.
+        var trimWarning: String?
+        switch RegionEditGuard.neighbourVerdict(
+            before: before.targetRegions, after: after.targetRegions,
+            movedBefore: selection, movedAfter: moved
+        ) {
+        case .untouched:
+            break
+        case .changed(let lost, let gained):
+            throw LogicianError.verificationFailed(
+                requested: "'\(movedName ?? "?")' moved and every other region on the row left "
+                    + "exactly where it was",
+                actual: RegionEditGuard.neighbourSentence(lost: lost, gained: gained),
+                restored: false
+            )
+        case .unreadable(let unreadableBefore, let unreadableAfter):
+            trimWarning = "Whether the nudge trimmed a neighbour could not be checked: "
+                + "\(unreadableBefore) region(s) on this row published no position before the "
+                + "nudge and \(unreadableAfter) afterwards, so the two span lists are not "
+                + "comparable. The region total is unchanged, which rules out a neighbour "
+                + "swallowed whole but not one trimmed. Read logic_list_regions."
+        }
+        // The moved region's OWN length, from the same free evidence: whatever
+        // the nudge did to its start it must have done to its end. Only when
+        // Logic actually published an end either side — `end_bar` defaulted to
+        // the start bar would make every beat nudge look like a trim.
+        if selection["end_bar"] != nil, moved["end_bar"] != nil,
+           let spanBefore = RegionEditGuard.Span(selection),
+           let spanAfter = RegionEditGuard.Span(moved),
+           !RegionEditGuard.nudgeLengthKept(before: spanBefore, after: spanAfter) {
+            throw LogicianError.verificationFailed(
+                requested: "'\(movedName ?? "?")' moved at the length it had",
+                actual: "it went from \(spanBefore.sentence) to \(spanAfter.sentence): its end did "
+                    + "not travel with its start, so the region itself was trimmed by what it "
+                    + "landed on. Undo puts it back one nudge at a time; read logic_list_regions "
+                    + "before anything else",
+                restored: false
+            )
+        }
+        var note = "Verified against the arrangement map in BOTH terms: "
+        note += "'\(movedName ?? "?")' is at bar \(landed.bar) beat \(landed.beat), which is "
+        note += RegionEditGuard.nudgeRequestSentence(byBars: byBars, byBeats: byBeats)
+        note += " from bar \(oldStart) beat \(oldBeat)"
+        note += verdict == .exact ? ". " : ", carrying across the bar line. "
+        if trimWarning == nil {
+            note += "Every other region on the row is where it was, span for span - a nudged "
+            note += "region TRIMS what it overlays, and that is checked here, not just the region "
+            note += "total (unchanged at \(after.totalRegions) across every rendered row). "
+        }
+        note += Self.exclusivityNote(scope: exclusive.scope, command: .nudge)
+        note += "Relative: a repeat moves again. Undo puts it back."
         var result: [String: Any] = [
             "success": true, "verified": true, "state": "moved",
             "track": trackName, "track_name": trackName,
             "region": selection["name"] ?? "?",
             "from_bar": oldStart,
-            "to_bar": moved["start_bar"] ?? NSNull(),
-            "to_beat": moved["start_beat"] ?? 1,
+            // Published beside `from_bar` because a caller could not check a
+            // beat move without it — the whole reason a beat nudge that did
+            // nothing used to read as a success.
+            "from_beat": oldBeat,
+            "to_bar": landed.bar,
+            "to_beat": landed.beat,
+            "nudges_fired": commands.count,
+            // How many steps were watched landing rather than waited out. Each
+            // one is a positional read taken between key commands, so a number
+            // short of `nudges_fired` on a call that verified means the map was
+            // slow, not that a nudge went missing.
+            "nudges_confirmed": stepsConfirmed,
             "project_regions_before": before.totalRegions,
             "project_regions_after": after.totalRegions,
-            "note": "The region total across every rendered row is unchanged at "
-                + "\(after.totalRegions), so the nudge did not swallow a neighbour it landed on. "
-                + Self.exclusivityNote(scope: exclusive.scope, command: .nudge)
-                + "Relative: a repeat moves again. Undo puts it back."
+            "note": note
         ]
+        if case .carried(let beatsPerBar) = verdict {
+            // Named as INFERRED, because it is: the meter that makes this move
+            // add up, not one read from Logic. See `nudgeVerdict`.
+            result["bar_line_carry"] = ["beats_per_bar_inferred": beatsPerBar]
+        }
         exclusive.decorate(&result)
+        if let trimWarning { appendWarning(trimWarning, to: &result) }
         annotateCoverage(coverage, in: &result)
         if let keyFocus = exclusive.anchor["key_focus"] { result["key_focus"] = keyFocus }
         return result

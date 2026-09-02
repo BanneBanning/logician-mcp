@@ -1059,6 +1059,35 @@ with every render coming back as audio the agent can listen to.
   `logic_list_signatures` refuses outright — a meter map that dropped a signature change would
   place every later bar confidently wrong.
 
+- **A nudge by beats is verified like a nudge by bars — and every nudge is a little
+  faster.** `logic_move_region` checked where the region landed only when `by_beats` was
+  0, and never checked the beat at all: a `{by_beats: -1}` nudge that moved nothing came
+  back `success: true, verified: true, state: "moved"` — reproduced live 2026-09-02 on a
+  region already sitting at bar 1, which Logic cannot nudge any further left — and one
+  beat in a `{by_bars: 16, by_beats: 1}` request switched the exact bar comparison off
+  with it. Both terms are now checked on every call against Logic's own arrangement map,
+  the result publishes `from_beat` beside `from_bar` so the caller can check the
+  displacement too, and a nudge that did not move names the keyboard focus and any open
+  dialog instead of reporting success. The meter is not read to do it: the request and the
+  two positions already say which meter would explain a beat carrying across a bar line,
+  and a carry that no meter explains is a failure. The overlay backstop grew the eye it
+  was missing as well. It compared the region TOTAL, which can only ever see a neighbour
+  swallowed WHOLE, while Logic TRIMS what a nudged region is laid over — a trim moves a
+  neighbour's start or end and leaves the count exactly where it was — so the target row's
+  regions are now compared span for span either side of the nudge, and a trimmed neighbour
+  (or a moved region whose own end did not travel with its start) is a named failure. That
+  costs nothing: both span lists were already in hand. And the two blind sleeps the region
+  family's earlier fixes missed are gone the same way `logic_copy_region`'s paste wait and
+  `logic_delete_region`'s delete wait went: the 0.4 s before the verification census is
+  now the census itself looking first (measured 8 of 8, the region was already at its new
+  bar before the sleep began), and the 0.15 s after every nudge is now a positional read
+  that fires the next nudge the moment the last one lands — 15 of 15 steps confirmed live.
+  Measured back to back on one region, minutes apart, in the same Logic: a 1-bar nudge
+  3.20 s → 2.61 s, a 4-bar move 3.80 s → 3.07 s, 201 ms → 154 ms per step (that hour's
+  Logic was slow; the same 1-bar call profiled at 1.14 s earlier the same day, of which
+  the tail sleep was 411 ms). The anchor selection also stops re-walking the arrangement
+  the call has just walked, which is another ~60 ms.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.
