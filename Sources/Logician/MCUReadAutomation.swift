@@ -83,12 +83,7 @@ extension MCUController {
         guard endBar >= startBar else {
             throw LogicianError.invalidArguments("end_bar must be >= start_bar")
         }
-        guard freshStatus() != nil else {
-            throw LogicianError.trackNotExposed(
-                requested: "the Mackie Control bridge for the automation read",
-                exposed: "the bridge is not running or Logic has never talked to it (see logic_health)"
-            )
-        }
+        try requireSurface("the Mackie Control bridge for the automation read")
         let transport = try logic.getTransport()
         let beatsPerBar = (transport["time_signature"] as? String)?
             .split(separator: "/").first.flatMap { Int($0) } ?? 4

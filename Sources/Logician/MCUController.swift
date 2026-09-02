@@ -111,7 +111,8 @@ enum MCUController {
         /// The strip whose view is showing, when the view belongs to one.
         let strip: String?
         /// What is on the LCD: "plugin_list", "plugin_edit", "send",
-        /// "instrument_bank" or "instrument_edit".
+        /// "instrument_bank", "instrument_edit" or "channel_strip" (the mixer
+        /// snapshot's Volume view, which belongs to no single strip).
         let view: String
         /// The MCU physical insert slot, for a plugin-edit view.
         let slot: Int?
@@ -183,18 +184,160 @@ enum MCUController {
         try? LogicAccessibility().projectDocumentPath()
     }
 
+    /// The raw control-surface snapshot: in-memory status straight from the
+    /// bridge socket (no file throttle), falling back to the state file when
+    /// the socket round trip fails. Undated and unjudged — `freshStatus` and
+    /// `surfaceUnavailability` are where the judging happens.
+    static func statusSnapshot() -> [String: Any] {
+        (try? MCUBridge.sendForDictionary(.status)) ?? MCUBridge.status()
+    }
+
+    /// How old the mirror may be before it stops counting as a live read.
+    ///
+    /// The mirror is Logic's own echo and it does not rot on its own — but a
+    /// mirror left behind by a Logic that has since quit, or by a surface
+    /// connection that has since dropped, looks exactly like one from a Logic
+    /// that is merely idle. So an old mirror is not served silently; it is
+    /// PROBED (`requireSurface`).
+    static let staleMirrorSeconds: Double = 600
+
     static func freshStatus() -> [String: Any]? {
-        // In-memory status straight from the bridge socket (no file throttle);
-        // fall back to the state file if the socket round trip fails.
-        let status = (try? MCUBridge.sendForDictionary(.status)) ?? MCUBridge.status()
+        let status = statusSnapshot()
         guard status["ok"] as? Bool == true || status["bridge_running"] as? Bool == true else { return nil }
         // A silent Logic sends nothing, so do not require recent traffic —
         // only that Logic has ever talked this session. Every write verifies
         // itself through LED/LCD feedback, which is the real liveness check.
         guard (status["received_events"] as? Int ?? 0) > 0 else { return nil }
+        // …and then, historically, the very next line required recent traffic
+        // anyway, which is how ten idle minutes took the whole control-surface
+        // plane down with "the bridge is not running" while the bridge was
+        // running and Logic was fine (D1/D2 in profiles/logic_mixer_snapshot.md,
+        // measured 2026-09-02 at last_receive_age 3 413 s). The guard stays —
+        // a stale mirror must not be mistaken for a live read — but it is no
+        // longer the last word: `requireSurface` wakes an idle surface and
+        // tells the two faults apart before any tool refuses.
         let age = Date().timeIntervalSince1970 - (status["last_receive"] as? Double ?? 0)
-        guard age < 600 else { return nil }
+        guard age < staleMirrorSeconds else { return nil }
         return status
+    }
+
+    // MARK: The surface guard — four faults that used to wear one message
+
+    /// Why the surface could not be read. The old refusal named two of these
+    /// and asserted both of them at once ("the bridge is not running or Logic
+    /// has never talked to it"), which was wrong on both counts in the one
+    /// case that actually happens.
+    enum SurfaceUnavailability: Equatable {
+        /// No daemon answered — the only case the old message described.
+        case bridgeNotAnswering
+        /// The daemon is fine; Logic is not there to talk to it.
+        case logicNotRunning
+        /// Daemon and Logic are both up, but Logic has never sent this daemon
+        /// anything: the control surface is not set up in Logic's preferences.
+        case logicNeverTalked
+        /// Everything is up and Logic simply has not been touched. The mirror
+        /// is old, nothing is broken, and one probe press ends it.
+        case logicSilent(seconds: Double)
+    }
+
+    /// Decides which of the four it is, from the snapshot plus a clock. Pure,
+    /// so the wording below is tested against an old `last_receive` and a
+    /// non-zero `received_events` without a daemon or an idle hour.
+    static func surfaceUnavailability(
+        status: [String: Any]?, logicRunning: Bool, now: Double
+    ) -> SurfaceUnavailability {
+        guard let status,
+              status["ok"] as? Bool == true || status["bridge_running"] as? Bool == true
+        else { return .bridgeNotAnswering }
+        guard logicRunning else { return .logicNotRunning }
+        guard (status["received_events"] as? Int ?? 0) > 0 else { return .logicNeverTalked }
+        let lastReceive = status["last_receive"] as? Double ?? 0
+        return .logicSilent(seconds: max(0, now - lastReceive))
+    }
+
+    /// What to tell the caller. Each string names what was actually found and
+    /// the repair for it, and none of them claims the bridge is down while it
+    /// is answering.
+    static func surfaceUnavailabilityDetail(_ why: SurfaceUnavailability) -> String {
+        switch why {
+        case .bridgeNotAnswering:
+            return "no Mackie Control bridge daemon answered, so the surface cannot be read or"
+                + " written. Run logic_health: it starts the bridge and audits the rest of the setup"
+        case .logicNotRunning:
+            return "the bridge daemon is answering but Logic Pro is not running, so there is"
+                + " nothing on the other end of the control surface. Open the project and try again"
+        case .logicNeverTalked:
+            return "the bridge daemon is answering and Logic is running, but Logic has never sent"
+                + " this daemon a single control-surface message — the Mackie Control is not set up"
+                + " in Logic (Logic Pro ▸ Settings ▸ Control Surfaces ▸ Setup). Run logic_health,"
+                + " which reports the surface setup"
+        case .logicSilent(let seconds):
+            let minutes = Int((seconds / 60).rounded())
+            return "the bridge daemon is answering (so the bridge IS running) but Logic has not"
+                + " answered the control surface for about \(minutes) minute(s), and a probe press"
+                + " did not wake it either. Logic is running, so the surface connection itself is"
+                + " the suspect: check Logic Pro ▸ Settings ▸ Control Surfaces ▸ Setup for the"
+                + " Mackie Control, then run logic_health"
+        }
+    }
+
+    /// Whether Logic Pro is running at all — one process-list look, no
+    /// Accessibility permission and no window walk.
+    static func logicIsRunning() -> Bool {
+        !NSRunningApplication
+            .runningApplications(withBundleIdentifier: LogicAccessibility().bundleIdentifier)
+            .isEmpty
+    }
+
+    /// How long to wait for Logic's answer to the wake probe. The observed
+    /// wake produced 19 events; a bank step is answered in ~4 ms and this is
+    /// generous by three orders of magnitude, because it is paid once per idle
+    /// session.
+    static let surfaceWakeTimeoutMs = 600
+
+    /// Wakes a surface whose mirror has only gone QUIET, with one press.
+    ///
+    /// `bank_left` is the probe because it is the one press whose worst case is
+    /// a bank the next thing to happen walks back anyway: every tool that reads
+    /// banks starts at the left edge (`resetToLeftmostBank`) and every tool
+    /// that addresses a channel resolves through it. It is also literally the
+    /// press that fixed this by hand (2026-09-02, events 890 → 909).
+    ///
+    /// Returns the now-live status, or nil when Logic did not answer — which
+    /// is the evidence that the fault is not idleness.
+    static func wakeSurface() -> [String: Any]? {
+        let events = statusSnapshot()["received_events"] as? Int ?? -1
+        guard (try? press("bank_left")) != nil else { return nil }
+        _ = awaitEvents(since: events, timeoutMs: surfaceWakeTimeoutMs)
+        return freshStatus()
+    }
+
+    /// The guard every control-surface tool takes before its first press: the
+    /// live mirror, or a refusal that says which fault it found.
+    ///
+    /// An idle session no longer needs a manual wake — `logicSilent` is the
+    /// one case that is not a fault at all, so it is answered with a probe
+    /// press instead of a refusal.
+    ///
+    /// - Parameter consequence: what did NOT happen, for a tool that would
+    ///   have written something ("Nothing was pressed"). Kept as the callers'
+    ///   own sentence because only they know what they were about to do.
+    @discardableResult
+    static func requireSurface(
+        _ requested: String, consequence: String? = nil
+    ) throws -> [String: Any] {
+        if let status = freshStatus() { return status }
+        let why = surfaceUnavailability(
+            status: statusSnapshot(),
+            logicRunning: logicIsRunning(),
+            now: Date().timeIntervalSince1970
+        )
+        if case .logicSilent = why, let woken = wakeSurface() { return woken }
+        throw LogicianError.trackNotExposed(
+            requested: requested,
+            exposed: surfaceUnavailabilityDetail(why)
+                + (consequence.map { ". " + $0 } ?? "")
+        )
     }
 
     /// Event-driven wait: blocks in the bridge until new MIDI arrived from

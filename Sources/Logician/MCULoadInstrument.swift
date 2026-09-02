@@ -408,13 +408,11 @@ extension MCUController {
         format: String?,
         maxSteps: Int
     ) throws -> [String: Any] {
-        guard freshStatus() != nil else {
-            throw LogicianError.trackNotExposed(
-                requested: "the control-surface instrument browser",
-                exposed: "the Mackie Control bridge is not running or Logic has never talked to it"
-                    + " (see logic_health). There is no Accessibility route to the instrument slot."
-            )
-        }
+        try requireSurface(
+            "the control-surface instrument browser",
+            consequence: "There is no Accessibility route to the instrument slot, so nothing was"
+                + " read or written"
+        )
         guard let channel = try findChannel(trackName: trackName) else {
             throw headerlessStripError(
                 name: trackName,

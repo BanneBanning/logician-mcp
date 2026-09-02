@@ -23,13 +23,9 @@ extension MCUController {
     /// bar's own checkbox; verified by reading that checkbox back, with the
     /// surface LED as a second source.
     static func setMetronome(logic: LogicAccessibility, enabled: Bool) throws -> [String: Any] {
-        guard freshStatus() != nil else {
-            throw LogicianError.trackNotExposed(
-                requested: "the metronome button on the control surface",
-                exposed: "the Mackie Control bridge is not running or Logic has never talked to it"
-                    + " (see logic_health). Nothing was pressed."
-            )
-        }
+        try requireSurface(
+            "the metronome button on the control surface", consequence: "Nothing was pressed"
+        )
         func axState() -> Bool? { (try? logic.getTransport())?["metronome"] as? Bool }
         func ledState() -> Bool? { freshStatus().map { ledLit(clickLED, in: $0) } }
 
