@@ -664,10 +664,15 @@ extension LogicAccessibility {
             Thread.sleep(forTimeInterval: 0.4)
             rewound = true
         }
-        _ = try setPlayhead(barNumber: bar, beat: beat)
+        let moved = try setPlayhead(barNumber: bar, beat: beat)
         let after = residue()
         let group = playheadGroup(in: try controlBarGroup())
         var result: [String: Any] = [
+            // Where the playhead was — after any rewind, which is the honest
+            // "before" for the stepping, and the one a caller reporting a move
+            // wants to show. Carried through from `setPlayhead` rather than
+            // read again.
+            "before": moved["before"] ?? NSNull(),
             "bar": group.flatMap { sliderValue($0, LogicUIStrings.Element.playheadBarSlider) } ?? bar,
             "beat": group.flatMap { sliderValue($0, LogicUIStrings.Element.playheadBeatSlider) } ?? beat,
             "rewound_first": rewound,

@@ -153,3 +153,33 @@ enum ListEditorWalk {
         role == "AXTable" ? .skipChildren : .descend
     }
 }
+
+/// What the settle after the pane-OPEN press is allowed to wait for.
+///
+/// Split out and made pure because the old answer was wrong in a way no live
+/// session could show: the settle waited for the TARGET tab's table, Logic
+/// opens the pane on the tab it was last on, and a readiness check that can
+/// never be true simply looks like a slow pane. Measured 2026-09-02
+/// (`logic_markers` profile §5): `settle DEADLINE` 15/15, 610–1 094 ms, with
+/// `previousTab == "Event"` 15/15.
+enum ListEditorSettleGoal: Equatable {
+    /// The tab strip is not published yet. Nothing else can be asked, and
+    /// nothing else is worth asking — the strip is what the caller needs.
+    case tabStrip
+    /// The strip is there and the target tab is NOT selected, so a press
+    /// follows and ITS settle waits for the table. This one is done.
+    case ready
+    /// The strip is there and the target tab is ALREADY selected, so no press
+    /// follows: this settle is the only one, and it has to wait for the table.
+    case targetTabDrawn
+}
+
+enum ListEditorSettle {
+    /// A tab the strip does not carry keeps the settle waiting rather than
+    /// letting it return early: the caller's refusal (`tabNotFound`) is worth
+    /// more after the deadline than before the pane finished painting.
+    static func goal(target: String, tabs: [(name: String, selected: Bool)]) -> ListEditorSettleGoal {
+        guard let tab = tabs.first(where: { $0.name == target }) else { return .tabStrip }
+        return tab.selected ? .targetTabDrawn : .ready
+    }
+}

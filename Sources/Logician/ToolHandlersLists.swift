@@ -238,15 +238,64 @@ extension MCPServer {
                     name ?? "bar \(bar ?? 0)", numbers: matches.compactMap { $0["bar"] as? Int }
                 )
             }
-            var moved = try logic.setPlayhead(barNumber: target, beat: nil)
-            moved["marker"] = marker
-            moved["state"] = "playhead_at_marker"
-            // The playhead lands WITHIN the bar, not exactly on its line
-            // (FINDINGS 2026-08-28) — said here because a caller that then
-            // creates something at the playhead depends on it.
-            moved["note"] = "The playhead was parked at bar \(target). Logic's position stepping"
-                + " lands inside the bar, not exactly on its line, so anything placed at the"
-                + " playhead afterwards can sit up to a beat late."
+            // The marker's BEAT, not only its bar. `setPlayhead(beat: nil)`
+            // does not mean "beat 1" — it never touches the beat slider, so
+            // the playhead kept whatever beat it was already on: measured
+            // 2026-09-02, `goto` on a marker at `33 4 1 1` parked at bar 33
+            // BEAT 1 and reported both numbers without noticing they
+            // disagreed. `parkPlayheadOnGrid` is the primitive split, copy and
+            // import park with, and its `on_grid` is read off the MCU's own
+            // position display rather than claimed.
+            let park = MarkerPark.target(bar: target, beat: marker["beat"])
+            let parked = try logic.parkPlayheadOnGrid(bar: park.bar, beat: park.beat)
+            guard (parked["bar"] as? Int) == park.bar,
+                  (parked["beat"] as? Int) == park.beat else {
+                throw LogicianError.verificationFailed(
+                    requested: "the playhead at the marker, bar \(park.bar) beat \(park.beat)",
+                    actual: "bar \(parked["bar"] ?? "?") beat \(parked["beat"] ?? "?")",
+                    restored: false
+                )
+            }
+            var moved: [String: Any] = [
+                "success": true,
+                "verified": true,
+                "state": "playhead_at_marker",
+                "before": parked["before"] ?? NSNull(),
+                "after": ["bar": park.bar, "beat": park.beat],
+                "marker": marker,
+                "playhead": parked,
+                "write_route": "ax_playhead_park_on_grid",
+                "note": "The playhead was parked at bar \(park.bar) beat \(park.beat) — the"
+                    + " marker's own position, beat included."
+                    + (parked["rewound_first"] as? Bool == true
+                        ? " It was rewound to the project start first, which is what makes the"
+                            + " stepping land exactly on the beat rather than inside it."
+                        : parked["transport_rolling"] as? Bool == true
+                            ? " It was NOT rewound first, because the transport is rolling — so"
+                                + " any sub-beat offset the playhead already carried is still"
+                                + " there."
+                            : " It already read as being exactly on the beat before the move.")
+            ]
+            if !park.exact {
+                appendWarning(
+                    "This marker sits BETWEEN beats (Logic prints its position as"
+                        + " '\((marker["Position"] as? String) ?? "?")'), and the control bar"
+                        + " publishes a bar slider and a beat slider and nothing below them — so"
+                        + " the playhead is on beat \(park.beat), the beat line at or before the"
+                        + " marker, not on the marker itself.",
+                    to: &moved
+                )
+            }
+            if parked["on_grid"] as? Bool == false {
+                appendWarning(
+                    "The position display still reads division"
+                        + " \(parked["timecode_division"] ?? "?"), tick"
+                        + " \(parked["timecode_ticks"] ?? "?"), so the playhead is inside the beat"
+                        + " rather than on it — anything placed at the playhead now would inherit"
+                        + " that offset.",
+                    to: &moved
+                )
+            }
             return moved
         case "delete":
             return try logic.deleteMarker(name: name, bar: bar)
@@ -273,34 +322,61 @@ extension MCPServer {
     /// and it is second because a MIDI-note binding can be silently orphaned
     /// when Logic's ports are recreated while a button cannot.
     private func createMarker(bar: Int?, name: String?) throws -> [String: Any] {
-        let readBefore = logic.readMarkerList()
-        let before = readBefore.markers ?? []
-        // The COUNT is the list's own on both sides of the create, never the
-        // readable rows': a marker created into an undrawn row would otherwise
-        // read as "no new marker appeared" and be reported as a failure that
-        // had in fact worked — the exact mistake `EventCensus` was written to
-        // stop on the Event List's writes (2026-09-01).
-        let countBefore = readBefore.census?.count ?? before.count
-        var moved: [String: Any]?
-        if let bar { moved = try logic.setPlayhead(barNumber: bar, beat: nil) }
+        // REFUSED BEFORE ANYTHING IS OPENED. `name` used to be accepted, and
+        // paid for: the create ran, then a second write tried the row's name
+        // cell and a THIRD pane cycle (1 902 ms, measured 2026-09-02) came back
+        // "not writable" — because on Logic Pro 12.3.1 no cell in a Marker List
+        // row publishes a settable value, every row, every cell. An argument
+        // that cannot work is refused with the route that does, not charged for.
+        if let name, !name.isEmpty {
+            throw LogicianError.invalidArguments(
+                "action 'create' cannot name a marker on this Logic version: no cell in a Marker"
+                    + " List row publishes a settable value (measured on Logic Pro 12.3.1,"
+                    + " 2026-09-02), so there is no Accessibility route to a marker's name at all"
+                    + " — 'rename' refuses for the same reason. Create it WITHOUT `name`: it gets"
+                    + " Logic's own default ('Marker 5'), which is what every marker in the"
+                    + " project already carries. Rename it by hand in Logic if the name matters"
+                    + " (double-click the name in the Marker List, or the marker in the Tracks"
+                    + " area's Marker track). Nothing was created."
+            )
+        }
+        // The playhead is parked BEFORE the pane opens, and with
+        // `parkPlayheadOnGrid`, not `setPlayhead`: both position sliders are
+        // RELATIVE steppers, so a sub-beat offset the playhead already carries
+        // is carried into the marker — the documented `9 1 4 201` landing
+        // (FINDINGS 2026-08-28 fynd 10). This was the last writer in the server
+        // still stepping blind; split, copy, edit_event and import_midi all
+        // park on the grid and read the residue off the MCU timecode.
+        var parked: [String: Any]?
+        if let bar {
+            let park = try logic.parkPlayheadOnGrid(bar: bar, beat: 1)
+            guard (park["bar"] as? Int) == bar, (park["beat"] as? Int) == 1 else {
+                throw LogicianError.verificationFailed(
+                    requested: "the playhead at bar \(bar) beat 1 before the create",
+                    actual: "bar \(park["bar"] ?? "?") beat \(park["beat"] ?? "?");"
+                        + " no marker was created",
+                    restored: false
+                )
+            }
+            parked = park
+        }
+        // ONE pane cycle: the count before, the button press and the readback
+        // all happen with the same pane open on the same tab. It was three
+        // (four with the key-command fallback), at 1 509–2 130 ms each.
+        var reading = try logic.createMarkerThroughListButton()
         var route = "list_editor_create_marker_button"
-        if !logic.pressCreateMarkerButton() {
+        if !reading.pressed {
             route = "midi_key_command_create_marker"
             let command = try MCUController.resolveKeyCommand(
                 named: KeyCommandRegistry.Name.createMarker, logic: logic
             )
             _ = try MCUController.triggerKeyCommand(note: command.note, channel: command.channel)
+            reading = logic.readMarkerCreateFallback(
+                countBefore: reading.countBefore, barsBefore: reading.barsBefore
+            )
         }
-        var after: [[String: Any]] = []
-        var censusAfter: ListEditorCensus?
-        var created = false
-        for _ in 0..<20 {
-            Thread.sleep(forTimeInterval: 0.25)
-            let read = logic.readMarkerList()
-            after = read.markers ?? []
-            censusAfter = read.census
-            if (read.census?.count ?? after.count) > countBefore { created = true; break }
-        }
+        let created = reading.created
+        let after = reading.markers
         // WHICH row is the new one is neither the row INDEX nor the name: Logic
         // renumbers markers by position, so creating one at bar 33 in front of
         // an existing "Marker 1" at bar 161 renamed THAT one to "Marker 2" and
@@ -308,34 +384,50 @@ extension MCPServer {
         // made the first version of this code report the wrong marker). The new
         // marker is identified by its BAR — the playhead's, which is where Logic
         // just put it.
-        let playheadBar = (moved?["after"] as? [String: Any])?["bar"] as? Int ?? bar
-        let beforeBars = before.compactMap { $0["bar"] as? Int }
+        let playheadBar = (parked?["bar"] as? Int) ?? bar
         let fresh = after.first { marker in
             guard let markerBar = marker["bar"] as? Int else { return false }
             if let playheadBar { return markerBar == playheadBar }
-            return !beforeBars.contains(markerBar)
+            return !reading.barsBefore.contains(markerBar)
         }
         var payload: [String: Any] = [
             "success": created,
             "verified": created,
             "state": created ? "created" : "failed",
-            "markers_before": countBefore,
-            "markers_after": censusAfter?.count ?? after.count,
+            "markers_before": reading.countBefore,
+            "markers_after": reading.countAfter ?? reading.countBefore,
             "markers": after,
             "write_route": route,
-            "readback_route": "marker_list_reread",
+            "readback_route": reading.pressed ? "marker_list_same_pane" : "marker_list_reread",
+            "readback_polls": reading.polls,
             "note": created
-                ? "Created at the PLAYHEAD, and Logic's position stepping lands inside the bar"
-                    + " rather than exactly on its line, so read the reported bar/beat back."
-                    + " NOTE that Logic RENUMBERS its default marker names by position: creating"
+                ? (parked == nil
+                    ? "Created at the PLAYHEAD, wherever it stood — no bar was given, so nothing"
+                        + " was parked and any sub-beat offset the playhead carried is in the"
+                        + " marker. "
+                    : "Created at the PLAYHEAD, parked exactly on bar \(playheadBar ?? 0) beat 1"
+                        + " and checked against the control surface's own position display. ")
+                    + "NOTE that Logic RENUMBERS its default marker names by position: creating"
                     + " a marker before an existing one renames that one, so address markers by"
                     + " BAR when it matters. Remove this one with action 'delete'."
                 : "No new marker appeared in the Marker List after the create."
         ]
-        if let moved { payload["playhead"] = moved }
+        if let parked { payload["playhead"] = parked }
+        if created, parked != nil, parked?["on_grid"] as? Bool != true {
+            appendWarning(
+                "The playhead was parked for this create and the position display could NOT"
+                    + " confirm it landed exactly on the beat"
+                    + ((parked?["on_grid"] as? Bool) == false
+                        ? " (it reads division \(parked?["timecode_division"] ?? "?"), tick"
+                            + " \(parked?["timecode_ticks"] ?? "?"))"
+                        : " (the surface could not be read)")
+                    + ", so read the marker's own position back before trusting it.",
+                to: &payload
+            )
+        }
         if let fresh {
             payload["marker"] = fresh
-        } else if created, let censusAfter, !censusAfter.isComplete {
+        } else if created, let censusAfter = reading.censusAfter, !censusAfter.isComplete {
             // The count grew, so the marker is there; the row carrying it is
             // the one Logic has not drawn, so its bar cannot be read yet. Both
             // halves are said, because "created: true" with no marker in the
@@ -347,22 +439,11 @@ extension MCPServer {
                 to: &payload
             )
         }
-        if let name {
-            // Naming is a SEPARATE write and is reported separately: Logic's
-            // Create Marker names the marker itself, and whether the row can be
-            // renamed from this plane is a runtime question.
-            if let renamed = try? logic.renameMarker(name: nil, bar: fresh?["bar"] as? Int, newName: name) {
-                payload["renamed"] = renamed["success"] ?? false
-                payload["markers"] = renamed["markers"] ?? after
-            } else {
-                payload["renamed"] = false
-                appendWarning(
-                    "The marker was created and verified, but it could NOT be renamed to"
-                        + " '\(name)' — the Marker List's cells are not writable from"
-                        + " Accessibility. It carries Logic's own default name.",
-                    to: &payload
-                )
-            }
+        if let failure = reading.readbackFailure {
+            appendWarning(
+                "The readback could not be trusted as a full list: " + failure.reason + ".",
+                to: &payload
+            )
         }
         return payload
     }

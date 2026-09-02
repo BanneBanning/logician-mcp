@@ -72,6 +72,12 @@ struct ListEditorTable {
     /// one that is selected (measured 2026-09-01: 164 ms of the 268 ms each
     /// Event List stepper write cost, and it grew with the region's size).
     let element: AXUIElement
+
+    /// THE number of rows this list holds: its own `Number of Items`, falling
+    /// back to what it published. The same rule `ListEditorCensus.count`
+    /// applies, for a write that is polling its own effect and has not built a
+    /// census yet — a row Logic counted and has not drawn is still a row.
+    var count: Int { declaredCount ?? rows.count }
 }
 
 extension LogicAccessibility {
@@ -101,14 +107,19 @@ extension LogicAccessibility {
         // plugin window and the read came back "no tab" while a perfectly
         // readable list sat one window over (FINDINGS 2026-08-28, finding 9).
         guard let window = try? projectWindow() else { return (nil, .paneUnavailable) }
-        let wasOpen = tempoListTabs(in: window).isEmpty == false
+        // This walk is BOTH "is the pane open?" and, when it is, the tab strip
+        // itself — the same four radio buttons, read once instead of twice.
+        var tabs = tempoListTabs(in: window)
+        let wasOpen = tabs.isEmpty == false
         if !wasOpen {
             guard (try? pressMenuItem(
                 containing: LogicUIStrings.Menu.listEditors, underMenu: LogicUIStrings.Menu.view
             )) != nil else {
                 return (nil, .paneUnavailable)
             }
-            settleForListEditors(tab: tab, in: window)
+            // The settle polls for the strip and HANDS IT BACK, so the walk
+            // that used to follow it is gone too.
+            tabs = settleForListEditorsPane(tab: tab, in: window)
         }
         defer {
             if !wasOpen {
@@ -117,7 +128,6 @@ extension LogicAccessibility {
                 )
             }
         }
-        let tabs = tempoListTabs(in: window)
         guard let target = tabs.first(where: { $0.name == tab }) else {
             return (nil, .tabNotFound(tab))
         }
@@ -143,22 +153,60 @@ extension LogicAccessibility {
         return (body(window), nil)
     }
 
+    /// The settle that follows the pane-OPEN press — and it deliberately asks a
+    /// different question from the one after a tab press.
+    ///
+    /// MEASURED 2026-09-02 (`logic_markers` profile §5, C1). Logic opens the
+    /// pane on the tab it was last on: `previousTab == "Event"` **15/15**,
+    /// never the tab the caller asked for. So the old call, which waited for
+    /// the TARGET tab's table to be drawn, was waiting for something only the
+    /// press that comes AFTER it can make true — it ran the deadline out
+    /// **15/15, 610–1 094 ms (median 740)**, on every caller whose tab is not
+    /// the resting one. The tab strip, which is what the caller needs next,
+    /// appears in **58–260 ms**.
+    ///
+    /// So this waits for the STRIP, and keeps waiting for a drawn table only in
+    /// the one case where no press follows — the target tab is already the
+    /// selected one, which is the Event tab's own readers, where the old
+    /// question was the right one and answered in 286–548 ms. The decision is
+    /// `ListEditorSettle.goal`, pure and tested.
+    ///
+    /// The strip it polled is RETURNED rather than walked for again: 56–251 ms
+    /// per walk, for four radio buttons already in hand.
+    func settleForListEditorsPane(
+        tab: String, in window: AXUIElement
+    ) -> [(name: String, element: AXUIElement, selected: Bool)] {
+        let deadline = Date().addingTimeInterval(0.6)
+        var tabs = tempoListTabs(in: window)
+        while true {
+            switch ListEditorSettle.goal(
+                target: tab, tabs: tabs.map { (name: $0.name, selected: $0.selected) }
+            ) {
+            case .ready:
+                return tabs
+            case .targetTabDrawn:
+                if listEditorTabIsDrawn(tab: tab, in: window) { return tabs }
+            case .tabStrip:
+                break
+            }
+            guard Date() < deadline else { return tabs }
+            Thread.sleep(forTimeInterval: 0.05)
+            tabs = tempoListTabs(in: window)
+        }
+    }
+
     /// The pane repaints after a menu toggle or a tab switch; the table's rows
     /// are not there on the first look. So this WAITS FOR THE TAB, and only
     /// falls back on the clock.
     ///
-    /// MEASURED 2026-09-02, twice, and the two settles are NOT the same size:
+    /// This is the settle AFTER A TAB PRESS. The one after the pane opens is
+    /// `settleForListEditorsPane`, which asks a question that can be true
+    /// before the press — see its comment for why they had to be split.
     ///
-    /// - **After the tab switch** (`logic_list_signatures` profile §6/C1) the
-    ///   readiness question answered true on the FIRST poll at 64–66 ms, 3/3,
-    ///   against the flat 0.6 s — **~535 ms of pure clock-watching** on every
-    ///   caller whose tab is not the resting one (Signature, Marker, Tempo, and
-    ///   `logic_project_snapshot` twice more).
-    /// - **After the pane opens** (`logic_list_events` profile §4) it is real
-    ///   work: ready at 286–462 ms there and 523–548 ms in the later
-    ///   measurement, the first poll always false. **~50–80 ms**, not the
-    ///   200–310 the earlier profile estimated — the pane genuinely needs that
-    ///   time and only the tail was slack.
+    /// MEASURED 2026-09-02: the readiness question answered true on the FIRST
+    /// poll at 64–66 ms, 3/3 (`logic_list_signatures` profile §6/C1) and again
+    /// at 55–349 ms, 15/15 (`logic_markers` profile §5) — this half is healthy,
+    /// and it is the half that was already waiting for the right thing.
     ///
     /// The old 0.6 s stays as the DEADLINE, so a pane that never becomes
     /// readable costs exactly what it always did and the caller's own count
@@ -349,6 +397,56 @@ extension LogicAccessibility {
             $0.localizedCaseInsensitiveContains(LogicUIStrings.Element.deleteRowAction)
         }) else { return false }
         return AXUIElementPerformAction(row.element, delete as CFString) == .success
+    }
+
+    /// Re-reads the tab's table INSIDE the pane scope until the write it
+    /// follows can be seen in it, or until the deadline.
+    ///
+    /// This is the positive check that replaced the blind sleeps after the
+    /// Marker List's create and delete: 0.5 s after a button press that the
+    /// next read always found anyway, and 0.4 s after a row action that
+    /// measured 13.9 ms (`logic_markers` profile 2026-09-02, C3). A re-read
+    /// costs 55–260 ms and answers the real question; the clock answered none.
+    ///
+    /// Returns the LAST table it read even when it timed out: a poll that ran
+    /// out still hands back what Logic is showing, which is what the caller
+    /// reports as its readback.
+    func pollListEditorTable(
+        tab: String, in window: AXUIElement, deadline seconds: TimeInterval = 3.0,
+        until isSettled: (ListEditorTable) -> Bool
+    ) -> (table: ListEditorTable?, settled: Bool, polls: Int) {
+        let deadline = Date().addingTimeInterval(seconds)
+        var last: ListEditorTable?
+        var polls = 0
+        while true {
+            polls += 1
+            if let table = readListEditorTable(tab: tab, in: window).table {
+                last = table
+                if isSettled(table) { return (table, true, polls) }
+            }
+            guard Date() < deadline else { return (last, false, polls) }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+    }
+
+    /// Selects one row and PROVES it took.
+    ///
+    /// Replaces the 0.2 s that used to be slept after every marker-row select.
+    /// Measured 2026-09-02 (`logic_markers` profile C3, and the `logic_edit_event`
+    /// profile before it): the set itself costs 0.3–0.5 ms and `AXSelected`
+    /// reads back at 0 ms. The 0.5 s deadline is there for the Logic version
+    /// where that stops being true, not for this one.
+    @discardableResult
+    func selectListEditorRowVerified(_ row: ListEditorRow, in table: ListEditorTable) -> Bool {
+        selectListEditorRow(row, in: table)
+        let deadline = Date().addingTimeInterval(0.5)
+        while true {
+            if ["1", "true"].contains(stringAttribute(row.element, kAXSelectedAttribute as String)) {
+                return true
+            }
+            guard Date() < deadline else { return false }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
     }
 
     /// Selects exactly one row (`AXSelected` is writable on these rows), which

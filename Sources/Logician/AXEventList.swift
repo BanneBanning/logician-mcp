@@ -69,10 +69,25 @@ extension LogicAccessibility {
         guard let table = inner.table else {
             return (nil, [], inner.failure ?? .tableNotFound(tab))
         }
+        let counted = listEditorCensus(of: table)
+        guard let census = counted.census else {
+            return (nil, table.columns, counted.failure ?? .tableNotFound(tab))
+        }
+        return (census, table.columns, nil)
+    }
+
+    /// The census of a table that was read INSIDE a pane scope — the same
+    /// truncation cross-check and the same undrawn-row rule
+    /// `readListEditorEntries` applies, lifted out so a write that is holding
+    /// the pane open can count what it is looking at without paying a second
+    /// pane cycle (1.5–2.1 s) to be told the same number.
+    func listEditorCensus(
+        of table: ListEditorTable
+    ) -> (census: ListEditorCensus?, failure: ListEditorFailure?) {
         if let declared = table.declaredCount, declared != table.rows.count {
             return (
-                nil, table.columns,
-                .countMismatch(tab: tab, rows: table.rows.count, declared: declared)
+                nil,
+                .countMismatch(tab: table.tab, rows: table.rows.count, declared: declared)
             )
         }
         return (
@@ -80,7 +95,7 @@ extension LogicAccessibility {
                 cells: table.rows.map(\.cells), columns: table.columns,
                 declaredCount: table.declaredCount
             ),
-            table.columns, nil
+            nil
         )
     }
 
