@@ -524,12 +524,13 @@ Parameters:
 
 #### `logic_rename_track`
 
-Rename a track by writing the channel strip's name field (element-addressed AX). Verified against the track headers.
+Rename a track by writing the channel strip's name field (element-addressed AX). VERIFIED BY ROW: the row you addressed must carry the new name character for character - so a rename that changes only the CASE ('Inst 2' -> 'INST 2') is a real rename and is proven as one, and a rename to the name the row already has fires nothing at all and comes back state 'already_named'. The result names the row afterwards: `renamed_track {track_number, track_name}` plus `previous_name` - address the track by BOTH of those next, because the old name no longer resolves. Pass track_number to rename ONE of two rows sharing a name (the state logic_duplicate_track leaves behind, and this is the way out of it); a new_name another row already carries is REFUSED for a name-addressed call, naming that row, rather than manufacturing a pair no name-addressed tool can reach - pass track_number to make such a pair deliberately (restoring one is a real move) and the result warns which other row shares the name. On a project that renders only part of its track list, a row scrolled out of view comes back state 'renamed_not_visible' with verified:false and a warning to scroll and re-read - it is NOT a claim that nothing happened, and a retry addressed to the old name will not find the row if it worked.
 
 Parameters:
 
   - `new_name` (string) **(required)**
   - `track_name` (string) **(required)**
+  - `track_number` (integer): Recommended for duplicate names - the only way to address one of two rows sharing a name.
 
 #### `logic_duplicate_track`
 

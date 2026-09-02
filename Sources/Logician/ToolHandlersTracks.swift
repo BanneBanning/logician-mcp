@@ -116,10 +116,38 @@ extension MCPServer {
     }
 
     func handleRenameTrack(_ arguments: [String: Any]) throws -> Any {
-        return try logic.renameTrack(
+        let result = try logic.renameTrack(
             trackName: requiredString("track_name", in: arguments),
+            trackNumber: arguments["track_number"] as? Int,
             newName: requiredString("new_name", in: arguments)
         )
+        // The bank map's payload IS the surface's LCD name rows, and a rename
+        // rewrites one of their cells — so this tool was the only track
+        // mutation without an invalidation, and its staleness is the WORST of
+        // the four. `bankedAtMatch` (MCUTransportLCD.swift:487) deliberately
+        // tolerates exactly one differing cell, which is the press-banner
+        // signature; a rename changes exactly one cell. So a lookup of any
+        // OTHER track in the renamed strip's bank still passes the fast path
+        // off the stale map and the staleness is never discovered — it
+        // survives the whole session instead of self-correcting on the next
+        // MCU call (confirmed live 2026-09-02: `bank-cache.json` byte- and
+        // mtime-identical after five renames while the live LCD cell had
+        // changed).
+        //
+        // Repairing the one cell in place was considered and rejected: the
+        // cached cell is Logic's own ABBREVIATION of the name, by a rule this
+        // process cannot compute (`RenamedTrk1` painted as `RenmT1`, not a
+        // truncation), so the new cell can only be READ — which means banking
+        // the surface to that bank, an MCU round-trip that costs more than the
+        // rescan it would save and moves a surface this call otherwise never
+        // touches. Deleting the file is an unlink, and turns an undetectable
+        // wrong map into an absent one — measured cheaper on the create side
+        // (11 854 ms with a stale map against 6 796 ms with none).
+        let state = result["state"] as? String
+        if state == "renamed" || state == "renamed_not_visible" {
+            invalidateBankMap()
+        }
+        return result
     }
 
     func handleDuplicateTrack(_ arguments: [String: Any]) throws -> Any {

@@ -1263,6 +1263,35 @@ with every render coming back as audio the agent can listen to.
   the surface BEFORE reading the display it was quoting, so it reported a pan value ('0',
   live) as the catalog entry it had drifted to — it now reports the cell it actually saw.
 
+- **Renaming a track is instant, and the track answers to its new name straight away.**
+  `logic_rename_track` was 1 386–1 615 ms and is 263–479 ms, measured old binary against new
+  in one session on 2026-09-02 — 76% of the old call was three blind sleeps waiting for
+  things that were already there (the inline editor is focused and pre-filled within a
+  millisecond of the key command; the header column carries the new name before the first
+  sleep began; the "lingering rename popover" the third sleep guarded has never once
+  appeared). The waits are gone, the popover close now rides on the verification poll's miss
+  path, and every proof is stronger than before. The big one is not the speed: after a
+  rename, the renamed track used to be unreachable by EVERY tool that selects a track first
+  — Logic does not repaint the inspector strip's name while the renamed track stays
+  selected, so a perfectly correct follow-up call spent 8.5 s and then refused, quoting the
+  very row it had been asked for. Measured on the same track, same session: 8 480 ms refusal
+  before, 396 ms success after, with no selection bounce. The readback that caught the
+  wrong-strip bug is kept; it now tells an unrepainted name from a different track. Renaming
+  also VERIFIES the row you addressed rather than looking for the new name anywhere in the
+  list, so `Inst 2` → `INST 2` is a real rename that is proven as one, and renaming a track
+  to the name it already has fires nothing at all and says `already_named` in 50 ms instead
+  of writing and charging 1.4 s for a "rename" that never happened. The result now names the
+  row afterwards (`renamed_track`, `previous_name`), a row scrolled out of view comes back
+  `renamed_not_visible` instead of a failure claim about a rename that landed, `track_number`
+  addresses one of two rows sharing a name — the state `logic_duplicate_track` leaves behind,
+  and this is the way out of it — and a name another row already carries is refused rather
+  than turned into a pair no name-addressed tool can reach. And the control surface's bank
+  map, whose cells ARE track names, is finally forgotten after a rename: this was the only
+  track mutation that left it stale, and the staleness was invisible (the bank match tolerates
+  exactly one differing cell, which is exactly what a rename produces), so it survived a whole
+  session. The next surface call rescans instead, measured at 1 378 ms on the reference
+  project.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

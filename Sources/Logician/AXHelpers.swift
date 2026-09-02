@@ -38,7 +38,11 @@ extension LogicAccessibility {
         return strip
     }
 
-    func inspectorStrip(named trackName: String) throws -> AXUIElement {
+    /// Every inspector channel strip the project window is showing, named by
+    /// its `AXDescription`. One walk, because two callers ask two questions of
+    /// the same list: which strip is the named one, and what the LEFT strip is
+    /// currently called (see `InspectorReadback`).
+    func inspectorStrips() throws -> [(name: String, help: String, element: AXUIElement)] {
         let mainWindow = try projectWindow()
         var strips: [(name: String, help: String, element: AXUIElement)] = []
         collect(from: mainWindow, maximumDepth: AXDepth.inspectorStrip) { element in
@@ -53,6 +57,22 @@ extension LogicAccessibility {
                 element: element
             ))
         }
+        return strips
+    }
+
+    /// What the LEFT inspector channel strip currently calls itself — the name
+    /// `inspectorStrip(named:)` compares against, read on its own so a failed
+    /// comparison can be explained rather than only reported.
+    func leftInspectorStripName() -> String? {
+        guard let strips = try? inspectorStrips() else { return nil }
+        let left = strips.first(where: {
+            $0.help.hasPrefix(LogicUIStrings.Element.leftInspectorPrefix)
+        }) ?? strips.first
+        return left?.name
+    }
+
+    func inspectorStrip(named trackName: String) throws -> AXUIElement {
+        let strips = try inspectorStrips()
         guard let left = strips.first(where: {
             $0.help.hasPrefix(LogicUIStrings.Element.leftInspectorPrefix)
         }) ?? strips.first else {

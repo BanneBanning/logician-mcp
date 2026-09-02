@@ -179,7 +179,11 @@ extension LogicAccessibility {
         try verifyProjectPath(expectedProjectPath)
 
         let group = try trackHeaderGroup()
-        let parsed = try parsedTrackHeaders()
+        // The group is already resolved, so parse THAT one: the no-argument
+        // overload walks `trackHeaderGroup()` again, and that walk is 25.2 ms
+        // of the 25.4 ms it costs (measured 2026-09-02, `logic_select_track`
+        // profile).
+        let parsed = parsedTrackHeaders(in: group)
         let rows = TrackChange.rows(
             headers: parsed.map { (number: $0.number, name: $0.name, selected: $0.selected) }
         )
@@ -207,6 +211,9 @@ extension LogicAccessibility {
         // plugin tool re-addressing the strip it just wrote returns
         // `already_selected` above and never reaches this line.
         MCUController.settleSurfaceDebt(before: nil)
+        // The selection is moving, so the inspector is about to be repainted
+        // and any rename staleness recorded for the old one is spent.
+        LogicAccessibility.forgetRenamedInPlace()
         // Focus is about to move; until the move is verified below, the only
         // honest focus record is none (a failed or half-restored selection
         // must not leave the previous strip's name standing).
@@ -256,6 +263,14 @@ extension LogicAccessibility {
         ), rows)
     }
 
+    /// Waits for the selection write to be readable on both planes.
+    ///
+    /// This one sleeps BEFORE it looks, and stays that way: the
+    /// `logic_select_track` profile of 2026-09-02 ran a zero-wait probe here
+    /// and it MISSED on 4 of 4 — Logic's inspector-strip repaint genuinely
+    /// lags the `AXSelectedChildren` write — while every real move converged
+    /// on the first look 100 ms later. The settle is somewhere in (0, 100] ms
+    /// and shortening the tick needs a distribution experiment, not a guess.
     func pollTrackSelected(_ item: AXUIElement, name: String) -> Bool {
         for _ in 0..<20 {
             Thread.sleep(forTimeInterval: 0.1)
@@ -266,12 +281,40 @@ extension LogicAccessibility {
         return false
     }
 
+    /// Is the track the caller named really the selected one, on two
+    /// independent planes?
+    ///
+    /// The header's `AXSelected` is the first. The second is the left
+    /// inspector channel strip, which must show the same track — that is what
+    /// catches a header claiming a selection the rest of the UI never
+    /// followed.
+    ///
+    /// The inspector's name can be STALE rather than wrong, though, and
+    /// exactly once: Logic does not repaint it when the selected track is
+    /// renamed. `InspectorReadback` decides which of the two it is, and
+    /// carries the measurement (a rename used to make its own follow-up call
+    /// refuse after 8.9 s). Everything the old comparison rejected, it still
+    /// rejects.
     func trackSelectionVerified(_ item: AXUIElement, name: String) -> Bool {
         guard stringAttribute(item, kAXSelectedAttribute as String) == "1" else {
             return false
         }
-        // Independent readback: the left inspector strip must show the same track.
-        return (try? inspectorStrip(named: name)) != nil
+        if (try? inspectorStrip(named: name)) != nil { return true }
+        // Only reached when the header says selected and the inspector does
+        // not agree — which is either the rename staleness or the wrong-strip
+        // state, and the extra reads are priced against the 8.9 s the first
+        // case used to cost.
+        let verdict = InspectorReadback.verdict(
+            requested: name,
+            selectedHeaderName: parseTrackDescription(
+                stringAttribute(item, kAXDescriptionAttribute as String)
+            )?.name,
+            inspectorName: leftInspectorStripName(),
+            renderedNames: ((try? parsedTrackHeaders()) ?? []).map(\.name),
+            renamedInPlace: LogicAccessibility.renamedInPlace
+        )
+        if case .staleAfterRename = verdict { return true }
+        return false
     }
 
     func restoreSelection(_ previousItem: AXUIElement?, in group: AXUIElement) -> Bool {
