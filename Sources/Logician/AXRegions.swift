@@ -19,38 +19,65 @@ extension LogicAccessibility {
         // reported a project full of regions as having NO track rows at all.
         // A silently empty arrangement map is the worst possible answer here:
         // it is the same shape as a correct one.
-        let window = try projectWindow()
+        regionRows(in: try projectWindow())
+    }
+
+    /// The same walk against a project window the caller ALREADY resolved.
+    /// `listRegions` needs that window a second time for `AXDocument`, and
+    /// `projectWindow()` is four window-list reads (measured 2026-09-02:
+    /// `AXWindows`, `AXMainWindow`, `AXFocusedWindow`, `AXDocument` were each
+    /// read TWICE per call). Resolving it once also removes a latent
+    /// disagreement: `projectDocumentPath()` takes the first window carrying a
+    /// document, which is a rule `projectWindow()` deliberately refuses (it
+    /// excludes the Mixer), so the two could name different projects.
+    func regionRows(in window: AXUIElement) -> [(number: Int, track: String, regions: [AXUIElement])] {
         var rows: [(Int, String, [AXUIElement])] = []
         walk(from: window, maximumDepth: AXDepth.trackRegionRow) { element in
-            let description = stringAttribute(element, kAXDescriptionAttribute as String)
-            if stringAttribute(element, kAXRoleAttribute as String) == "AXLayoutArea",
-               description.hasPrefix(LogicUIStrings.Format.trackDescriptionPrefix),
-               description.contains(LogicUIStrings.Format.openQuote) {
-                let digits = description
-                    .dropFirst(LogicUIStrings.Format.trackDescriptionPrefix.count)
-                    .prefix { $0.isNumber }
-                let name = description.split(separator: LogicUIStrings.Format.openQuote).last.map {
-                    String($0).replacingOccurrences(
-                        of: String(LogicUIStrings.Format.closeQuote), with: ""
-                    )
-                } ?? description
-                let regions = children(of: element).filter {
-                    stringAttribute($0, "AXRoleDescription")
-                        == LogicUIStrings.Element.regionRoleDescription
-                }
-                rows.append((Int(digits) ?? 0, name, regions))
-                return .skipChildren // region items have no nested rows
+            // ROLE FIRST, then the description. Measured 2026-09-02: this walk
+            // visits 448 nodes and 22 of them are `AXLayoutArea`, so reading
+            // `AXDescription` up front spent 426 reads (0.089 ms each) to
+            // discard 95% of them — 25–40 ms of a 118–209 ms warm call, and
+            // ×4 on every region WRITE, which walks this four times. The
+            // predicate is unchanged; only the order it is evaluated in is.
+            guard stringAttribute(element, kAXRoleAttribute as String) == "AXLayoutArea" else {
+                return .descend
             }
-            return .descend
+            let description = stringAttribute(element, kAXDescriptionAttribute as String)
+            guard description.hasPrefix(LogicUIStrings.Format.trackDescriptionPrefix),
+                  description.contains(LogicUIStrings.Format.openQuote) else {
+                return .descend
+            }
+            let digits = description
+                .dropFirst(LogicUIStrings.Format.trackDescriptionPrefix.count)
+                .prefix { $0.isNumber }
+            let name = description.split(separator: LogicUIStrings.Format.openQuote).last.map {
+                String($0).replacingOccurrences(
+                    of: String(LogicUIStrings.Format.closeQuote), with: ""
+                )
+            } ?? description
+            let regions = children(of: element).filter {
+                stringAttribute($0, "AXRoleDescription")
+                    == LogicUIStrings.Element.regionRoleDescription
+            }
+            rows.append((Int(digits) ?? 0, name, regions))
+            return .skipChildren // region items have no nested rows
         }
         return rows
     }
 
+    /// One region, as the arrangement map reports it.
+    ///
+    /// `selected` is emitted only when TRUE, the same rule `start_beat` and
+    /// `end_beat` already followed. Measured 2026-09-02 on the reference
+    /// project: 52 of 54 regions carried `"selected": false`, ~940 B of a
+    /// 5 772-byte payload — 17% of the response spent restating the default.
+    /// Every consumer in the tree reads it as `as? Bool == true`, so an absent
+    /// key and a false one are already the same answer to them.
     func parseRegion(_ element: AXUIElement) -> [String: Any] {
         var entry: [String: Any] = [
-            "name": stringAttribute(element, kAXDescriptionAttribute as String),
-            "selected": stringAttribute(element, "AXSelected") == "1"
+            "name": stringAttribute(element, kAXDescriptionAttribute as String)
         ]
+        if stringAttribute(element, "AXSelected") == "1" { entry["selected"] = true }
         let help = stringAttribute(element, kAXHelpAttribute as String)
         // "Region starts at 9 bars 2 beats and ends at 11 bars , MIDI region."
         // Two independent regexes keep the optional beats simple.
@@ -82,6 +109,53 @@ extension LogicAccessibility {
         return entry
     }
 
+    /// Fills in the `type` Logic did not publish, from the one it did.
+    ///
+    /// WHAT THE HELP SENTENCE ACTUALLY DOES, measured 2026-09-02 with an AXHelp
+    /// dump of all 54 regions on the reference project while exactly 2 were
+    /// selected: **all 54 carried the `, MIDI region` / `, Audio region` tail**,
+    /// and a selected and an unselected region published the same attribute set
+    /// and the same help shape. The profile's reading — that Logic gates the
+    /// tail on selection, because the 2 typed regions were exactly the 2
+    /// selected ones — is therefore DISPROVED; that correlation was a
+    /// coincidence of one sample.
+    ///
+    /// What is NOT disproved is that the field goes missing: the same tool on
+    /// the same project hours earlier the same day returned `type` on 2 of 54,
+    /// with `start_bar`/`end_bar` parsing on all of them, so Logic can be caught
+    /// publishing the position half of that sentence without the type half. No
+    /// other attribute on the region says what kind it is (`AXSubrole` is
+    /// absent, `AXRoleDescription` is the flat word `Region`, the children are a
+    /// text field and three drag handles), and the only selection-independent
+    /// source left is the inspector channel strip at ~0.7 s PER TRACK — six
+    /// times the whole call. So the repair is the free one below, plus a
+    /// description that stops promising a type for every region.
+    ///
+    /// A track row holds ONE kind of region — an audio track cannot hold a MIDI
+    /// region and a software instrument cannot hold an audio one — so a single
+    /// typed region names the type of every region on its row, at no extra AX
+    /// read. Rows where Logic published no type at all still carry none, and
+    /// `regionMapNote` says what that absence means rather than letting it read
+    /// as "not a MIDI region".
+    ///
+    /// A row that somehow reports two different types is left exactly as it was:
+    /// a guess that contradicts the evidence is worse than no answer.
+    static func typedRowRegions(_ regions: [[String: Any]]) -> [[String: Any]] {
+        let observed = Set(regions.compactMap { $0["type"] as? String })
+        guard observed.count == 1, let rowType = observed.first else { return regions }
+        return regions.map { region in
+            guard region["type"] == nil else { return region }
+            var filled = region
+            filled["type"] = rowType
+            // Say where it came from. The row's OWN help sentence is Logic's
+            // word; this one is an inference off a sibling, and a caller about
+            // to refuse a destructive edit on the strength of it should be able
+            // to tell the two apart.
+            filled["type_from"] = "track_row"
+            return filled
+        }
+    }
+
     /// What a walk that found NO track rows actually means. Pure, so all three
     /// outcomes can be pinned by tests: the previous code returned
     /// `{"tracks": []}` for every one of them, and on a French Logic (R4,
@@ -110,10 +184,108 @@ extension LogicAccessibility {
         return headerItemCount == 0 ? .genuinelyEmpty : .rowsUnreadable(headerCount: headerItemCount)
     }
 
+    /// How much of the project the arrangement map is, said in fields rather
+    /// than in a footnote.
+    ///
+    /// `logic_list_regions` used to return `project_document`, `tracks` and a
+    /// 165-byte static `note` — while `logic_list_tracks`, called seconds later
+    /// on the same 19 rendered rows, reported `partial: true` and
+    /// `missing_track_numbers: [10…19]`. The two tools agreed exactly on the
+    /// rows and only one of them said the other ten existed: the COVERAGE U1
+    /// honesty failure `TrackListCompleteness` was written to end, still
+    /// standing on the region path.
+    ///
+    /// The numbering rule costs NOTHING — `regionRows()` already returns the
+    /// row numbers — so it runs on every call. The other two signals (collapsed
+    /// stacks, a scrollable Tracks area) need the track HEADER column, measured
+    /// 2026-09-02 at +40–50 ms on a 95–120 ms warm call, so they are opt-in
+    /// (`check_hidden_rows`) and the result says which of the two it paid for.
+    ///
+    /// Pure, so both branches can be pinned without Logic running.
+    struct RegionMapCoverage: Equatable {
+        /// True only on POSITIVE evidence that rows exist which this map does
+        /// not describe.
+        let partial: Bool
+        /// `"partial"` or `"unknown"`, never `"complete"` — same rule, and same
+        /// reason, as `TrackListCompleteness`.
+        var completeness: String { partial ? "partial" : "unknown" }
+        /// One sentence per signal.
+        let evidence: [String]
+        /// Track numbers that provably exist and whose regions are not here.
+        let missingTrackNumbers: [Int]
+        /// What was actually READ to reach this verdict, so a caller can tell a
+        /// cheap verdict from a thorough one.
+        let checked: String
+    }
+
+    /// - Parameters:
+    ///   - rowNumbers: the track numbers of the rendered region rows.
+    ///   - headerColumn: the track-header column's own coverage verdict, or nil
+    ///     when this call did not pay the +40–50 ms to read it.
+    static func regionMapCoverage(
+        rowNumbers: [Int], headerColumn: RegionEditGuard.Coverage?
+    ) -> RegionMapCoverage {
+        let numbering = TrackListCompleteness.numbering(
+            rowNumbers: rowNumbers, rowNoun: "region row"
+        )
+        guard let headerColumn else {
+            return RegionMapCoverage(
+                partial: numbering.partial,
+                evidence: numbering.evidence,
+                missingTrackNumbers: numbering.missingTrackNumbers,
+                checked: "row_numbering"
+            )
+        }
+        var evidence = numbering.evidence
+        for reason in headerColumn.reasons where !evidence.contains(reason) {
+            evidence.append(reason)
+        }
+        return RegionMapCoverage(
+            partial: numbering.partial || headerColumn.partial,
+            evidence: evidence,
+            missingTrackNumbers: Array(
+                Set(numbering.missingTrackNumbers).union(headerColumn.unseenTrackNumbers)
+            ).sorted(),
+            checked: "row_numbering+track_header_column"
+        )
+    }
+
+    /// The sentence the arrangement map always carries. It has to say three
+    /// things an agent must not forget: what `partial` does and does not mean,
+    /// which fields are omitted at their default rather than absent, and — when
+    /// the header column was not read — that the cheap verdict is the weaker of
+    /// the two.
+    static func regionMapNote(headerColumnChecked: Bool) -> String {
+        var note =
+            "Only regions on track rows Logic has RENDERED are listed. partial: true means rows"
+            + " are provably missing (partial_evidence, missing_track_numbers); partial: false"
+            + " means nothing proved any missing — never a census, because an unrendered row"
+            + " publishes nothing at all."
+        if !headerColumnChecked {
+            note += " coverage_checked here is the row NUMBERING alone; collapsed stacks and a"
+                + " scrolled Tracks area hide rows without leaving a gap in it — pass"
+                + " check_hidden_rows: true to read the track header column too (+40–50 ms)."
+        }
+        note += " Bars/beats are Logic's own help text; start_beat/end_beat are omitted on the"
+            + " barline, selected when false. type comes from that same help text and is NOT"
+            + " guaranteed (all 54 regions of the reference project on 2026-09-02, 2 of the same"
+            + " 54 hours earlier): one typed region types its row (type_from: \"track_row\"), and"
+            + " an absent type means UNKNOWN, never 'not audio' — logic_select_region or"
+            + " logic_describe_tracks answers it."
+        return note
+    }
+
     /// The arrangement map: every region on every visible track, with bar
     /// positions and type parsed from the element's help text.
-    func listRegions(trackName: String?) throws -> [String: Any] {
-        let rows = try regionRows()
+    ///
+    /// `checkHiddenRows` buys the second half of the completeness verdict — see
+    /// `regionMapCoverage`. The first half is always paid for because it is
+    /// free.
+    func listRegions(trackName: String?, checkHiddenRows: Bool = false) throws -> [String: Any] {
+        // One window resolution for the walk AND the document path, instead of
+        // the two `projectWindow()`/`projectDocumentPath()` each did.
+        let window = try projectWindow()
+        let rows = regionRows(in: window)
         if rows.isEmpty {
             let headerCount = (try? trackHeaderItems())?.count
             switch LogicAccessibility.emptyArrangementVerdict(headerItemCount: headerCount) {
@@ -142,7 +314,7 @@ extension LogicAccessibility {
             tracks.append([
                 "track_number": row.number,
                 "track_name": row.track,
-                "regions": row.regions.map(parseRegion)
+                "regions": LogicAccessibility.typedRowRegions(row.regions.map(parseRegion))
             ])
         }
         if let filter = trackName, tracks.isEmpty {
@@ -151,11 +323,28 @@ extension LogicAccessibility {
                 exposed: "visible track rows: " + rows.map(\.track).joined(separator: ", ")
             )
         }
-        return [
-            "project_document": (try? projectDocumentPath()) ?? NSNull(),
+        // The completeness verdict is computed over ALL rendered rows, never
+        // over the filtered slice: "which rows can this walk not see" is a
+        // question about the arrangement, not about what the caller asked for.
+        let coverage = LogicAccessibility.regionMapCoverage(
+            rowNumbers: rows.map(\.number),
+            headerColumn: checkHiddenRows
+                ? regionRowCoverage(regionRowNumbers: rows.map(\.number))
+                : nil
+        )
+        var result: [String: Any] = [
+            "project_document": documentPath(of: window) ?? NSNull(),
             "tracks": tracks,
-            "note": "Only regions on currently rendered track rows are listed (scrolled-out tracks are not exposed). Positions are whole bars/beats as Logic's own help text reports them."
+            "partial": coverage.partial,
+            "completeness": coverage.completeness,
+            "partial_evidence": coverage.evidence,
+            "coverage_checked": coverage.checked,
+            "note": LogicAccessibility.regionMapNote(headerColumnChecked: checkHiddenRows)
         ]
+        if !coverage.missingTrackNumbers.isEmpty {
+            result["missing_track_numbers"] = coverage.missingTrackNumbers
+        }
+        return result
     }
 
     /// Selects one region, identified by track + name and/or start bar.

@@ -350,7 +350,8 @@ extension MCPServer {
 
     func handleListRegions(_ arguments: [String: Any]) throws -> Any {
         return try logic.listRegions(
-            trackName: arguments["track_name"] as? String
+            trackName: arguments["track_name"] as? String,
+            checkHiddenRows: arguments["check_hidden_rows"] as? Bool ?? false
         )
     }
 
