@@ -1129,6 +1129,33 @@ with every render coming back as audio the agent can listen to.
   states (the state after the third undo was identical to the state after the first) and
   nothing in the label can tell you where in it you are.
 
+- **Muting a track no longer depends on whether some other track is soloed.**
+  `logic_set_track_mute` decided whether to press mute from ONE instantaneous frame of the
+  mute light, and Logic flashes that light on every channel a standing solo silences. So
+  with any solo up, "unmute this" could catch the lit half of the flash, conclude the track
+  was muted, press mute — and **mute a track that was playing**, while reporting a verified
+  success; and "mute this" could catch the same flash and report a verified no-op having
+  done nothing. Both directions were silent wrongness on a tool that changes what the song
+  sounds like. The state now comes from a sampled window classified by counting edges, the
+  same rule and the same code the mixer read uses: a steady light is a mute, a flashing one
+  is a solo, and the result says which window it paid (`led_evidence`), whether anything is
+  soloed (`any_soloed`), and — when the light is flashing — `mute_led_blinking` with a
+  sentence saying the track is silent right now but not muted. Unmuting a genuinely muted
+  track under a solo ends with the light flashing rather than dark, which is now read as the
+  success it is instead of a failed write. Proven live 2026-09-02 with `Bas` soloed: unmute
+  on an unmuted, flashing strip is `already_off` with nothing pressed and the mixer census
+  still reads it unmuted; mute really mutes it (and reads back steady while nineteen strips
+  flash); unmute really unmutes it. The evidence costs 1.6 s each way, and only while a solo
+  stands — Logic's whole-project solo light answers that in one steady read, so with nothing
+  soloed the call pays a 0.3 s settle instead (measured 470 ms for a no-op, 0.8–0.9 s for a
+  write) and that settle is itself new protection: it catches a light that repaints late
+  after the surface banks, which the single instant never did. The mute flash was also
+  MEASURED rather than assumed — 733 ms per phase, not the record light's 640 ms, so a
+  window shorter than 1.5 s would have read a flash as a state on roughly one attempt in
+  eleven. `logic_set_track_solo` shares the window (its light has never been measured
+  flashing, and a flashing one is now refused rather than guessed at) and
+  `logic_set_insert_bypass` never had the problem: it reads a checkbox, not a light.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.
