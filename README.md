@@ -126,7 +126,7 @@ Fast enough that you stop noticing. I stopwatch everything against a live refere
 | A bounce of any bar range, audio attached, zero dialogs | **~2 s** |
 | A before/after A/B of a change, both versions as audio | **~5 s** |
 | A whole MIDI arrangement composed by import, verified note for note | **~3–4 s** |
-| The entire project read — tracks, regions, markers, transport | **well under a second** |
+| The entire project read — tracks, regions, markers, transport | **~1 s** (~2 s the first time in a session) |
 | A marker set, moved to, or removed | **under 1 s** |
 | A send created with its level, or removed | **~4–6 s** |
 | Stems of any range | **~4 s per track** |
