@@ -448,8 +448,35 @@ extension MCPServer {
         return payload
     }
 
+    /// Prefer the SOCKET, which is what `MCUController.freshStatus()`
+    /// (MCUController.swift:126-129) has always done for the server's own
+    /// reads. This tool did the opposite — file only, never the socket — and
+    /// handed agents a strictly worse view than the server keeps for itself
+    /// for no saving at all: measured 2026-09-02, socket 0.36-0.60 ms client
+    /// RTT against file 0.35-2.42 ms. `.status` is read-shaped
+    /// (`BridgeCommandName.emitsMIDI` is false for it), so asking costs no
+    /// MIDI and cannot arm the shutdown PAN press.
+    ///
+    /// The file stays as the fallback, because a dead daemon's last words are
+    /// still the only description of the surface there is — but the result
+    /// now says which plane answered and how old the answer is.
     func handleMcuStatus(_ arguments: [String: Any]) throws -> Any {
-        return MCUBridge.status()
+        let now = Date().timeIntervalSince1970
+        if let live = try? MCUBridge.sendForDictionary(.status), live["ok"] as? Bool == true {
+            return MCUStatusReport.payload(
+                snapshot: live, source: .socket, daemonPidAlive: nil, now: now
+            )
+        }
+        let mirror = MCUBridge.status()
+        guard mirror["updated"] != nil else {
+            return MCUStatusReport.payload(
+                snapshot: mirror, source: .unavailable, daemonPidAlive: nil, now: now
+            )
+        }
+        return MCUStatusReport.payload(
+            snapshot: mirror, source: .stateFile,
+            daemonPidAlive: MCUBridge.daemonPidAlive(), now: now
+        )
     }
 
     func handleMcuCommand(_ arguments: [String: Any]) throws -> Any {

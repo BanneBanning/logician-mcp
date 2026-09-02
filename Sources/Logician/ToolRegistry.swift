@@ -355,7 +355,7 @@ extension MCPServer {
             Tool(
                 name: "logic_mcu_status",
                 title: "Read the control surface",
-                description: "Read the Mackie Control bridge's mirrored state: LCD text (track names/values as data), fader positions, transport LEDs, timecode display, online status. This is Logic's documented control-surface feedback channel — no UI, no focus, no windows involved. Requires logic-mcu-bridge running and a Mackie Control configured in Logic pointing at the 'Logic MCP MCU' ports.",
+                description: "Read the Mackie Control bridge's mirrored state: LCD text (track names/values as data), fader positions, transport LEDs, timecode display, online status, and the assignment display decoded (assignment_view, plus assignment_plugin_edit / assignment_send_view for the two standing view hazards). This is Logic's documented control-surface feedback channel — no UI, no focus, no windows involved. CHECK age_seconds: it is how many seconds ago this snapshot was taken. source: \"socket\" means the daemon computed it just now (age ~0); source: \"state_file\" means the daemon did not answer and this is the mirror it left on disk, which it rewrites only when Logic sends something — that mirror can be MINUTES old, and every field in it, assignment included, then describes the surface as it was, not as it is. Requires logic-mcu-bridge running and a Mackie Control configured in Logic pointing at the 'Logic MCP MCU' ports.",
                 inputSchema: ["type": "object", "properties": [:], "additionalProperties": false],
                 safety: .readOnly,
                 idempotent: true,
