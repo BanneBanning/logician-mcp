@@ -214,6 +214,7 @@ If the agent describes the audio, you're done. 🎧
 |---|---|
 | `accessibility_trusted: false` | System Settings → Privacy & Security → Accessibility → turn on your MCP client (or Terminal). Add it with **+** if it's missing. |
 | `mcu_connected: false`, fresh install | You haven't added the Mackie Control yet, or its ports aren't set to `Logic MCP MCU`. Redo [step 3](#3-let-logic-see-it). |
+| `mcu_connected: false`, with `open_dialogs` listed | Logic is sitting on a dialog, and a dialog stops it talking to the surface. Answer or cancel the window `logic_health` named; nothing about your MIDI setup is wrong. |
 | `mcu_connected: false`, *used to work* | Logic doesn't reopen the port after a restart. Logic → Control Surfaces → Setup → re-pick `Logic MCP MCU` in the Input/Output Port dropdowns. Or just restart Logic. |
 | `duplicate_ports: [...]` | Two identical `Logic MCP MCU` entries in Logic's port menu confuse it. Quit your MCP client, run `killall MIDIServer` in Terminal, reopen the client, re-pick the port, then ask the agent to `Run logic_setup_key_commands with relearn true`. |
 | a key command "fires but nothing happens" | `Run logic_setup_key_commands with relearn true` — recreated MIDI ports can orphan Logic's bindings. |

@@ -606,6 +606,12 @@ func handleCommand(_ object: BridgeCommand) -> BridgeResponse {
         var response = BridgeResponse.success
         response.snapshot = state.snapshot()
         response.midiStreaming = isMIDIStreamActive()
+        // ADDITIVE (2026-09-02), and the reason `logic_health` can now prove
+        // liveness, protocol level and surface state in ONE round trip
+        // instead of a ping followed by a status. A daemon older than this
+        // simply omits the key; the server reads that as "cannot tell from
+        // here" and falls back to the ping it always sent.
+        response.bridgeProtocol = bridgeProtocolVersion
         return response
     case .awaitEvents:
         // Event-driven wait: returns as soon as new MIDI arrived from Logic

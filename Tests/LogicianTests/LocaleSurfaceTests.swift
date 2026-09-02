@@ -295,9 +295,59 @@ final class LocaleSurfaceTests: XCTestCase {
         ))
         let payload = report.payload
         XCTAssertNotNil(payload["determined_by"])
-        // Never claimed as a measurement.
-        let confidence = (payload["confidence"] as? String) ?? ""
-        XCTAssertTrue(confidence.hasPrefix("inferred"))
-        XCTAssertTrue(confidence.contains("running application"))
+    }
+
+    /// The "this is an inference, not a measurement" paragraph used to ship in
+    /// every result — 381 B, byte-identical whatever the verdict, 18% of a
+    /// healthy `logic_health` payload (measured 2026-09-02). It is
+    /// documentation, so it is paid once per session in the tool description
+    /// instead of once per call in the result.
+    func testTheInferenceCaveatIsDocumentationAndNotPerCallPayload() {
+        let report = LogicUILanguage.report(evidence(
+            localizations: ["en"], preferences: ["en"], matched: ["en"]
+        ))
+        XCTAssertNil(report.payload["confidence"])
+        let description = MCPServer.wholeRegistry.first { $0.name == "logic_health" }?.description ?? ""
+        XCTAssertTrue(description.contains("INFERENCE, never a measurement"))
+        XCTAssertTrue(description.contains("which language it is drawing in"))
+        XCTAssertTrue(description.contains("OLD language"))
+    }
+
+    /// The full note is ~1 371 characters. It used to be emitted twice in one
+    /// response — inside the block and again promoted to the top level — so
+    /// the same prose more than doubled a non-English Mac's report.
+    func testTheTopLevelLanguageNoteIsAPointerNotASecondCopy() {
+        let report = LogicUILanguage.report(evidence(
+            localizations: ["en", "sv"], preferences: ["sv"], matched: ["sv"]
+        ))
+        let full = report.note ?? ""
+        let summary = report.noteSummary ?? ""
+        XCTAssertFalse(full.isEmpty)
+        XCTAssertFalse(summary.isEmpty)
+        XCTAssertNotEqual(summary, full)
+        XCTAssertLessThan(summary.count * 4, full.count)
+        // It still carries the two facts an agent must not miss, and says
+        // where the rest is.
+        XCTAssertTrue(summary.contains("'sv'"))
+        XCTAssertTrue(summary.contains("control-surface plane"))
+        XCTAssertTrue(summary.contains("logic_ui_language.language_note"))
+    }
+
+    func testAnUndeterminedLanguageAlsoPointsAtTheBlockRatherThanRepeatingIt() {
+        let report = LogicUILanguage.report(evidence(
+            localizations: [], preferences: ["en"], matched: []
+        ))
+        let summary = report.noteSummary ?? ""
+        XCTAssertTrue(summary.contains("could not be determined"))
+        XCTAssertTrue(summary.contains("logic_ui_language.language_note"))
+        XCTAssertNotEqual(summary, LogicUILanguage.unknownNote)
+    }
+
+    func testAnEnglishLogicPromotesNothingToTheTopLevel() {
+        let report = LogicUILanguage.report(evidence(
+            localizations: ["en"], preferences: ["en"], matched: ["en"]
+        ))
+        XCTAssertNil(report.note)
+        XCTAssertNil(report.noteSummary)
     }
 }

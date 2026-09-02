@@ -70,16 +70,33 @@ enum LogicUILanguage {
             var result: [String: Any] = [
                 "language": language ?? NSNull(),
                 "is_english": isEnglish ?? NSNull(),
-                "determined_by": method,
-                "confidence": "inferred — macOS publishes no way to ask a running"
-                    + " application which language it is drawing in. This is Logic's app"
-                    + " bundle's localizations matched against the language preference order"
-                    + " that applies to it, which is the same choice Logic makes when it"
-                    + " launches. A Logic that has been running since before a language"
-                    + " change will still be showing the OLD language."
+                "determined_by": method
             ]
             if let note { result["language_note"] = note }
             return result
+        }
+
+        /// The one-line form `logic_health` promotes to the TOP level of its
+        /// result. nil when there is nothing to warn about.
+        ///
+        /// The promotion is deliberate — an agent skimming the doctor must not
+        /// miss a non-English Logic — but it used to be the full note copied
+        /// verbatim, so the same 1 371 characters travelled twice in one
+        /// response (measured 2026-09-02: ~2.75 kB of identical prose, more
+        /// than doubling a non-English Mac's report to make one point). The
+        /// long form stays exactly where it was, in
+        /// `logic_ui_language.language_note`; this is the pointer to it.
+        var noteSummary: String? {
+            guard note != nil else { return nil }
+            guard let language else {
+                return "Logic's UI LANGUAGE could not be determined, so this server cannot say"
+                    + " whether its English-string assumptions hold — see"
+                    + " logic_ui_language.language_note."
+            }
+            return "Logic's UI LANGUAGE appears to be '\(language)', not English."
+                + " The Accessibility plane can fail on a perfectly healthy Logic;"
+                + " the control-surface plane speaks MIDI and is unaffected. Read"
+                + " logic_ui_language.language_note for the plane-by-plane detail."
         }
     }
 
@@ -173,15 +190,18 @@ enum LogicUILanguage {
     /// Reads the evidence off this Mac. Touches the filesystem and the
     /// preferences domain; does NOT touch Logic — it works with Logic closed,
     /// which is exactly when `logic_health` is most often run.
-    static func evidence(bundleIdentifier: String) -> Evidence {
-        // Prefer the RUNNING Logic's bundle URL: it is the copy actually in
-        // use, which need not be the one Launch Services would resolve.
-        let running = NSRunningApplication
-            .runningApplications(withBundleIdentifier: bundleIdentifier)
-            .first?.bundleURL
-        let installed = NSWorkspace.shared
-            .urlForApplication(withBundleIdentifier: bundleIdentifier)
-        let bundle = (running ?? installed).flatMap { Bundle(url: $0) }
+    /// `runningBundleURL` is the RUNNING Logic's bundle URL when the caller
+    /// already resolved the process (it is the copy actually in use, which
+    /// need not be the one Launch Services would resolve). Pass nil and the
+    /// Launch Services lookup answers instead.
+    static func evidence(bundleIdentifier: String, runningBundleURL: URL?) -> Evidence {
+        // `??` is an autoclosure, so the Launch Services lookup is only paid
+        // when there is no running copy to prefer. It used to be computed
+        // unconditionally and thrown away: 2.3 ms of a 92.9 ms cold call
+        // (measured 2026-09-02).
+        let bundle = (runningBundleURL
+            ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier))
+            .flatMap { Bundle(url: $0) }
         let localizations = bundle?.localizations ?? []
 
         // The per-application language override (System Settings > General >
@@ -215,13 +235,21 @@ enum LogicUILanguage {
         )
     }
 
-    /// Evidence + verdict, as the block `logic_health` publishes.
-    static func healthPayload(bundleIdentifier: String) -> [String: Any] {
-        let facts = evidence(bundleIdentifier: bundleIdentifier)
-        var payload = report(facts).payload
+    /// Evidence + verdict, as the block `logic_health` publishes, plus the
+    /// one-line form of the warning it promotes to the top level.
+    struct HealthBlock {
+        let payload: [String: Any]
+        /// `logic_health["language_note"]`, or nil on an English Logic.
+        let topLevelNote: String?
+    }
+
+    static func healthBlock(bundleIdentifier: String, runningBundleURL: URL?) -> HealthBlock {
+        let facts = evidence(bundleIdentifier: bundleIdentifier, runningBundleURL: runningBundleURL)
+        let verdict = report(facts)
+        var payload = verdict.payload
         payload["preference_order"] = Array(facts.preferenceOrder.prefix(5))
         payload["per_application_override"] = facts.perApplicationOverride
         payload["app_localizations_count"] = facts.appLocalizations.count
-        return payload
+        return HealthBlock(payload: payload, topLevelNote: verdict.noteSummary)
     }
 }

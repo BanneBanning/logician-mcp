@@ -475,6 +475,38 @@ with every render coming back as audio the agent can listen to.
   nothing at all about what is not — spending that silence as a guarantee in front of a
   destructive command is the exact bug being fixed.
 
+- **Asking how things are stopped moving the control surface, and says a third as
+  much.** `logic_health` is the tool the guide tells every session to run first, and it
+  was ending that session by pressing PAN: its liveness probe counted as a write, so the
+  server's shutdown restored a surface nothing had touched — 145 ms of it measured, and a
+  real view change on a surface the user had left in a Send or insert view. Which bridge
+  commands can move the surface is now a property of the command vocabulary itself,
+  answered by an exhaustive switch that will not compile until a newly added command says
+  which side it is on, rather than by a list that had drifted to one entry. Measured live
+  in alternating pairs against the sandbox project: the doctor's exit went from 137–140 ms
+  and "surface returned to Pan view" to 1.6 ms and "the control surface was never
+  touched", and the surface's own event counter did not move once across the whole run.
+  `logic_get_transport` reads the surface through the same probe and is fixed by the same
+  change. The pass also took the doctor's own cost down: one socket round trip where there
+  were two once the bridge daemon is on this build (its `status` reply now carries the
+  protocol version the ping was sent for) and never more than the two it always cost
+  before then, one Logic-process lookup where there were three, one window walk where a
+  second was about to be added, and no Launch Services lookup on the branch that discards
+  it — 3.4 ms to 3.1 ms warm. And the report itself went from 2 139 to 638 bytes on a
+  healthy Mac, 2 432 to 791 on the wire, **70% smaller** — because 22 key commands all
+  reading `registered: true` are now a count, the 381-byte "this is an inference"
+  paragraph moved into the tool description where it is paid once per session instead of
+  once per call, and the 1 371-character non-English warning is carried once in full with
+  a one-line pointer at the top level instead of being shipped twice.
+- **The doctor can tell a modal apart from a dead surface.** A Logic sitting on an
+  unanswered alert stops feeding the control surface entirely, which reads as
+  `mcu_connected: false` — so the one tool people run *because* something is stuck was
+  answering "go and re-pick your MIDI ports" at someone whose only problem was a dialog on
+  screen. `logic_health` already reads Logic's window list; when the surface is silent and
+  a window is open it now names that window in the fix and lists it in `open_dialogs`, and
+  when no window is open it says so, so the MIDI-port remedy is only offered to the people
+  it is actually for.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

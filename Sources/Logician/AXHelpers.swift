@@ -224,7 +224,19 @@ extension LogicAccessibility {
             .first else {
             throw LogicianError.logicNotRunning
         }
-        let appElement = AXUIElementCreateApplication(application.processIdentifier)
+        return windows(ofProcess: application.processIdentifier)
+    }
+
+    /// The same walk against a Logic process the caller ALREADY resolved.
+    ///
+    /// `runningApplications(withBundleIdentifier:)` is 0.22 ms warm and
+    /// 0.71 ms cold (measured 2026-09-02), and `logic_health` was paying it
+    /// three times in one call — once for its own `logic_pid`, once in here,
+    /// once inside the UI-language inference. Find it once, pass it down.
+    /// The trust check stays with the CALLER on this path so it is not paid
+    /// twice either; `logicWindows()` above is the checked entry point.
+    func windows(ofProcess pid: pid_t) -> [AXUIElement] {
+        let appElement = AXUIElementCreateApplication(pid)
         var collected = attribute(appElement, kAXWindowsAttribute as String) as? [AXUIElement] ?? []
         if collected.isEmpty {
             // Logic's AXWindows list is sometimes empty while Logic is not the

@@ -5,18 +5,39 @@ import LogicMCUBridge
 // MCU bridge status and raw MCU commands.
 extension MCPServer {
     func handleHealth(_ arguments: [String: Any]) throws -> Any {
-        var health = logic.health()
+        let facts = logic.healthFacts()
+        var health = facts.payload
         // Doctor checks: every setup step as data, with the fix in text.
-        MCUBridge.ensureRunning()
-        let bridge = (try? MCUBridge.send(.status)) ?? BridgeResponse(ok: false)
-        let bridgeUp = bridge.ok
-        let receivedEvents = bridge.snapshot?.receivedEvents ?? 0
+        //
+        // ONE round trip on a healthy Mac, where this used to make two:
+        // `ensureRunning()`'s ping proved liveness and then `.status` was sent
+        // for the snapshot. `.status` proves liveness exactly as well, and
+        // since 2026-09-02 it echoes `bridge_protocol` too, so the version
+        // check that justified the ping rides along. A daemon too old to echo
+        // it — or a dead socket — falls back to the full start-and-upgrade
+        // path, which is where that work belonged all along.
+        var bridge = try? MCUBridge.send(.status)
+        if bridge?.ok != true || (bridge?.bridgeProtocol ?? 0) < bridgeProtocolVersion {
+            let outcome = MCUBridge.ensureRunning()
+            if MCPServer.mustRereadStatus(firstReadAnswered: bridge?.ok == true, after: outcome) {
+                bridge = try? MCUBridge.send(.status)
+            }
+        }
+        let bridgeUp = bridge?.ok == true
+        let receivedEvents = bridge?.snapshot?.receivedEvents ?? 0
         health["bridge_running"] = bridgeUp
         health["mcu_connected"] = receivedEvents > 0
         if !bridgeUp {
             health["bridge_fix"] = "the bridge subprocess could not be started (self-spawn with --bridge failed)"
         } else if receivedEvents == 0 {
-            health["mcu_fix"] = "no MIDI from Logic yet. If this is a FRESH setup: add a Mackie Control in Logic > Control Surfaces > Setup with ports 'Logic MCP MCU'. If it worked before and the bridge was restarted: Logic does not reopen the port by itself - open Control Surfaces > Setup and re-pick 'Logic MCP MCU' in Input/Output Port (or restart Logic). Tools fall back to Accessibility meanwhile, slower and less complete."
+            health["mcu_fix"] = MCPServer.mcuRemediation(dialogTitles: facts.dialogTitles)
+            // The evidence behind that sentence, so the reader can go and look
+            // rather than take the doctor's word for it. Only on this branch:
+            // a dialog open on a working surface is not a fault, and this
+            // report is already 87% boilerplate.
+            if !facts.dialogTitles.isEmpty {
+                health["open_dialogs"] = facts.dialogTitles
+            }
         }
         // Orphaned twin ports are the single most confusing failure
         // in this system: everything looks connected while key
@@ -33,20 +54,26 @@ extension MCPServer {
                 + "with relearn: true."
         }
         let registered = Set(KeyCommandRegistry.commands().compactMap { $0["name"] as? String })
-        health["key_commands"] = KeyCommandRegistry.standardCommands.map { command in
-            ["name": command.name, "registered": registered.contains(command.name)]
-        }
-        if !KeyCommandRegistry.standardCommands.allSatisfy({ registered.contains($0.name) }) {
+        let keyCommands = MCPServer.keyCommandCensus(
+            standard: KeyCommandRegistry.standardCommands.map(\.name), registered: registered
+        )
+        health["key_commands"] = keyCommands.census
+        if !keyCommands.missing.isEmpty {
             health["key_commands_fix"] = "run logic_setup_key_commands (or let the first tool that needs one learn it automatically); if commands are listed as registered but never fire, run it with relearn: true - port recreation orphans the bindings in Logic"
         }
         // Which language Logic is drawing in — the one setup property that
         // silently disables a third of the surface and that nothing used to
         // report. An INFERENCE, and the block says so; see `LogicUILanguage`.
         // Promoted to a top-level `language_note` when it is not English, so
-        // an agent skimming the doctor's output cannot miss it.
-        let language = LogicUILanguage.healthPayload(bundleIdentifier: logic.bundleIdentifier)
-        health["logic_ui_language"] = language
-        if let note = language["language_note"] as? String {
+        // an agent skimming the doctor's output cannot miss it — as ONE LINE
+        // pointing back at the block, not as a second copy of the 1 371-char
+        // account (which is what it was until 2026-09-02).
+        let language = LogicUILanguage.healthBlock(
+            bundleIdentifier: logic.bundleIdentifier,
+            runningBundleURL: facts.application?.bundleURL
+        )
+        health["logic_ui_language"] = language.payload
+        if let note = language.topLevelNote {
             health["language_note"] = note
         }
         if health["accessibility_trusted"] as? Bool != true {
@@ -86,6 +113,76 @@ extension MCPServer {
             fixes["project_fix"] = "Logic is running but no project document is open (an empty Logic window, or a project that has never been saved to disk). Open or save a project: tools that address tracks, regions and bars need one, and the tools that verify against a project path cannot check anything without it."
         }
         return fixes
+    }
+
+    /// Whether the `status` read taken BEFORE `ensureRunning()` still
+    /// describes the daemon that is answering AFTER it.
+    ///
+    /// Two things make it stale, and only two. The read may not have answered
+    /// at all (dead socket), or `ensureRunning()` may have put a different
+    /// daemon there — and a fresh daemon starts with `received_events` at 0,
+    /// so reusing the old reading would report `mcu_connected: true` about a
+    /// bridge Logic has never spoken to. Everything else keeps the first read,
+    /// which is what makes the common case one socket round trip instead of
+    /// two: a daemon too old to echo `bridge_protocol` on `status` is still
+    /// proven alive AND current by the ping inside `ensureRunning()`, so its
+    /// snapshot is still the right one and costs what it always did.
+    static func mustRereadStatus(
+        firstReadAnswered: Bool, after outcome: MCUBridge.StartOutcome
+    ) -> Bool {
+        !firstReadAnswered || outcome != .unchanged
+    }
+
+    /// `mcu_fix` — the remedy for "the bridge is up and Logic has sent it
+    /// nothing yet".
+    ///
+    /// That one symptom has two completely unrelated cures, and until
+    /// 2026-09-02 the doctor only knew the second. A Logic sitting on a modal
+    /// alert stops feeding the control surface entirely (the same mechanism
+    /// measured on `logic_add_send`: a modal reads as a dead bridge), so the
+    /// tool most likely to be run BECAUSE something is stuck was answering
+    /// "go and re-pick your MIDI ports" at someone whose only problem was an
+    /// unanswered dialog. `logic_health` already walks Logic's window list for
+    /// the project document; naming what it saw there costs nothing and is
+    /// the only way to tell the reader which cure they are in.
+    ///
+    /// The dialog is named as a POSSIBILITY, not a verdict: the window list
+    /// says a dialog, sheet or floating window is open, not that it is modal
+    /// — an open plugin window looks the same from here.
+    static func mcuRemediation(dialogTitles: [String]) -> String {
+        let ports = "If this is a FRESH setup: add a Mackie Control in Logic > Control Surfaces > Setup with ports 'Logic MCP MCU'. If it worked before and the bridge was restarted: Logic does not reopen the port by itself - open Control Surfaces > Setup and re-pick 'Logic MCP MCU' in Input/Output Port (or restart Logic). Tools fall back to Accessibility meanwhile, slower and less complete."
+        guard !dialogTitles.isEmpty else {
+            return "no MIDI from Logic yet, and Logic has no dialog open (its window list was read"
+                + " at the same moment), so this is the setup. " + ports
+        }
+        let named = dialogTitles.map { "'\($0)'" }.joined(separator: ", ")
+        return "no MIDI from Logic yet, and Logic HAS a window open that can be the reason: "
+            + named + ". While a modal alert is up Logic stops feeding the control surface"
+            + " altogether, which looks exactly like a surface that was never set up - and it"
+            + " swallows key commands too, so tools report that they fired and nothing happened."
+            + " Answer or cancel it in Logic (logic_list_windows shows its buttons) and run"
+            + " logic_health again. Only if mcu_connected is still false with nothing on screen"
+            + " is it the MIDI setup: " + ports
+    }
+
+    /// The `key_commands` block, as a pure function of the two name sets.
+    ///
+    /// It used to be 22 rows of `{"name": …, "registered": true}` — 1 268 B,
+    /// 56% of a healthy report's whole payload (measured 2026-09-02), every
+    /// byte of it saying nothing is wrong. The names only carry information
+    /// when one is MISSING, and the failure already has its own
+    /// `key_commands_fix` line, so the healthy case is a count.
+    static func keyCommandCensus(
+        standard: [String], registered: Set<String>
+    ) -> (census: [String: Any], missing: [String]) {
+        let missing = standard.filter { !registered.contains($0) }
+        var census: [String: Any] = [
+            "registered": standard.count - missing.count,
+            "of": standard.count,
+            "all_registered": missing.isEmpty
+        ]
+        if !missing.isEmpty { census["missing"] = missing }
+        return (census, missing)
     }
 
     func handleSetupKeyCommands(_ arguments: [String: Any]) throws -> Any {

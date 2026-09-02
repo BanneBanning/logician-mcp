@@ -158,4 +158,10 @@ private func waitFor(_ fd: Int32, events: Int16, deadline: Date) -> Bool {
 /// `final_value` + `followed`. Both are ADDITIVE: an older daemon simply omits
 /// the keys, `SurfaceSnapshot` defaults them rather than failing to decode,
 /// and the server reports the meter feed as unavailable instead of empty.
+/// NOT bumped for the `bridge_protocol` field `status` began echoing on
+/// 2026-09-02: it is purely additive, it changes nothing a daemon DOES, and
+/// bumping would have made every healthy running daemon read as outdated and
+/// be replaced — a restart of the user's live surface to buy one saved socket
+/// round trip. A daemon that omits the key costs the server one extra ping,
+/// once, until it is next restarted.
 public let bridgeProtocolVersion = 5
