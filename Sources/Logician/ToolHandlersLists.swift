@@ -21,7 +21,7 @@ extension MCPServer {
             )
         }
         let read = logic.readEventList()
-        guard let events = read.events else {
+        guard let events = read.events, let census = read.census else {
             throw LogicianError.trackNotExposed(
                 requested: "Logic's Event List",
                 exposed: read.failure?.reason ?? "the Event tab published no table"
@@ -34,7 +34,10 @@ extension MCPServer {
             "verified": true,
             "state": "listed",
             "events": Array(events.prefix(limit)),
-            "event_count": events.count,
+            // The LIST'S count, not the array's: a row Logic has published and
+            // not drawn yet is a real event that cannot be read, and counting
+            // the readable ones would report a region one note short of itself.
+            "event_count": census.count,
             "columns": read.columns,
             "scope": "the SELECTED region (or the selected track's region at the playhead) — this"
                 + " is what Logic's Event List shows, never the whole project. Select with"
@@ -43,20 +46,21 @@ extension MCPServer {
                 + " tab are restored afterwards. Values are Logic's own cell texts, plus parsed"
                 + " bar/beat/pitch/velocity/length where the columns were recognised."
         ]
-        if let declared = read.declaredCount { payload["declared_count"] = declared }
+        if let declared = census.declared { payload["declared_count"] = declared }
         // Logic's own answer to "which region is this?", read off the Event
         // tab's Region Path label.
         if let region = read.region, !region.isEmpty { payload["region"] = region }
+        appendUnreadRowWarning(census, kind: "event", to: &payload)
         if truncated {
             payload["truncated"] = true
             payload["limit"] = limit
             appendWarning(
-                "The list holds \(events.count) events and only the first \(limit) are in this"
+                "The list holds \(census.count) events and only the first \(limit) are in this"
                     + " result. Raise `limit`, or narrow the selection.",
                 to: &payload
             )
         }
-        if events.isEmpty {
+        if census.count == 0 {
             appendWarning(
                 "The Event List is EMPTY. That means nothing is selected (or the selected region"
                     + " holds no events) — it is NOT evidence that the project has no MIDI. Select"
@@ -66,6 +70,35 @@ extension MCPServer {
         }
         if let selection { payload["selection"] = selection }
         return payload
+    }
+
+    /// The one place a List Editors read admits that Logic counted rows it had
+    /// not drawn — the reader's half of what `EventCensus` already does on
+    /// every write, in the same words.
+    ///
+    /// It says all three things, because any one of them alone still misleads:
+    /// how many the list holds (the count Logic declares), how many are in the
+    /// payload, and WHICH row numbers are missing. Before this, a 26-note
+    /// region came back as 26 entries of which one was blank, a real note was
+    /// gone, and both counts agreed (measured 3/3, 2026-09-02).
+    func appendUnreadRowWarning(
+        _ census: ListEditorCensus, kind: String, to payload: inout [String: Any]
+    ) {
+        guard !census.isComplete else { return }
+        payload["\(kind)s_read"] = census.entries.count
+        payload["unreadable_rows"] = census.unread
+        payload["unreadable_row_numbers"] = census.unreadRowNumbers
+        appendWarning(
+            census.unreadNote
+                + " The list holds \(census.count) \(kind)(s) and \(census.entries.count) of them"
+                + " could be read; row(s)"
+                + " \(census.unreadRowNumbers.map(String.init).joined(separator: ", "))"
+                + " are missing from this result and NOT from the project. A List Editors table"
+                + " only draws the rows in view, so a list longer than the pane always answers"
+                + " short: scroll it (or make the pane taller) and read again before concluding"
+                + " that a \(kind) is not there.",
+            to: &payload
+        )
     }
 
     // MARK: - logic_edit_event (G18)
@@ -152,25 +185,30 @@ extension MCPServer {
         switch action {
         case "list":
             let read = logic.readMarkerList()
-            guard let markers = read.markers else {
+            guard let markers = read.markers, let census = read.census else {
                 throw LogicianError.trackNotExposed(
                     requested: "Logic's Marker List",
                     exposed: read.failure?.reason ?? "the Marker tab published no table"
                 )
             }
-            return [
+            var payload: [String: Any] = [
                 "success": true, "verified": true, "state": "listed",
                 "markers": markers,
-                "marker_count": markers.count,
+                // The list's own count, for the same reason logic_list_events
+                // reports it: a marker Logic has counted and not drawn yet is a
+                // marker, and reporting the readable ones would hide it.
+                "marker_count": census.count,
                 "columns": read.columns,
                 "note": "Read out of View > List Editors > Marker; the pane and the previously"
                     + " selected tab are restored afterwards."
             ]
+            appendUnreadRowWarning(census, kind: "marker", to: &payload)
+            return payload
         case "create":
             return try createMarker(bar: bar, name: name)
         case "goto":
             let read = logic.readMarkerList()
-            guard let markers = read.markers else {
+            guard let markers = read.markers, let census = read.census else {
                 throw LogicianError.trackNotExposed(
                     requested: "Logic's Marker List",
                     exposed: read.failure?.reason ?? "the Marker tab published no table"
@@ -185,11 +223,14 @@ extension MCPServer {
                 return false
             }
             guard let marker = matches.first, let target = marker["bar"] as? Int else {
+                // "Not in the list I could read" is not "not in the project"
+                // when Logic counted a row it had not drawn, so the refusal
+                // says which it is rather than leaving the caller to assume.
                 throw LogicianError.trackNotFound(
                     name.map { "marker '\($0)'" } ?? "a marker at bar \(bar ?? 0)",
                     available: markers.map {
                         "\(($0["name"] as? String) ?? "(unnamed)") at bar \(($0["bar"] as? Int).map(String.init) ?? "?")"
-                    }
+                    } + (census.isComplete ? [] : ["(" + census.unreadNote + " Read again.)"])
                 )
             }
             guard matches.count == 1 else {
@@ -232,7 +273,14 @@ extension MCPServer {
     /// and it is second because a MIDI-note binding can be silently orphaned
     /// when Logic's ports are recreated while a button cannot.
     private func createMarker(bar: Int?, name: String?) throws -> [String: Any] {
-        let before = logic.readMarkerList().markers ?? []
+        let readBefore = logic.readMarkerList()
+        let before = readBefore.markers ?? []
+        // The COUNT is the list's own on both sides of the create, never the
+        // readable rows': a marker created into an undrawn row would otherwise
+        // read as "no new marker appeared" and be reported as a failure that
+        // had in fact worked — the exact mistake `EventCensus` was written to
+        // stop on the Event List's writes (2026-09-01).
+        let countBefore = readBefore.census?.count ?? before.count
         var moved: [String: Any]?
         if let bar { moved = try logic.setPlayhead(barNumber: bar, beat: nil) }
         var route = "list_editor_create_marker_button"
@@ -244,11 +292,14 @@ extension MCPServer {
             _ = try MCUController.triggerKeyCommand(note: command.note, channel: command.channel)
         }
         var after: [[String: Any]] = []
+        var censusAfter: ListEditorCensus?
         var created = false
         for _ in 0..<20 {
             Thread.sleep(forTimeInterval: 0.25)
-            after = logic.readMarkerList().markers ?? []
-            if after.count > before.count { created = true; break }
+            let read = logic.readMarkerList()
+            after = read.markers ?? []
+            censusAfter = read.census
+            if (read.census?.count ?? after.count) > countBefore { created = true; break }
         }
         // WHICH row is the new one is neither the row INDEX nor the name: Logic
         // renumbers markers by position, so creating one at bar 33 in front of
@@ -268,8 +319,8 @@ extension MCPServer {
             "success": created,
             "verified": created,
             "state": created ? "created" : "failed",
-            "markers_before": before.count,
-            "markers_after": after.count,
+            "markers_before": countBefore,
+            "markers_after": censusAfter?.count ?? after.count,
             "markers": after,
             "write_route": route,
             "readback_route": "marker_list_reread",
@@ -282,7 +333,20 @@ extension MCPServer {
                 : "No new marker appeared in the Marker List after the create."
         ]
         if let moved { payload["playhead"] = moved }
-        if let fresh { payload["marker"] = fresh }
+        if let fresh {
+            payload["marker"] = fresh
+        } else if created, let censusAfter, !censusAfter.isComplete {
+            // The count grew, so the marker is there; the row carrying it is
+            // the one Logic has not drawn, so its bar cannot be read yet. Both
+            // halves are said, because "created: true" with no marker in the
+            // payload is otherwise indistinguishable from a bug.
+            appendWarning(
+                "The marker was created — the Marker List's own count grew — but the new row is"
+                    + " one Logic has NOT drawn yet, so it is missing from `markers` and its bar"
+                    + " could not be read. " + censusAfter.unreadNote + " Read the list again.",
+                to: &payload
+            )
+        }
         if let name {
             // Naming is a SEPARATE write and is reported separately: Logic's
             // Create Marker names the marker itself, and whether the row can be
@@ -313,8 +377,15 @@ extension MCPServer {
                 exposed: knowledge.failure?.reason ?? "the Signature tab published no table"
             )
         }
-        return [
-            "success": true, "verified": true, "state": "listed",
+        var payload: [String: Any] = [
+            "success": true,
+            // A cached map is NOT a verified one, and this is the cache that
+            // needs saying so: its cross-check can only contradict, never
+            // confirm, and it has no TTL. Same rule, same words, as
+            // logic_tempo_events' `tempo_list_cache`.
+            "verified": !knowledge.servedFromCache,
+            "state": "listed",
+            "read_route": knowledge.servedFromCache ? "signature_list_cache" : "signature_list",
             "signatures": zip(map.bars, map.signatures).map { bar, signature in
                 [
                     "bar": bar,
@@ -331,6 +402,19 @@ extension MCPServer {
                 + " project's boundaries exactly what they have always been. A map with more than"
                 + " one bar length IS integrated by every tool that converts bars to seconds."
         ]
+        // The Signature List holds KEY signatures in the same table, and this
+        // reader counts them for the truncation cross-check and then skips
+        // them. The count is reported because the description promises those
+        // rows are accounted for — and because a key-row count that does not
+        // match the project's key changes is how a row this server could not
+        // read becomes visible.
+        if let keyRows = knowledge.keySignatureRows {
+            payload["key_signature_rows"] = keyRows
+        }
+        if knowledge.servedFromCache {
+            appendWarning(MeterKnowledge.cacheWarning, to: &payload)
+        }
+        return payload
     }
 
     // MARK: - logic_set_insert_bypass (G36)

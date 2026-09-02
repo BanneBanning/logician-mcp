@@ -729,6 +729,29 @@ with every render coming back as audio the agent can listen to.
   because one is Logic re-filtering 1400 rows and the other is the MIDI plane. Unit-tested,
   not live-verified: this flow rewrites persisted key bindings, so it was fixed by review and
   23 new tests rather than by running it.
+- **The event and marker lists never lose a note in silence again — and they are a
+  quarter faster.** Logic's List Editors draw only the rows in VIEW: everything scrolled
+  out of the pane, and the newest row of a list that has just grown, is published and
+  counted while its cells stay empty. The readers mapped every published row anyway, so a
+  region that had just gained a note came back as 26 events of which one was blank, a real
+  note (`12 4 2 1 Note D♯3`) was simply gone, and both counts said 26 — nothing in the
+  result hinted that anything was missing (reproduced 3/3). A 54-note region was worse
+  still: 26 real notes, 28 blanks, reported as 54. Now `logic_list_events` and
+  `logic_markers` report every row they can read, state the count Logic itself declares,
+  and name the row numbers they could not read in a warning that says how to get them
+  (scroll the list) — the same census, in the same words, that the Event List's WRITES
+  have used since the day before. The meter map, where a lost row would place every later
+  bar confidently wrong rather than merely misreport it, now REFUSES a Signature List with
+  an undrawn row instead of quietly reading it as a key change, and that refusal keeps the
+  bad map out of the session cache. `logic_list_signatures` also reports the key-signature
+  rows it skipped (`key_signature_rows`), and a map served from cache now says so —
+  `read_route: signature_list_cache`, `verified: false` and a SERVED FROM CACHE warning,
+  exactly as `logic_tempo_events` has always done. The same pass stopped both List Editors
+  tree walks from descending into the table's rows for things that sit beside it, and
+  replaced two blind 0.6 s waits with a positive readiness check that keeps the 0.6 s as
+  its deadline: measured live, `logic_list_events` went **1 150 → 816–891 ms** on a
+  25-event region and **1 840 → 1 034–1 081 ms** on a 54-event one, and
+  `logic_list_signatures`' cache miss **2 112 → 1 471 ms** (a cache hit stays 8 ms).
 
 ### Known limitations (honest by design)
 

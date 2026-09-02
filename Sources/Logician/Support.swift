@@ -368,6 +368,23 @@ struct MeterKnowledge {
     /// Why it did not — carried into the payload so an unread map is visible as
     /// an unread map, never as a constant one.
     let failure: ListEditorFailure?
+    /// Did this map come out of the server's cache rather than out of Logic?
+    ///
+    /// It matters more here than for the tempo map, which is why it is reported
+    /// rather than assumed away: the control bar publishes the signature AT THE
+    /// PLAYHEAD, so the cache's cross-check can only ever contradict the map,
+    /// never confirm it, and there is no TTL — a session that reads the map
+    /// once serves that map at 7 ms a call forever (measured 2026-09-02).
+    var servedFromCache: Bool = false
+    /// How many rows of the Signature List were KEY signatures — counted for
+    /// the truncation cross-check and then skipped. Nil when nothing was read
+    /// from Logic on this call (a cache hit counted no rows).
+    ///
+    /// Reported because the reader's own doc comment always promised it would
+    /// be, and because it is the number that makes a dropped row visible: a
+    /// Signature List whose key-row count is one higher than the project's key
+    /// changes is a list with a row this server could not read.
+    var keySignatureRows: Int?
 
     /// The map, but only when it came from the Signature List AND actually
     /// changes the arithmetic. This is what every consumer passes down; see the
@@ -389,9 +406,10 @@ struct MeterKnowledge {
                 "note": "bar math assumed one beats-per-bar, as it always has"
             ]
         }
-        return [
+        var block: [String: Any] = [
             "read": true,
             "source": "signature_list",
+            "read_route": servedFromCache ? "signature_list_cache" : "signature_list",
             "events": map.events.count,
             "signatures": map.signatures,
             "bars": map.bars,
@@ -402,7 +420,20 @@ struct MeterKnowledge {
             // bit-for-bit what they have always been.
             "integrated": map.isVariable
         ]
+        if let keySignatureRows { block["key_signature_rows"] = keySignatureRows }
+        if servedFromCache { block["warning"] = MeterKnowledge.cacheWarning }
+        return block
     }
+
+    /// What a cached meter map obliges its result to say — the tempo family's
+    /// "SERVED FROM CACHE, UNVERIFIED" wording, adapted to the one difference
+    /// that makes this cache riskier: its cross-check cannot confirm anything.
+    static let cacheWarning = "SERVED FROM CACHE, UNVERIFIED: this meter map is this server's"
+        + " earlier read of the Signature List, not a fresh one. The only live cross-check"
+        + " available is the control bar's time signature AT THE PLAYHEAD, which can contradict"
+        + " a map (and then the cache is discarded) but can never confirm one — a signature"
+        + " added in Logic since the cached read would not show up here, and there is no TTL."
+        + " Nothing else in this call could tell."
 
     /// What a VARYING meter obliges a seconds-slicing result to say.
     func warning(sliced: String) -> String? {

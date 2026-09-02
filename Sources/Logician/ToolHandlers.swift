@@ -352,7 +352,10 @@ extension MCPServer {
     /// so it can only ever contradict the map, never confirm it; a signature the
     /// map cannot account for at any bar therefore discards the cache, and a
     /// signature it can does not prove the map is current.
-    func resolveMeterMap() -> (map: MeterMap?, failure: ListEditorFailure?) {
+    func resolveMeterMap() -> (
+        map: MeterMap?, failure: ListEditorFailure?, servedFromCache: Bool,
+        keySignatureRows: Int?
+    ) {
         let projectPath = try? logic.projectDocumentPath()
         if let cached = loadScopedCache(
             MCPServer.meterMapCacheURL, projectPath: projectPath, as: MeterMap.self
@@ -363,15 +366,25 @@ extension MCPServer {
                 $0.numerator == liveSignature?.numerator
                     && $0.denominator == liveSignature?.denominator
             }) {
-                return (cached, nil)
+                // Served, and SAID to be served: this check can only ever
+                // contradict the map, so a pass is not a confirmation, and the
+                // caller reports the route and the caveat rather than dressing
+                // a cached map as a live read (the tempo twin's rule, applied
+                // to the cache that needs it more — it has no TTL).
+                return (cached, nil, true, nil)
             }
             invalidateMeterMapCache()
         }
         let read = logic.readMeterMap()
+        // ONLY a successful read is cached, and that is what keeps a partially
+        // drawn Signature List out of the cache: `parseSignatureList` refuses a
+        // list holding a row Logic has published and not drawn, so the map that
+        // would have been missing a time signature is never written here and
+        // never served for the rest of the session (2026-09-02).
         if let map = read.map {
             saveScopedCache(map, to: MCPServer.meterMapCacheURL, projectPath: projectPath)
         }
-        return (read.map, read.failure)
+        return (read.map, read.failure, false, read.map == nil ? nil : read.keySignatureRows)
     }
 
     /// The meter map, the payload block that reports it, and the warning a
@@ -384,7 +397,11 @@ extension MCPServer {
     /// block still names the reason so an agent can see the read was attempted.
     func resolveMeterKnowledge() -> MeterKnowledge {
         let resolved = resolveMeterMap()
-        return MeterKnowledge(map: resolved.map, failure: resolved.failure)
+        return MeterKnowledge(
+            map: resolved.map, failure: resolved.failure,
+            servedFromCache: resolved.servedFromCache,
+            keySignatureRows: resolved.keySignatureRows
+        )
     }
 
     /// What this invocation knows about the tempo across `startBar`–`endBar`:

@@ -282,17 +282,25 @@ extension MCPServer {
 
     private func snapshotMarkers() throws -> [String: Any] {
         let read = logic.readMarkerList()
-        guard let markers = read.markers else {
+        guard let markers = read.markers, let census = read.census else {
             throw LogicianError.trackNotExposed(
                 requested: "Logic's Marker List",
                 exposed: read.failure?.reason ?? "the Marker tab published no table"
             )
         }
-        return [
+        var block: [String: Any] = [
             "markers": markers,
-            "marker_count": markers.count,
+            // Logic's own count, so a snapshot never reports a marker list one
+            // row short of itself (`ListEditorCensus`).
+            "marker_count": census.count,
             "columns": read.columns
         ]
+        if !census.isComplete {
+            block["markers_read"] = markers.count
+            block["unreadable_rows"] = census.unread
+            block["warning"] = census.unreadNote
+        }
+        return block
     }
 
     /// One walk over the addressable tracks reading BOTH the insert chain and
