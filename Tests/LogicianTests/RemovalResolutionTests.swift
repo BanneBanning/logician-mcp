@@ -208,4 +208,125 @@ final class RemovalResolutionTests: XCTestCase {
             beforeCount: nil, afterNames: ["Gain"], pluginName: "Gain"
         ))
     }
+
+    // MARK: - removalJumpEntries: the undershoot invariant
+
+    /// The invariant the removal's jump lives or dies by. Overshooting `--`
+    /// wraps into the far end of a 590+-entry catalog, so the landing must
+    /// stay ABOVE the origin for every hint the map can produce — exact, or
+    /// too small, which is the only direction it can err.
+    func testTheJumpNeverCarriesTheBrowsePastTheBoundary() {
+        let margin = MCUController.browseRemovalUndershootEntries
+        for trueOrdinal in [1, 2, 5, 35, 120, 331, 590] {
+            for travelled in 0...min(trueOrdinal, 12) {
+                for shortfall in 0...min(trueOrdinal, 6) {
+                    let hint = trueOrdinal - shortfall // a map can only undercount
+                    guard let jump = MCUController.removalJumpEntries(
+                        cachedOrdinal: hint, entriesTravelled: travelled
+                    ) else { continue }
+                    let landing = trueOrdinal - travelled - jump
+                    XCTAssertGreaterThanOrEqual(
+                        landing, margin,
+                        "hint \(hint) for ordinal \(trueOrdinal) after \(travelled) travelled"
+                            + " landed at \(landing), inside the undershoot margin"
+                    )
+                }
+            }
+        }
+    }
+
+    func testAnExactHintLandsExactlyTheMarginShortOfTheBoundary() {
+        let margin = MCUController.browseRemovalUndershootEntries
+        // `Gain` sat at ordinal ~35 on the profiled install, one step travelled.
+        let jump = MCUController.removalJumpEntries(cachedOrdinal: 35, entriesTravelled: 1)
+        XCTAssertEqual(jump, 35 - 1 - margin)
+        XCTAssertEqual(35 - 1 - (jump ?? 0), margin, "the landing, for an exact hint")
+    }
+
+    func testNoJumpIsTakenWhenTheBoundaryIsAlreadyInsideTheMargin() {
+        let margin = MCUController.browseRemovalUndershootEntries
+        XCTAssertNil(MCUController.removalJumpEntries(cachedOrdinal: margin, entriesTravelled: 0))
+        XCTAssertNil(MCUController.removalJumpEntries(cachedOrdinal: 1, entriesTravelled: 0))
+        XCTAssertNil(MCUController.removalJumpEntries(cachedOrdinal: 40, entriesTravelled: 40))
+        XCTAssertNotNil(
+            MCUController.removalJumpEntries(cachedOrdinal: margin + 1, entriesTravelled: 0)
+        )
+    }
+
+    func testTheRemovalUndershootsWhereTheAddAimsStraight() {
+        // The asymmetry is deliberate: an add that lands short walks one step
+        // forward, a removal that lands past `--` walks the whole catalog.
+        XCTAssertGreaterThan(MCUController.browseRemovalUndershootEntries, 0)
+        XCTAssertEqual(MCUController.browseJumpUndershootEntries, 0)
+    }
+
+    // MARK: - The bound the backward walk promises
+
+    func testTheBackwardWalkIsBoundedInEntriesAndWallClock() {
+        // The old bound was 400 MESSAGES, which at the unpaced loop's 15-23%
+        // swallow rate reached ~330 entries of a catalog running past 590: a
+        // plug-in deeper than that could not be removed at all.
+        XCTAssertGreaterThan(MCUController.browseEntryCap, 590)
+        XCTAssertGreaterThanOrEqual(MCUController.browseRemovalBudget, 30)
+    }
+
+    func testTheBoundaryRefusalNamesTheEntryLimitAndReadsTheTailBack() {
+        let refusal = MCUController.removalBoundaryRefusal(
+            entriesSeen: MCUController.browseEntryCap,
+            tail: ["Silver Gate", "Modulation Delay", "EnVerb"],
+            jumped: false
+        )
+        XCTAssertTrue(refusal.contains("\(MCUController.browseEntryCap) catalog entries"))
+        XCTAssertTrue(refusal.contains("\(MCUController.browseEntryCap)-entry limit"))
+        XCTAssertTrue(refusal.contains("Silver Gate, Modulation Delay, EnVerb"))
+        XCTAssertTrue(refusal.contains("Nothing was written"))
+        XCTAssertFalse(refusal.contains("steps"), "the old bound counted messages and said 'steps'")
+    }
+
+    func testTheBoundaryRefusalNamesTheSearchBudgetWhenThatIsWhatStoppedIt() {
+        let refusal = MCUController.removalBoundaryRefusal(
+            entriesSeen: 120, tail: ["Gain"], jumped: false
+        )
+        XCTAssertTrue(refusal.contains("120 catalog entries"))
+        XCTAssertTrue(refusal.contains("\(Int(MCUController.browseRemovalBudget)) s search budget"))
+        XCTAssertFalse(refusal.contains("-entry limit"))
+    }
+
+    func testAFailedJumpSaysTheCachedPositionWasDiscarded() {
+        let refusal = MCUController.removalBoundaryRefusal(
+            entriesSeen: 400, tail: [], jumped: true
+        )
+        XCTAssertTrue(refusal.contains("discarded"))
+        XCTAssertFalse(
+            MCUController.removalBoundaryRefusal(entriesSeen: 400, tail: [], jumped: false)
+                .contains("discarded")
+        )
+    }
+
+    func testTheRefusalCountsOneEntrySingular() {
+        XCTAssertTrue(
+            MCUController.removalBoundaryRefusal(entriesSeen: 1, tail: [], jumped: false)
+                .contains("1 catalog entry")
+        )
+    }
+
+    // MARK: - The drift refusal reports the browse cell, not a pan row
+
+    /// The message's whole job is to say what the browse drifted to, and it
+    /// used to read the LCD after `exitToPan()` had already run — so it
+    /// reported '0', strip 1's PAN value, live on 2026-09-02. Taking the cell
+    /// as a parameter is what makes the ordering impossible to get wrong.
+    func testTheDriftRefusalReportsTheCellItWasGiven() {
+        let refusal = MCUController.removalDriftActual(driftedTo: "Silver Gate (s/s)")
+        XCTAssertTrue(refusal.contains("'Silver Gate (s/s)'"))
+        XCTAssertTrue(
+            refusal.contains("before the surface was restored"),
+            "the message says which view the cell was read on"
+        )
+        XCTAssertTrue(refusal.contains("aborted without removing"))
+    }
+
+    func testTheDriftRefusalSaysSoWhenTheCellCouldNotBeReadAtAll() {
+        XCTAssertTrue(MCUController.removalDriftActual(driftedTo: nil).contains("'?'"))
+    }
 }

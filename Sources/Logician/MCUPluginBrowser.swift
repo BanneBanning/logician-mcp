@@ -470,11 +470,88 @@ extension MCUController {
         return target.offset
     }
 
+    /// How many entries a removal's backward jump carries, given the ordinal
+    /// the catalog map holds for the plug-in being removed and how far the
+    /// browse has already travelled from where that plug-in sits. nil when
+    /// there is no jump worth taking — the boundary is already inside the
+    /// undershoot margin.
+    ///
+    /// The invariant is the whole point, and it is the one the add path does
+    /// not need: for an exact hint the landing is
+    /// `browseRemovalUndershootEntries` entries ABOVE the `--` origin, and for
+    /// a hint that is too small — the only direction a cached ordinal can err,
+    /// see `PluginCatalogMap` — it is further above still. So the jump can
+    /// never carry the browse PAST the boundary, which is the one failure that
+    /// costs a whole catalog lap instead of a step.
+    static func removalJumpEntries(cachedOrdinal: Int, entriesTravelled: Int) -> Int? {
+        let distance = cachedOrdinal - entriesTravelled - browseRemovalUndershootEntries
+        return distance > 0 ? distance : nil
+    }
+
+    /// The refusal a backward walk that never reached `--` carries: how many
+    /// catalog ENTRIES it looked at, which of the two bounds stopped it, and
+    /// the last entries it still had on screen.
+    ///
+    /// Counted in entries because the old bound was counted in MESSAGES — 400
+    /// of them, which at the unpaced loop's 15-23% swallow rate was ~330
+    /// entries of a 590+-entry catalog (measured 2026-09-02), so the message
+    /// "within 400 steps" was true and useless: it never said the browse had
+    /// not been near the boundary.
+    static func removalBoundaryRefusal(
+        entriesSeen: Int, tail: [String], jumped: Bool
+    ) -> String {
+        let bound = entriesSeen >= browseEntryCap
+            ? "the \(browseEntryCap)-entry limit"
+            : "the \(Int(browseRemovalBudget)) s search budget"
+        var text = "the browser never reached the No Plug-in entry: it looked at"
+            + " \(entriesSeen) catalog \(entriesSeen == 1 ? "entry" : "entries")"
+            + " and stopped on \(bound)"
+        if !tail.isEmpty {
+            text += ", still showing [\(tail.joined(separator: ", "))]"
+        }
+        text += ". The boundary is the top of the list, so a browse that has not"
+            + " reached it has not been near it."
+        if jumped {
+            text += " The cached catalog position this browse jumped to cannot have been"
+                + " right, and has been discarded — the next attempt walks instead, which is"
+                + " slower but needs no cache."
+        }
+        return text + " Nothing was written: a browse writes nothing until the"
+            + " confirming press, and the press was never sent (browse abandoned)."
+    }
+
+    /// The `actual` half of the drift refusal — the one failure mode the
+    /// confirmation guard exists to explain.
+    ///
+    /// It takes the cell as a VALUE because the message used to read it as a
+    /// side effect, `browseName()` interpolated AFTER `exitToPan()` had already
+    /// run: so it reported a PAN row. Live 2026-09-02 it said the entry had
+    /// "drifted to '0'", which is strip 1's pan value and not a catalog entry
+    /// at all — and that reading had already cost one wrong diagnosis in
+    /// `profiles/logic_add_plugin.md`, where the same '0' was attributed to
+    /// another session pulling the surface out of the plug-in list.
+    static func removalDriftActual(driftedTo: String?) -> String {
+        "the entry drifted to '\(driftedTo ?? "?")' (read on the plug-in list, before the"
+            + " surface was restored) and stepping back to the No Plug-in entry could not"
+            + " recover it; aborted without removing"
+    }
+
     /// Whether the LCD insert row read back after the confirming press shows
     /// the removal. Two honest after-states exist: the slot reads empty, or
     /// Logic closed the gap and the later inserts slid up one — the old row
     /// with the cleared cell dropped and an empty cell appended. Anything
     /// else (the name still in place, a reshuffle) is a failed removal.
+    ///
+    /// Which one Logic actually does is now measured, and it is the first:
+    /// 2026-09-02, `Gain` removed from MCU slot 1 with `Parametric EQ` sitting
+    /// in slot 2, the row went `["Gain", "ParEQ", …]` → `["--", "ParEQ", …]`
+    /// and an independent `logic_list_inserts {route: "mcu"}` agreed. **Logic
+    /// clears the slot in place; it does not compact.** The compaction branch
+    /// below is therefore defensive rather than load-bearing — kept because one
+    /// observation on one Logic version is thin ground for deleting a
+    /// tolerance that costs nothing, and because the AX numbering DOES compact
+    /// (`insert_index` is the occupied-slot ordinal), so the two planes really
+    /// do disagree about this row.
     static func lcdRowShowsRemoval(before: [String], after: [String], slotIndex: Int) -> Bool {
         guard after.indices.contains(slotIndex) else { return true }
         func empty(_ cell: String) -> Bool { cell.isEmpty || cell == MCULCDStrings.emptySlot }
@@ -501,12 +578,24 @@ extension MCUController {
         return after < beforeCount
     }
 
-    /// Removes a plugin mouse-free: browse the occupied slot to the "--"
-    /// (No Plug-in) entry at the list boundary and confirm. The boundary can
-    /// be up to a full list away (~100 entries), so this takes up to ~60 s —
-    /// still no pointer, no menus. Returns nil when MCU is unavailable.
-    /// `insertSlot` (Mackie physical 1-8) names the slot when the same
-    /// display name occupies several of them.
+    /// Removes a plugin mouse-free: browse the occupied slot BACKWARD to the
+    /// "--" (No Plug-in) entry at the list boundary and confirm. Returns nil
+    /// when MCU is unavailable. `insertSlot` (Mackie physical 1-8) names the
+    /// slot when the same display name occupies several of them.
+    ///
+    /// The distance to the boundary is exactly the removed plug-in's catalog
+    /// ordinal, and that is the number `plugin-catalog-cache.json` already
+    /// holds — so this jumps most of the way (deliberately UNDERSHOOTING, see
+    /// `removalJumpEntries`) and paces the rest on the cell CHANGING, the same
+    /// two mechanisms `addPluginViaBrowser` has carried since 2026-08-31. Both
+    /// arrived here on 2026-09-02, with the walk's every-4th-step
+    /// `quiescentStatus`, its blind settle sleeps and the blind second after
+    /// the press replaced by proofs; measured mean 8553 ms before.
+    ///
+    /// Every proof the call had is still here and in the same order: the LCD
+    /// name proof before the press, the SELECT LED, the PL-view cross-check
+    /// against Accessibility, the slot readback and the duplicate-aware AX
+    /// cross-check.
     static func removePluginViaBrowser(
         pluginName: String, logic: LogicAccessibility, trackName: String,
         insertSlot: Int? = nil
@@ -534,54 +623,227 @@ extension MCUController {
         // afterwards can tell "one of three removed" from "nothing happened".
         let axCountBefore = (try? logic.insertPluginNames(trackName: trackName))
             .map { names in names.filter { axNamesPlugin($0, requested: pluginName) }.count }
+        func browseCell(in bottom: String) -> String {
+            let start = bottom.index(bottom.startIndex, offsetBy: min(slotIndex * 7, bottom.count))
+            // The entry spills over several LCD fields; cut at the first long
+            // gap, then take the NEIGHBOUR'S "--" back off. A BARE "--" is left
+            // alone by `normalizedBrowseEntry` (PluginCatalogTests covers
+            // exactly that), which is what makes the shared reader safe to use
+            // for the boundary test itself — and it stops the refusals below
+            // reporting `Parametric EQ (s/s)  --` as an entry.
+            let raw = String(bottom[start...])
+            let cut = raw.range(of: "    ").map { String(raw[..<$0.lowerBound]) } ?? raw
+            return normalizedBrowseEntry(cut)
+        }
         func browseName() -> String? {
             guard let status = freshStatus(),
                   let bottom = status["lcd_bottom"] as? String else { return nil }
-            let start = bottom.index(bottom.startIndex, offsetBy: min(slotIndex * 7, bottom.count))
-            let raw = String(bottom[start...])
-            let cut = raw.range(of: "    ").map { String(raw[..<$0.lowerBound]) } ?? raw
-            return cut.trimmingCharacters(in: .whitespaces)
+            return browseCell(in: bottom)
+        }
+        func atBoundary(_ shown: String) -> Bool { shown == MCULCDStrings.emptySlot }
+        /// One entry BACKWARD, paced: the next message is not sent until this
+        /// one has visibly landed.
+        ///
+        /// The unpaced loop this replaces fired 2-tick messages as fast as the
+        /// socket allowed and lost 15-23% of them into unfinished repaints
+        /// (measured 2026-09-02 over three live removals; `awaitEvents(250)`
+        /// never once timed out, 0 of 126). That is not only slow — 56 ms per
+        /// entry, and worse the deeper it goes — it is what made one removal in
+        /// four FAIL: the loop left ticks in flight, so the read that declared
+        /// the boundary reached was stale (the settle's `quiescentStatus`
+        /// returned in 31 ms against 153-158 ms on the runs that worked), and
+        /// four blind corrections then spent 2243 ms recovering nothing.
+        /// Waiting for the cell to CHANGE spends exactly one repaint per entry
+        /// and cannot leave a tick in flight to arrive late.
+        func stepBackward(from shown: String) throws -> Bool {
+            let response = try MCUBridge.send(.vpot(index: slotIndex, delta: -browseTicksPerEntry))
+            guard response.ok else { return false }
+            _ = waitFor(seconds: 0.25) { status in
+                (status["lcd_bottom"] as? String).map { browseCell(in: $0) != shown } ?? false
+            }
+            return true
+        }
+        /// Carries the browse `entriesToJump` entries BACKWARD from where it
+        /// is now. Nothing is written by a browse — it is uncommitted until the
+        /// vpot press — so a jump that lands in the wrong place costs steps and
+        /// nothing else. See `waitForSurfaceQuiet` for why the chunks are not
+        /// allowed to run into each other.
+        func jump(entries entriesToJump: Int) throws -> Bool {
+            for chunk in browseJumpPlan(ticks: -entriesToJump * browseTicksPerEntry) {
+                let before = freshStatus()?["received_events"] as? Int ?? -1
+                guard try MCUBridge.send(.vpot(index: slotIndex, delta: chunk)).ok else {
+                    return false
+                }
+                _ = awaitEvents(since: before, timeoutMs: 400)
+                _ = waitForSurfaceQuiet(seconds: 2.0)
+            }
+            return true
         }
         // Browse backward toward the "--" boundary entry.
         var reached = false
-        for step in 0..<400 {
-            let before = freshStatus()?["received_events"] as? Int ?? -1
-            let response = try MCUBridge.send(.vpot(index: slotIndex, delta: -2))
-            guard response.ok else { exitToPan(); return nil }
-            _ = awaitEvents(since: before, timeoutMs: 250)
-            if step % 4 == 3 { _ = quiescentStatus() }
-            if browseName() == MCULCDStrings.emptySlot { reached = true; break }
+        /// Entries this browse actually LOOKED at — name changes, which is the
+        /// only trustworthy count (a swallowed message advances nothing).
+        var entriesSeen = 0
+        /// …plus the ones a jump carried it over: how far it has travelled from
+        /// the ordinal the removed plug-in sits at, which is what the cached
+        /// hint is measured against.
+        var entriesTravelled = 0
+        var tail: [String] = []
+        var lastName: String?
+        /// nil = the map has not been consulted yet, 0 = consulted and it had
+        /// nothing usable.
+        var hintTaken: Int?
+        var jumpedEntries = 0
+        var stepsSinceJump = 0
+        var catalog = loadPluginCatalog()
+        let deadline = Date().addingTimeInterval(browseRemovalBudget)
+        func rememberTail(_ name: String) {
+            tail.append(name)
+            if tail.count > browseRemovalTailEntries { tail.removeFirst() }
+        }
+        while entriesSeen < browseEntryCap, Date() < deadline {
+            let name = browseName() ?? ""
+            if atBoundary(name) { reached = true; break }
+            if !name.isEmpty, name != lastName {
+                // The first read is the slot's own insert name — where the
+                // browse STARTS, not an entry it has passed.
+                if lastName != nil {
+                    entriesSeen += 1
+                    entriesTravelled += 1
+                }
+                lastName = name
+                rememberTail(name)
+            }
+            // The destination is ordinal 0, so the distance to it is exactly
+            // the removed plug-in's own ordinal — the one number
+            // `plugin-catalog-cache.json` holds, written by every
+            // `logic_add_plugin` browse. Consult it once, and only once a
+            // catalog entry with its format annotation is on screen: the mono
+            // and stereo catalogs are not the same list.
+            if hintTaken == nil, entriesSeen >= 1, !name.isEmpty {
+                if let known = catalog,
+                   let hint = known.position(
+                       matching: pluginName, format: browseEntryFormat(name)
+                   ) {
+                    hintTaken = hint
+                    if let toJump = removalJumpEntries(
+                        cachedOrdinal: hint, entriesTravelled: entriesTravelled
+                    ) {
+                        guard try jump(entries: toJump) else { exitToPan(); return nil }
+                        jumpedEntries = toJump
+                        entriesTravelled += toJump
+                        // The landing is an entry the walk did not pass, so it
+                        // is not counted as one it looked at — but it is worth
+                        // reading back if this browse ends up refusing.
+                        lastName = browseName()
+                        if let landing = lastName, !landing.isEmpty { rememberTail(landing) }
+                        continue
+                    }
+                } else {
+                    hintTaken = 0
+                }
+            }
+            // A jump that has not reached the boundary within the margin it
+            // aimed for, plus a grace, was a wrong hint — and a map that has
+            // been caught out is deleted rather than trusted again. The walk
+            // carries on regardless and still finds the boundary, exactly as it
+            // would have from cold.
+            if jumpedEntries > 0 {
+                stepsSinceJump += 1
+                if catalog != nil,
+                   stepsSinceJump > browseRemovalUndershootEntries + browseJumpGraceSteps {
+                    discardPluginCatalog()
+                    catalog = nil
+                }
+            }
+            guard try stepBackward(from: name) else { exitToPan(); return nil }
         }
         guard reached else {
+            // A jump is the one thing that could have carried this browse PAST
+            // the boundary and into the far end of the catalog, so a walk that
+            // jumped and then failed convicts the map on its way out.
+            if jumpedEntries > 0 { discardPluginCatalog() }
             exitToPan()
             throw LogicianError.openVerificationFailed(
-                "the browser never reached the No Plug-in entry within 400 steps; nothing was changed (browse abandoned)"
+                removalBoundaryRefusal(
+                    entriesSeen: entriesSeen, tail: tail, jumped: jumpedEntries > 0
+                )
             )
         }
-        // Settle and re-verify "--" is still shown before confirming.
-        _ = quiescentStatus()
-        Thread.sleep(forTimeInterval: 0.3)
+        // The display could still advance one more entry after the boundary
+        // read, so prove it has stopped before confirming anything — but prove
+        // it, rather than sleeping through it. The blind `Thread.sleep(0.3)`
+        // this replaces was insuring against a real effect on the UNPACED loop;
+        // pacing removed the cause, and the 150 ms silence proof is kept
+        // because it is a proof and it is nearly free. The correction loop
+        // below is verification, not waiting, so it stays — but its blind
+        // 0.4 s per correction (2243 ms spent recovering nothing, live,
+        // 2026-09-02) becomes a positive check that the boundary is back.
+        waitForSurfaceQuiet(seconds: 0.6)
+        var settledName = browseName()
         var corrections = 0
-        while browseName() != MCULCDStrings.emptySlot, corrections < 4 {
-            _ = try? MCUBridge.send(.vpot(index: slotIndex, delta: 2))
-            Thread.sleep(forTimeInterval: 0.4)
-            _ = quiescentStatus()
+        while let drifted = settledName, !atBoundary(drifted), corrections < 4 {
+            _ = try? MCUBridge.send(.vpot(index: slotIndex, delta: browseTicksPerEntry))
+            let recovered = waitFor(seconds: 0.5) { status in
+                (status["lcd_bottom"] as? String).map { atBoundary(browseCell(in: $0)) } ?? false
+            }
+            if recovered == nil { waitForSurfaceQuiet(seconds: 0.5) }
+            settledName = browseName()
             corrections += 1
         }
-        guard browseName() == MCULCDStrings.emptySlot else {
+        guard let settled = settledName, atBoundary(settled) else {
+            // Read the cell BEFORE the restore, and carry it as a value: the
+            // message used to interpolate `browseName()` after `exitToPan()`
+            // and reported a pan row. See `removalDriftActual`.
+            let drifted = settledName
             exitToPan()
             throw LogicianError.verificationFailed(
                 requested: "the No Plug-in entry shown at confirmation time",
-                actual: "the entry drifted to '\(browseName() ?? "?")'; aborted without removing",
+                actual: removalDriftActual(driftedTo: drifted),
                 restored: true
             )
         }
+        let eventsBeforePress = freshStatus()?["received_events"] as? Int ?? -1
         let response = try MCUBridge.send(.vpotPress(index: slotIndex))
         guard response.ok else { exitToPan(); return nil }
-        Thread.sleep(forTimeInterval: 1.0)
-        _ = quiescentStatus()
-        guard let after = try pluginInsertNames() else { return nil }
-        exitToPan()
+        // Logic's own answer to the press, positively: committing the slot
+        // repaints the row. The blind `Thread.sleep(1.0)` this replaces was
+        // 11.8% of the whole call (1006 ms mean, measured 2026-09-02) and it
+        // was waiting for something that had already happened. What that
+        // second was really insuring against — a plug-in that has not finished
+        // tearing down when its slot is read — is not dropped, it moves to the
+        // readback below, where it is spent only when it is actually needed.
+        _ = awaitEvents(since: eventsBeforePress, timeoutMs: 1000)
+        waitForSurfaceQuiet(seconds: 0.6)
+        guard var after = try pluginInsertNames() else { return nil }
+        func slotCell(_ cells: [String]) -> String {
+            cells.indices.contains(slotIndex)
+                ? cells[slotIndex].trimmingCharacters(
+                    in: CharacterSet(charactersIn: MCULCDStrings.bypassMarker)
+                )
+                : ""
+        }
+        if !lcdRowShowsRemoval(before: inserts, after: after, slotIndex: slotIndex) {
+            // Waiting for the CELL to clear rather than for a duration to
+            // elapse: a plug-in that is slow to tear down gets as long as it
+            // needs, a fast one costs nothing at all.
+            _ = waitFor(seconds: 2.0) { status in
+                guard let bottom = status["lcd_bottom"] as? String else { return false }
+                let cell = slotCell(lcdFields(bottom))
+                return cell.isEmpty || cell == MCULCDStrings.emptySlot
+            }
+            if let refreshed = (try? pluginInsertNames()) ?? nil { after = refreshed }
+        }
+        // The surface stays on the insert list, which `pluginInsertNames` just
+        // proved by content, and the next plug-in call only has to enter it
+        // again — so record the debt instead of walking home. Worth 2253 ms of
+        // THIS call's latency (26.3% of it, measured 2026-09-02); worth less
+        // than that across a chain, honestly, because the next MCU write tool
+        // opens with `findChannel`, which was measured at 2148-2250 ms from a
+        // standing plug-in list against 436 ms from Pan. That double charge is
+        // `ensurePanNames`' to answer (N2 in profiles/logic_remove_plugin.md),
+        // not this call's, and it is verification rather than waiting.
+        deferSurfaceRestore(SurfaceDebt(strip: trackName, view: "plugin_list", slot: nil))
         let rowShowsRemoval = lcdRowShowsRemoval(before: inserts, after: after, slotIndex: slotIndex)
         // AX cross-check: with a single instance the plugin must be gone from
         // the strip's inserts; with duplicates, one fewer must be listed.
@@ -600,6 +862,10 @@ extension MCUController {
             Thread.sleep(forTimeInterval: 0.4)
         }
         guard rowShowsRemoval, axGone || !axReachable else {
+            // The success path leaves the surface where it is on purpose; a
+            // failure hands it back, because nobody is going to reuse the view
+            // a refusal came out of.
+            exitToPan()
             throw LogicianError.verificationFailed(
                 requested: "'\(pluginName)' removed from '\(trackName)'",
                 actual: rowShowsRemoval

@@ -360,8 +360,16 @@ extension LogicAccessibility {
     /// Look FIRST, then re-look every `windowPollInterval` until
     /// `windowPollDeadline`. `verdict` returns nil to keep waiting, and nil
     /// comes back when the deadline passed without an answer.
-    func pollWindowList<Verdict>(_ verdict: ([AXUIElement]) throws -> Verdict?) throws -> Verdict? {
-        let deadline = Date().addingTimeInterval(Self.windowPollDeadline)
+    ///
+    /// `deadline` is a BUDGET, not a charge — every measured caller answers on
+    /// its first look — so a caller that has never measured how long its own
+    /// window takes to appear may keep a longer one rather than inherit the
+    /// 2 s default (`removeSilenceWindowDeadline`).
+    func pollWindowList<Verdict>(
+        deadline seconds: TimeInterval = LogicAccessibility.windowPollDeadline,
+        _ verdict: ([AXUIElement]) throws -> Verdict?
+    ) throws -> Verdict? {
+        let deadline = Date().addingTimeInterval(seconds)
         while true {
             if let answer = try verdict(try logicWindows()) { return answer }
             if Date() >= deadline { return nil }
@@ -409,8 +417,10 @@ extension LogicAccessibility {
     /// 30% of the warm total, for a state that was already true. It is the
     /// same conversion the two close tools got on 2026-09-01, on the one
     /// helper that fix did not reach.
-    func pollNewWindow(before: Set<WindowKey>) throws -> AXUIElement? {
-        try pollWindowList { windows in
+    func pollNewWindow(
+        before: Set<WindowKey>, deadline: TimeInterval = LogicAccessibility.windowPollDeadline
+    ) throws -> AXUIElement? {
+        try pollWindowList(deadline: deadline) { windows in
             windows.first { !before.contains(WindowKey(element: $0)) }
         }
     }

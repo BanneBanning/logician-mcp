@@ -1243,7 +1243,6 @@ with every render coming back as audio the agent can listen to.
   something worth retrying. Point placement also stopped taking its beats-per-bar from the
   control bar's signature AT THE PLAYHEAD: it comes from the project's Signature List at
   the first point's own bar, which also makes 6/8 three beats a bar instead of six.
-
 - **A rename now proves itself in both channels, and takes 0.18 s doing it.**
   `logic_rename_region`'s description promised the rename was verified twice over; the
   inspector readback was taken and thrown away, and the one comparison that ran was
@@ -1271,6 +1270,59 @@ with every render coming back as audio the agent can listen to.
   from **890 B to 434 B** and the no-op from 709 B to 259 B. Also new in the payload: the
   `track_number` the call resolved, so a rename on a project with two rows of one name says
   which row it wrote.
+- **Taking a plugin off a track is as quick as putting one on.** `logic_remove_plugin` was
+  8 553 ms and is 4 354 ms warm, measured over five removals on 2026-09-02 — the mouse-free
+  removal was still running the browse loop the insertion side replaced two days earlier, and
+  every mechanism it was missing is now shared rather than copied: the backward walk to the
+  No Plug-in boundary is paced on the display actually changing, it jumps most of the distance
+  using the catalog position a previous insertion already learned (the boundary sits at
+  ordinal 0, so the distance IS that position), the blind second after the confirming press
+  and the two blind settle sleeps are positive readbacks, and the surface is left on the
+  insert list for the next plugin call instead of walking home to Pan. Every proof stayed:
+  the LCD name before the press, the SELECT LED, the plug-in-list cross-check against
+  Accessibility, the slot readback, and the duplicate-aware count check. Two refusals also
+  got honest. The step bound used to be 400 MIDI MESSAGES, of which 15-23% were being
+  swallowed, so it reached only ~330 entries of a catalog running past 590 and a plug-in
+  deeper than that could not be removed at all; it is now counted in catalog ENTRIES with a
+  wall-clock budget, and a browse that gives up says how many entries it saw and reads the
+  last ones back. And the message for a browse that drifted off the boundary used to restore
+  the surface BEFORE reading the display it was quoting, so it reported a pan value ('0',
+  live) as the catalog entry it had drifted to — it now reports the cell it actually saw.
+
+- **Strip silence tells you which number is which, and can no longer walk away from
+  its own modal.** `logic_remove_silence` now reports each of the Remove Silence
+  window's four numeric fields WITH the label Logic printed beside it, plus stable
+  keys (`threshold_db`, `minimum_silence_seconds`, `pre_attack_seconds`,
+  `post_release_seconds`) and the value parsed for you — Logic prints these in the
+  system's locale, so the reference Mac's `-28` threshold arrives beside `0,1000`
+  and a caller running `Double()` over the string gets nothing. The result note and
+  the tool description used to name those four in an order that was not the order
+  they came in, so an agent read the −28 dB threshold as a post-release TIME; both
+  now match what the window publishes, and the zero-crossing flag is keyed
+  `zero_crossing` instead of by Logic's own English label. **The window is found by
+  APPEARANCE, not by its English title.** It is modal (measured), so a translated
+  title used to leave it standing — swallowing Logic's keyboard and every later tool
+  call — while the source comment claimed the failure was safe; the tool now takes
+  the window that opened when the command fired, corroborates the title or the
+  shape, and Cancel-and-refuses anything else rather than pressing OK on a dialog it
+  does not recognise. The Cancel is now PROVEN: the modal is watched out of Logic's
+  window list instead of being followed by a 0.3 s sleep that checked nothing —
+  measured 2026-09-02, it leaves at once on about half of calls (60 ms) and lingers
+  half a second on the rest, which the old sleep was returning through. **And it is
+  the sixth region command to get the guard the other five share**: `apply: true`
+  clears the project-wide selection with Logic's own Deselect All, proves it landed,
+  selects the target back and checks the region total across EVERY rendered row —
+  so a strip that also cut a region on one of the ten unrendered rows of the
+  reference project is now a loud failure instead of `success: true, verified: true`.
+  The result says `selection_scope`, names the regions Logic made in
+  `produced_regions` and warns that all of them come back SELECTED. Measured on the
+  sandbox: preview 187–1 245 ms (best 187 ms against a flat 505 ms before — one
+  arrangement walk instead of two, and no blind sleeps), apply 1 245 ms against
+  733 ms, the difference being the project-wide clear that makes the exclusivity
+  claim true. A preview that changes nothing also stopped shipping "You changed the
+  ARRANGEMENT" beside its own "NOTHING WAS CHANGED": the listen note is gated on the
+  payload now, so every preview and every verified `already_*` no-op across the
+  server is quiet.
 
 ### Known limitations (honest by design)
 
