@@ -581,7 +581,7 @@ Parameters:
 
 #### `logic_select_region`
 
-Select exactly one region (by track + region_name and/or start_bar; ambiguity is refused with candidates listed). exclusive (default true) clears all other region selections first, so a following edit key command (cut/copy/delete/nudge) touches only this region. Verified via the element's selection state. To select SEVERAL regions at once use logic_select_regions (with the s) - a different tool with modes 'track', 'following', 'following_same_track', 'all' and 'none'; this one is single and exclusive on purpose.
+Select exactly one region (by track + region_name and/or start_bar; ambiguity is refused with candidates listed). exclusive (default true) clears all other region selections first, so a following edit key command (cut/copy/delete/nudge) touches only this region. Verified via the element's selection state; a region that is already selected is a verified no-op (state: "already_selected") and nothing is written to it, while the other selections are still cleared. `deselected` counts them. To select SEVERAL regions at once use logic_select_regions (with the s) - a different tool with modes 'track', 'following', 'following_same_track', 'all' and 'none'; this one is single and exclusive on purpose.
 
 Parameters:
 

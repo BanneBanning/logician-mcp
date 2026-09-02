@@ -177,6 +177,11 @@ extension LogicAccessibility {
     /// off by default because the repair WRITES to the track header column,
     /// which the read-only region paths (the Region inspector, the Event List)
     /// have no reason to pay for.
+    ///
+    /// A region that is ALREADY selected is a verified no-op: nothing is
+    /// written to it, `state` reads `already_selected`, and the `exclusive:`
+    /// contract is still honoured (the siblings are cleared either way). See
+    /// `regionSelectionPlan` for why that read has to come first.
     func selectRegion(
         trackName: String, regionName: String?, startBar: Int?, exclusive: Bool,
         trackNumber: Int? = nil, forKeyCommand: Bool = false
@@ -220,30 +225,61 @@ extension LogicAccessibility {
         let keyFocus = forKeyCommand
             ? ensureTracksAreaKeyFocus(trackName: row.track, trackNumber: row.number)
             : nil
-        if exclusive {
-            for otherRow in rows {
-                for region in otherRow.regions
-                where stringAttribute(region, "AXSelected") == "1" && !CFEqual(region, hit.0) {
-                    _ = AXUIElementSetAttributeValue(region, "AXSelected" as CFString, kCFBooleanFalse)
-                }
+        // ONE read of the selection, taken BEFORE anything is written: the
+        // target's own state and the siblings the `exclusive:` contract has to
+        // clear come out of the same sweep the clear used to do on its own.
+        var targetSelected = false
+        var selectedSiblings: [AXUIElement] = []
+        for otherRow in rows {
+            for region in otherRow.regions {
+                let isTarget = CFEqual(region, hit.0)
+                guard isTarget || exclusive else { continue }
+                guard stringAttribute(region, "AXSelected") == "1" else { continue }
+                if isTarget { targetSelected = true } else { selectedSiblings.append(region) }
             }
         }
-        var stuck = false
-        for attempt in 0..<2 {
-            let status = AXUIElementSetAttributeValue(
-                hit.0, "AXSelected" as CFString, kCFBooleanTrue
-            )
-            guard status == .success else {
-                throw LogicianError.writeFailed("AXSelected write returned AXError \(status.rawValue)")
+        let plan = LogicAccessibility.regionSelectionPlan(
+            targetSelected: targetSelected, exclusive: exclusive,
+            otherSelectedCount: selectedSiblings.count
+        )
+        for sibling in selectedSiblings where plan.clearSiblings {
+            _ = AXUIElementSetAttributeValue(sibling, "AXSelected" as CFString, kCFBooleanFalse)
+        }
+        var stuck = !plan.writeTarget
+        if stuck && plan.reproveAfterClear {
+            // The clear just wrote to this row; the skip may only stand on a
+            // read taken after it, never on the one taken before. Polled, not
+            // read once: a write to a sibling republishes the same layout
+            // area, which is the very staleness this fix is dodging — and a
+            // stale "not selected" here would put the 1.1 s retry straight
+            // back. Look-first, so the honest case still costs one read.
+            stuck = pollRegionSelected(hit.0, budget: 0.1)
+        }
+        let wroteSelection = !stuck
+        if wroteSelection {
+            for attempt in 0..<2 {
+                let status = AXUIElementSetAttributeValue(
+                    hit.0, "AXSelected" as CFString, kCFBooleanTrue
+                )
+                guard status == .success else {
+                    throw LogicianError.writeFailed(
+                        "AXSelected write returned AXError \(status.rawValue)"
+                    )
+                }
+                // Look before sleeping. The AX write is synchronous — a genuine
+                // change read back as selected inside 300 ms in every measured
+                // sample (8/8, 2026-09-02) and the sibling paths read
+                // `AXSelected` back at 0 ms — so the 0.3 s stays as a BUDGET
+                // for a slower Logic instead of a flat charge on every write.
+                if pollRegionSelected(hit.0, budget: 0.3) { stuck = true; break }
+                if attempt == 0 { Thread.sleep(forTimeInterval: 0.5) } // stale-element transient
             }
-            Thread.sleep(forTimeInterval: 0.3)
-            if stringAttribute(hit.0, "AXSelected") == "1" { stuck = true; break }
-            if attempt == 0 { Thread.sleep(forTimeInterval: 0.5) } // stale-element transient
         }
         guard stuck else {
             throw LogicianError.verificationFailed(
                 requested: "region selected",
-                actual: "the region's AXSelected did not stick after a retry",
+                actual: "the region's AXSelected did not read back as selected within 0.3 s of "
+                    + "the write, and did not stick after a rewrite either",
                 restored: false
             )
         }
@@ -255,11 +291,78 @@ extension LogicAccessibility {
         var result = parseRegion(hit.0)
         result["success"] = true
         result["verified"] = true
+        result["state"] = wroteSelection ? "selected" : "already_selected"
         result["track"] = row.track
         result["track_name"] = row.track
         result["exclusive"] = exclusive
+        if exclusive { result["deselected"] = plan.siblingsToClear }
         if let keyFocus { result["key_focus"] = keyFocus.dictionary }
         return result
+    }
+
+    /// Re-reads a region's `AXSelected` until it says selected, looking BEFORE
+    /// it sleeps. Returns false when the budget runs out.
+    func pollRegionSelected(
+        _ region: AXUIElement, budget: TimeInterval, interval: TimeInterval = 0.01
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(budget)
+        while true {
+            if stringAttribute(region, "AXSelected") == "1" { return true }
+            if Date() >= deadline { return false }
+            Thread.sleep(forTimeInterval: interval)
+        }
+    }
+
+    /// What `selectRegion` does about a selection it has READ but not yet
+    /// written.
+    struct RegionSelectionPlan: Equatable {
+        /// Whether the other selected regions must be deselected. The
+        /// `exclusive:` contract, and nothing else, decides this — an
+        /// already-selected target does NOT excuse leaving a sibling selected,
+        /// because the caller's next key command would take it too.
+        let clearSiblings: Bool
+        /// How many other regions were found selected and will be cleared.
+        let siblingsToClear: Int
+        /// Whether `AXSelected = true` has to be written to the target at all.
+        let writeTarget: Bool
+        /// Whether the skipped write has to be re-proved: the sibling clear
+        /// writes to the same rendered rows, so a "already selected" verdict
+        /// taken before it may only stand on a second read taken after it.
+        let reproveAfterClear: Bool
+    }
+
+    /// Read `AXSelected` before writing it — the whole of D1.
+    ///
+    /// Measured 2026-09-02 (`logic_get_region_params` profile, 8/8 perfect
+    /// correlation): writing `AXSelected = true` onto a region that is ALREADY
+    /// selected makes Logic republish the layout item, so the readback lands on
+    /// a stale element and reports NOT selected for longer than 300 ms — the
+    /// "stale-element transient" retry then fires every single time, at
+    /// 1116–1125 ms against the 305–306 ms a genuine change costs. The
+    /// idempotent case is the common one (read a region then read it again,
+    /// read then write), so all eight `selectRegion` callers — get/set/rename
+    /// region params, move, copy, delete, split, edit_event, bounce_in_place —
+    /// paid **+812 ms** for a selection that was already correct.
+    ///
+    /// This also corrects the older `logic_delete_region` note that the retry
+    /// "fires on freshly-created regions": the discriminator is *already
+    /// selected*, not *freshly created*.
+    ///
+    /// Measured after the fix, same project, same day: `logic_get_region_params`
+    /// on an already-selected region 1990–1997 → 866–873 ms (1943 → 805 ms with
+    /// two siblings still selected), on a region that was NOT selected
+    /// 1158–1174 → 857–866 ms, and `logic_select_region` itself 402–465 →
+    /// 90–163 ms.
+    static func regionSelectionPlan(
+        targetSelected: Bool, exclusive: Bool, otherSelectedCount: Int
+    ) -> RegionSelectionPlan {
+        let clearing = exclusive && otherSelectedCount > 0
+        return RegionSelectionPlan(
+            clearSiblings: exclusive,
+            siblingsToClear: exclusive ? otherSelectedCount : 0,
+            writeTarget: !targetSelected,
+            reproveAfterClear: targetSelected && clearing
+        )
     }
 
     /// The channel strip's pan value (the strip's pan AXSlider), always

@@ -599,6 +599,29 @@ with every render coming back as audio the agent can listen to.
   `pressMenuItem(settled:)` had just proven was there, and 250 ms after a close press that
   had already landed: **0.85–0.87 s → 0.72–0.74 s** per call, 0.20 s for the first visit
   in a process.
+- **Every region tool got about a second faster by looking before it writes.** Addressing a
+  region by name selects it first, and that step used to write `AXSelected = true` without
+  ever asking whether the region was already selected. Writing it onto a region Logic
+  already had selected makes Logic republish the row, so the readback 300 ms later reported
+  "not selected" and a 500 ms "stale-element" retry fired — every time. It was the
+  *idempotent* case that paid: reading a region twice, or reading it and then writing to it,
+  cost 800 ms more than moving the selection to a different region did. The selection is now
+  READ first: an already-selected region is a verified no-op (`state: "already_selected"`,
+  nothing written to it), while `exclusive` still clears every other selected region and
+  `deselected` counts them — and because that clear touches the same rows, the no-op is
+  re-proved by a second read rather than assumed. A selection that genuinely moves polls its
+  readback instead of sleeping through a flat 300 ms, and the retry stays for a write that
+  really does not stick. Measured live 2026-09-02 on the sandbox project, warm:
+  `logic_get_region_params` on an already-selected region 1 990–1 997 ms → 866–873 ms, and
+  1 943 ms → 805 ms with two more regions on the track still selected; the same read on a
+  region that was NOT selected 1 158–1 174 ms → 857–866 ms; `logic_select_region` itself
+  402–465 ms → 90–163 ms. Same saving on every tool that addresses a region by name —
+  `logic_set_region_params`, `logic_rename_region`, `logic_move_region`, `logic_copy_region`,
+  `logic_delete_region`, `logic_split_region`, `logic_edit_event`, `logic_bounce_in_place`,
+  `logic_list_events` and `logic_remove_silence`. The exclusivity was proven the hard way:
+  with all three regions of a track selected and the target among them, the call came back
+  `already_selected` with `deselected: 2` and the arrangement map showed exactly one region
+  selected on that track.
 
 ### Known limitations (honest by design)
 
