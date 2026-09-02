@@ -183,6 +183,67 @@ enum AudioClip {
         return "clip-\(millis)-\(entropy)-\(stem).m4a"
     }
 
+    // MARK: How much of a file can ride along
+
+    /// What an audio-carrying result can attach: the whole file, or a window
+    /// of it.
+    enum EarPlan: Equatable {
+        /// Short enough to encode entire.
+        case whole
+        /// Too long for the byte cap — attach this many seconds from the
+        /// start and SAY so.
+        case window(seconds: Double)
+    }
+
+    /// The seconds of AAC that fit in `maxBytes`.
+    ///
+    /// AAC is variable-rate, so this is the nominal length with a margin
+    /// (0.85) for the container and for material that encodes above target.
+    /// At the shipped 400 000 B / 64 kbps that is **42 s** — measured
+    /// 2026-09-02: a 136.7 s freeze render encoded whole came to 1.0 MB and
+    /// was DROPPED, and the 8 s window `logic_get_audio_clip` writes of loud
+    /// material came to 50 476 B (6.3 KB/s, well inside the 8 KB/s nominal).
+    static func earWindowCapSeconds(maxBytes: Int, bitrate: Int = AudioClip.bitrate) -> Double {
+        guard maxBytes > 0, bitrate > 0 else { return 0 }
+        let bytesPerSecond = Double(bitrate) / 8
+        return (Double(maxBytes) / bytesPerSecond * 0.85).rounded(.down)
+    }
+
+    /// Whether a file of `fileSeconds` can be attached whole, decided BEFORE
+    /// anything is encoded.
+    ///
+    /// This is the arithmetic that was missing: `encodeEarCopy` encoded the
+    /// whole file and then compared the RESULT to the cap, so a long render
+    /// paid a full encode (933–1 004 ms measured 2026-09-02 on 136.7 s) to
+    /// produce `nil`. An unknown length (a file this server cannot open)
+    /// counts as long: a window is cheap and always yields something, while
+    /// a whole-file encode of an unknown length is the exact gamble that
+    /// produced silence.
+    static func earPlan(
+        fileSeconds: Double?, maxBytes: Int = 400_000, bitrate: Int = AudioClip.bitrate
+    ) -> EarPlan {
+        let cap = earWindowCapSeconds(maxBytes: maxBytes, bitrate: bitrate)
+        guard let fileSeconds, fileSeconds.isFinite, fileSeconds > 0 else {
+            return .window(seconds: cap)
+        }
+        return fileSeconds <= cap ? .whole : .window(seconds: cap)
+    }
+
+    /// How long an audio file is, from its header alone — no decoding.
+    ///
+    /// `audioFileMetrics` already reports `frames`, but only for AIFF/AIFC and
+    /// only after reading and measuring every sample; this answers the one
+    /// question the ear-copy decision asks, for every format AVFoundation
+    /// opens, and returns nil rather than guessing when it opens none.
+    static func seconds(ofFile path: String) -> Double? {
+        guard let file = try? AVAudioFile(forReading: URL(fileURLWithPath: path)) else {
+            return nil
+        }
+        let rate = file.processingFormat.sampleRate
+        guard rate > 0, file.length > 0 else { return nil }
+        return (Double(file.length) / rate * 1000).rounded() / 1000
+    }
+
     // MARK: Read, mix, encode
 
     /// What one written clip turned out to be. Every number here is measured

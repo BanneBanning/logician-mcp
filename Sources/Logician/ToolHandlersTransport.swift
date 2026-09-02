@@ -500,7 +500,13 @@ extension MCPServer {
                     projectPath: logic.projectDocumentPath(),
                     label: "midi-verify",
                     sliceStartSeconds: verifyRange.start, sliceEndSeconds: verifyRange.end,
-                    logic: logic, trackName: trackName
+                    logic: logic, trackName: trackName,
+                    // This tool parks and restores the playhead around the
+                    // whole take (the `defer` above), so the render must not
+                    // step the same sliders a second time — and only the
+                    // slice's METRICS are read out of it below, so no audio
+                    // block is encoded for a result that never carries one.
+                    restorePlayhead: false, includeAudio: false
                 )
             }) {
                 let slice = render["slice"] as? [String: Any]

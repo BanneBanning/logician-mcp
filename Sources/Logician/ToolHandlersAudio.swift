@@ -503,7 +503,12 @@ extension MCPServer {
         var render = try MCUController.renderSelectedTrack(
             projectPath: projectPath, label: label,
             sliceStartSeconds: sliceRange?.start, sliceEndSeconds: sliceRange?.end,
-            logic: logic, trackName: trackName
+            logic: logic, trackName: trackName,
+            // `include_audio: false` reaches the encoder rather than being
+            // applied after it: a whole-render ear copy costs ~0.9 s, and
+            // paying it for a block `toolResult` is about to drop is the same
+            // waste the A/B path already refuses to pay.
+            includeAudio: arguments["include_audio"] as? Bool ?? true
         )
         render["track"] = trackName
         render["track_name"] = trackName
@@ -544,6 +549,11 @@ extension MCPServer {
         // one second cannot write the same path (they used to, and the second
         // overwrote the first).
         let clipsDirectory = Captures.ensureRoot()
+        // The shared retention policy, run by every tool that writes here.
+        // A clip is ~50 KB against a render's 46 MB, so this practically
+        // never removes anything on a clip call — it is here so that no
+        // writer is the one exception that lets the folder grow unbounded.
+        let pruned = Captures.makeRoom()
         let scratch = clipsDirectory.appendingPathComponent(
             AudioClip.clipFileName(sourcePath: clipPath)
         )
@@ -604,6 +614,7 @@ extension MCPServer {
             "note": "An MCP AUDIO content block accompanies this text (mono AAC, mixed down from \(clip.sourceChannels) channel\(clip.sourceChannels == 1 ? "" : "s")). SELF-CHECK: if no audio block reached you, your client DROPS them - do not pretend to hear; instead open clip_path with your client's file viewer (many viewers pass audio files to the model as real multimodal input; verified in Antigravity). NEVER read audio files as text/bash.",
             "_audio": ["data": clipData.base64EncodedString(), "mimeType": "audio/mp4"]
         ]
+        if let pruned { result["captures_pruned"] = pruned }
         if requestedDuration > 20.0 {
             appendWarning(
                 "duration_seconds \(requestedDuration) is over this tool's 20 s ceiling; "

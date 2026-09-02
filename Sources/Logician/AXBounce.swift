@@ -965,8 +965,11 @@ extension LogicAccessibility {
             )
         }
         reportProgress("render finished (\(lastSize) bytes)", percent: 91)
-        // Move the render into the captures directory under the label name.
+        // Move the render into the captures directory under the label name,
+        // making room first: nothing pruned that folder before 2026-09-02 and
+        // every writer now shares one policy (`Captures.makeRoom`).
         let capturesDirectory = Captures.ensureRoot()
+        let pruned = Captures.makeRoom()
         let destination = capturesDirectory.appendingPathComponent(
             "\(filename).\(URL(fileURLWithPath: renderedPath).pathExtension)"
         )
@@ -1008,6 +1011,7 @@ extension LogicAccessibility {
         if let earCopy {
             result["_audio"] = ["data": earCopy.base64EncodedString(), "mimeType": "audio/mp4"]
         }
+        if let pruned { result["captures_pruned"] = pruned }
         if !appliedOptions.isEmpty {
             result["options_changed"] = appliedOptions
             result["options_note"] = "These are the USER'S OWN bounce settings and Logic keeps them "
@@ -1103,10 +1107,130 @@ extension LogicAccessibility {
         return encodeEarCopy(path: sourcePath, maxBytes: maxBytes)
     }
 
+    /// The audio block a result carries, the length it covers, and the note
+    /// that tells the agent which of those it got. `data == nil` is a real
+    /// outcome here, never a silence: `note` then names the reason and the
+    /// file to open instead.
+    struct EarAudio {
+        let data: Data?
+        /// Always present. Goes into the result as `listen_note`.
+        let note: String
+        /// Seconds of audio the block holds; nil when there is no block.
+        let coveredSeconds: Double?
+        /// Seconds the SOURCE file holds, when it could be read.
+        let sourceSeconds: Double?
+        /// The block is a window, not the whole file.
+        let windowed: Bool
+    }
+
+    /// The sound a result carries — whole when it fits, a WINDOW when it does
+    /// not, and an explanation when neither works.
+    ///
+    /// The defect this replaces, measured 2026-09-02 on a 136.7 s freeze
+    /// render of one track (6 029 645 frames at 44.1 kHz): `encodeEarCopy` encodes the whole file at 64 kbps
+    /// and returns nil above `maxBytes`, so the result reached the agent with
+    /// **no audio block and no `listen_note`** (2/2) while the tool
+    /// description, the server instructions and the agent guide all promised
+    /// the audio rides along — and the encode that produced nothing cost
+    /// 933–1 004 ms, 11% of the call. Anything past ~42 s is over the cap,
+    /// i.e. every normal full-track render.
+    ///
+    /// So the LENGTH decides first (`AudioClip.earPlan`, from the header):
+    ///
+    ///  - Short enough: encoded whole, and the 128 kbps preview already on
+    ///    disk IS the block whenever it fits (`earCopy`) — no second encode.
+    ///  - Too long: the first `AudioClip.earWindowCapSeconds` are cut through
+    ///    the seek-and-decode route `logic_get_audio_clip` uses, so only the
+    ///    window is ever decoded, and the note says which window it is and
+    ///    how to reach the rest.
+    ///  - Neither: no block, and a note naming the reason plus `preview_path`.
+    static func earAudio(
+        sourcePath: String, previewPath: String?, maxBytes: Int = 400_000
+    ) -> EarAudio {
+        let fileSeconds = AudioClip.seconds(ofFile: sourcePath)
+        func trimmed(_ value: Double) -> String {
+            value == value.rounded() ? String(Int(value.rounded())) : String(format: "%.1f", value)
+        }
+        func noBlock(_ reason: String) -> EarAudio {
+            EarAudio(
+                data: nil,
+                note: "NO audio block could be made for this result: \(reason). Nothing was"
+                    + " heard. To listen, open preview_path with your client's FILE VIEWER, or"
+                    + " call logic_get_audio_clip {path, start_seconds, duration_seconds} for a"
+                    + " listenable window of the file at `path`. NEVER read audio files as"
+                    + " text/bash.",
+                coveredSeconds: nil, sourceSeconds: fileSeconds, windowed: false
+            )
+        }
+        switch AudioClip.earPlan(fileSeconds: fileSeconds, maxBytes: maxBytes) {
+        case .whole:
+            guard let data = earCopy(
+                preview: previewPath, sourcePath: sourcePath, maxBytes: maxBytes
+            ) else {
+                return noBlock(
+                    "the AAC encode of '\(sourcePath)' produced nothing under the"
+                        + " \(maxBytes / 1000) KB attachment cap"
+                )
+            }
+            return EarAudio(
+                data: data,
+                note: "This result CARRIES the rendered audio as an MCP audio block - listen"
+                    + " now. If no audio block reached you, open preview_path with your client's"
+                    + " file viewer instead.",
+                coveredSeconds: fileSeconds, sourceSeconds: fileSeconds, windowed: false
+            )
+        case .window(let windowSeconds):
+            guard windowSeconds > 0 else {
+                return noBlock("the attachment cap leaves no room for any audio")
+            }
+            let scratch = FileManager.default.temporaryDirectory
+                .appendingPathComponent("logician-ear-\(UUID().uuidString).m4a")
+            defer { try? FileManager.default.removeItem(at: scratch) }
+            let clip: AudioClip.Clip
+            do {
+                clip = try AudioClip.write(
+                    sourcePath: sourcePath, startSeconds: 0,
+                    durationSeconds: windowSeconds, destination: scratch
+                )
+            } catch let fault as AudioClip.Fault {
+                return noBlock(fault.message)
+            } catch {
+                return noBlock((error as NSError).localizedDescription)
+            }
+            guard let data = try? Data(contentsOf: scratch),
+                  !data.isEmpty, data.count <= maxBytes else {
+                return noBlock(
+                    "the \(trimmed(clip.durationSeconds)) s window still encoded above the"
+                        + " \(maxBytes / 1000) KB attachment cap"
+                )
+            }
+            return EarAudio(
+                data: data,
+                note: "This result CARRIES the FIRST \(trimmed(clip.durationSeconds)) s of this"
+                    + " \(trimmed(clip.sourceSeconds)) s render as an MCP audio block - listen"
+                    + " now. The WHOLE file does not fit an audio block (the cap is"
+                    + " \(maxBytes / 1000) KB, about"
+                    + " \(trimmed(AudioClip.earWindowCapSeconds(maxBytes: maxBytes))) s at"
+                    + " 64 kbps), so a window rides along instead: the complete render is on"
+                    + " disk at `path` (and as an AAC copy at preview_path), and any other"
+                    + " stretch of it comes back from logic_get_audio_clip {path,"
+                    + " start_seconds, duration_seconds}. Do not describe what you have not"
+                    + " heard - this block is the first"
+                    + " \(trimmed(clip.durationSeconds)) s only.",
+                coveredSeconds: clip.durationSeconds, sourceSeconds: clip.sourceSeconds,
+                windowed: true
+            )
+        }
+    }
+
     /// Encodes a file as a small mono AAC "ear copy" suitable for an MCP
     /// audio content block (nil when encoding fails or the result exceeds
     /// the safe attachment size). This is what lets bounce/render results
     /// CARRY their own sound instead of just naming a file.
+    ///
+    /// Callers that may be handed a LONG file want `earAudio` instead: this
+    /// one encodes whatever it is given and only then compares the result to
+    /// the cap, which is a full encode spent to return nil.
     static func encodeEarCopy(path: String, maxBytes: Int = 400_000) -> Data? {
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent("logician-ear-\(UUID().uuidString).m4a")
@@ -1160,6 +1284,51 @@ extension LogicAccessibility {
         }
         guard declared > 8 else { return false }
         return fileSize >= declared + 8
+    }
+
+    /// Whether the first bytes of a render describe a FINISHED file — the
+    /// container is covered AND it actually holds audio.
+    ///
+    /// `containerComplete` is not enough on its own, measured 2026-09-02 on
+    /// the sandbox: Logic publishes the freeze `.aif` before it starts
+    /// streaming samples, and that snapshot is a 4 096-byte header whose FORM
+    /// size reads 504 — every declared byte present, `numSampleFrames` zero.
+    /// Two renders were copied out in 3.3 s in exactly that state (against
+    /// 4.3–4.9 s for a real one) and came back as 0-frame captures. So the
+    /// COMM chunk's own frame count is read here too, and a header-only
+    /// snapshot is what it is: NOT complete, keep waiting.
+    ///
+    /// nil for a container this cannot judge (not AIFF/AIFC/WAV), so callers
+    /// keep whatever evidence they had before.
+    static func audioRenderComplete(head: Data, fileSize: UInt64) -> Bool? {
+        guard let covered = containerComplete(header: head, fileSize: fileSize) else { return nil }
+        guard covered else { return false }
+        let bytes = [UInt8](head)
+        guard bytes.count >= 12,
+              String(bytes: bytes[0..<4], encoding: .ascii) == "FORM" else {
+            // WAV: the container check is all this knows how to do.
+            return covered
+        }
+        func beUInt32(_ offset: Int) -> UInt32 {
+            (UInt32(bytes[offset]) << 24) | (UInt32(bytes[offset + 1]) << 16)
+                | (UInt32(bytes[offset + 2]) << 8) | UInt32(bytes[offset + 3])
+        }
+        var offset = 12
+        while offset + 8 <= bytes.count {
+            let chunkID = String(bytes: bytes[offset..<offset + 4], encoding: .ascii) ?? ""
+            let size = Int(beUInt32(offset + 4))
+            if chunkID == "COMM" {
+                // numSampleFrames is the 4 bytes after the 2-byte channel
+                // count; a partial header that does not reach it is not
+                // evidence of anything.
+                guard offset + 14 <= bytes.count else { return false }
+                return beUInt32(offset + 10) > 0
+            }
+            offset += 8 + size + (size % 2)
+        }
+        // FORM says the file is whole but no COMM chunk was found in the head
+        // that was read: judge nothing rather than pass it.
+        return nil
     }
 
     /// RMS/peak per channel from a bounced AIFF (big-endian PCM) or WAV file —
