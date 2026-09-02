@@ -29,6 +29,115 @@ enum MCUTimecodeReading: Equatable {
     case implausible(reason: String)
 }
 
+/// What a solo-bounced A/B may honestly say about the solo it worked under.
+///
+/// Two ways of being wrong used to be invisible here (`logic_evaluate_change`
+/// profile §8, defects D1 and D3, 2026-09-01). A solo this tool switched ON and
+/// could not switch off again was reported only as `solo_restored: false`, with
+/// no `warning` at all on a tool registered `mayWarn: true` — and a track left
+/// soloed silently poisons every later bounce in the project, which is exactly
+/// what `logic_export_stems` warns about in words. And a solo already up on
+/// ANOTHER track was never looked for, so both bounces contained that track
+/// while the `note` went on saying they were made "with only this track soloed"
+/// and the ear copies contained music the result said was not there.
+///
+/// Neither is a refusal. The A/B's deltas stay honest under a foreign solo,
+/// because the same contamination is in A and in B — the sibling tool refuses
+/// because a STEM must hold one track, which is not this tool's promise. What
+/// must change is what the result says: the note, the warning, and the line
+/// telling the agent what it is about to hear.
+///
+/// Pure, so the composition is pinned without Logic running: three facts in
+/// (who else was soloed — `nil` when the track headers could not be READ, which
+/// is not the same as nobody — whether this track was already soloed, and
+/// whether the solo ended up restored), the result's strings out.
+enum SoloBounceReport {
+
+    struct Report {
+        let note: String
+        let warning: String?
+        /// Appended to the ear-copy note, so "listen to both" and "what is in
+        /// them" cannot disagree.
+        let listenSuffix: String?
+        /// The result's `solo_context`. Never an empty dictionary: a track
+        /// list that could not be read says `unavailable` and why.
+        let context: [String: Any]
+    }
+
+    /// Today's note, kept verbatim for the case it was always true of: this
+    /// track soloed, nothing else soloed, and the headers readable enough to
+    /// say so.
+    static let exclusiveNote = "Two offline master bounces with only this track soloed - works on stack subtracks and shared-channel tracks that freeze refuses. Master-bus processing applies to both A and B. No playback occurred."
+
+    private static let sharedTail = " The A/B deltas are still honest - whatever is in A is in B. Master-bus processing applies to both. No playback occurred."
+
+    static func compose(
+        trackName: String,
+        preexistingSolos: [String]?,
+        wasAlreadySoloed: Bool,
+        soloRestored: Bool
+    ) -> Report {
+        let others = preexistingSolos?.filter {
+            $0.caseInsensitiveCompare(trackName) != .orderedSame
+        }
+        let list = (others ?? []).joined(separator: ", ")
+        let plural = (others ?? []).count > 1
+
+        var note = exclusiveNote
+        var listenSuffix: String?
+        var warnings: [String] = []
+
+        if let others {
+            if !others.isEmpty {
+                note = "Two offline master bounces with this track soloed - but \(list) "
+                    + (plural ? "were" : "was") + " ALREADY soloed when the call started, so both"
+                    + " bounces contain " + (plural ? "them" : "it") + " too and what you hear is"
+                    + " NOT this track alone." + sharedTail
+                listenSuffix = " Both copies also contain \(list), "
+                    + (plural ? "which were" : "which was") + " already soloed before the A/B ran."
+                warnings.append(
+                    "\(list) " + (plural ? "were" : "was") + " already soloed before the A/B -"
+                        + " both bounces contain " + (plural ? "them" : "it") + " as well as"
+                        + " '\(trackName)', so the ear copies are not this track alone."
+                        + " The deltas are unaffected; the audio is."
+                )
+            }
+        } else {
+            note = "Two offline master bounces with this track soloed - whether any OTHER track was"
+                + " already soloed could NOT be read, so the bounces may contain more than this"
+                + " track." + sharedTail
+            listenSuffix = " Whether another track was already soloed could not be read, so both"
+                + " copies may contain more than '\(trackName)'."
+            warnings.append(
+                "Logic's track headers could not be read before the A/B, so whether another track"
+                    + " was already soloed is UNKNOWN - the bounces may contain more than"
+                    + " '\(trackName)'."
+            )
+        }
+
+        if !soloRestored && !wasAlreadySoloed {
+            // The same sentence `logic_export_stems` uses for the same hazard.
+            warnings.append(
+                "'\(trackName)' is still soloed - every later bounce contains only it until that is fixed."
+            )
+        }
+
+        let context: [String: Any]
+        if let others {
+            context = ["other_tracks_soloed": others]
+        } else {
+            context = ["unavailable": "Logic's track headers could not be read before the A/B"]
+        }
+
+        return Report(
+            note: note,
+            warning: warnings.isEmpty ? nil : warnings.joined(separator: " ALSO: "),
+            listenSuffix: listenSuffix,
+            context: context
+        )
+    }
+}
+
 extension MCUController {
     // MARK: The timecode display: mode plausibility
 
@@ -401,7 +510,7 @@ extension MCUController {
         startBar: Int, endBar: Int,
         startSeconds: Double, endSeconds: Double,
         tempo: Double,
-        keepChange: Bool
+        keepChange: Bool, includeAudio: Bool
     ) throws -> [String: Any] {
         let projectPath = try logic.projectDocumentPath()
         if let tracks = (try? logic.listTracks())?["tracks"] as? [[String: Any]],
@@ -439,10 +548,30 @@ extension MCUController {
             )
         }
         reportProgress("applying the change", percent: 46)
+        // `trackName:` is what lets `setPluginParameter` use its own
+        // bookkeeping at all: without it `hotMatchesRequest()` returns false on
+        // its first line (MCUParameters.swift:533) and neither branch of
+        // `if let trackName` runs, so the hot plugin view is never consulted
+        // AND the plugin-edit `SurfaceDebt` is never recorded — this tool left
+        // the surface in plugin-edit with nothing in the ledger saying so.
+        //
+        // It buys no time here, and that is worth writing down. The profile's
+        // candidate N1 sized it at −1.0 to −1.5 s on the theory that the second
+        // write (the rollback) would find the view still hot. Measured live
+        // 2026-09-02 on the sandbox: **an offline bounce puts the surface back
+        // in PN by itself** (assignment `P4` before `logic_bounce_range`, `PN`
+        // straight after, LCD back to track names), so the two writes of an A/B
+        // can never be adjacent and the same write costs 2 887 / 2 852 ms
+        // either side of the bounce. Two writes with nothing in between DO get
+        // the view — 2 990 ms cold, then 2 401 / 2 364 ms — so the cache works;
+        // it is 590 ms, not 1.5 s, and this tool cannot reach it. What is left
+        // is ~0.7 ms for one `freshStatus()` probe that correctly declines, and
+        // a surface debt that is now recorded rather than inferred by the
+        // crashed-predecessor fallback in `settleSurfaceDebt`.
         guard let change = try setPluginParameter(
             slot: insertSlot, parameter: parameter,
             targetValue: targetValue, expectedCurrentValue: expectedCurrentValue,
-            tolerance: nil
+            tolerance: nil, trackName: trackName
         ) else {
             throw LogicianError.trackNotExposed(
                 requested: "MCU write of '\(parameter)' in slot \(insertSlot)",
@@ -466,7 +595,7 @@ extension MCUController {
                 if ((try? setPluginParameter(
                     slot: insertSlot, parameter: parameter,
                     targetValue: beforeValue, expectedCurrentValue: expected,
-                    tolerance: nil
+                    tolerance: nil, trackName: trackName
                 )) ?? nil) != nil {
                     return true
                 }
@@ -543,7 +672,8 @@ extension MCUController {
         evalResult = attachABAudio(
             to: evalResult,
             baselinePath: ((renderA["slice"] as? [String: Any])?["path"] as? String) ?? (renderA["path"] as? String),
-            afterPath: ((renderB["slice"] as? [String: Any])?["path"] as? String) ?? (renderB["path"] as? String)
+            afterPath: ((renderB["slice"] as? [String: Any])?["path"] as? String) ?? (renderB["path"] as? String),
+            includeAudio: includeAudio
         )
         return evalResult
     }
@@ -551,11 +681,30 @@ extension MCUController {
     /// Attaches baseline+after ear copies as ordered MCP audio blocks so the
     /// A/B can be HEARD in the same result the keep/rollback decision is
     /// made from. First audio block = baseline (A), second = after (B).
-    static func attachABAudio(to result: [String: Any], baselinePath: String?, afterPath: String?) -> [String: Any] {
+    ///
+    /// `includeAudio: false` is the caller's `include_audio` opt-out, and it
+    /// reaches this far down on purpose: both copies used to be transcoded and
+    /// base64-encoded anyway, for `toolResult` to lift out and throw away a
+    /// moment later — 134–289 ms per call that bought the agent nothing,
+    /// measured identical with the flag on and off (`logic_evaluate_change`
+    /// profile §7, 2026-09-01). The agent-visible payload is unchanged:
+    /// `_audio_suppressed` tells `toolResult` this result WOULD have carried
+    /// audio, so it still rewrites the listen note into the "blocks were
+    /// OMITTED" one and still adds the epistemics line, exactly as when it had
+    /// blocks to drop.
+    static func attachABAudio(
+        to result: [String: Any], baselinePath: String?, afterPath: String?,
+        includeAudio: Bool = true
+    ) -> [String: Any] {
         var result = result
-        guard let baselinePath, let afterPath,
-              let a = LogicAccessibility.encodeEarCopy(path: baselinePath, maxBytes: 300_000),
-              let b = LogicAccessibility.encodeEarCopy(path: afterPath, maxBytes: 300_000) else { return result }
+        guard let baselinePath, let afterPath else { return result }
+        guard includeAudio else {
+            result["_audio_suppressed"] = true
+            return result
+        }
+        guard let a = LogicAccessibility.encodeEarCopy(path: baselinePath, maxBytes: 300_000),
+              let b = LogicAccessibility.encodeEarCopy(path: afterPath, maxBytes: 300_000)
+        else { return result }
         result["_audio_list"] = [
             ["data": a.base64EncodedString(), "mimeType": "audio/mp4"],
             ["data": b.base64EncodedString(), "mimeType": "audio/mp4"]
@@ -575,11 +724,20 @@ extension MCUController {
         insertSlot: Int, parameter: String,
         expectedCurrentValue: String, targetValue: String,
         startBar: Int, endBar: Int,
-        keepChange: Bool
+        keepChange: Bool, includeAudio: Bool
     ) throws -> [String: Any] {
         _ = try logic.selectTrack(
             trackName: trackName, trackNumber: trackNumber, expectedProjectPath: nil
         )
+
+        // Who else is soloed, read BEFORE this tool adds its own solo — after
+        // it, the answer is unreadable in principle. Not a refusal (the sibling
+        // `logic_export_stems` refuses because a stem must hold ONE track; an
+        // A/B's deltas survive a foreign solo, since the same contamination is
+        // in both bounces) but the result must say so, because the ear copies
+        // then contain music the note used to deny. `nil` is not `[]`: an
+        // unreadable Tracks area answers "unknown", never "nobody".
+        let preexistingSolos = logic.soloedTrackNamesIfReadable()
 
         // Solo on - with a track number the AX strip toggle is authoritative
         // (duplicate track names make the MCU name match ambiguous).
@@ -631,10 +789,12 @@ extension MCUController {
         let changeOpt: [String: Any]?
         do {
             reportProgress("applying the change", percent: 46)
+            // `trackName:` for the hot plugin view and the plugin-edit
+            // SurfaceDebt — see the same call in `evaluateChangeRendered`.
             changeOpt = try setPluginParameter(
                 slot: insertSlot, parameter: parameter,
                 targetValue: targetValue, expectedCurrentValue: expectedCurrentValue,
-                tolerance: nil
+                tolerance: nil, trackName: trackName
             )
         } catch {
             unsolo()
@@ -659,7 +819,7 @@ extension MCUController {
                 if ((try? setPluginParameter(
                     slot: insertSlot, parameter: parameter,
                     targetValue: beforeValue, expectedCurrentValue: expected,
-                    tolerance: nil
+                    tolerance: nil, trackName: trackName
                 )) ?? nil) != nil {
                     return true
                 }
@@ -708,6 +868,13 @@ extension MCUController {
             deltas["peak_delta_db"] = zip(a, b).map { (($1 - $0) * 100).rounded() / 100 }
         }
 
+        let soloReport = SoloBounceReport.compose(
+            trackName: trackName,
+            preexistingSolos: preexistingSolos,
+            wasAlreadySoloed: wasAlreadySoloed,
+            soloRestored: soloRestored || wasAlreadySoloed
+        )
+
         var evalResult: [String: Any] = [
             "success": true,
             "verified": (restored || keepChange) && (soloRestored || wasAlreadySoloed),
@@ -715,6 +882,7 @@ extension MCUController {
             "method": "solo_bounce",
             "decision": decision,
             "solo_restored": soloRestored || wasAlreadySoloed,
+            "solo_context": soloReport.context,
             "change": [
                 "track": trackName, "track_name": trackName,
                 "insert_slot": insertSlot, "parameter": parameter,
@@ -731,9 +899,19 @@ extension MCUController {
             "baseline_metrics": metricsA ?? NSNull(),
             "after_metrics": metricsB ?? NSNull(),
             "deltas": deltas,
-            "note": "Two offline master bounces with only this track soloed - works on stack subtracks and shared-channel tracks that freeze refuses. Master-bus processing applies to both A and B. No playback occurred."
+            "note": soloReport.note
         ]
-        evalResult = attachABAudio(to: evalResult, baselinePath: pathA, afterPath: pathB)
+        appendWarning(soloReport.warning, to: &evalResult)
+        evalResult = attachABAudio(
+            to: evalResult, baselinePath: pathA, afterPath: pathB, includeAudio: includeAudio
+        )
+        // The ear copies' own note last, so "listen to both of these" and
+        // "here is what is in them besides the track you asked about" arrive
+        // together rather than one of them being quietly false.
+        if let suffix = soloReport.listenSuffix,
+           let listen = evalResult["listen_note"] as? String {
+            evalResult["listen_note"] = listen + suffix
+        }
         return evalResult
     }
 

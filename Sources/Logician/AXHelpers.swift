@@ -511,8 +511,22 @@ extension LogicAccessibility {
             throw LogicianError.confirmationFailed("AXError \(confirmStatus.rawValue); restored=\(restored)")
         }
 
-        Thread.sleep(forTimeInterval: 0.35)
-        let after = try revealFormattedValue(of: field, fallbackName: parameterName)
+        // No blind wait for the confirm to land: poll the field for the value
+        // this line was going to read anyway, and stop the moment it says what
+        // was asked for. The old `Thread.sleep(0.35)` here plus the 0.20 s
+        // inside each `revealFormattedValue` were 750 ms of the 775–792 ms an
+        // AX parameter write measured on 2026-09-01 (`logic_evaluate_change`
+        // profile §5, phases B05/B07) — 96% of the phase, asleep. The
+        // verification itself is unchanged: the same compare against the same
+        // readback, only reached as soon as it is true instead of at a fixed
+        // deadline. A field that really does take the old 0.55 s still gets it.
+        // Whole-tool effect, measured 2026-09-02 on the sandbox: one
+        // `logic_evaluate_change` method `bounce` (two of these writes) went
+        // 6 316 ms → 4 687 ms.
+        let after = try revealFormattedValue(
+            of: field, fallbackName: parameterName,
+            timeout: 0.55, settlingOn: { self.equivalentFormattedValues($0, targetValue) }
+        )
         guard equivalentFormattedValues(after, targetValue) else {
             let restored = restore(field: field, value: before)
             throw LogicianError.verificationFailed(requested: targetValue, actual: after, restored: restored)
@@ -584,7 +598,34 @@ extension LogicAccessibility {
         return firstSentence.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    func revealFormattedValue(of field: AXUIElement, fallbackName: String) throws -> String {
+    /// A plugin parameter's value as Logic formats it, revealed by focusing
+    /// the field (unfocused, many of these fields publish the parameter's NAME
+    /// where its value belongs) and then reading it back.
+    ///
+    /// The read used to sit behind a blind `Thread.sleep(0.20)`. Measured
+    /// 2026-09-01 (`logic_evaluate_change` profile §5): an AX text-field write
+    /// is synchronous and the focused value is readable 0–6 ms later, so that
+    /// sleep — and the 0.35 s `setParameter` slept after `kAXConfirmAction` —
+    /// was 750 ms of a 775 ms write, on the helper EVERY AX plugin-parameter
+    /// write in the server goes through. It is now a bounded poll on the very
+    /// value the caller is about to compare: nothing is verified less, the
+    /// answer just arrives when it is ready.
+    ///
+    /// `settlingOn` is what keeps the verification honest after a write. The
+    /// field publishes its OLD value for a few ms after the confirm, so a poll
+    /// that stopped at "something readable" would compare the pre-write value
+    /// against the target and call a good write a failure. The default accepts
+    /// any revealed value (right for a plain read, where nothing was written);
+    /// a post-write caller passes the target test and gets today's semantics.
+    /// On timeout the LAST revealed value is returned rather than thrown away,
+    /// so the caller's own compare still produces the same `verificationFailed`
+    /// naming the actual value it does today.
+    func revealFormattedValue(
+        of field: AXUIElement,
+        fallbackName: String,
+        timeout: TimeInterval = 0.20,
+        settlingOn accept: (String) -> Bool = { _ in true }
+    ) throws -> String {
         let focusStatus = AXUIElementSetAttributeValue(
             field,
             kAXFocusedAttribute as CFString,
@@ -593,12 +634,22 @@ extension LogicAccessibility {
         guard focusStatus == .success else {
             throw LogicianError.writeFailed("Could not focus \(fallbackName); AXError \(focusStatus.rawValue)")
         }
-        Thread.sleep(forTimeInterval: 0.20)
-        let value = stringAttribute(field, kAXValueAttribute as String)
-        guard !value.isEmpty, value.localizedCaseInsensitiveCompare(fallbackName) != .orderedSame else {
+        var revealed: String?
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            let value = stringAttribute(field, kAXValueAttribute as String)
+            if !value.isEmpty, value.localizedCaseInsensitiveCompare(fallbackName) != .orderedSame {
+                revealed = value
+                if accept(value) { return value }
+            }
+            Thread.sleep(forTimeInterval: 0.004)
+        } while Date() < deadline
+        // Never revealed at all is the old failure, unchanged. Revealed but
+        // never settling is the caller's compare to report, with the value.
+        guard let revealed else {
             throw LogicianError.writeFailed("Could not reveal formatted value for \(fallbackName)")
         }
-        return value
+        return revealed
     }
 
     func restore(field: AXUIElement, value: String) -> Bool {
@@ -606,8 +657,14 @@ extension LogicAccessibility {
               AXUIElementPerformAction(field, kAXConfirmAction as CFString) == .success else {
             return false
         }
-        Thread.sleep(forTimeInterval: 0.25)
-        guard let restoredValue = try? revealFormattedValue(of: field, fallbackName: "parameter") else {
+        // Same bounded poll as the write's own verification, with the same
+        // budget the two blind sleeps used to spend (0.25 + 0.20 s): a restore
+        // that lands in 4 ms is not worth a quarter-second of sleep, and a
+        // restore that never lands still fails after the full grace period.
+        guard let restoredValue = try? revealFormattedValue(
+            of: field, fallbackName: "parameter",
+            timeout: 0.45, settlingOn: { self.equivalentFormattedValues($0, value) }
+        ) else {
             return false
         }
         return equivalentFormattedValues(restoredValue, value)

@@ -1,5 +1,93 @@
 import Foundation
 
+/// Everything `logic_evaluate_change` decides before it touches the project.
+///
+/// The order is the point. `expected_project_path` used to be honoured by ONE
+/// of the three methods — `bounce` passed it down; `render` and `solo_bounce`
+/// never read the key at all, and every `selectTrack`/`bounceRange` beneath
+/// them passed `expectedProjectPath: nil` (`logic_evaluate_change` profile §8,
+/// defect D2, 2026-09-01). On a tool whose whole job is to WRITE a plugin
+/// parameter and render audio, an agent that switched projects between calls
+/// and defended itself with the argument got the write applied to the wrong
+/// project and `success: true` for it. The guard now runs here, once, for all
+/// three methods, and it runs FIRST — before the shape checks, before the
+/// tempo/meter maps are read, and long before anything is written. Pointed at
+/// the wrong project is the more important thing to learn, and it costs
+/// nothing to learn it first: `verifyProjectPath(nil)` returns immediately
+/// when the argument was not passed, which is the ordinary call.
+///
+/// The verification is injected rather than called, so the ordering is pinned
+/// by a pure test instead of by a live project switch.
+enum EvaluateChangePreflight {
+
+    enum Method: String {
+        case render
+        case bounce
+        case soloBounce = "solo_bounce"
+    }
+
+    /// The method AND what it needs to run, so a resolved request cannot be
+    /// missing the slot its method addresses the plugin by.
+    enum Plan: Equatable {
+        case render(insertSlot: Int)
+        case soloBounce(insertSlot: Int)
+        case bounce
+    }
+
+    struct Request {
+        let plan: Plan
+        let startBar: Int
+        let endBar: Int
+        let expectedProjectPath: String?
+        let keepChange: Bool
+        /// Read here as well as by `toolResult`, because the two ear copies are
+        /// transcoded deep inside the A/B and there is no point building what
+        /// the transport is about to drop.
+        let includeAudio: Bool
+    }
+
+    static let methodRefusal = "method must be one of 'render' (single-track freeze A/B, needs insert_slot), "
+        + "'bounce' (master A/B, needs plugin_name) or 'solo_bounce' "
+        + "(soloed master A/B for tracks freeze refuses, needs insert_slot)"
+
+    static func resolve(
+        _ arguments: [String: Any],
+        verifyProjectPath: (String?) throws -> Void
+    ) throws -> Request {
+        let expectedProjectPath = arguments["expected_project_path"] as? String
+        try verifyProjectPath(expectedProjectPath)
+
+        guard let startBar = arguments["start_bar"] as? Int,
+              let endBar = arguments["end_bar"] as? Int else {
+            throw LogicianError.invalidArguments("missing integers: start_bar, end_bar")
+        }
+        guard let name = arguments["method"] as? String, let method = Method(rawValue: name) else {
+            throw LogicianError.invalidArguments(methodRefusal)
+        }
+        func requiredSlot() throws -> Int {
+            guard let slot = arguments["insert_slot"] as? Int else {
+                throw LogicianError.invalidArguments(
+                    "method '\(method.rawValue)' requires insert_slot (1-8, MCU physical slot; list with logic_list_inserts route 'mcu')"
+                )
+            }
+            return slot
+        }
+        let plan: Plan
+        switch method {
+        case .render: plan = .render(insertSlot: try requiredSlot())
+        case .soloBounce: plan = .soloBounce(insertSlot: try requiredSlot())
+        case .bounce: plan = .bounce
+        }
+        return Request(
+            plan: plan,
+            startBar: startBar, endBar: endBar,
+            expectedProjectPath: expectedProjectPath,
+            keepChange: arguments["keep_change"] as? Bool ?? false,
+            includeAudio: arguments["include_audio"] as? Bool ?? true
+        )
+    }
+}
+
 // Audio pipeline: bounce, render, A/B evaluation, audio clip reads.
 extension MCPServer {
     func handleBounceRange(_ arguments: [String: Any]) throws -> Any {
@@ -216,16 +304,14 @@ extension MCPServer {
 
     func handleEvaluateChange(_ arguments: [String: Any]) throws -> Any {
         let payload: Any
-        guard let startBar = arguments["start_bar"] as? Int,
-              let endBar = arguments["end_bar"] as? Int else {
-            throw LogicianError.invalidArguments("missing integers: start_bar, end_bar")
+        // One guard for all three methods, ahead of every write and every map
+        // read - see EvaluateChangePreflight for why it did not used to be.
+        let request = try EvaluateChangePreflight.resolve(arguments) {
+            try logic.verifyProjectPath($0)
         }
-        if (arguments["method"] as? String) == "render" {
-            guard let slot = arguments["insert_slot"] as? Int else {
-                throw LogicianError.invalidArguments(
-                    "method 'render' requires insert_slot (1-8, MCU physical slot; list with logic_list_inserts route 'mcu')"
-                )
-            }
+        let startBar = request.startBar
+        let endBar = request.endBar
+        if case .render(let slot) = request.plan {
             // Method 'render' cuts BOTH the baseline and the changed audio out
             // of a freeze render by bar math. Under a tempo map, math that
             // assumes one tempo makes the two cuts land on different musical
@@ -281,7 +367,7 @@ extension MCPServer {
                 startBar: startBar, endBar: endBar,
                 startSeconds: range.start, endSeconds: range.end,
                 tempo: range.tempo,
-                keepChange: arguments["keep_change"] as? Bool ?? false
+                keepChange: request.keepChange, includeAudio: request.includeAudio
             )
             // A sample that could not run gets a warning, not a refusal: the
             // check failing must not break an A/B that works today.
@@ -296,12 +382,7 @@ extension MCPServer {
             reportProgress("A/B complete", percent: 100)
             return rendered
         }
-        if (arguments["method"] as? String) == "solo_bounce" {
-            guard let slot = arguments["insert_slot"] as? Int else {
-                throw LogicianError.invalidArguments(
-                    "method 'solo_bounce' requires insert_slot (1-8, MCU physical slot; list with logic_list_inserts route 'mcu')"
-                )
-            }
+        if case .soloBounce(let slot) = request.plan {
             payload = try MCUController.evaluateChangeSoloBounced(
                 logic: logic,
                 trackName: requiredString("track_name", in: arguments),
@@ -311,11 +392,11 @@ extension MCPServer {
                 expectedCurrentValue: requiredString("expected_current_value", in: arguments),
                 targetValue: requiredString("target_value", in: arguments),
                 startBar: startBar, endBar: endBar,
-                keepChange: arguments["keep_change"] as? Bool ?? false
+                keepChange: request.keepChange, includeAudio: request.includeAudio
             )
             return payload
         }
-        if (arguments["method"] as? String) == "bounce" {
+        if case .bounce = request.plan {
             do {
                 payload = try logic.evaluateChangeBounced(
                 trackName: requiredString("track_name", in: arguments),
@@ -326,8 +407,12 @@ extension MCPServer {
                 targetValue: requiredString("target_value", in: arguments),
                 startBar: startBar,
                 endBar: endBar,
-                keepChange: arguments["keep_change"] as? Bool ?? false,
-                expectedProjectPath: arguments["expected_project_path"] as? String
+                keepChange: request.keepChange,
+                // Already enforced centrally above; passed on because this
+                // function's own contract is to check it, and one more
+                // `projectDocumentPath()` read is 1-4 ms.
+                expectedProjectPath: request.expectedProjectPath,
+                includeAudio: request.includeAudio
             )
             } catch {
                 logic.cancelBounceDialog()
@@ -335,11 +420,9 @@ extension MCPServer {
             }
             return payload
         }
-        throw LogicianError.invalidArguments(
-            "method must be one of 'render' (single-track freeze A/B, needs insert_slot), "
-                + "'bounce' (master A/B, needs plugin_name) or 'solo_bounce' "
-                + "(soloed master A/B for tracks freeze refuses, needs insert_slot)"
-        )
+        // Unreachable: the preflight resolved the method or refused with this
+        // same sentence. Swift wants the function to end in a value or a throw.
+        throw LogicianError.invalidArguments(EvaluateChangePreflight.methodRefusal)
     }
 
     func handleRenderTrack(_ arguments: [String: Any]) throws -> Any {

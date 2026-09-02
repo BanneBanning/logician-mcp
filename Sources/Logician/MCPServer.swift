@@ -682,7 +682,13 @@ final class MCPServer: @unchecked Sendable {
             // the keys are lifted out and independently of `includeAudio`: a
             // result whose blocks were suppressed still sends the agent to the
             // file paths, so it still owes the same epistemic warning.
-            let carriedAudio = object["_audio"] != nil || object["_audio_list"] != nil
+            // A producer that SKIPPED the encode because `include_audio` was
+            // already false says so with this key rather than by going quiet:
+            // the result still owes the omission note and the epistemics line
+            // it would have owed had the blocks been built and dropped here.
+            let suppressed = (object["_audio_suppressed"] as? Bool) == true
+            object.removeValue(forKey: "_audio_suppressed")
+            let carriedAudio = object["_audio"] != nil || object["_audio_list"] != nil || suppressed
             if let audio = object["_audio"] as? [String: String],
                let data = audio["data"], let mime = audio["mimeType"] {
                 audioBlocks.append(["type": "audio", "data": data, "mimeType": mime])
@@ -695,13 +701,18 @@ final class MCPServer: @unchecked Sendable {
                 }
                 object.removeValue(forKey: "_audio_list")
             }
-            if !includeAudio && !audioBlocks.isEmpty {
+            if !includeAudio && (!audioBlocks.isEmpty || suppressed) {
                 audioBlocks = []
-                // Correct the standing promise in place. No key is added or
-                // removed - only the value of the note that would otherwise
-                // tell the agent to listen to blocks that are not there.
+                // Correct the standing promise in place: the value of the note
+                // that would otherwise tell the agent to listen to blocks that
+                // are not there. (A producer that skipped the encode outright
+                // never wrote that note, so for it the key is written here
+                // instead of rewritten - same result, one fewer transcode.)
                 let omitted = "Audio blocks were OMITTED because you passed include_audio: false. Nothing was heard. To listen, open the audio paths in this result (preview_path / clip_path / baseline_audio / after_audio) with your client's file viewer, or call again with include_audio: true. NEVER read audio files as text/bash."
-                if object["listen_note"] != nil {
+                if object["listen_note"] != nil || suppressed {
+                    // `suppressed` gets the same key the attached-then-dropped
+                    // path gets: the producer skipped writing `listen_note`
+                    // precisely because it had no blocks to point at.
                     object["listen_note"] = omitted
                 } else if object["note"] != nil {
                     object["note"] = omitted

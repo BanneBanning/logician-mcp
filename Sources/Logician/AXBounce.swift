@@ -1461,7 +1461,8 @@ extension LogicAccessibility {
         startBar: Int,
         endBar: Int,
         keepChange: Bool,
-        expectedProjectPath: String?
+        expectedProjectPath: String?,
+        includeAudio: Bool
     ) throws -> [String: Any] {
         try verifyProjectPath(expectedProjectPath)
         // The master A/B is the one evaluation that needs no track: it bounces
@@ -1585,7 +1586,9 @@ extension LogicAccessibility {
             "deltas": deltas,
             "note": "Offline 24-bit master renders; no playback occurred. Metrics computed from the files."
         ]
-        evalResult = MCUController.attachABAudio(to: evalResult, baselinePath: pathA, afterPath: pathB)
+        evalResult = MCUController.attachABAudio(
+            to: evalResult, baselinePath: pathA, afterPath: pathB, includeAudio: includeAudio
+        )
         return evalResult
     }
 

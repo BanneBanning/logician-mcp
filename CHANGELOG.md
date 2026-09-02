@@ -404,6 +404,31 @@ with every render coming back as audio the agent can listen to.
   legitimate move. And a call with a bad argument is refused before the tool selects
   anything, instead of changing the user's region selection on its way to saying no.
 
+- **`logic_evaluate_change` answers a quarter faster, refuses the wrong project on every
+  method, and stops calling a shared bounce a solo one.** An A/B by ear used to spend
+  three quarters of a second asleep in each of its parameter writes: the Accessibility
+  write is synchronous and reads back in a few milliseconds, but the code waited a flat
+  0.35 s after confirming and another 0.20 s in each of the two value reads. Those are
+  bounded polls on the very values the next line compares now, so nothing is verified
+  less and the answer arrives when it is ready — a `method: "bounce"` A/B went
+  **6 316 ms → 4 687 ms** on the reference project, and because the sleeping helper is
+  the one every Accessibility parameter write in the server goes through, every one of
+  them got the same 0.75 s back. `expected_project_path` is honoured by all three
+  methods now: it was checked on `bounce` and silently ignored by `render` and
+  `solo_bounce`, so an agent that switched projects and defended itself with the
+  argument had the parameter written into the wrong project and was told
+  `success: true` — the check runs once, before the method's own shape checks, before
+  the tempo map is read and long before anything is written (measured: the old `render`
+  spent 8.0 s reading maps in the wrong project before failing on something else; the
+  refusal now lands in 1 ms). And `solo_bounce` stopped promising what it could not
+  see: a track that was already soloed somewhere else is not refused — both bounces
+  carry it, so the deltas stay honest — but the result now says so in `warning` and
+  `solo_context` instead of insisting the bounces held "only this track soloed", and a
+  solo the tool could not switch off again finally warns in the same words
+  `logic_export_stems` uses, rather than only flipping `solo_restored` to false. With
+  `include_audio: false` the two ear copies are no longer transcoded for the transport
+  to throw away (134–289 ms), and the result reads exactly as it did before.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.
