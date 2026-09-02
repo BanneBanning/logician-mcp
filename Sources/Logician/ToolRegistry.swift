@@ -220,6 +220,7 @@ extension MCPServer {
                     "properties": [
                         "scope": ["type": "string", "enum": ["region", "track"], "description": "'region' (default) prints the named region; 'track' prints the whole selected track."],
                         "track_name": ["type": "string", "description": "The region's track (required for scope 'region'); the track to print for scope 'track'."],
+                        "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
                         "region_name": ["type": "string"],
                         "start_bar": ["type": "integer", "description": "The region's current start bar."],
                         "name": ["type": "string", "description": "Name for the printed region/file. Logic's default is '<region>_bip'."],
@@ -809,7 +810,7 @@ extension MCPServer {
             Tool(
                 name: "logic_list_regions",
                 title: "List regions",
-                description: "The arrangement map: every region on every rendered track row, with name, start/end bar (and beat when off the barline), type (midi/audio) and selection state — parsed from Logic's own accessibility descriptions. Read-only. Optionally filter to one track. THIS MAP CAN BE INCOMPLETE AND NOW SAYS SO IN FIELDS, not in a footnote: `partial` (true when rows are PROVABLY missing), `completeness` ('partial' or 'unknown' - never 'complete', because a row Logic has not rendered publishes nothing at all), `partial_evidence`, `missing_track_numbers` where the numbering names them, and `coverage_checked` saying which signals were read. By default it reads the ROW NUMBERING only, which is free - a map holding rows 1-9 and 20-29 has already proved ten rows exist that it cannot see. Collapsed track stacks and a scrolled Tracks area can hide rows WITHOUT leaving a gap in the numbering: pass check_hidden_rows: true to read the track header column and scroll bar too (measured +40-50 ms on a 95-120 ms call). REGIONS HAVE NO STABLE HANDLE: they are addressed by (track_name, region_name, start_bar), and start_bar is exactly what an edit changes - so re-read this map between two edits of the same region instead of reusing the first read's start_bar. Duplicate region names make verification count occurrences rather than identify a region, which is why every edit tool selects exclusively first. FIELDS OMITTED AT THEIR DEFAULT: start_beat/end_beat on the barline, and `selected` when false (52 of 54 regions on the reference project, 17% of the payload) - absent means not selected. `type` IS NOT GUARANTEED: it is parsed from the region's help sentence, which Logic published for all 54 regions on 2026-09-02 and for only 2 of the same 54 hours earlier, so where one region on a row carries it the rest are filled in from it (type_from: 'track_row', because a track holds one kind of region) and where none does the field is ABSENT - which means unknown, never 'not audio'. logic_select_region or logic_describe_tracks answers it outright. EMPTY IS PROVEN, NOT ASSUMED: a walk that finds no track rows is cross-checked against the track header column, and an arrangement that is unreadable (or visibly holds tracks the walk cannot see - e.g. a non-English Logic UI) is REFUSED with the reason rather than reported as an empty project.",
+                description: "The arrangement map: every region on every rendered track row, with name, start/end bar (and beat when off the barline), type (midi/audio) and selection state — parsed from Logic's own accessibility descriptions. Read-only. Optionally filter to one track. THIS MAP CAN BE INCOMPLETE AND NOW SAYS SO IN FIELDS, not in a footnote: `partial` (true when rows are PROVABLY missing), `completeness` ('partial' or 'unknown' - never 'complete', because a row Logic has not rendered publishes nothing at all), `partial_evidence`, `missing_track_numbers` where the numbering names them, and `coverage_checked` saying which signals were read. By default it reads the ROW NUMBERING only, which is free - a map holding rows 1-9 and 20-29 has already proved ten rows exist that it cannot see. Collapsed track stacks and a scrolled Tracks area can hide rows WITHOUT leaving a gap in the numbering: pass check_hidden_rows: true to read the track header column and scroll bar too (measured +40-50 ms on a 95-120 ms call). REGIONS HAVE NO STABLE HANDLE: they are addressed by (track_name, region_name, start_bar), and start_bar is exactly what an edit changes - so re-read this map between two edits of the same region instead of reusing the first read's start_bar. Every row here carries its `track_number`, and that is what to pass to the region tools when several rows share a name (an imported project is full of 'Studio Grand' rows): a name that matches two rendered rows is now REFUSED as ambiguous rather than resolved to the first of them, and track_number + track_name are cross-checked against each other. Duplicate region names make verification count occurrences rather than identify a region, which is why every edit tool selects exclusively first. FIELDS OMITTED AT THEIR DEFAULT: start_beat/end_beat on the barline, and `selected` when false (52 of 54 regions on the reference project, 17% of the payload) - absent means not selected. `type` IS NOT GUARANTEED: it is parsed from the region's help sentence, which Logic published for all 54 regions on 2026-09-02 and for only 2 of the same 54 hours earlier, so where one region on a row carries it the rest are filled in from it (type_from: 'track_row', because a track holds one kind of region) and where none does the field is ABSENT - which means unknown, never 'not audio'. logic_select_region or logic_describe_tracks answers it outright. EMPTY IS PROVEN, NOT ASSUMED: a walk that finds no track rows is cross-checked against the track header column, and an arrangement that is unreadable (or visibly holds tracks the walk cannot see - e.g. a non-English Logic UI) is REFUSED with the reason rather than reported as an empty project.",
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -833,6 +834,7 @@ extension MCPServer {
                     "type": "object",
                     "properties": [
                         "track_name": ["type": "string"],
+                        "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
                         "region_name": ["type": "string"],
                         "start_bar": ["type": "integer"],
                         "exclusive": ["type": "boolean", "description": "Default true: clear other selections first. false ADDS this region to the current selection and reports selected_before/selected_count."]
@@ -854,6 +856,7 @@ extension MCPServer {
                     "type": "object",
                     "properties": [
                         "track_name": ["type": "string"],
+                        "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
                         "region_name": ["type": "string"],
                         "start_bar": ["type": "integer"]
                     ],
@@ -874,6 +877,7 @@ extension MCPServer {
                     "type": "object",
                     "properties": [
                         "track_name": ["type": "string"],
+                        "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
                         "region_name": ["type": "string"],
                         "start_bar": ["type": "integer", "description": "The region's current start bar."],
                         "apply": ["type": "boolean", "description": "false (default) previews and changes nothing; true commits."]
@@ -902,6 +906,7 @@ extension MCPServer {
                             "description": "Which selection command to fire."
                         ],
                         "track_name": ["type": "string", "description": "The anchor's track; required for every mode except 'all' and 'none'."],
+                        "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
                         "region_name": ["type": "string", "description": "Which region is the anchor (with start_bar to disambiguate)."],
                         "start_bar": ["type": "integer", "description": "The anchor region's current start bar."]
                     ],
@@ -923,6 +928,7 @@ extension MCPServer {
                     "type": "object",
                     "properties": [
                         "track_name": ["type": "string"],
+                        "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
                         "region_name": ["type": "string", "description": "Which region; with start_bar, to disambiguate."],
                         "start_bar": ["type": "integer", "description": "The region's CURRENT start bar."],
                         "at_bar": ["type": "integer", "minimum": 1, "description": "Bar to cut at; must be inside the region."],
@@ -952,6 +958,7 @@ extension MCPServer {
                     "type": "object",
                     "properties": [
                         "track_name": ["type": "string"],
+                        "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
                         "region_name": ["type": "string"],
                         "start_bar": ["type": "integer", "description": "Which region (its current start bar)."],
                         "by_bars": ["type": "integer", "description": "Positive = right, negative = left."],
@@ -974,10 +981,12 @@ extension MCPServer {
                     "type": "object",
                     "properties": [
                         "track_name": ["type": "string"],
+                        "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
                         "region_name": ["type": "string"],
                         "start_bar": ["type": "integer"],
                         "to_bar": ["type": "integer"],
                         "to_track": ["type": "string", "description": "Destination track; default same track."],
+                        "to_track_number": ["type": "integer", "description": "Which destination ROW, when several tracks share `to_track`'s name. Cross-checked against to_track exactly as track_number is against track_name."],
                         "move": ["type": "boolean", "description": "true uses Cut instead of Copy (moves across tracks)."]
                     ],
                     "required": ["track_name", "to_bar"],
@@ -997,6 +1006,7 @@ extension MCPServer {
                     "type": "object",
                     "properties": [
                         "track_name": ["type": "string", "description": "Select this track's region first. Omit to read whatever is selected."],
+                        "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
                         "region_name": ["type": "string", "description": "With track_name: which region."],
                         "start_bar": ["type": "integer", "description": "With track_name: the region's current start bar."],
                         "include_quantize_values": [
@@ -1021,6 +1031,7 @@ extension MCPServer {
                     "type": "object",
                     "properties": [
                         "track_name": ["type": "string", "description": "Which track the region is on. Required for scope 'region'."],
+                        "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
                         "region_name": ["type": "string", "description": "Which region, with start_bar to disambiguate."],
                         "start_bar": ["type": "integer", "description": "The region's CURRENT start bar."],
                         "scope": [
@@ -1071,6 +1082,7 @@ extension MCPServer {
                     "type": "object",
                     "properties": [
                         "track_name": ["type": "string", "description": "Which track the region is on."],
+                        "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
                         "region_name": ["type": "string", "description": "Which region (its current name), with start_bar to disambiguate."],
                         "start_bar": ["type": "integer", "description": "The region's current start bar."],
                         "new_name": ["type": "string", "description": "The new name. One line, non-empty."],
@@ -1863,11 +1875,12 @@ extension MCPServer {
             Tool(
                 name: "logic_list_events",
                 title: "List a region's MIDI events",
-                description: "Read the MIDI events of a region out of Logic's Event List (View > List Editors > Event) — position, type, pitch, velocity and length, as Logic's own cells print them. This closes the asymmetry where logic_record_midi could WRITE MIDI that nothing could read back. SCOPE, and it matters: the Event List shows the SELECTED region (or the selected track's region at the playhead), never the project's MIDI as a whole — pass track_name (plus region_name and/or start_bar) to select one first, or select with logic_select_region and call this with no arguments to read whatever is showing. An EMPTY list means nothing is selected, not that the project has no MIDI, and the result says so. Every row carries Logic's published columns verbatim plus parsed bar/beat/pitch/velocity/length where the columns were recognised. The row count is cross-checked against the list's own 'Number of Items' and a mismatch REFUSES rather than returning a truncated take on the region (an AX table publishes only realised rows). Opens the List Editors pane if it was closed, restores the previously selected tab, and closes what it opened.",
+                description: "Read the MIDI events of a region out of Logic's Event List (View > List Editors > Event) — position, type, pitch, velocity and length, as Logic's own cells print them. This closes the asymmetry where logic_record_midi could WRITE MIDI that nothing could read back. SCOPE, and it matters: the Event List shows the SELECTED region (or the selected track's region at the playhead), never the project's MIDI as a whole — pass track_name (plus region_name and/or start_bar) to select one first, or select with logic_select_region and call this with no arguments to read whatever is showing. An EMPTY list means nothing is selected, not that the project has no MIDI, and the result says so. Every row carries Logic's published columns verbatim plus parsed bar/beat/pitch/velocity/length where the columns were recognised. IT ANSWERS ONLY THE ROWS LOGIC HAS DRAWN: a List Editors table publishes every row it holds and draws the cells of the ones IN VIEW (measured — a 54-event region published all 54 and drew 26), so a region longer than the pane comes back short. `event_count` is the LIST'S own count, never the array's length, and when they differ the result carries `events_read`, `unreadable_rows`, `unreadable_row_numbers` and a warning. Those events are missing from the RESULT, not from the project: scroll in Logic (or make the pane taller) and read again. The row count is also cross-checked against the list's own 'Number of Items' and a mismatch REFUSES rather than returning a truncated take on the region. Opens the List Editors pane if it was closed, restores the previously selected tab, and closes what it opened.",
                 inputSchema: [
                     "type": "object",
                     "properties": [
                         "track_name": ["type": "string", "description": "Select this track's region first (exclusive selection). Omit to read whatever is currently selected."],
+                        "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
                         "region_name": ["type": "string", "description": "With track_name: which region."],
                         "start_bar": ["type": "integer", "description": "With track_name: the region's current start bar."],
                         "limit": ["type": "integer", "description": "Maximum events in the result, default 500. The full count is always reported as event_count."]
@@ -1894,6 +1907,7 @@ extension MCPServer {
                             "description": "'set' edits an existing note, 'create' adds one, 'delete' removes one."
                         ],
                         "track_name": ["type": "string", "description": "Select this track's region first (exclusive). Omit to edit whatever region is showing."],
+                        "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
                         "region_name": ["type": "string", "description": "With track_name: which region."],
                         "start_bar": ["type": "integer", "description": "With track_name: the region's current start bar."],
                         "bar": ["type": "integer", "minimum": 1, "description": "The event's bar (for 'create', the bar to put it on). Required."],
@@ -1932,7 +1946,7 @@ extension MCPServer {
             Tool(
                 name: "logic_markers",
                 title: "Read and write markers",
-                description: "Markers: list, create, goto or delete them. 'list' reads Logic's Marker List (View > List Editors > Marker) with each marker's bar and name. 'create' presses the Marker tab's own Create new Marker button at the PLAYHEAD (Logic's Create Marker key command is the fallback for a version that does not publish the button) and verifies against the list's own count; pass bar to park the playhead there first, which rewinds and then steps so the marker lands EXACTLY on the bar line rather than a fraction of a beat late, checked against the control surface's position display. 'goto' parks the playhead on the marker's bar AND BEAT — a marker at 33 4 1 1 leaves the playhead on 33|4, not 33|1. 'delete' uses the list row's own Delete action and verifies the marker is gone (Undo restores it). NAMES ARE READ-ONLY on Logic Pro 12.3.1: no cell in a Marker List row publishes a settable value, so 'rename' refuses with the reason and 'create' refuses a name argument up front rather than creating a marker and then failing to name it — markers keep Logic's own default names (Marker 1, Marker 2, ...) unless you rename them by hand in Logic. Address a marker by name (exact, case-insensitive — never fuzzy, because deleting the wrong marker is silent damage) or by bar; ambiguity refuses with the candidates listed. Each action is ONE List Editors pane cycle, so create and delete cost about as much as a list.",
+                description: "Markers: list, create, goto or delete them. 'list' reads Logic's Marker List (View > List Editors > Marker) with each marker's bar and name. 'create' presses the Marker tab's own Create new Marker button at the PLAYHEAD (Logic's Create Marker key command is the fallback for a version that does not publish the button) and verifies against the list's own count; pass bar to park the playhead there first, which rewinds and then steps so the marker lands EXACTLY on the bar line rather than a fraction of a beat late, checked against the control surface's position display. 'goto' parks the playhead on the marker's bar AND BEAT — a marker at 33 4 1 1 leaves the playhead on 33|4, not 33|1. 'delete' uses the list row's own Delete action and verifies the marker is gone (Undo restores it). NAMES ARE READ-ONLY on Logic Pro 12.3.1: no cell in a Marker List row publishes a settable value, so 'rename' refuses with the reason and 'create' refuses a name argument up front rather than creating a marker and then failing to name it — markers keep Logic's own default names (Marker 1, Marker 2, ...) unless you rename them by hand in Logic. Address a marker by name (exact, case-insensitive — never fuzzy, because deleting the wrong marker is silent damage) or by bar; ambiguity refuses with the candidates listed. 'list' ANSWERS ONLY THE ROWS LOGIC HAS DRAWN, exactly as logic_list_events does: the Marker tab publishes every row it holds and draws the cells of the rows IN VIEW ONLY, so a marker list longer than the pane comes back short. `marker_count` is the list's OWN count, and when it disagrees with what could be read the result carries `markers_read`, `unreadable_rows`, `unreadable_row_numbers` and a warning — those markers are missing from the RESULT, not from the project. Scroll the list in Logic (or make the pane taller) and read again; a 'goto' or 'delete' that cannot find a marker says the same thing rather than reporting it absent. Each action is ONE List Editors pane cycle, so create and delete cost about as much as a list.",
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -1956,7 +1970,7 @@ extension MCPServer {
             Tool(
                 name: "logic_list_signatures",
                 title: "List time signatures",
-                description: "Read the project's time signatures out of Logic's Signature List (View > List Editors > Signature): each signature, the bar it starts on, and its bar length in QUARTER-note beats (what Logic's BPM counts — 6/8 is three beats a bar, 7/8 three and a half). This is the meter map, the last assumption that was left in this server's bar math after the tempo map landed. HOW IT IS USED: a map with more than one bar length is INTEGRATED by every tool that converts bars to seconds itself (logic_render_track's slice, logic_evaluate_change method 'render', logic_record_midi's note placement and verification slice, logic_record_automation's point placement) — those results then carry a meter_map block and a warning, and an explicit beats_per_bar argument no longer overrides the project's own grid. A map with ONE bar length is reported and deliberately not used, so a constant-meter project's boundaries are bit-for-bit what they have always been. The Signature List also holds KEY signatures; those rows are counted for the truncation cross-check and skipped. Read cost ~2 s, no playhead movement, cached per project.",
+                description: "Read the project's time signatures out of Logic's Signature List (View > List Editors > Signature): each signature, the bar it starts on, and its bar length in QUARTER-note beats (what Logic's BPM counts — 6/8 is three beats a bar, 7/8 three and a half). This is the meter map, the last assumption that was left in this server's bar math after the tempo map landed. HOW IT IS USED: a map with more than one bar length is INTEGRATED by every tool that converts bars to seconds itself (logic_render_track's slice, logic_evaluate_change method 'render', logic_record_midi's note placement and verification slice, logic_record_automation's point placement) — those results then carry a meter_map block and a warning, and an explicit beats_per_bar argument no longer overrides the project's own grid. A map with ONE bar length is reported and deliberately not used, so a constant-meter project's boundaries are bit-for-bit what they have always been. The Signature List also holds KEY signatures; those rows are counted for the truncation cross-check and skipped. IT ANSWERS ONLY THE ROWS LOGIC HAS DRAWN — and unlike logic_list_events and logic_markers, which report what they could read and name what they could not, this one REFUSES: a List Editors table draws the cells of the rows IN VIEW ONLY, an undrawn signature row is indistinguishable from the project's own initial signature, and a meter map that quietly dropped a signature change would place every later bar confidently wrong. So a published-but-undrawn row comes back as a refusal naming the row numbers; scroll the Signature List in Logic (or make the pane taller) and call again. Read cost ~2 s, no playhead movement, cached per project.",
                 inputSchema: ["type": "object", "properties": [:], "additionalProperties": false],
                 // Not read-only: it toggles the List Editors pane and switches
                 // a tab (both restored).

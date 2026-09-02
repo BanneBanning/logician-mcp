@@ -177,6 +177,7 @@ extension LogicAccessibility {
     func bounceInPlace(
         scope: String,
         trackName: String?,
+        trackNumber: Int?,
         regionName: String?,
         startBar: Int?,
         name: String?,
@@ -193,7 +194,8 @@ extension LogicAccessibility {
                 throw LogicianError.invalidArguments("scope 'region' needs track_name")
             }
             anchor = try selectRegion(
-                trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true
+                trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true,
+                trackNumber: trackNumber
             )
             guard try selectedRegionCount() == 1 else {
                 throw LogicianError.verificationFailed(
@@ -203,7 +205,9 @@ extension LogicAccessibility {
                 )
             }
         } else if let trackName {
-            _ = try selectTrack(trackName: trackName, trackNumber: nil, expectedProjectPath: nil)
+            _ = try selectTrack(
+                trackName: trackName, trackNumber: trackNumber, expectedProjectPath: nil
+            )
         }
         let before = try flatRegionMap()
         // Resolved BEFORE the modal goes up, because the diff around the OK

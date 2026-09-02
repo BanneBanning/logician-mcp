@@ -360,7 +360,8 @@ extension MCPServer {
             trackName: requiredString("track_name", in: arguments),
             regionName: arguments["region_name"] as? String,
             startBar: arguments["start_bar"] as? Int,
-            exclusive: arguments["exclusive"] as? Bool ?? true
+            exclusive: arguments["exclusive"] as? Bool ?? true,
+            trackNumber: try regionTrackNumber(in: arguments)
         )
     }
 
@@ -368,7 +369,8 @@ extension MCPServer {
         return try logic.deleteRegion(
             trackName: requiredString("track_name", in: arguments),
             regionName: arguments["region_name"] as? String,
-            startBar: arguments["start_bar"] as? Int
+            startBar: arguments["start_bar"] as? Int,
+            trackNumber: try regionTrackNumber(in: arguments)
         )
     }
 
@@ -377,7 +379,8 @@ extension MCPServer {
             trackName: try requiredString("track_name", in: arguments),
             regionName: arguments["region_name"] as? String,
             startBar: arguments["start_bar"] as? Int,
-            apply: (arguments["apply"] as? Bool) ?? false
+            apply: (arguments["apply"] as? Bool) ?? false,
+            trackNumber: try regionTrackNumber(in: arguments)
         )
     }
 
@@ -386,7 +389,8 @@ extension MCPServer {
             mode: try requiredString("mode", in: arguments),
             trackName: arguments["track_name"] as? String,
             regionName: arguments["region_name"] as? String,
-            startBar: arguments["start_bar"] as? Int
+            startBar: arguments["start_bar"] as? Int,
+            trackNumber: try regionTrackNumber(in: arguments)
         )
     }
 
@@ -400,7 +404,8 @@ extension MCPServer {
             startBar: arguments["start_bar"] as? Int,
             atBar: atBar,
             atBeat: arguments["at_beat"] as? Int ?? 1,
-            notesCrossing: (arguments["notes_crossing"] as? String) ?? "split"
+            notesCrossing: (arguments["notes_crossing"] as? String) ?? "split",
+            trackNumber: try regionTrackNumber(in: arguments)
         )
     }
 
@@ -410,7 +415,8 @@ extension MCPServer {
             regionName: arguments["region_name"] as? String,
             startBar: arguments["start_bar"] as? Int,
             byBars: arguments["by_bars"] as? Int ?? 0,
-            byBeats: arguments["by_beats"] as? Int ?? 0
+            byBeats: arguments["by_beats"] as? Int ?? 0,
+            trackNumber: try regionTrackNumber(in: arguments)
         )
     }
 
@@ -419,7 +425,8 @@ extension MCPServer {
             trackName: arguments["track_name"] as? String,
             regionName: arguments["region_name"] as? String,
             startBar: arguments["start_bar"] as? Int,
-            includeQuantizeValues: arguments["include_quantize_values"] as? Bool ?? false
+            includeQuantizeValues: arguments["include_quantize_values"] as? Bool ?? false,
+            trackNumber: try regionTrackNumber(in: arguments)
         )
     }
 
@@ -434,7 +441,8 @@ extension MCPServer {
             startBar: arguments["start_bar"] as? Int,
             scope: scope,
             arguments: arguments,
-            expected: (arguments["expected_current"] as? [String: Any]) ?? [:]
+            expected: (arguments["expected_current"] as? [String: Any]) ?? [:],
+            trackNumber: try regionTrackNumber(in: arguments)
         )
     }
 
@@ -444,7 +452,8 @@ extension MCPServer {
             regionName: arguments["region_name"] as? String,
             startBar: arguments["start_bar"] as? Int,
             newName: requiredString("new_name", in: arguments),
-            expectedCurrentName: arguments["expected_current_name"] as? String
+            expectedCurrentName: arguments["expected_current_name"] as? String,
+            trackNumber: try regionTrackNumber(in: arguments)
         )
     }
 
@@ -458,7 +467,9 @@ extension MCPServer {
             startBar: arguments["start_bar"] as? Int,
             toBar: toBar,
             toTrack: arguments["to_track"] as? String,
-            move: arguments["move"] as? Bool ?? false
+            move: arguments["move"] as? Bool ?? false,
+            fromTrackNumber: try regionTrackNumber(in: arguments),
+            toTrackNumber: arguments["to_track_number"] as? Int
         )
     }
 

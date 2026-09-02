@@ -8,6 +8,11 @@ extension MCPServer {
     // MARK: - logic_list_events (G04)
 
     func handleListEvents(_ arguments: [String: Any]) throws -> Any {
+        // OUTSIDE the `if`, deliberately: a `track_number` with no
+        // `track_name` beside it must be refused, and a check that only runs
+        // on the selecting path would instead have read whatever region
+        // happened to be showing and called it row 26's.
+        let trackNumber = try regionTrackNumber(in: arguments)
         // Optionally point the list at a region first: the Event List shows what
         // is SELECTED, so "read this region's notes" is two steps and the tool
         // does both rather than leaving an agent to discover the coupling.
@@ -17,7 +22,8 @@ extension MCPServer {
                 trackName: trackName,
                 regionName: arguments["region_name"] as? String,
                 startBar: arguments["start_bar"] as? Int,
-                exclusive: true
+                exclusive: true,
+                trackNumber: trackNumber
             )
         }
         let read = logic.readEventList()
@@ -122,7 +128,8 @@ extension MCPServer {
                 trackName: trackName,
                 regionName: request.regionName,
                 startBar: request.startBar,
-                exclusive: true
+                exclusive: true,
+                trackNumber: request.trackNumber
             )
         }
         if action == "create" {

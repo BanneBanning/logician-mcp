@@ -103,34 +103,39 @@ extension LogicAccessibility {
         return (nil, position)
     }
 
+    /// The header row a `(track_name, track_number)` pair names.
+    ///
+    /// The decision itself is `TrackRowAddressing.resolve`, shared with the
+    /// arrangement's region rows since 2026-09-02 — this function's rule was
+    /// the good one and the region tools had no equivalent, so the rule moved
+    /// rather than being copied. Behaviour here is unchanged: exact name
+    /// comparison, and a number that names a differently-named row refuses
+    /// before anything is written.
     func resolveTrack(
         _ headers: [TrackHeader],
         name: String,
         number: Int?
     ) throws -> TrackHeader {
-        if let number = number {
-            guard let byNumber = headers.first(where: { $0.number == number }) else {
-                throw LogicianError.trackNotFound(
-                    "track \(number)",
-                    available: headers.map { "\($0.number): \($0.name)" }
-                )
+        let available = headers.map { "\($0.number): \($0.name)" }
+        let verdict = TrackRowAddressing.resolve(
+            rows: headers.map { TrackRowAddressing.Row(number: $0.number, name: $0.name) },
+            name: name, number: number, caseInsensitive: false
+        )
+        switch verdict {
+        case .resolved(let resolved):
+            guard let header = headers.first(where: { $0.number == resolved }) else {
+                throw LogicianError.trackNotFound(name, available: available)
             }
-            guard byNumber.name == name else {
-                throw LogicianError.trackMismatch(number: number, expected: name, actual: byNumber.name)
-            }
-            return byNumber
+            return header
+        case .numberNotFound(let missing):
+            throw LogicianError.trackNotFound("track \(missing)", available: available)
+        case .nameNotFound:
+            throw LogicianError.trackNotFound(name, available: available)
+        case .ambiguous(let numbers):
+            throw LogicianError.trackAmbiguous(name, numbers: numbers)
+        case .mismatch(let number, let expected, let actual):
+            throw LogicianError.trackMismatch(number: number, expected: expected, actual: actual)
         }
-        let matches = headers.filter { $0.name == name }
-        guard !matches.isEmpty else {
-            throw LogicianError.trackNotFound(
-                name,
-                available: headers.map { "\($0.number): \($0.name)" }
-            )
-        }
-        guard matches.count == 1, let match = matches.first else {
-            throw LogicianError.trackAmbiguous(name, numbers: matches.map(\.number))
-        }
-        return match
     }
 
     func verifyProjectPath(_ expected: String?) throws {

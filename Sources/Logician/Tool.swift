@@ -193,6 +193,27 @@ struct Tool {
     /// instructions' INSERT NUMBERING paragraph.
     static let axInsertIndexNote = " ACCESSIBILITY ordinal (logic_list_inserts route 'ax'), NOT the Mackie insert_slot — see INSERT NUMBERING in the server instructions."
 
+    /// The `track_number` argument of every tool that addresses a REGION on a
+    /// track row. One sentence, one place: it is on thirteen tools, and the
+    /// thing it has to say — that the number and the name are cross-checked
+    /// rather than one overriding the other — is exactly what a hand-copied
+    /// description would drift on.
+    ///
+    /// SHORT, and deliberately free of the words `list`, `midi` and `region`.
+    /// `logic_find_tool` ranks by keyword over exactly this text, and thirteen
+    /// tools carry it: the first draft named `logic_list_regions` and
+    /// `logic_import_midi` in it, which handed every region tool the query
+    /// terms of "list the midi notes in a region" and pushed
+    /// `logic_list_events` clean out of the top five for it (caught by
+    /// `ToolSearchTests` against the retrieval probe's query set). A sentence
+    /// repeated across a family of tools is a ranking decision, not just
+    /// prose.
+    static let regionTrackNumberNote = "Which ROW, when several tracks share the name — an import"
+        + " leaves a stack of 'Studio Grand' rows, because Logic names each new track after the"
+        + " default patch it loaded. The arrangement map prints every row's track_number. Pass it"
+        + " WITH track_name: the two are cross-checked, and a pair that disagrees is refused"
+        + " before anything is written."
+
     /// The mirror of `axInsertIndexNote`, for the Mackie physical slot.
     static let mcuInsertSlotNote = " MACKIE physical slot 1-8 (logic_list_inserts route 'mcu'), NOT the Accessibility insert_index — see INSERT NUMBERING in the server instructions."
 

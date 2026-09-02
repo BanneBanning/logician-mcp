@@ -312,6 +312,7 @@ extension MCPServer {
             return try logic.bounceInPlace(
                 scope: scope,
                 trackName: arguments["track_name"] as? String,
+                trackNumber: try regionTrackNumber(in: arguments),
                 regionName: arguments["region_name"] as? String,
                 startBar: arguments["start_bar"] as? Int,
                 name: arguments["name"] as? String,

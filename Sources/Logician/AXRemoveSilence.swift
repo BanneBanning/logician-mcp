@@ -87,12 +87,16 @@ extension LogicAccessibility {
     /// produce, so an agent can ask "what would this do?" and get a number
     /// without touching the arrangement. `apply: true` presses OK and verifies
     /// against the arrangement map.
+    /// - Parameter trackNumber: addresses the ROW by number instead of
+    ///   trusting the name to be unique (see `resolveRegionRow`).
     func removeSilence(
-        trackName: String, regionName: String?, startBar: Int?, apply: Bool
+        trackName: String, regionName: String?, startBar: Int?, apply: Bool,
+        trackNumber: Int? = nil
     ) throws -> [String: Any] {
-        let before = try regionSnapshot(trackName: trackName)
+        let before = try regionSnapshot(trackName: trackName, trackNumber: trackNumber)
         let selection = try selectRegion(
-            trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true
+            trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true,
+            trackNumber: trackNumber
         )
         // An audio-only function: on a MIDI region the command does nothing
         // and the window never appears, which would look like a bug.
@@ -144,7 +148,8 @@ extension LogicAccessibility {
         var after = before
         for _ in 0..<30 {
             Thread.sleep(forTimeInterval: 0.4)
-            after = (try? regionSnapshot(trackName: trackName)) ?? after
+            after = (try? regionSnapshot(trackName: trackName, trackNumber: trackNumber))
+                ?? after
             if after.count != before.count { break }
         }
         let expected = state["preview_regions"] as? Int

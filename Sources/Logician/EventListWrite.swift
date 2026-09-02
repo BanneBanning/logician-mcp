@@ -401,6 +401,10 @@ enum EventListWrite {
 struct EventEditRequest {
     let action: String
     let trackName: String?
+    /// The ROW, when several tracks carry `trackName`. Cross-checked against
+    /// the name by `resolveRegionRow`, so a stale pair refuses rather than
+    /// editing a namesake's region.
+    let trackNumber: Int?
     let regionName: String?
     let startBar: Int?
     let address: EventAddress
@@ -415,6 +419,19 @@ struct EventEditRequest {
         }
         self.action = action
         trackName = arguments["track_name"] as? String
+        trackNumber = arguments["track_number"] as? Int
+        // A row number with no name beside it is refused rather than ignored:
+        // the number's whole value is that it is CROSS-CHECKED against the
+        // name, and a call that passed one and had it silently dropped would
+        // edit whatever region happened to be selected while believing it had
+        // addressed row 26.
+        guard trackNumber == nil || trackName != nil else {
+            throw LogicianError.invalidArguments(
+                "track_number needs track_name as well — the two are cross-checked against each"
+                    + " other, which is the whole point of passing the number. Nothing was read"
+                    + " or written."
+            )
+        }
         regionName = arguments["region_name"] as? String
         startBar = arguments["start_bar"] as? Int
 
