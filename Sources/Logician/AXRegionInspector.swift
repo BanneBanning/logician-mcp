@@ -639,7 +639,7 @@ extension LogicAccessibility {
               let bundleURL = logic.bundleURL,
               let info = Bundle(url: bundleURL)?.infoDictionary else { return nil }
         let language = LogicUILanguage.report(
-            LogicUILanguage.evidence(bundleIdentifier: bundleIdentifier)
+            LogicUILanguage.evidence(bundleIdentifier: bundleIdentifier, runningBundleURL: bundleURL)
         ).language
         return Self.quantizeValuesScope(
             logicVersion: (info["CFBundleShortVersionString"] as? String) ?? "?",
