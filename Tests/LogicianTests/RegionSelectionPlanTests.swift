@@ -43,7 +43,8 @@ final class RegionSelectionPlanTests: XCTestCase {
 
     /// `exclusive: false` means the caller wants this region ADDED to whatever
     /// is selected. The siblings are left alone however many of them there are,
-    /// and the already-selected target is still a no-op.
+    /// and the already-selected target is still a no-op. Nothing was written,
+    /// so there is nothing to prove afterwards either.
     func testANonExclusiveSelectionLeavesEverySiblingSelected() {
         let plan = LogicAccessibility.regionSelectionPlan(
             targetSelected: true, exclusive: false, otherSelectedCount: 3
@@ -52,6 +53,97 @@ final class RegionSelectionPlanTests: XCTestCase {
         XCTAssertEqual(plan.siblingsToClear, 0)
         XCTAssertFalse(plan.writeTarget)
         XCTAssertFalse(plan.reproveAfterClear)
+        XCTAssertFalse(plan.provePriorSelection)
+    }
+
+    /// D2, and the whole reason `exclusive: false` was a lie. The keyboard
+    /// focus write is the thing that collapses Logic's selection onto one
+    /// region — measured 2026-09-02, written ALONE with no `AXSelected` write
+    /// anywhere in the call, it took four selected regions across four tracks
+    /// down to one. It may go out on the exclusive path, where the collapse is
+    /// what was asked for, and never on the additive one.
+    func testTheFocusWriteIsExclusiveOnly() {
+        for otherSelected in [0, 1, 5] {
+            for targetSelected in [true, false] {
+                XCTAssertTrue(
+                    LogicAccessibility.regionSelectionPlan(
+                        targetSelected: targetSelected, exclusive: true,
+                        otherSelectedCount: otherSelected
+                    ).focusTarget,
+                    "exclusive, others: \(otherSelected), selected: \(targetSelected)"
+                )
+                XCTAssertFalse(
+                    LogicAccessibility.regionSelectionPlan(
+                        targetSelected: targetSelected, exclusive: false,
+                        otherSelectedCount: otherSelected
+                    ).focusTarget,
+                    "additive, others: \(otherSelected), selected: \(targetSelected)"
+                )
+            }
+        }
+    }
+
+    /// An additive call that WRITES has to count the arrangement again: the
+    /// regions that were selected before it are the ones the defect used to
+    /// take away, and only a fresh count can say they are still there.
+    func testAnAdditiveWriteOverAnExistingSelectionIsProved() {
+        XCTAssertTrue(
+            LogicAccessibility.regionSelectionPlan(
+                targetSelected: false, exclusive: false, otherSelectedCount: 2
+            ).provePriorSelection
+        )
+    }
+
+    /// The proof is owed only where something could have been lost. Nothing
+    /// else selected means there is nothing to lose; an already-selected
+    /// target means nothing was written; and the exclusive path DELIBERATELY
+    /// takes the siblings away, so counting them again would be counting its
+    /// own contract as a failure.
+    func testNothingWrittenOrNothingAtRiskNeedsNoRecount() {
+        XCTAssertFalse(
+            LogicAccessibility.regionSelectionPlan(
+                targetSelected: false, exclusive: false, otherSelectedCount: 0
+            ).provePriorSelection, "nothing else was selected"
+        )
+        XCTAssertFalse(
+            LogicAccessibility.regionSelectionPlan(
+                targetSelected: true, exclusive: false, otherSelectedCount: 4
+            ).provePriorSelection, "already selected: nothing is written"
+        )
+        XCTAssertFalse(
+            LogicAccessibility.regionSelectionPlan(
+                targetSelected: false, exclusive: true, otherSelectedCount: 4
+            ).provePriorSelection, "exclusive clears them on purpose"
+        )
+    }
+
+    /// A recount that adds up is a plain success — no warning key at all,
+    /// because a warning nobody needs is a warning the next one hides behind.
+    func testAnAdditiveSelectionThatGrewCarriesNoWarning() {
+        let outcome = LogicAccessibility.additiveSelectionOutcome(expected: 3, observed: 3)
+        XCTAssertEqual(outcome.selectedCount, 3)
+        XCTAssertNil(outcome.warning)
+    }
+
+    /// The defect's own shape, reported honestly: three regions should be
+    /// selected, Logic published one. The call DID select its target, so this
+    /// is a warning on a successful selection rather than a throw — and it has
+    /// to say how many went, and where the working route is.
+    func testAnAdditiveSelectionThatCollapsedWarnsAndNamesTheAlternative() throws {
+        let outcome = LogicAccessibility.additiveSelectionOutcome(expected: 3, observed: 1)
+        XCTAssertEqual(outcome.selectedCount, 1)
+        let warning = try XCTUnwrap(outcome.warning)
+        XCTAssertTrue(warning.contains("2 that were selected before this call"), warning)
+        XCTAssertTrue(warning.contains("logic_select_regions"), warning)
+    }
+
+    /// MORE regions selected than were counted is not this tool's failure —
+    /// a scrolled-in row or the user's own click can do it — and the count is
+    /// reported as read rather than dressed up as a warning.
+    func testMoreSelectedThanExpectedIsNotAWarning() {
+        let outcome = LogicAccessibility.additiveSelectionOutcome(expected: 2, observed: 5)
+        XCTAssertEqual(outcome.selectedCount, 5)
+        XCTAssertNil(outcome.warning)
     }
 
     /// A target that is NOT selected is a genuine change: the write happens,

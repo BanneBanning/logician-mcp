@@ -644,7 +644,7 @@ final class MCPProtocolTests: XCTestCase {
         }
     }
 
-    /// The census the result-key inventory produced: 30 tools can put a
+    /// The census the result-key inventory produced: 31 tools can put a
     /// top-level `warning` in their result. A new emitter that forgets the flag
     /// (or a flag on a tool that cannot warn) fails here rather than shipping a
     /// key no description mentions.
@@ -658,7 +658,8 @@ final class MCPProtocolTests: XCTestCase {
             "logic_load_instrument", "logic_markers", "logic_mixer_snapshot", "logic_plugin_preset",
             "logic_project_snapshot", "logic_read_automation", "logic_record_automation",
             "logic_record_midi", "logic_remove_plugin", "logic_remove_silence", "logic_render_track",
-            "logic_reset_to", "logic_set_metronome", "logic_set_mixer", "logic_set_tempo",
+            "logic_reset_to", "logic_select_region", "logic_set_metronome", "logic_set_mixer",
+            "logic_set_tempo",
             "logic_set_track_record_arm", "logic_split_region", "logic_tempo_events"
         ]
         let flagged = Set(server.toolRegistry().filter(\.mayWarn).map(\.name))

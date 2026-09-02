@@ -822,20 +822,21 @@ extension MCPServer {
             Tool(
                 name: "logic_select_region",
                 title: "Select a region",
-                description: "Select exactly one region (by track + region_name and/or start_bar; ambiguity is refused with candidates listed). exclusive (default true) clears all other region selections first, so a following edit key command (cut/copy/delete/nudge) touches only this region. Verified via the element's selection state; a region that is already selected is a verified no-op (state: \"already_selected\") and nothing is written to it, while the other selections are still cleared. `deselected` counts them. To select SEVERAL regions at once use logic_select_regions (with the s) - a different tool with modes 'track', 'following', 'following_same_track', 'all' and 'none'; this one is single and exclusive on purpose.",
+                description: "Select ONE region (by track + region_name and/or start_bar; ambiguity is refused with candidates listed). exclusive (default true) clears every other region selection first, so a following edit key command (cut/copy/delete/nudge) touches only this region; `deselected` counts what it cleared. exclusive: false ADDS this region to whatever is already selected instead, and PROVES it rather than claiming it: `selected_before` and `selected_count` are counted off the arrangement, and a selection that did not actually GROW comes back with a warning naming what was lost instead of a silent success. Those two counts see VISIBLE track rows only, while the selection itself is project-wide. Verified via the element's selection state either way; a region that is already selected is a verified no-op (state: \"already_selected\") and nothing is written to it, while the other selections are still cleared under exclusive: true. To select MANY regions in one call - a whole track, everything after a point, the whole project - use logic_select_regions (with the s), which fires Logic's own selection commands: adding them one at a time here works, but it is one round trip per region.",
                 inputSchema: [
                     "type": "object",
                     "properties": [
                         "track_name": ["type": "string"],
                         "region_name": ["type": "string"],
                         "start_bar": ["type": "integer"],
-                        "exclusive": ["type": "boolean", "description": "Default true: clear other selections first."]
+                        "exclusive": ["type": "boolean", "description": "Default true: clear other selections first. false ADDS this region to the current selection and reports selected_before/selected_count."]
                     ],
                     "required": ["track_name"],
                     "additionalProperties": false
                 ],
                 // Not read-only: changes the project-wide region selection.
                 safety: .write,
+                mayWarn: true,
                 idempotent: true,
                 handler: MCPServer.handleSelectRegion
             ),
@@ -885,7 +886,7 @@ extension MCPServer {
             Tool(
                 name: "logic_select_regions",
                 title: "Select several regions",
-                description: "Select MANY regions at once — the thing logic_select_region deliberately cannot do (it is exclusive and single). Modes, each one a real Logic command: 'track' (every region on the anchor's track), 'following' (the anchor and everything after it, on EVERY track), 'following_same_track' (the anchor and everything after it on that track only), 'all' (every region in the project), 'none' (clear the selection). The relative modes need an anchor: track_name, plus region_name and/or start_bar when the track holds more than one region — the anchor is selected exclusively first, then the command extends from it. VERIFICATION: the number of selected regions is counted before and after off the arrangement map, and a mode that moved nothing comes back success: false rather than pretending. The count sees VISIBLE track rows only, while the selection itself is project-wide — a following edit acts on every selected region, counted or not. Uses learned key commands (Logic 12.3.1 names: 'Select All Regions/Cells of Same Track', 'Select All Following', 'Select All Following of Same Track/Pitch', 'Select All', 'Deselect All'). THIS CAN WRITE INTO THE USER'S OWN LOGIC: a command missing from the registry is LEARNED on the spot, which adds a MIDI-note assignment to the user's active key command set (additive, removable in Logic's Key Commands window), and the result then carries `learned_key_command`, `learned_note` and a `consent_note` saying exactly that. Say so when you report the result.",
+                description: "Select MANY regions in ONE call — logic_select_region takes one region per call, so a track's worth of them is a round trip each and a rule Logic already knows ('everything after bar 40') cannot be expressed at all. Modes, each one a real Logic command: 'track' (every region on the anchor's track), 'following' (the anchor and everything after it, on EVERY track), 'following_same_track' (the anchor and everything after it on that track only), 'all' (every region in the project), 'none' (clear the selection). The relative modes need an anchor: track_name, plus region_name and/or start_bar when the track holds more than one region — the anchor is selected exclusively first, then the command extends from it. VERIFICATION: the number of selected regions is counted before and after off the arrangement map, and a mode that moved nothing comes back success: false rather than pretending. The count sees VISIBLE track rows only, while the selection itself is project-wide — a following edit acts on every selected region, counted or not. Uses learned key commands (Logic 12.3.1 names: 'Select All Regions/Cells of Same Track', 'Select All Following', 'Select All Following of Same Track/Pitch', 'Select All', 'Deselect All'). THIS CAN WRITE INTO THE USER'S OWN LOGIC: a command missing from the registry is LEARNED on the spot, which adds a MIDI-note assignment to the user's active key command set (additive, removable in Logic's Key Commands window), and the result then carries `learned_key_command`, `learned_note` and a `consent_note` saying exactly that. Say so when you report the result.",
                 inputSchema: [
                     "type": "object",
                     "properties": [
