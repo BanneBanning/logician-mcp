@@ -135,15 +135,6 @@ extension LogicAccessibility {
         return slot
     }
 
-    func pluginNamesMatch(_ displayed: String, _ requested: String) -> Bool {
-        let lhs = displayed.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let rhs = requested.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !lhs.isEmpty, !rhs.isEmpty else { return false }
-        // Logic truncates displayed insert names (for example "Space D" for "Space Designer"),
-        // so accept a prefix relationship in either direction.
-        return lhs == rhs || lhs.hasPrefix(rhs) || rhs.hasPrefix(lhs)
-    }
-
     func parseTrackDescription(_ description: String) -> (number: Int, name: String)? {
         let prefix = LogicUIStrings.Format.trackDescriptionPrefix
         guard description.hasPrefix(prefix),
@@ -292,27 +283,6 @@ extension LogicAccessibility {
         return path
     }
 
-    func pollWindowDiff(before: Set<WindowKey>, expectAppear: Bool) throws -> AXUIElement? {
-        for _ in 0..<20 {
-            Thread.sleep(forTimeInterval: 0.1)
-            let current = try logicWindows()
-            let appeared = current.filter { !before.contains(WindowKey(element: $0)) }
-            if expectAppear, let new = appeared.first {
-                return new
-            }
-            if !expectAppear, current.count < before.count {
-                return nil
-            }
-        }
-        return nil
-    }
-
-    func firstMissingWindow(from before: Set<WindowKey>) -> WindowKey? {
-        guard let current = try? logicWindows() else { return nil }
-        let currentKeys = Set(current.map(WindowKey.init))
-        return before.first { !currentKeys.contains($0) }
-    }
-
     /// How long a window-close poll waits in total, and how long it waits
     /// between looks.
     ///
@@ -372,6 +342,67 @@ extension LogicAccessibility {
         }
     }
 
+    /// The first window that was not open before the press — looked for
+    /// FIRST, then re-looked every `windowPollInterval` until
+    /// `windowPollDeadline`.
+    ///
+    /// MEASURED 2026-09-02 (`logic_open_plugin` §3.1): `AXUIElementPerformAction`
+    /// on an insert's open button BLOCKS while Logic builds the plugin UI, so
+    /// a look taken with no wait at all found the new window ALREADY THERE on
+    /// 6 of 6 opens — 3 warm audio-insert, 1 cold, 2 instrument — and the loop
+    /// answered on its first look every time. The shape this replaces slept
+    /// 0.1 s in FRONT of that first look and so paid 100 ms of a 307 ms call,
+    /// 30% of the warm total, for a state that was already true. It is the
+    /// same conversion the two close tools got on 2026-09-01, on the one
+    /// helper that fix did not reach.
+    func pollNewWindow(before: Set<WindowKey>) throws -> AXUIElement? {
+        try pollWindowList { windows in
+            windows.first { !before.contains(WindowKey(element: $0)) }
+        }
+    }
+
+    /// The channel's own plugin windows — the ones titled after the track —
+    /// and what each of them says it is showing. See `PluginWindowShowing`
+    /// for why the CONTENT and not the window list is the thing to read.
+    ///
+    /// Cheap enough to poll: one `AXChildren` read per window plus a role and
+    /// a value per direct child, which is 8–14 children on the two plugins
+    /// measured 2026-09-02 (Decapitator 8, Channel EQ 14). Nothing descends
+    /// into the plugin's own controls.
+    ///
+    /// The subrole filter is the same one `AXPresets` applies for the same
+    /// reason: a track named like the open document would otherwise let the
+    /// PROJECT window pass for a plugin window.
+    func pluginWindowsShowing(
+        trackName: String, in windows: [AXUIElement]
+    ) -> [PluginWindowShowing<WindowKey>] {
+        windows.compactMap { window in
+            guard stringAttribute(window, kAXTitleAttribute as String) == trackName,
+                  stringAttribute(window, kAXSubroleAttribute as String) != "AXStandardWindow"
+            else { return nil }
+            // The size is part of the shape because two plugins that both
+            // publish a custom canvas have the SAME handful of header
+            // children and differ by almost nothing else Accessibility can
+            // see; their windows are different sizes (Decapitator 192×177,
+            // Channel EQ 516×331, measured 2026-09-02).
+            let size = (try? frame(of: window)).map { "size:\(Int($0.width))×\(Int($0.height))" }
+            var shape: [String] = [size ?? "size:unknown"]
+            var staticTexts: [String] = []
+            for child in children(of: window) {
+                let role = stringAttribute(child, kAXRoleAttribute as String)
+                shape.append(role + "|" + stringAttribute(child, kAXDescriptionAttribute as String))
+                if role == kAXStaticTextRole as String {
+                    staticTexts.append(stringAttribute(child, kAXValueAttribute as String))
+                }
+            }
+            return PluginWindowShowing(
+                key: WindowKey(element: window),
+                shows: pluginNameFromHeader(staticTexts: staticTexts, trackName: trackName),
+                shape: shape
+            )
+        }
+    }
+
     func closeWindowElement(_ window: AXUIElement) -> Bool {
         // A close-button attribute that is not an element falls through to the
         // child-button path below rather than trapping (`as!`).
@@ -390,22 +421,42 @@ extension LogicAccessibility {
         return false
     }
 
+    /// The answer `openPlugin` gives when the plugin's window is up.
+    ///
+    /// `window_title` is the TRACK's name — Logic titles plugin windows after
+    /// the channel, and `openPlugin` refuses any window that is titled
+    /// otherwise — so the field every caller actually wants is `window_shows`,
+    /// the plugin name the window's own header publishes. `verified_by` says
+    /// which proof was taken, because the three are not equally strong.
     func openResult(
         state: String,
         track: String,
         slot: InsertSlot,
-        windowTitle: String
+        shows: String,
+        replacing: String?,
+        verifiedBy: String
     ) -> [String: Any] {
-        [
+        var result: [String: Any] = [
             "success": true,
             "verified": true,
             "state": state,
             "track": track,
             "insert_index": slot.index,
             "plugin_display_name": slot.name,
-            "window_title": windowTitle,
-            "note": "Plugin window titles in Logic are the track name, not the plugin name. Use logic_list_plugin_parameters to inspect the window contents."
+            "window_title": track,
+            "window_shows": shows.isEmpty
+                ? "unavailable: this window publishes no plugin name of its own"
+                : shows,
+            "verified_by": verifiedBy,
+            "note": "Logic titles a plugin window after the TRACK, not the plugin, and reuses ONE"
+                + " window per channel: opening a second plugin on the same track swaps this"
+                + " window's contents instead of opening another. logic_list_plugin_parameters"
+                + " {window_title} reads what is in it."
         ]
+        if let replaced = replacing, !replaced.isEmpty {
+            result["replaced_plugin"] = replaced
+        }
+        return result
     }
 
     /// Visits `root` and every descendant down to `maximumDepth` (inclusive,
