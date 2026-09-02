@@ -1109,14 +1109,14 @@ Parameters:
 
 #### `logic_markers`
 
-Markers: list, create, goto, rename or delete them. 'list' reads Logic's Marker List (View > List Editors > Marker) with each marker's bar and name. 'create' fires Logic's own Create Marker key command at the PLAYHEAD (pass bar to park the playhead there first) and verifies against a fresh read of the list; note that Logic's position stepping lands inside the bar rather than exactly on its line, so a marker can sit a fraction of a beat late. 'goto' parks the playhead at a named marker's bar. 'delete' uses the list row's own Delete action and verifies the marker is gone (Undo restores it). 'rename' writes the row's name cell IF Logic publishes a settable one and REFUSES with the reason if not — the Tempo List's cells turned out to be steppers rather than fields, so this is checked at runtime rather than assumed. Address a marker by name (exact, case-insensitive — never fuzzy, because renaming or deleting the wrong marker is silent damage) or by bar; ambiguity refuses with the candidates listed. MAY RETURN `warning` — read it before the rest of the result (RESULT CONTRACT in the server instructions).
+Markers: list, create, goto or delete them. 'list' reads Logic's Marker List (View > List Editors > Marker) with each marker's bar and name. 'create' presses the Marker tab's own Create new Marker button at the PLAYHEAD (Logic's Create Marker key command is the fallback for a version that does not publish the button) and verifies against the list's own count; pass bar to park the playhead there first, which rewinds and then steps so the marker lands EXACTLY on the bar line rather than a fraction of a beat late, checked against the control surface's position display. 'goto' parks the playhead on the marker's bar AND BEAT — a marker at 33 4 1 1 leaves the playhead on 33|4, not 33|1. 'delete' uses the list row's own Delete action and verifies the marker is gone (Undo restores it). NAMES ARE READ-ONLY on Logic Pro 12.3.1: no cell in a Marker List row publishes a settable value, so 'rename' refuses with the reason and 'create' refuses a name argument up front rather than creating a marker and then failing to name it — markers keep Logic's own default names (Marker 1, Marker 2, ...) unless you rename them by hand in Logic. Address a marker by name (exact, case-insensitive — never fuzzy, because deleting the wrong marker is silent damage) or by bar; ambiguity refuses with the candidates listed. Each action is ONE List Editors pane cycle, so create and delete cost about as much as a list. MAY RETURN `warning` — read it before the rest of the result (RESULT CONTRACT in the server instructions).
 
 Parameters:
 
   - `action` (string): Default 'list'. One of: `list`, `create`, `goto`, `rename`, `delete`.
-  - `bar` (integer): Which marker (its bar), for goto/rename/delete. For 'create': park the playhead at this bar first.
-  - `name` (string): Which marker (exact name), for goto/rename/delete. For 'create': the name to give it, applied as a separate write that is reported separately.
-  - `new_name` (string): Required for action 'rename'.
+  - `bar` (integer): Which marker (its bar), for goto/rename/delete. For 'create': park the playhead exactly on this bar's line first.
+  - `name` (string): Which marker (exact name), for goto/rename/delete. REFUSED for 'create': a marker's name cannot be written from this plane on Logic Pro 12.3.1, and the refusal comes before anything is created.
+  - `new_name` (string): Required for action 'rename', which refuses on Logic Pro 12.3.1 — the name cell is not settable. Rename markers in Logic.
 
 #### `logic_list_signatures`
 

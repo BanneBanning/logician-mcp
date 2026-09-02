@@ -775,6 +775,38 @@ with every render coming back as audio the agent can listen to.
   sentence that looks truncated and helps nobody. It now reads "This tool takes no
   arguments."; tools that do take arguments still list them.
 
+- **`logic_markers` goes to the marker, not to its bar — and every action is one pane
+  cycle instead of three.** `goto` on a marker at `33 4 1 1` parked the playhead on bar 33
+  BEAT 1, three beats early, and handed back `after: {bar: 33, beat: 1}` next to
+  `marker: {beat: 4}` in the same payload without noticing the two disagreed: it read only
+  the bar and passed `beat: nil`, which does not mean beat 1 — it means the beat slider is
+  never touched, so the playhead kept whatever beat it already had. It now parks on the
+  marker's bar AND beat, on the grid, with the landing read back off the control surface's
+  own position display; a marker that sits between beats gets the beat line before it and a
+  warning that says so. `create` parks the same way — it was the last writer in the server
+  still stepping blind, which is how a marker asked for at bar 9 could land at `9 1 4 201`.
+  Underneath, the whole tool stopped re-opening Logic's List Editors pane between the steps
+  of one call: `create` and `delete` opened, settled and closed it three times at ~1.55 s
+  each to read a table that takes 5–12 ms, and the two blind sleeps they slept (0.5 s after
+  a button press, 0.4 s after a row action that measures 13.9 ms) are now positive checks on
+  the list's own count. And the pane's opening settle was waiting for the target tab to be
+  drawn while Logic opens the pane on the tab it was last on — a question that could not be
+  true before the press that makes it true, so it burned its whole deadline 15/15
+  (610–1 094 ms) on every pane cycle. It waits for the tab strip now, which is what comes
+  next, and hands the strip to the caller instead of walking the window for it again; every
+  List Editors tool pays that cycle, `logic_list_signatures`, `logic_tempo_events`,
+  `logic_edit_event` and `logic_project_snapshot`'s three pane visits included. **Measured
+  live 2026-09-02, warm: `list` 1 532–2 255 ms → 457–491 ms, `create` at two bars' distance
+  6 053 ms → 907 ms, `delete` 5 733–6 499 ms → 559–638 ms** — the pane cycle itself is
+  ~460 ms where it was ~1 550. `goto` is unchanged at ~5 s across 32 bars, because 73% of it
+  is the playhead stepping bar by bar and that is a separate problem. Marker NAMES are
+  read-only on Logic Pro 12.3.1 (no cell in a Marker List row publishes a settable value,
+  measured every row, every cell), so `create` now refuses a `name` argument up front with
+  the manual route instead of creating the marker and spending another 1.9 s to fail at it;
+  the description says markers keep Logic's default names, and that `create` presses the
+  Marker tab's own button with the key command as the fallback, which is what it has always
+  actually done.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.
