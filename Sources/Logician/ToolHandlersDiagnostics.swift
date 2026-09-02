@@ -89,6 +89,14 @@ extension MCPServer {
     }
 
     func handleSetupKeyCommands(_ arguments: [String: Any]) throws -> Any {
+        // 0.8 ms warm, 16.6 ms cold, against a call that binds 22 commands
+        // over several minutes. Learning onto a port whose twin Logic is
+        // actually bound to is the single most expensive way to produce a
+        // registry entry that lies, and the server's own daemon-upgrade path
+        // (SIGKILL after a 4 s SIGTERM) is one manufacturer of that orphan.
+        if let refusal = KeyCommandRegistry.orphanRefusal(
+            orphans: orphanedPortNames(), action: "learning key commands"
+        ) { throw LogicianError.preconditionUnmet(refusal) }
         let relearn = (arguments["relearn"] as? Bool) ?? false
         var targets = KeyCommandRegistry.standardCommands
         if let onlyNames = arguments["commands"] as? [String], !onlyNames.isEmpty {
@@ -119,6 +127,14 @@ extension MCPServer {
         let search = (arguments["search"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             ?? KeyCommandRegistry.defaultSearchTerm(for: name)
         let relearn = (arguments["relearn"] as? Bool) ?? false
+        // The one hazard this flow's own readback provably cannot see: the row
+        // text says "Note 74" whether or not the port Logic bound it to still
+        // exists. The audit is one CoreMIDI enumeration (0.8 ms warm, 16.6 ms
+        // cold). The read-only answers below carry it as a warning; the paths
+        // that BIND refuse.
+        let orphanWarning = KeyCommandRegistry.orphanRefusal(
+            orphans: orphanedPortNames(), action: "learning '\(name)'"
+        )
 
         // Look before binding. A dry run is the honest answer to "names drift
         // between Logic versions": it opens the window, filters, reads the
@@ -139,7 +155,7 @@ extension MCPServer {
             let exact = rows.contains {
                 ($0["name"] as? String)?.caseInsensitiveCompare(name) == .orderedSame
             }
-            return [
+            var payload: [String: Any] = [
                 "success": true, "verified": true, "state": "searched",
                 "requested_name": name, "search": usedSearch,
                 "exact_match": exact,
@@ -149,21 +165,31 @@ extension MCPServer {
                     ? "NOTHING WAS BOUND (dry_run). Logic has a command with exactly this name - call again without dry_run to learn it."
                     : "NOTHING WAS BOUND (dry_run). No row carries exactly '\(name)'. Pick a name from matches (assignment shows what each command is already bound to), or search a shorter term."
             ]
+            if let orphanWarning { payload["warning"] = orphanWarning }
+            return payload
         }
-
-        let taken = KeyCommandRegistry.takenNotes()
 
         // Already in the registry and not being repaired: answer from the file
         // rather than opening the Key Commands window for nothing. The window
         // steals focus from Logic's project window, so not opening it is a
         // feature, not just a saving.
         if !relearn, let existing = KeyCommandRegistry.note(named: name) {
-            return [
+            var payload: [String: Any] = [
                 "success": true, "verified": true, "state": "already_registered",
                 "name": name, "midi_note": existing.note, "channel": existing.channel,
                 "note": "Already in the key command registry - nothing was bound and the Key Commands window was not opened. Fire it with logic_trigger_key_command {name: \"\(name)\"}. Pass relearn: true to bind it again (the repair when a command silently stopped firing)."
             ]
+            if let orphanWarning { payload["warning"] = orphanWarning }
+            return payload
         }
+
+        // Every path from here binds. Refuse rather than record something that
+        // may never fire.
+        if let orphanWarning { throw LogicianError.preconditionUnmet(orphanWarning) }
+
+        // Read AFTER the early return above: the fast path used to parse the
+        // registry file one extra time for a note it never chose.
+        let taken = KeyCommandRegistry.takenNotes()
 
         var chosenNote: Int
         if let explicit = arguments["note"] as? Int {
@@ -171,14 +197,15 @@ extension MCPServer {
                 throw LogicianError.invalidArguments("note must be 0-127; got \(explicit)")
             }
             // An explicit note that another command already answers to would
-            // make the registry lie about which command a note fires.
-            if !relearn, let holder = KeyCommandRegistry.entry(note: explicit, channel: 16),
-               ((holder["name"] as? String) ?? "").caseInsensitiveCompare(name) != .orderedSame {
-                throw LogicianError.invalidArguments(
-                    "note \(explicit) is already registered to '\(holder["name"] ?? "?")'. "
-                        + "Nothing was bound. Omit 'note' to let the free range pick one."
-                )
-            }
+            // make the registry lie about which command a note fires — and
+            // that is just as true on the repair path, which is why the
+            // `!relearn` prefix this guard used to carry is gone. The
+            // exemption `relearn` actually needs is the SAME-NAME one, and
+            // `explicitNoteRefusal` is exactly that: it never refuses a
+            // command its own note.
+            if let refusal = KeyCommandRegistry.explicitNoteRefusal(
+                note: explicit, name: name, in: KeyCommandRegistry.commands()
+            ) { throw LogicianError.invalidArguments(refusal) }
             chosenNote = explicit
         } else {
             guard let free = KeyCommandRegistry.freeNote(taken: taken) else {
@@ -210,6 +237,13 @@ extension MCPServer {
                 candidates: (entry["candidates"] as? [String]) ?? []
             )
         }
+        // Refusals, not failures: the driver looked, found a state it must not
+        // write over, and left everything alone. Their own text names the way
+        // forward, so it is the whole message.
+        if status == "already_assigned" || status == "relearn_refused",
+           let explanation = entry["note"] as? String {
+            throw LogicianError.preconditionUnmet(explanation)
+        }
         guard status == "learned" || status == "already_learned" else {
             throw LogicianError.verificationFailed(
                 requested: "a MIDI-note assignment for '\(name)'",
@@ -226,19 +260,30 @@ extension MCPServer {
             "registry_path": KeyCommandRegistry.url.path,
             "note": "This wrote into YOUR OWN Logic key command set: '\(entry["name"] ?? name)' now also answers to a MIDI note on the 'Logic MCP Commands' port. It is ADDITIVE - the existing keyboard shortcut is untouched - and removable in Logic's Key Commands window (select the command, Delete Assignment). The registry file records the name, the note, the timestamp and that logic_learn_key_command bound it; logic_list_key_commands reads it back. Fire it with logic_trigger_key_command."
         ]
+        var warnings: [String] = []
         if let requested = entry["requested_name"] {
             payload["requested_name"] = requested
-            payload["warning"] = "Logic's own spelling is '\(entry["name"] ?? name)', not '\(name)' - the registry holds Logic's."
+            warnings.append("Logic's own spelling is '\(entry["name"] ?? name)', not '\(name)' - the registry holds Logic's.")
         }
+        // The driver's own warning — the registry refusing a note another
+        // command holds — must not be lost behind the spelling one.
+        if let carried = entry["warning"] as? String { warnings.append(carried) }
+        if !warnings.isEmpty { payload["warning"] = warnings.joined(separator: " ") }
         if let deleted = entry["stale_assignments_deleted"] {
             payload["stale_assignments_deleted"] = deleted
         }
+        // A cold bridge daemon costs up to 3 s inside the note send; it used
+        // to be invisible.
+        if let started = entry["bridge_start_ms"] { payload["bridge_start_ms"] = started }
         return payload
     }
 
-    /// U4: the registry's contents, which nothing could read before. Pure file
-    /// read — Logic is not touched, not even asked whether it is running.
+    /// U4: the registry's contents, which nothing could read before. Logic is
+    /// not touched, not even asked whether it is running — the file, plus one
+    /// CoreMIDI enumeration (0.8 ms warm) for the port identity the entries
+    /// are compared against.
     func handleListKeyCommands(_ arguments: [String: Any]) throws -> Any {
+        let livePortID = sourceUniqueID(named: commandsPortName).map(Int.init)
         let standard = Dictionary(
             uniqueKeysWithValues: KeyCommandRegistry.standardCommands.map {
                 ($0.name.lowercased(), $0)
@@ -259,6 +304,14 @@ extension MCPServer {
             if let at = raw["learned_at"] { entry["learned_at"] = at }
             if let search = raw["search"] { entry["search"] = search }
             if let notes = raw["notes"] { entry["notes"] = notes }
+            // Logic scopes an assignment to the port's unique ID, so an entry
+            // that records which identity it was learned against can be
+            // checked later; one that does not is silent about it rather than
+            // presumed good.
+            if let recorded = raw["port_unique_id"] as? Int {
+                entry["port_unique_id"] = recorded
+                if let livePortID { entry["port_identity"] = recorded == livePortID ? "current" : "changed" }
+            }
             return entry
         }.sorted { (($0["name"] as? String) ?? "") < (($1["name"] as? String) ?? "") }
 
@@ -266,9 +319,13 @@ extension MCPServer {
         let missing = KeyCommandRegistry.standardCommands
             .filter { !registered.contains($0.name.lowercased()) }
             .map(\.name)
-        return [
+        let stale = KeyCommandRegistry.staleIdentityNames(
+            in: commands, currentPortUniqueID: livePortID
+        )
+        var payload: [String: Any] = [
             "success": true, "verified": true,
             "port": "Logic MCP Commands",
+            "port_unique_id": livePortID ?? NSNull(),
             "registry_path": KeyCommandRegistry.url.path,
             "count": commands.count,
             "commands": commands,
@@ -276,6 +333,15 @@ extension MCPServer {
             "learnable_note_range": "\(KeyCommandRegistry.learnableNoteRange.lowerBound)-\(KeyCommandRegistry.learnableNoteRange.upperBound)",
             "note": "The registry is the CONSENT RECORD: logic_trigger_key_command refuses any note that is not listed here, because an unlisted note could be bound to anything in the user's key command set. Every entry is an assignment that exists in the user's own Logic Key Commands window and can be removed there (select the command, Delete Assignment). This call read a file - Logic was not touched, so an entry listed here can still have been orphaned inside Logic (recreated MIDI ports do that silently); logic_setup_key_commands with relearn: true is the repair."
         ]
+        if !stale.isEmpty {
+            payload["port_identity_changed"] = stale
+            payload["warning"] = "These commands were learned against a DIFFERENT 'Logic MCP "
+                + "Commands' port identity than the one live now (\(stale.joined(separator: ", ")))"
+                + ". Logic binds key commands to a port's unique ID, so they may look registered "
+                + "and never fire. Repair: logic_setup_key_commands with relearn: true for the "
+                + "standard set, logic_learn_key_command with relearn: true for the rest."
+        }
+        return payload
     }
 
     func handleTriggerKeyCommand(_ arguments: [String: Any]) throws -> Any {

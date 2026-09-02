@@ -27,6 +27,34 @@ private func endpointUniqueID(_ object: MIDIObjectRef) -> Int32 {
     return value
 }
 
+/// The port key commands are learned onto and fired from.
+public let commandsPortName = "Logic MCP Commands"
+
+/// The unique ID the named virtual SOURCE currently carries, or nil when no
+/// endpoint of that name exists (the daemon is down, or it never started).
+///
+/// Logic scopes a key-command assignment to this number, and the Key Commands
+/// window's row text carries no port identity at all — so recording it at
+/// learn time is the only way a later read can say that a binding was made
+/// against an identity Logic no longer sees. Costs one CoreMIDI enumeration:
+/// 0.8 ms warm, 16.6 ms cold (measured for `orphanedPortNames` in the
+/// logic_health profile, same walk).
+///
+/// Ambiguity is reported as ambiguity: with an orphaned twin of the same name
+/// present, two endpoints answer and this returns the one holding an EXPECTED
+/// id, or nil if neither does. `orphanedPortNames()` is the check that says
+/// the list is dirty.
+public func sourceUniqueID(named name: String) -> Int32? {
+    var matches: [Int32] = []
+    for index in 0..<MIDIGetNumberOfSources() {
+        let source = MIDIGetSource(index)
+        guard endpointName(source) == name else { continue }
+        matches.append(endpointUniqueID(source))
+    }
+    if matches.count == 1 { return matches[0] }
+    return matches.first { expectedPortUniqueIDs.contains($0) }
+}
+
 /// Lists this bridge's ports that carry an unexpected unique ID, i.e. orphans
 /// left behind by a dead daemon. Empty means the port list is clean.
 public func orphanedPortNames() -> [String] {

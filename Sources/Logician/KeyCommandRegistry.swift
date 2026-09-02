@@ -32,14 +32,84 @@ enum KeyCommandRegistry {
         return (note, (hit["channel"] as? Int) ?? 16)
     }
 
+    /// What a `register` call did. A refusal is not a failure of the LEARN —
+    /// the assignment may well exist in Logic — it says the consent record was
+    /// left alone because writing would have made it lie, and the text names
+    /// what to do instead.
+    enum Registration: Equatable {
+        case registered
+        case refused(String)
+
+        var refusal: String? {
+            if case .refused(let reason) = self { return reason }
+            return nil
+        }
+    }
+
+    /// The name of a DIFFERENT command that already answers to this note.
+    ///
+    /// Pure over the rows so every guard built on it can be tested without a
+    /// registry file. Case-insensitive on the name, because the registry holds
+    /// Logic's own spelling and callers type their own.
+    static func noteHolder(
+        note: Int, channel: Int = 16, otherThan name: String, in commands: [[String: Any]]
+    ) -> String? {
+        for entry in commands {
+            guard (entry["note"] as? Int) == note,
+                  ((entry["channel"] as? Int) ?? 16) == channel else { continue }
+            let holder = (entry["name"] as? String) ?? "?"
+            if holder.caseInsensitiveCompare(name) != .orderedSame { return holder }
+        }
+        return nil
+    }
+
+    /// Why this note may not be written into the registry under this name, or
+    /// nil when it may.
+    ///
+    /// `register` de-dupes by NAME only, so before this guard two rows could
+    /// hold the same note and nothing anywhere noticed: `takenNotes()`
+    /// collapsed them into a `Set`, `entry(note:channel:)` returned whichever
+    /// sorted first, and `logic_trigger_key_command` therefore reported the
+    /// WRONG command name while firing whatever Logic had actually bound.
+    static func registrationRefusal(
+        note: Int, channel: Int, name: String, in commands: [[String: Any]]
+    ) -> String? {
+        guard let holder = noteHolder(note: note, channel: channel, otherThan: name, in: commands)
+        else { return nil }
+        return "note \(note) (channel \(channel)) is already registered to '\(holder)'. "
+            + "The registry is the consent record and one note can only mean one command, so "
+            + "'\(name)' was NOT recorded. Remove '\(holder)' in Logic's Key Commands window "
+            + "(select it, Delete Assignment) and delete its entry from \(url.path), or learn "
+            + "'\(name)' again without forcing a note."
+    }
+
+    /// Why an explicit `note:` argument may not be used for this command.
+    /// Same rule as `registrationRefusal`, phrased for the caller who is about
+    /// to bind rather than for the record that is about to be written — and
+    /// applied whether or not `relearn` was passed: re-binding a command to
+    /// ANOTHER command's note is exactly as much of a lie the second time.
+    static func explicitNoteRefusal(
+        note: Int, channel: Int = 16, name: String, in commands: [[String: Any]]
+    ) -> String? {
+        guard let holder = noteHolder(note: note, channel: channel, otherThan: name, in: commands)
+        else { return nil }
+        return "note \(note) is already registered to '\(holder)'. Nothing was bound. "
+            + "Omit 'note' to let the free range pick one."
+    }
+
+    @discardableResult
     static func register(
         note: Int, channel: Int, name: String, notes: String,
-        source: String = "logic_setup_key_commands", search: String? = nil
-    ) {
+        source: String = "logic_setup_key_commands", search: String? = nil,
+        portUniqueID: Int? = nil
+    ) -> Registration {
         var root = (try? Data(contentsOf: url))
             .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             ?? ["port": "Logic MCP Commands"]
         var commands = root["commands"] as? [[String: Any]] ?? []
+        if let refusal = registrationRefusal(
+            note: note, channel: channel, name: name, in: commands
+        ) { return .refused(refusal) }
         commands.removeAll {
             (($0["name"] as? String) ?? "").caseInsensitiveCompare(name) == .orderedSame
         }
@@ -58,10 +128,37 @@ enum KeyCommandRegistry {
             "notes": notes
         ]
         if let search { entry["search"] = search }
+        // Logic scopes an assignment to the ENDPOINT's unique ID, and the Key
+        // Commands row text carries no port identity at all — which is why an
+        // orphaned twin port is invisible to this flow's own readback. Writing
+        // the identity that was live at learn time is what lets
+        // `logic_list_key_commands` say later that these bindings were made
+        // against a port Logic no longer sees.
+        if let portUniqueID { entry["port_unique_id"] = portUniqueID }
         commands.append(entry)
         root["commands"] = commands
         if let data = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted]) {
             try? data.write(to: url)
+        }
+        return .registered
+    }
+
+    /// The commands whose recorded port identity is NOT the one live now —
+    /// bindings Logic scoped to an endpoint that no longer exists under that
+    /// unique ID, i.e. rows that read as healthy and can never fire.
+    ///
+    /// Entries with no recorded identity (everything bound before this was
+    /// written) are NOT reported: absence of a witness is not evidence.
+    /// `currentPortUniqueID` nil means the port could not be read at all, and
+    /// then nothing is claimed either.
+    static func staleIdentityNames(
+        in commands: [[String: Any]], currentPortUniqueID: Int?
+    ) -> [String] {
+        guard let current = currentPortUniqueID else { return [] }
+        return commands.compactMap { entry in
+            guard let recorded = entry["port_unique_id"] as? Int, recorded != current
+            else { return nil }
+            return (entry["name"] as? String) ?? "?"
         }
     }
 
@@ -94,6 +191,97 @@ enum KeyCommandRegistry {
     static func freeNote(taken: Set<Int>) -> Int? {
         let order = Array(learnableNoteRange) + Array(122...127) + Array(21...59)
         return order.first { !taken.contains($0) }
+    }
+
+    /// The notes one learn may try, in order: the chosen note first, then
+    /// FREE notes from the same allocator that chose it, each one added to
+    /// `taken` before the next is picked.
+    ///
+    /// What this replaced was a bare arithmetic ladder —
+    /// `[n, (n + 20) % 128, (n + 40) % 128]` — which consulted neither
+    /// `takenNotes()`, nor either note range, nor the registry. Because
+    /// `learnableNoteRange` is exactly 40 notes wide starting at 60, that
+    /// aimed straight into the block this scheme reserves: `n ∈ 60…79` put
+    /// `n + 40` in 100-119 and `n ∈ 80…99` put `n + 20` there, so EVERY
+    /// first choice the picker can make had a fallback sitting on a note one
+    /// of the product's own standard commands is about to want. Logic raises
+    /// its conflict alert only for a note it has ALREADY bound, so a note
+    /// merely reserved here — the ordinary state before onboarding runs —
+    /// was taken silently and the standard command displaced later.
+    static func candidateNotes(preferred: Int, taken: Set<Int>, limit: Int = 3) -> [Int] {
+        var chosen = [preferred]
+        var blocked = taken
+        blocked.insert(preferred)
+        while chosen.count < limit, let next = freeNote(taken: blocked) {
+            chosen.append(next)
+            blocked.insert(next)
+        }
+        return chosen
+    }
+
+    // MARK: - Reading an assignment out of a Key Commands row
+
+    /// Every MIDI note the row's ASSIGNMENT columns name (the command's own
+    /// name is not passed in — Logic has commands with "Note" in their titles).
+    /// Only the literal `Note N` spelling is recognised: Logic paints some
+    /// notes symbolically ("F2 (Modifiers …)" for note 109 on an MCU device),
+    /// and there is no way to tell such a label from a keyboard F-key, so
+    /// those are deliberately NOT claimed.
+    static func assignedNotes(in assignmentText: String) -> [Int] {
+        let prefix = LogicUIStrings.Format.keyCommandNotePrefix
+        var notes: [Int] = []
+        var rest = Substring(assignmentText)
+        while let range = rest.range(of: prefix) {
+            var digits = ""
+            var index = range.upperBound
+            while index < rest.endIndex, rest[index].isNumber {
+                digits.append(rest[index])
+                index = rest.index(after: index)
+            }
+            if let value = Int(digits) { notes.append(value) }
+            rest = rest[range.upperBound...]
+        }
+        return notes
+    }
+
+    /// What a command row already carries, relative to the note about to be
+    /// learned onto it.
+    enum RowAssignment: Equatable {
+        /// No MIDI-note assignment the row text can prove.
+        case none
+        /// The row already answers to exactly this note — a verified no-op.
+        case preferred(Int)
+        /// The row answers to OTHER notes. Learning again would STACK a
+        /// second controller assignment rather than replace the first.
+        case other([Int])
+    }
+
+    static func rowAssignment(_ assignmentText: String, preferredNote: Int) -> RowAssignment {
+        let notes = assignedNotes(in: assignmentText)
+        if notes.contains(preferredNote) { return .preferred(preferredNote) }
+        return notes.isEmpty ? .none : .other(notes)
+    }
+
+    /// The refusal for a learn attempted while the port list carries orphaned
+    /// twins, or nil when it is clean.
+    ///
+    /// A virtual endpoint that outlived a dead daemon keeps the name and takes
+    /// a random unique ID, and Logic scopes key-command assignments to the
+    /// unique ID — so with two `Logic MCP Commands` in the list, learning binds
+    /// to whichever one Logic is pointed at, which may not be the one this
+    /// server sends on. Nothing in this flow's readback can see that: the row
+    /// text says "Note 74" either way. Refusing costs one 0.8 ms audit
+    /// (16.6 ms cold, measured in the logic_health profile) and saves a
+    /// registry entry that lies.
+    static func orphanRefusal(orphans: [String], action: String) -> String? {
+        guard !orphans.isEmpty else { return nil }
+        return "Logic's MIDI port list shows orphaned twin ports (\(orphans.joined(separator: ", "))"
+            + "), left by a bridge daemon that died without cleaning up. Logic binds key commands "
+            + "to a port's unique ID, so \(action) now would record an assignment that may never "
+            + "fire — and nothing in the Key Commands window can tell the two twins apart. "
+            + "NOTHING WAS BOUND. Fix first: quit this MCP client, run 'killall MIDIServer' in a "
+            + "terminal, start the client again, re-pick 'Logic MCP MCU' in Logic > Control "
+            + "Surfaces > Setup, then call again. logic_health reports the same audit."
     }
 
     /// The Key Commands window's search field takes a substring of the row's
