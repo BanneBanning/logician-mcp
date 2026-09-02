@@ -32,12 +32,31 @@ enum MCUBridge {
         return object
     }
 
+    /// What `ensureRunning()` had to do.
+    ///
+    /// The caller needs this because a snapshot it read BEFORE the call can
+    /// describe a daemon that no longer exists: a replaced daemon starts with
+    /// `received_events` at 0, so reusing the old reading would report
+    /// `mcu_connected: true` about a bridge Logic has not spoken to yet.
+    /// `unchanged` is the promise that the daemon answering now is the one
+    /// that was answering before, so an earlier read is still good.
+    enum StartOutcome {
+        /// Nothing moved — including the branch where an outdated daemon
+        /// could not be stopped and was deliberately kept.
+        case unchanged
+        /// A daemon was spawned (there was none, or the old one was replaced).
+        case started
+        /// No daemon is answering.
+        case failed
+    }
+
     /// Starts the bridge daemon when its socket is dead: standard MCP
     /// practice is that the server manages its own sidecars. Looks for the
     /// logic-mcu-bridge binary next to this executable.
-    static func ensureRunning() {
+    @discardableResult
+    static func ensureRunning() -> StartOutcome {
         if let pong = try? send(.ping), pong.ok {
-            if (pong.bridgeProtocol ?? 0) >= bridgeProtocolVersion { return }
+            if (pong.bridgeProtocol ?? 0) >= bridgeProtocolVersion { return .unchanged }
             // An outdated daemon owns the socket (pre-versioned builds kept
             // answering pings and silently lacked newer commands) — replace it.
             FileHandle.standardError.write(Data("[logician] replacing outdated bridge daemon\n".utf8))
@@ -55,7 +74,7 @@ enum MCUBridge {
                 message += " ~/Library/Application Support/LogicMCPMCU/" + lockName + ")"
                 message += " and rerun logic_health.\n"
                 FileHandle.standardError.write(Data(message.utf8))
-                return
+                return .unchanged
             }
         }
         // The bridge daemon is this same binary launched with --bridge —
@@ -66,14 +85,15 @@ enum MCUBridge {
         process.arguments = ["--bridge"]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-        guard (try? process.run()) != nil else { return }
+        guard (try? process.run()) != nil else { return .failed }
         for _ in 0..<30 {
             usleep(100_000)
             if (try? send(.ping))?.ok == true {
                 FileHandle.standardError.write(Data("[logician] started bridge daemon\n".utf8))
-                return
+                return .started
             }
         }
+        return .failed
     }
 
     /// Stops the daemon that currently owns the socket, and CONFIRMS it is
@@ -140,7 +160,7 @@ enum MCUBridge {
     /// factories, so a key name is a compiler-checked identifier rather than
     /// a string literal repeated at 35 call sites.
     static func send(_ command: BridgeCommand) throws -> BridgeResponse {
-        let data = try transact(try bridgeJSONEncoder.encode(command), isPing: command.name == .ping)
+        let data = try transact(try bridgeJSONEncoder.encode(command), command.name)
         guard let response = try? bridgeJSONDecoder.decode(BridgeResponse.self, from: data) else {
             throw LogicianError.openVerificationFailed("no response from the MCU bridge")
         }
@@ -157,7 +177,7 @@ enum MCUBridge {
     /// silently dropped by our decoder — which matters precisely because the
     /// two processes can be at different versions during an upgrade.
     static func sendForDictionary(_ command: BridgeCommand) throws -> [String: Any] {
-        let data = try transact(try bridgeJSONEncoder.encode(command), isPing: command.name == .ping)
+        let data = try transact(try bridgeJSONEncoder.encode(command), command.name)
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw LogicianError.openVerificationFailed("no response from the MCU bridge")
         }
@@ -170,7 +190,9 @@ enum MCUBridge {
     /// server does not model. Everything else goes through `send(_:)`.
     static func sendRaw(_ command: [String: Any]) throws -> [String: Any] {
         let payload = try JSONSerialization.data(withJSONObject: command)
-        let data = try transact(payload, isPing: (command["cmd"] as? String) == "ping")
+        let data = try transact(
+            payload, (command["cmd"] as? String).flatMap(BridgeCommandName.init(rawValue:))
+        )
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw LogicianError.openVerificationFailed("no response from the MCU bridge")
         }
@@ -182,20 +204,27 @@ enum MCUBridge {
     ///
     /// Set at the one boundary every command passes through, and read exactly
     /// once, on shutdown: a session that only listed tools must not reach into
-    /// Logic and reset the user's surface view on the way out. Pings are
-    /// excluded deliberately — a liveness probe reads state and changes none,
-    /// so it is not a touch.
+    /// Logic and reset the user's surface view on the way out.
+    ///
+    /// WHICH commands count is `BridgeCommandName.emitsMIDI`'s answer, not a
+    /// list kept here. This used to read `!= .ping`, which made every `status`
+    /// a touch — and `status` is what `logic_health` sends, so the server's
+    /// one `readOnly` doctor ended every session by pressing PAN (measured
+    /// 2026-09-02: 145 ms on a surface already in Pan, and a real view change
+    /// on a surface the user had left in a Send or insert view).
     nonisolated(unsafe) private(set) static var didTouchSurface = false // single writer, monotonic
 
-    private static func transact(_ payload: Data, isPing: Bool) throws -> Data {
-        if !isPing { didTouchSurface = true }
+    private static func transact(_ payload: Data, _ command: BridgeCommandName?) throws -> Data {
+        if command?.emitsMIDI ?? true { didTouchSurface = true }
         do {
             return try sendOnce(payload)
         } catch LogicianError.writeFailed(let detail) where detail.hasPrefix("could not reach") {
             // The daemon died mid-session. Self-healing is the stated
             // philosophy everywhere else; do it here instead of making the
-            // agent guess that logic_health is the cure.
-            guard !isPing else { throw LogicianError.writeFailed(detail) }
+            // agent guess that logic_health is the cure. A ping is exempt
+            // because a ping is how `ensureRunning()` looks: retrying one
+            // through it would recurse.
+            guard command != .ping else { throw LogicianError.writeFailed(detail) }
             ensureRunning()
             return try sendOnce(payload)
         }

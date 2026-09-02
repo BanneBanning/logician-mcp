@@ -396,7 +396,15 @@ extension LogicAccessibility {
     /// can say so as an OBSERVATION rather than sending the agent hunting for
     /// a window that is not there.
     func modalWindowTitles() -> [String] {
-        ((try? logicWindows()) ?? []).compactMap { window in
+        modalWindowTitles(in: (try? logicWindows()) ?? [])
+    }
+
+    /// The same reading of a window list the caller ALREADY walked. The walk
+    /// is 0.87-0.92 ms warm and 33.6 ms cold (measured 2026-09-02) and is the
+    /// single most expensive thing on `logic_health`'s path, so the doctor
+    /// takes one and reads both the project document and this out of it.
+    func modalWindowTitles(in windows: [AXUIElement]) -> [String] {
+        windows.compactMap { window in
             let subrole = stringAttribute(window, kAXSubroleAttribute as String)
             guard subrole == "AXDialog" || subrole == "AXSheet"
                     || subrole == "AXSystemDialog" || subrole == "AXFloatingWindow" else {

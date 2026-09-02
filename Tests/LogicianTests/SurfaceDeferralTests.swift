@@ -1,5 +1,6 @@
 import XCTest
 @testable import Logician
+import LogicMCUBridge
 
 /// The efficiency package's two new pieces of reasoning, both pure: the
 /// DEBT left behind when a plugin tool stops returning the surface to the Pan
@@ -247,5 +248,51 @@ final class SurfaceDeferralTests: XCTestCase {
     func testAPartialRowIsNotCacheable() {
         XCTAssertNil(MCUController.cacheableNameRows([page(["A", "B", "C"])]))
         XCTAssertNil(MCUController.cacheableNameRows([]))
+    }
+
+    // MARK: - Which bridge commands can move the user's surface
+    //
+    // `MCUBridge.didTouchSurface` decides whether the server presses PAN on
+    // the way out. It used to be set for everything except `ping`, so
+    // `logic_health` — a `safety: .readOnly` diagnostic whose only bridge
+    // traffic is a `status` the daemon answers from its own snapshot —
+    // restored a surface it had never moved (measured 2026-09-02: 145 ms, and
+    // a real view change on a surface the user had left in a Send view).
+
+    func testTheOnlyReadShapedBridgeCommandsAreTheThreeThatSendNoMIDI() {
+        // Pinned as a SET over CaseIterable rather than checked one by one:
+        // a new command added to the vocabulary shows up here as a failure
+        // instead of quietly inheriting whichever side someone forgot.
+        let readShaped = Set(BridgeCommandName.allCases.filter { !$0.emitsMIDI })
+        XCTAssertEqual(readShaped, [.ping, .status, .awaitEvents])
+    }
+
+    func testEveryOtherBridgeCommandCountsAsTouchingTheSurface() {
+        let writing = Set(BridgeCommandName.allCases.filter(\.emitsMIDI))
+        XCTAssertEqual(
+            writing,
+            [.press, .select, .mute, .solo, .vpotPress, .fader, .vpot, .raw,
+             .converge, .midiStream, .midiAbort, .keycmd]
+        )
+    }
+
+    func testTheDoctorsOwnCommandsAreReadShaped() {
+        XCTAssertFalse(BridgeCommand.status.emitsMIDI)
+        XCTAssertFalse(BridgeCommand.ping.emitsMIDI)
+        XCTAssertFalse(BridgeCommand.awaitEvents(since: 0, timeoutMs: 10).emitsMIDI)
+    }
+
+    func testACommandThisBuildDoesNotModelCountsAsAWrite() {
+        // `logic_mcu_command` forwards agent-authored objects verbatim and the
+        // daemon can be a newer build, so the unknown case is the one where
+        // guessing "read-only" skips a restore the user needed.
+        XCTAssertTrue(BridgeCommand(cmd: "teleport").emitsMIDI)
+        XCTAssertTrue(BridgeCommand(cmd: nil).emitsMIDI)
+    }
+
+    func testTheCheapestSurfaceWritesStillCount() {
+        XCTAssertTrue(BridgeCommand.press(button: "assign_pan").emitsMIDI)
+        XCTAssertTrue(BridgeCommand.raw(bytes: [0x90, 0x2A, 0x7F]).emitsMIDI)
+        XCTAssertTrue(BridgeCommand.midiAbort.emitsMIDI)
     }
 }

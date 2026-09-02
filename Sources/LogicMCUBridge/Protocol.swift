@@ -72,6 +72,36 @@ public enum BridgeCommandName: String, Sendable, CaseIterable {
     case midiAbort = "midi_abort"
     case keycmd
     case ping
+
+    /// Whether the DAEMON puts bytes on a MIDI port for this command.
+    ///
+    /// This is the property the server's "did we touch the user's control
+    /// surface?" flag is actually about, and it is answered here, next to the
+    /// vocabulary, by an EXHAUSTIVE switch with no `default`: adding a case
+    /// above is a compile error until someone says which side it belongs on.
+    /// The previous answer was a name list of one (`!= .ping`) kept at the
+    /// socket boundary, which is why `status` — a command the daemon serves
+    /// out of its own snapshot with no MIDI at all (Bridge.swift, `case
+    /// .status`) — counted as a touch and made a `readOnly` diagnostic press
+    /// PAN on the way out (measured 2026-09-02: +145 ms and a real surface
+    /// write when the user's view was not PN).
+    ///
+    /// The three false answers are read-shaped by construction: `ping`
+    /// replies `pong`, `status` returns `state.snapshot()`, and `await`
+    /// blocks until Logic sends something. Everything else either presses a
+    /// button, moves a fader or vpot, or writes raw bytes to one of the three
+    /// ports — `midi_stream` and `midi_abort` included, which reach Logic on
+    /// the performance port rather than the surface: the flag's contract is
+    /// "MIDI left this process", and a stuck-note abort is not a read.
+    public var emitsMIDI: Bool {
+        switch self {
+        case .press, .select, .mute, .solo, .vpotPress, .fader, .vpot, .raw,
+             .converge, .midiStream, .midiAbort, .keycmd:
+            return true
+        case .status, .awaitEvents, .ping:
+            return false
+        }
+    }
 }
 
 /// One `midi_stream` event, on the wire as a flat array:
@@ -196,6 +226,14 @@ public struct BridgeCommand: Codable, Sendable, Equatable {
     public init(cmd: String?) { self.cmd = cmd }
 
     public var name: BridgeCommandName? { cmd.flatMap(BridgeCommandName.init(rawValue:)) }
+
+    /// See `BridgeCommandName.emitsMIDI`. A command this build does not model
+    /// counts as one that emits: today's daemon answers "unknown cmd" and
+    /// sends nothing, but `logic_mcu_command` forwards agent-authored objects
+    /// verbatim and the daemon can be a NEWER build than this server, so the
+    /// unknown case is the one where guessing "read-only" would silently skip
+    /// a restore the user needed.
+    public var emitsMIDI: Bool { name?.emitsMIDI ?? true }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)

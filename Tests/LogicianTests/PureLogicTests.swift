@@ -931,4 +931,96 @@ final class PureLogicTests: XCTestCase {
             MCPServer.applicationRemediations(logicRunning: true, hasProjectDocument: true).isEmpty
         )
     }
+
+    // MARK: - logic_health's bridge probe: when one round trip is enough
+
+    func testAnAnsweringDaemonThatNothingTouchedKeepsItsFirstSnapshot() {
+        // The saving: the ping inside ensureRunning() already proved this
+        // daemon alive and current, so re-reading `status` would be a second
+        // round trip for an answer already in hand.
+        XCTAssertFalse(
+            MCPServer.mustRereadStatus(firstReadAnswered: true, after: .unchanged)
+        )
+    }
+
+    func testAReplacedDaemonInvalidatesTheSnapshotReadBeforeIt() {
+        // A fresh daemon starts with received_events at 0. Reusing the old
+        // reading would report mcu_connected: true about a bridge Logic has
+        // never spoken to.
+        XCTAssertTrue(
+            MCPServer.mustRereadStatus(firstReadAnswered: true, after: .started)
+        )
+    }
+
+    func testADeadSocketIsAlwaysReadAgain() {
+        XCTAssertTrue(
+            MCPServer.mustRereadStatus(firstReadAnswered: false, after: .started)
+        )
+        XCTAssertTrue(
+            MCPServer.mustRereadStatus(firstReadAnswered: false, after: .unchanged)
+        )
+        // Even when the start failed: the re-read is what turns "no daemon"
+        // into bridge_running: false rather than a stale true.
+        XCTAssertTrue(
+            MCPServer.mustRereadStatus(firstReadAnswered: false, after: .failed)
+        )
+    }
+
+    // MARK: - logic_health tells a modal apart from a dead surface
+
+    func testMCUFixNamesTheOpenDialogAndTellsTheReaderToAnswerIt() {
+        let fix = MCPServer.mcuRemediation(dialogTitles: ["Bounce", "AXSheet"])
+        XCTAssertTrue(fix.contains("'Bounce'"))
+        XCTAssertTrue(fix.contains("'AXSheet'"))
+        // The dialog is the LEAD, not a footnote after the port instructions.
+        let dialogAt = fix.range(of: "'Bounce'")
+            .map { fix.distance(from: fix.startIndex, to: $0.lowerBound) }
+        let portsAt = fix.range(of: "Control Surfaces")
+            .map { fix.distance(from: fix.startIndex, to: $0.lowerBound) }
+        XCTAssertNotNil(dialogAt)
+        XCTAssertNotNil(portsAt)
+        XCTAssertLessThan(dialogAt ?? 0, portsAt ?? 0)
+        // And the port remedy is still reachable, gated behind the dialog.
+        XCTAssertTrue(fix.contains("Logic MCP MCU"))
+    }
+
+    func testMCUFixSaysNoDialogWasOpenRatherThanStayingSilent() {
+        let fix = MCPServer.mcuRemediation(dialogTitles: [])
+        // An OBSERVATION, so nobody goes hunting for a window that is not there.
+        XCTAssertTrue(fix.contains("no dialog open"))
+        XCTAssertTrue(fix.contains("Logic MCP MCU"))
+    }
+
+    // MARK: - logic_health's key command census
+
+    func testKeyCommandCensusIsACountWhenEverythingIsRegistered() {
+        let census = MCPServer.keyCommandCensus(
+            standard: ["a", "b", "c"], registered: ["a", "b", "c"]
+        )
+        XCTAssertTrue(census.missing.isEmpty)
+        XCTAssertEqual(census.census["registered"] as? Int, 3)
+        XCTAssertEqual(census.census["of"] as? Int, 3)
+        XCTAssertEqual(census.census["all_registered"] as? Bool, true)
+        // The names are the whole point of the cut: 22 rows of `true` was 56%
+        // of a healthy report.
+        XCTAssertNil(census.census["missing"])
+    }
+
+    func testKeyCommandCensusNamesOnlyTheMissingOnes() {
+        let census = MCPServer.keyCommandCensus(
+            standard: ["a", "b", "c"], registered: ["b"]
+        )
+        XCTAssertEqual(census.missing, ["a", "c"])
+        XCTAssertEqual(census.census["registered"] as? Int, 1)
+        XCTAssertEqual(census.census["of"] as? Int, 3)
+        XCTAssertEqual(census.census["all_registered"] as? Bool, false)
+        XCTAssertEqual(census.census["missing"] as? [String], ["a", "c"])
+    }
+
+    func testKeyCommandCensusKeepsTheStandardOrderOfTheMissingNames() {
+        let census = MCPServer.keyCommandCensus(
+            standard: ["z", "y", "x"], registered: []
+        )
+        XCTAssertEqual(census.census["missing"] as? [String], ["z", "y", "x"])
+    }
 }

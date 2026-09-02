@@ -6,17 +6,48 @@ import LogicMCUBridge
 final class LogicAccessibility {
     let bundleIdentifier = "com.apple.logic10"
 
-    func health() -> [String: Any] {
-        let applications = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
+    /// Everything `logic_health` needs off the process and Accessibility
+    /// planes, gathered in ONE pass: one `runningApplications` lookup, one
+    /// window walk, and the resolved process handed back so the UI-language
+    /// inference does not repeat the lookup either.
+    struct HealthFacts {
+        /// The `logic_health` keys that come from this plane.
+        let payload: [String: Any]
+        /// The running Logic, or nil when it is not running. Passed on rather
+        /// than looked up again.
+        let application: NSRunningApplication?
+        /// Titles of the dialogs, sheets and floating windows Logic had open
+        /// at the moment of the walk — the evidence that tells "the surface
+        /// was never set up" apart from "Logic is sitting on a modal". Not a
+        /// modality proof; see `modalWindowTitles(in:)`.
+        let dialogTitles: [String]
+    }
+
+    func healthFacts() -> HealthFacts {
+        let application = NSRunningApplication
+            .runningApplications(withBundleIdentifier: bundleIdentifier).first
+        let trusted = AXIsProcessTrusted()
         var result: [String: Any] = [
-            "accessibility_trusted": AXIsProcessTrusted(),
-            "logic_running": !applications.isEmpty,
-            "logic_pid": applications.first.map { Int($0.processIdentifier) } ?? NSNull(),
+            "accessibility_trusted": trusted,
+            "logic_running": application != nil,
+            "logic_pid": application.map { Int($0.processIdentifier) } ?? NSNull(),
             "bundle_identifier": bundleIdentifier
         ]
-        result["project_document"] = (try? projectDocumentPath()) ?? NSNull()
-        return result
+        // One walk, two answers. `projectDocumentPath()` took its own and
+        // `modalWindowTitles()` would have taken a third.
+        let windows: [AXUIElement] = trusted
+            ? application.map { self.windows(ofProcess: $0.processIdentifier) } ?? []
+            : []
+        result["project_document"] = windows.lazy
+            .compactMap { self.documentPath(of: $0) }.first ?? NSNull()
+        return HealthFacts(
+            payload: result,
+            application: application,
+            dialogTitles: modalWindowTitles(in: windows)
+        )
     }
+
+    func health() -> [String: Any] { healthFacts().payload }
 
     // MARK: - Read-only discovery
 
