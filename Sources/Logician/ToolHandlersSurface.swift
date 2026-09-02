@@ -57,21 +57,34 @@ extension MCPServer {
         let resolution = max(arguments["resolution_beats"] as? Int ?? 1, 1)
         let maxPoints = min(max(arguments["max_points"] as? Int ?? 64, 1), 200)
         let settle = min(max((arguments["settle_seconds"] as? Double) ?? 0.8, 0.2), 3.0)
+        // The sampling grid's bar lengths. Read here, once, from the project's
+        // own Signature List (7 ms on a cache hit) rather than taken from the
+        // control bar inside the loop: the control bar publishes the signature
+        // AT THE PLAYHEAD, which is how a read of bars 2-4 built a five-beat
+        // grid because the playhead happened to sit in a 5/4 bar 41.
+        let meter = resolveMeterKnowledge()
 
         switch parameter {
         case "volume":
             return try MCUController.readAutomation(
                 logic: logic, trackName: track, kindLabel: "volume",
                 startBar: startBar, endBar: endBar, resolutionBeats: resolution,
-                maxPoints: maxPoints, settleSeconds: settle,
+                maxPoints: maxPoints, settleSeconds: settle, meter: meter,
                 enterView: { channel in try MCUController.volumeReader(channel: channel) },
-                restoreView: { MCUController.exitToPan() }
+                restoreView: { MCUController.exitToPan() },
+                // Handed over in the Volume view instead of walking home from
+                // it: 3.3-4.6 s, measured after the last byte the caller
+                // waited for. `strip: nil` like the mixer snapshot's identical
+                // view, so any Accessibility selection settles it first.
+                viewDebt: MCUController.SurfaceDebt(
+                    strip: nil, view: "channel_strip", slot: nil
+                )
             )
         case "pan":
             return try MCUController.readAutomation(
                 logic: logic, trackName: track, kindLabel: "pan",
                 startBar: startBar, endBar: endBar, resolutionBeats: resolution,
-                maxPoints: maxPoints, settleSeconds: settle,
+                maxPoints: maxPoints, settleSeconds: settle, meter: meter,
                 // Pan is read off the inspector strip's own knob, exactly as
                 // logic_record_automation reads it while verifying a pan curve.
                 enterView: { _ in { [logic] in logic.stripPanValue(trackName: track) } },
@@ -84,7 +97,7 @@ extension MCPServer {
             return try MCUController.readAutomation(
                 logic: logic, trackName: track, kindLabel: "send \(send) level",
                 startBar: startBar, endBar: endBar, resolutionBeats: resolution,
-                maxPoints: maxPoints, settleSeconds: settle,
+                maxPoints: maxPoints, settleSeconds: settle, meter: meter,
                 enterView: { _ in
                     guard try MCUController.ensureSendView() else {
                         throw LogicianError.trackNotExposed(
@@ -101,7 +114,9 @@ extension MCPServer {
                         )
                     }
                 },
-                restoreView: { MCUController.exitToPan() }
+                restoreView: { MCUController.exitToPan() },
+                // The send view is the debt its sibling tools already record.
+                viewDebt: MCUController.sendViewDebt(strip: track)
             )
         case "plugin":
             guard let slot = arguments["insert_slot"] as? Int, (1...8).contains(slot) else {
@@ -112,7 +127,7 @@ extension MCPServer {
                 logic: logic, trackName: track,
                 kindLabel: "plugin slot \(slot): \(parameterName)",
                 startBar: startBar, endBar: endBar, resolutionBeats: resolution,
-                maxPoints: maxPoints, settleSeconds: settle,
+                maxPoints: maxPoints, settleSeconds: settle, meter: meter,
                 enterView: { _ in
                     guard try MCUController.ensurePluginList() != nil,
                           try MCUController.enterPluginEdit(slot: slot) else {
@@ -132,7 +147,14 @@ extension MCPServer {
                         }
                     }
                 },
-                restoreView: { MCUController.exitToPan() }
+                restoreView: { MCUController.exitToPan() },
+                // A plugin-edit view left standing is the exact hazard the debt
+                // machinery was built for, and it is the one it handles:
+                // `settleSurfaceDebt` pays it before any selection onto another
+                // strip, exactly as the parameter tools' own deferral does.
+                viewDebt: MCUController.SurfaceDebt(
+                    strip: track, view: "plugin_edit", slot: slot
+                )
             )
         default:
             throw LogicianError.invalidArguments(
