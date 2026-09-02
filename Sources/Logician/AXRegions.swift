@@ -423,8 +423,8 @@ extension LogicAccessibility {
     /// has rendered and nothing about the ones it has not, so a region selected
     /// on a scrolled-out or folder-stacked row is not in this number. It is a
     /// necessary condition for exclusivity, never a project-wide proof — see
-    /// `RegionDeleteGuard` for the receipt that is, and for the tool that used
-    /// to advertise this count as one.
+    /// `RegionEditGuard` for the receipt that is, and for the four tools that
+    /// used to advertise this count as one.
     func selectedRegionCount() throws -> Int {
         try regionRows().reduce(0) { sum, row in
             sum + row.regions.filter { stringAttribute($0, "AXSelected") == "1" }.count
@@ -439,8 +439,9 @@ extension LogicAccessibility {
     /// learn these (`regionSnapshot` + `selectedRegionCount` + a second snapshot)
     /// and STILL could not answer the only question that mattered — whether the
     /// count it had was the project's. The totals are the after-check's real
-    /// yardstick: the target track's own count is satisfied by a Delete that
-    /// also emptied three other rows.
+    /// yardstick for all four destructive region tools: the target track's own
+    /// count is satisfied by a Delete that also emptied three other rows, by a
+    /// Split that cut four regions, and by a Paste that put four down.
     ///
     /// `parseRegion` runs on the target row only. The totals need no help text,
     /// so they cost one `AXSelected` read per region and no regex at all.
@@ -477,10 +478,10 @@ extension LogicAccessibility {
         )
     }
 
-    /// Can this walk see every row a Delete would act on? Reads the track HEADER
-    /// column and Logic's scroll bar, because the region walk publishes neither
-    /// a collapsed stack nor a viewport.
-    func regionRowCoverage(regionRowNumbers: [Int]) -> RegionDeleteGuard.Coverage {
+    /// Can this walk see every row a selection-based command would act on? Reads
+    /// the track HEADER column and Logic's scroll bar, because the region walk
+    /// publishes neither a collapsed stack nor a viewport.
+    func regionRowCoverage(regionRowNumbers: [Int]) -> RegionEditGuard.Coverage {
         let headers = (try? parsedTrackHeaders()) ?? []
         let verdict = TrackListCompleteness.evaluate(
             rows: headers.map {
@@ -491,7 +492,7 @@ extension LogicAccessibility {
             },
             scrollable: tracksAreaScrollable().scrollable
         )
-        return RegionDeleteGuard.coverage(
+        return RegionEditGuard.coverage(
             trackVerdict: verdict,
             headerNumbers: headers.map(\.number),
             regionRowNumbers: regionRowNumbers
@@ -525,6 +526,188 @@ extension LogicAccessibility {
         return remaining
     }
 
+    /// The pre-write decision every selection-based region command shares.
+    ///
+    /// Reads how far the arrangement walk can see, asks `RegionEditGuard` what
+    /// this call may promise, and THROWS the refusal from here — before the
+    /// caller has written anything, which is what makes `restored: true` on that
+    /// path a fact rather than a claim. Callers that write something else first
+    /// (`splitRegion` parks the playhead) must still call this BEFORE that write.
+    func regionEditPlan(
+        _ command: RegionEditGuard.Command, regionRowNumbers: [Int]
+    ) throws -> (coverage: RegionEditGuard.Coverage, plan: RegionEditGuard.Plan) {
+        let coverage = regionRowCoverage(regionRowNumbers: regionRowNumbers)
+        let plan = RegionEditGuard.plan(
+            coverage: coverage,
+            deselectAllRegistered: KeyCommandRegistry.note(
+                named: KeyCommandRegistry.Name.deselectAll
+            ) != nil,
+            command: command
+        )
+        if case .refuse(let reason) = plan {
+            throw LogicianError.verificationFailed(
+                requested: "exactly one region selected across the WHOLE project before "
+                    + command.name,
+                actual: reason,
+                restored: true // nothing has been written at this point
+            )
+        }
+        return (coverage, plan)
+    }
+
+    /// One region selected, and an honest statement of how far that claim
+    /// reaches — the step all four destructive region tools take immediately
+    /// before their key command.
+    struct ExclusiveRegionSelection {
+        /// The selection the command will act on. After a project-wide clear
+        /// this is the SECOND pass's result, so it describes the region that is
+        /// actually selected on screen right now.
+        let region: [String: Any]
+        /// The FIRST pass's result, which is the one carrying `key_focus` — what
+        /// state the call inherited, and the evidence a "nothing happened"
+        /// failure leads with.
+        let anchor: [String: Any]
+        /// `"project"` when Logic's own `Deselect All` established it,
+        /// `"rendered_rows"` when only the arrangement walk could be counted.
+        let scope: String
+        /// The receipt for the clear, or nil when there was none.
+        let clearReceipt: [String: Any]?
+        /// The `renderedRowsOnly` warning, or nil.
+        let warning: String?
+
+        /// Everything the result should carry about the selection, merged in by
+        /// the caller so all four tools report it the same way.
+        ///
+        /// The warning is APPENDED, never assigned: `logic_split_region` and
+        /// `logic_copy_region` both have their own honest complaints to make
+        /// about the playhead, and a scope caveat must not silently replace one.
+        func decorate(_ result: inout [String: Any]) {
+            result["selection_scope"] = scope
+            if let clearReceipt { result["project_wide_clear"] = clearReceipt }
+            appendWarning(warning, to: &result)
+        }
+    }
+
+    /// Makes exactly one region selected, project-wide where Logic lets it.
+    ///
+    /// Select the target (which establishes the Tracks-area keyboard focus these
+    /// commands need), fire Logic's own project-wide `Deselect All`, PROVE it
+    /// landed by watching the rendered selection fall from one to zero, select
+    /// the target back by the identity the first pass resolved, and count again.
+    /// The `renderedRowsOnly` plan skips the clear and counts once, and says so.
+    ///
+    /// The clear costs ~0.8 s (measured 2026-09-01 on `logic_delete_region`:
+    /// 1.98 s → 2.78 s) and there is no path that may skip it as provably
+    /// unnecessary — see `RegionEditGuard.plan` for why that fast path cannot
+    /// exist.
+    func establishExclusiveRegionSelection(
+        _ command: RegionEditGuard.Command, plan: RegionEditGuard.Plan,
+        trackName: String, regionName: String?, startBar: Int?, trackNumber: Int? = nil
+    ) throws -> ExclusiveRegionSelection {
+        let anchor = try selectRegion(
+            trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true,
+            trackNumber: trackNumber, forKeyCommand: true
+        )
+        guard case .projectWideClear = plan else {
+            // ONE count, not two. The value the guard TESTED is the value the
+            // refusal quotes: reading it a second time to interpolate a string
+            // cost a fifth full tree walk (~110 ms measured 2026-09-01) and
+            // could legitimately print a number that never refused anything.
+            let selectedCount = try selectedRegionCount()
+            guard selectedCount == 1 else {
+                throw LogicianError.verificationFailed(
+                    requested: "exactly one selected region before \(command.name)",
+                    actual: "\(selectedCount) regions selected; refusing to fire \(command.name). "
+                        + command.nothingHappened + " - but the SELECTION was not put back "
+                        + "either: this call had already selected "
+                        + "'\(anchor["name"] ?? "?")' exclusively, which cleared every other "
+                        + "region's selection",
+                    // `restored: true` here was a fiction: selectRegion has by
+                    // now changed the region selection and written AXFocused.
+                    // The arrangement is untouched; the selection is not.
+                    restored: false
+                )
+            }
+            var warning: String?
+            if case .renderedRowsOnly(let text) = plan { warning = text }
+            return ExclusiveRegionSelection(
+                region: anchor, anchor: anchor, scope: "rendered_rows",
+                clearReceipt: nil, warning: warning
+            )
+        }
+        let remaining = try clearProjectWideRegionSelection()
+        guard remaining == 0 else {
+            throw LogicianError.verificationFailed(
+                requested: "the project-wide region selection cleared before \(command.name)",
+                actual: "'\(KeyCommandRegistry.Name.deselectAll)' fired and \(remaining) "
+                    + "region(s) are still selected, so it did not reach Logic or is bound to "
+                    + "something else - and without it the selection cannot be proven "
+                    + "exclusive beyond the rendered rows. Refusing to fire \(command.name). "
+                    + command.nothingHappened + "; the SELECTION was changed (this call selected "
+                    + "'\(anchor["name"] ?? "?")' exclusively across the rendered rows). "
+                    + TracksAreaFocus.summary(inSelectionResult: anchor) + " "
+                    + TracksAreaFocus.dialogSentence(modalWindowTitles())
+                    + " Relearn the key commands with logic_setup_key_commands "
+                    + "{relearn: true} if the binding is stale.",
+                restored: false
+            )
+        }
+        // Select the target BACK, by the identity the first selection resolved -
+        // not by the caller's possibly looser arguments, so the second pass
+        // cannot land on a different region than the first.
+        let reselected = try selectRegion(
+            trackName: trackName,
+            regionName: anchor["name"] as? String,
+            startBar: anchor["start_bar"] as? Int,
+            exclusive: true,
+            trackNumber: trackNumber,
+            // The focus was established above, and `Deselect All` landing just
+            // proved it is live. A second header write buys nothing.
+            forKeyCommand: false
+        )
+        let selectedNow = try selectedRegionCount()
+        guard selectedNow == 1 else {
+            throw LogicianError.verificationFailed(
+                requested: "exactly one selected region before \(command.name)",
+                actual: "\(selectedNow) regions selected after a proven project-wide clear; "
+                    + "refusing to fire \(command.name). " + command.nothingHappened
+                    + "; the selection was cleared and then reselected",
+                restored: false
+            )
+        }
+        return ExclusiveRegionSelection(
+            region: reselected, anchor: anchor, scope: "project",
+            clearReceipt: [
+                "command": KeyCommandRegistry.Name.deselectAll,
+                "selected_after_clear": 0,
+                "selected_before_command": selectedNow,
+                "verified": true,
+                "means": "Logic's own Deselect All is project-wide; the rendered selection was"
+                    + " watched falling to zero, which proves the command landed."
+            ],
+            warning: nil
+        )
+    }
+
+    /// The sentence a result carries about how far its exclusivity claim reaches.
+    static func exclusivityNote(scope: String, command: RegionEditGuard.Command) -> String {
+        scope == "project"
+            ? "Before the target was selected back, the selection was cleared with Logic's own "
+                + "Deselect All - a project-wide command, proven to have landed by the rendered "
+                + "selection falling to zero - so nothing on an unrendered row was still selected "
+                + "when \(command.name) fired. "
+            : "Exclusivity was checked across the RENDERED rows only. "
+    }
+
+    /// The rows this call could not see, named in the result rather than only in
+    /// a refusal — a success on a partial arrangement is still a success taken
+    /// with one eye shut, and the caller is entitled to know which eye.
+    func annotateCoverage(_ coverage: RegionEditGuard.Coverage, in result: inout [String: Any]) {
+        guard coverage.partial else { return }
+        result["rows_not_rendered"] = coverage.unseenTrackNumbers
+        result["coverage_evidence"] = coverage.reasons
+    }
+
     /// Deletes ONE region — and is allowed to say so.
     ///
     /// Logic's `Delete` takes every selected region in the project. This tool
@@ -542,7 +725,7 @@ extension LogicAccessibility {
     /// selection collapsing to zero, then the one target region is selected
     /// back. Where that command is missing from the registry, the tool refuses
     /// if rows are provably hidden and says what it checked if they are not —
-    /// see `RegionDeleteGuard`. The after-check compares the region total across
+    /// see `RegionEditGuard`. The after-check compares the region total across
     /// EVERY rendered row, so collateral damage on a rendered row is a loud
     /// failure instead of an invisible one.
     func deleteRegion(
@@ -553,108 +736,25 @@ extension LogicAccessibility {
         // census doubles as the before-picture: selecting a region changes no
         // region counts.
         let before = try arrangementCensus(trackName: trackName)
-        let coverage = regionRowCoverage(regionRowNumbers: before.rowNumbers)
-        let plan = RegionDeleteGuard.plan(
-            coverage: coverage,
-            deselectAllRegistered: KeyCommandRegistry.note(
-                named: KeyCommandRegistry.Name.deselectAll
-            ) != nil
+        let (coverage, plan) = try regionEditPlan(.delete, regionRowNumbers: before.rowNumbers)
+        let exclusive = try establishExclusiveRegionSelection(
+            .delete, plan: plan,
+            trackName: trackName, regionName: regionName, startBar: startBar
         )
-        if case .refuse(let reason) = plan {
-            throw LogicianError.verificationFailed(
-                requested: "exactly one region selected across the WHOLE project before Delete",
-                actual: reason,
-                restored: true // nothing has been written at this point
-            )
-        }
-        let selection = try selectRegion(
-            trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true,
-            forKeyCommand: true
-        )
-        var clearReceipt: [String: Any]?
-        var reselected = selection
-        if case .projectWideClear = plan {
-            let remaining = try clearProjectWideRegionSelection()
-            guard remaining == 0 else {
-                throw LogicianError.verificationFailed(
-                    requested: "the project-wide region selection cleared before Delete",
-                    actual: "'\(KeyCommandRegistry.Name.deselectAll)' fired and \(remaining) "
-                        + "region(s) are still selected, so it did not reach Logic or is bound to "
-                        + "something else - and without it the selection cannot be proven "
-                        + "exclusive beyond the rendered rows. Refusing to fire Delete. Nothing "
-                        + "was deleted; the SELECTION was changed (this call selected "
-                        + "'\(selection["name"] ?? "?")' exclusively across the rendered rows). "
-                        + TracksAreaFocus.summary(inSelectionResult: selection) + " "
-                        + TracksAreaFocus.dialogSentence(modalWindowTitles())
-                        + " Relearn the key commands with logic_setup_key_commands "
-                        + "{relearn: true} if the binding is stale.",
-                    restored: false
-                )
-            }
-            // Select the target BACK, by the identity the first selection
-            // resolved - not by the caller's possibly looser arguments, so the
-            // second pass cannot land on a different region than the first.
-            reselected = try selectRegion(
-                trackName: trackName,
-                regionName: selection["name"] as? String,
-                startBar: selection["start_bar"] as? Int,
-                exclusive: true,
-                // The focus was established above, and `Deselect All` landing
-                // just proved it is live. A second header write buys nothing.
-                forKeyCommand: false
-            )
-            let selectedNow = try selectedRegionCount()
-            guard selectedNow == 1 else {
-                throw LogicianError.verificationFailed(
-                    requested: "exactly one selected region before Delete",
-                    actual: "\(selectedNow) regions selected after a proven project-wide clear; "
-                        + "refusing to fire Delete. Nothing was deleted; the selection was "
-                        + "cleared and then reselected",
-                    restored: false
-                )
-            }
-            clearReceipt = [
-                "command": KeyCommandRegistry.Name.deselectAll,
-                "selected_after_clear": 0,
-                "selected_before_delete": selectedNow,
-                "verified": true,
-                "means": "Logic's own Deselect All is project-wide; the rendered selection was"
-                    + " watched falling to zero, which proves the command landed."
-            ]
-        } else {
-            // ONE count, not two. The value the guard TESTED is the value the
-            // refusal quotes: reading it a second time to interpolate a string
-            // cost a fifth full tree walk (~110 ms measured 2026-09-01) and
-            // could legitimately print a number that never refused anything.
-            let selectedCount = try selectedRegionCount()
-            guard selectedCount == 1 else {
-                throw LogicianError.verificationFailed(
-                    requested: "exactly one selected region before Delete",
-                    actual: "\(selectedCount) regions selected; refusing to fire Delete. Nothing "
-                        + "was deleted - but the SELECTION was not put back either: this call had "
-                        + "already selected '\(selection["name"] ?? "?")' exclusively, which "
-                        + "cleared every other region's selection",
-                    // `restored: true` here was a fiction: selectRegion has by
-                    // now changed the region selection and written AXFocused.
-                    // The arrangement is untouched; the selection is not.
-                    restored: false
-                )
-            }
-        }
-        let targetName = reselected["name"] as? String
-        let targetBar = reselected["start_bar"] as? Int
+        let targetName = exclusive.region["name"] as? String
+        let targetBar = exclusive.region["start_bar"] as? Int
         try fireKeyCommand(KeyCommandRegistry.Name.delete)
         // Look BEFORE sleeping: measured 2026-09-01, the region was already
         // gone from the arrangement map on the FIRST read in 3 of 3 successful
         // deletes, so the old loop's opening 0.4 s sleep was pure waiting on
         // every success and its ten iterations cost 5.2 s to say "it is still
         // there" - the answer a focus-dead Logic gives every time.
-        var verdict = RegionDeleteGuard.Verification.unchanged
+        var verdict = RegionEditGuard.Verification.unchanged
         var after = before
         let deadline = Date().addingTimeInterval(2.0)
         repeat {
             after = try arrangementCensus(trackName: trackName)
-            verdict = RegionDeleteGuard.verify(
+            verdict = RegionEditGuard.verify(
                 targetStillPresent: after.targetRegions.contains {
                     ($0["start_bar"] as? Int) == targetBar && ($0["name"] as? String) == targetName
                 },
@@ -671,7 +771,7 @@ extension LogicAccessibility {
             throw LogicianError.verificationFailed(
                 requested: "region '\(targetName ?? "?")' deleted",
                 actual: "the region is still in the arrangement map (undo history unaffected). "
-                    + TracksAreaFocus.summary(inSelectionResult: selection) + " "
+                    + TracksAreaFocus.summary(inSelectionResult: exclusive.anchor) + " "
                     + TracksAreaFocus.dialogSentence(modalWindowTitles()),
                 restored: false
             )
@@ -697,26 +797,16 @@ extension LogicAccessibility {
             "track": trackName, "track_name": trackName,
             "region": targetName ?? "?",
             "start_bar": targetBar ?? NSNull(),
-            "selection_scope": clearReceipt == nil ? "rendered_rows" : "project",
             "regions_before": before.totalRegions,
             "regions_after": after.totalRegions,
             "note": "Exactly one region left the arrangement: the region totals across every "
                 + "rendered row fell by exactly 1, not just the target track's. "
-                + (clearReceipt == nil
-                    ? "Exclusivity was checked across the RENDERED rows only. "
-                    : "Before the target was selected back, the selection was cleared with "
-                        + "Logic's own Deselect All - a project-wide command, proven to have "
-                        + "landed by the rendered selection falling to zero - so nothing on an "
-                        + "unrendered row was still selected when Delete fired. ")
+                + Self.exclusivityNote(scope: exclusive.scope, command: .delete)
                 + "Removable mistake? Undo restores it."
         ]
-        if let clearReceipt { result["project_wide_clear"] = clearReceipt }
-        if case .renderedRowsOnly(let warning) = plan { result["warning"] = warning }
-        if coverage.partial {
-            result["rows_not_rendered"] = coverage.unseenTrackNumbers
-            result["coverage_evidence"] = coverage.reasons
-        }
-        if let keyFocus = selection["key_focus"] { result["key_focus"] = keyFocus }
+        exclusive.decorate(&result)
+        annotateCoverage(coverage, in: &result)
+        if let keyFocus = exclusive.anchor["key_focus"] { result["key_focus"] = keyFocus }
         return result
     }
 
@@ -853,6 +943,16 @@ extension LogicAccessibility {
     /// playhead somewhere else, fire the command and be told three times that
     /// everything worked. Here the three steps share one verdict, and the
     /// arrangement map is the proof: two regions where one was.
+    ///
+    /// Since 2026-09-02 that proof is taken across EVERY rendered row rather
+    /// than the target track's alone, and the exclusivity in front of Split is
+    /// established rather than inferred. `Split Regions/Events at Playhead
+    /// Position` cuts every SELECTED region at the playhead, project-wide, while
+    /// the count this tool guarded on saw only the rows Logic had rendered — the
+    /// blind spot `logic_delete_region` closed one door over, and on the same
+    /// reference project (ten subtracks under a collapsed stack) a Split that
+    /// also cut four regions off screen passed the guard and the after-check
+    /// both. See `RegionEditGuard`.
     func splitRegion(
         trackName: String, regionName: String?, startBar: Int?,
         atBar: Int, atBeat: Int, notesCrossing: String
@@ -872,7 +972,12 @@ extension LogicAccessibility {
                 _ = answerNotesCrossingSplit(choice: nil)
             }
         }
-        let before = try regionSnapshot(trackName: trackName)
+        // ONE walk for the target row's regions AND the project's rendered
+        // region total, because the after-check needs both and the second one
+        // is what makes "two regions where one was" a claim about the project
+        // instead of about one track.
+        let census = try arrangementCensus(trackName: trackName)
+        let before = census.targetRegions
         // Identify the region WITHOUT selecting it yet: the playhead has to be
         // parked first (see below), and parking touches the control bar, which
         // takes the keyboard focus away from the Tracks area — a Split fired
@@ -915,6 +1020,12 @@ extension LogicAccessibility {
                 actual: "bar \(atBar) beat \(atBeat) is the region's own start; splitting there produces nothing. Nothing was moved."
             )
         }
+        // FAILURE MODE 0, and it is checked LAST of the pre-write three because
+        // it costs a track-header walk the cheap argument refusals above do not:
+        // whether this call can honestly claim the selection it is about to make
+        // is the project's. It still comes before the park, which is the first
+        // thing here that changes anything at all.
+        let (coverage, plan) = try regionEditPlan(.split, regionRowNumbers: census.rowNumbers)
         // FAILURE MODE 2: the playhead not landing where it was asked to.
         // `setPlayhead` verifies bar and beat and stops there; the sub-beat
         // fields it never touched can leave the playhead most of a beat late,
@@ -927,21 +1038,18 @@ extension LogicAccessibility {
                 restored: false
             )
         }
-        // Selection LAST, for the focus reason above, and exclusive so Split
-        // cannot cut a region the caller never named.
-        let anchor = try selectRegion(
+        // Selection LAST, for the focus reason above, and exclusive PROJECT-WIDE
+        // where Logic's own Deselect All is available: Split cuts every selected
+        // region, and the count this used to guard on could not see the rows
+        // Logic had not rendered. The clear also re-proves the Tracks-area
+        // keyboard focus the park just spent, which is the failure mode the
+        // ordering comment above exists for.
+        let exclusive = try establishExclusiveRegionSelection(
+            .split, plan: plan,
             trackName: trackName, regionName: selection["name"] as? String,
-            startBar: selection["start_bar"] as? Int, exclusive: true,
-            forKeyCommand: true
+            startBar: selection["start_bar"] as? Int
         )
-        guard try selectedRegionCount() == 1 else {
-            throw LogicianError.verificationFailed(
-                requested: "exactly one selected region before Split",
-                actual: "\(try selectedRegionCount()) regions selected; refusing to fire Split "
-                    + "(it would cut every one of them at the playhead)",
-                restored: false
-            )
-        }
+        let anchor = exclusive.anchor
         try fireKeyCommand(KeyCommandRegistry.Name.splitRegionsAtPlayhead)
 
         // A MIDI region whose notes cross the cut raises a modal before
@@ -959,20 +1067,42 @@ extension LogicAccessibility {
         }
 
         // FAILURE MODE 3: the command fired and nothing happened. The
-        // arrangement map is the only evidence that counts.
-        var after: [[String: Any]] = []
-        var split = false
+        // arrangement map is the only evidence that counts — and it is read
+        // across EVERY rendered row, not the target track's, because a Split
+        // that also cut three regions on other rows leaves the target track
+        // showing exactly the two this check used to ask for.
+        var afterCensus = census
+        var verdict = RegionEditGuard.DeltaVerdict.pending
         for _ in 0..<10 {
             Thread.sleep(forTimeInterval: 0.35)
-            after = try regionSnapshot(trackName: trackName)
-            if after.count == before.count + 1 { split = true; break }
+            afterCensus = try arrangementCensus(trackName: trackName)
+            verdict = RegionEditGuard.delta(
+                expected: 1, before: census.totalRegions, after: afterCensus.totalRegions
+            )
+            if verdict != .pending { break }
         }
-        guard split else {
+        let after = afterCensus.targetRegions
+        switch verdict {
+        case .asExpected:
+            break
+        case .pending:
             throw LogicianError.verificationFailed(
                 requested: "two regions where '\(selection["name"] ?? "?")' was",
-                actual: "the track still shows \(after.count) region(s). Nothing was undone - "
+                actual: "the track still shows \(after.count) region(s) and the project's rendered "
+                    + "total is unchanged at \(afterCensus.totalRegions). Nothing was undone - "
                     + "if the split DID happen and only the map is stale, re-read logic_list_regions "
-                    + "before firing Undo",
+                    + "before firing Undo. "
+                    + TracksAreaFocus.summary(inSelectionResult: anchor) + " "
+                    + TracksAreaFocus.dialogSentence(modalWindowTitles()),
+                restored: false
+            )
+        case .unexpected:
+            throw LogicianError.verificationFailed(
+                requested: "exactly one region split in two",
+                actual: RegionEditGuard.unexpectedTotalSentence(
+                    command: .split, expectedDelta: 1,
+                    before: census.totalRegions, after: afterCensus.totalRegions
+                ),
                 restored: false
             )
         }
@@ -986,36 +1116,56 @@ extension LogicAccessibility {
             "notes_crossing": dialogAnswer ?? "not_asked",
             "regions_before": before.count,
             "regions_after": after.count,
+            "project_regions_before": census.totalRegions,
+            "project_regions_after": afterCensus.totalRegions,
             "left": leftHalf ?? NSNull(),
             "right": rightHalf ?? NSNull(),
             "playhead_left_at": ["bar": atBar, "beat": atBeat],
-            "note": Self.notesCrossingNote(dialogAnswer, requested: notesCrossing.lowercased())
-                + "Undo restores the single region. The two halves are new regions: their names and start bars are what logic_list_regions reports now, so re-read the map before addressing either of them."
+            // `notesCrossingNote` already ends on the Undo-and-re-read tail, and
+            // this note used to append a second copy of it verbatim - two
+            // identical sentences in every successful split, which only became
+            // visible once anything was written between them.
+            "note": "Exactly one region became two: the region total across every rendered row "
+                + "rose by exactly 1, not just the target track's. "
+                + Self.exclusivityNote(scope: exclusive.scope, command: .split)
+                + Self.notesCrossingNote(dialogAnswer, requested: notesCrossing.lowercased())
         ]
         result["playhead"] = parked
+        annotateCoverage(coverage, in: &result)
         if let keyFocus = anchor["key_focus"] { result["key_focus"] = keyFocus }
-        // An honest caveat rather than a silent wrong cut.
+        // An honest caveat rather than a silent wrong cut. Every one of these
+        // APPENDS: this result can legitimately carry a scope caveat, an
+        // off-grid cut and a missing right half at once, and the first
+        // complaint written must not be the only one the agent reads.
         switch parked["on_grid"] as? Bool {
         case true:
             break
         case false:
-            result["warning"] = "The playhead did NOT land exactly on bar \(atBar) beat \(atBeat) "
-                + "(the MCU position display still shows division \(parked["timecode_division"] ?? "?"), "
-                + "tick \(parked["timecode_ticks"] ?? "?")), so the cut sits inside the beat. "
-                + "Listen across the seam, or Undo and try again."
+            appendWarning(
+                "The playhead did NOT land exactly on bar \(atBar) beat \(atBeat) "
+                    + "(the MCU position display still shows division \(parked["timecode_division"] ?? "?"), "
+                    + "tick \(parked["timecode_ticks"] ?? "?")), so the cut sits inside the beat. "
+                    + "Listen across the seam, or Undo and try again.",
+                to: &result
+            )
             result["verified"] = false
         default:
-            result["warning"] = "Whether the cut landed exactly on the beat is UNVERIFIED: the MCU "
-                + "position display could not be read, and the control bar publishes bars and beats "
-                + "only — it cannot see a sub-beat offset. The playhead was rewound to the project "
-                + "start before stepping, which is what makes the position exact; that it is exact "
-                + "was not observed."
+            appendWarning(
+                "Whether the cut landed exactly on the beat is UNVERIFIED: the MCU "
+                    + "position display could not be read, and the control bar publishes bars and beats "
+                    + "only — it cannot see a sub-beat offset. The playhead was rewound to the project "
+                    + "start before stepping, which is what makes the position exact; that it is exact "
+                    + "was not observed.",
+                to: &result
+            )
         }
         if rightHalf == nil {
-            result["warning"] = ((result["warning"] as? String).map { $0 + " ALSO: " } ?? "")
-                + "A region count of \(after.count) proves the split happened, but no region starts "
-                + "at bar \(atBar) in the map — Logic reports whole bars and beats only, so a split "
-                + "inside a bar shows up on the bar it falls in. Read logic_list_regions for the truth."
+            appendWarning(
+                "A region count of \(after.count) proves the split happened, but no region starts "
+                    + "at bar \(atBar) in the map — Logic reports whole bars and beats only, so a split "
+                    + "inside a bar shows up on the bar it falls in. Read logic_list_regions for the truth.",
+                to: &result
+            )
         }
         if dialogAnswer == LogicAccessibility.notesCrossingLogicDefault {
             appendWarning(
@@ -1026,6 +1176,7 @@ extension LogicAccessibility {
                 to: &result
             )
         }
+        exclusive.decorate(&result)
         return result
     }
 
@@ -1164,6 +1315,15 @@ extension LogicAccessibility {
             && (lhs["start_bar"] as? Int) == (rhs["start_bar"] as? Int)
     }
 
+    /// Nudges ONE region — and the "one" is established, not hoped for.
+    ///
+    /// Logic's `Nudge Region/Event Position …` moves every SELECTED region,
+    /// project-wide. This guarded on a count over `regionRows()`, which sees
+    /// only the rows Logic has RENDERED, and then claimed `restored: true` on a
+    /// refusal taken AFTER `selectRegion` had already cleared every other
+    /// region's selection — both the same fictions `logic_delete_region` gave
+    /// up on 2026-09-01. Exclusivity now comes from Logic's own project-wide
+    /// `Deselect All`, proven to have landed; see `RegionEditGuard`.
     func moveRegion(
         trackName: String, regionName: String?, startBar: Int?,
         byBars: Int, byBeats: Int
@@ -1171,16 +1331,14 @@ extension LogicAccessibility {
         guard byBars != 0 || byBeats != 0 else {
             throw LogicianError.invalidArguments("pass a non-zero by_bars and/or by_beats")
         }
-        let selection = try selectRegion(
-            trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true,
-            forKeyCommand: true
+        // Before any write, so the refusal can say the project is untouched.
+        let before = try arrangementCensus(trackName: trackName)
+        let (coverage, plan) = try regionEditPlan(.nudge, regionRowNumbers: before.rowNumbers)
+        let exclusive = try establishExclusiveRegionSelection(
+            .nudge, plan: plan,
+            trackName: trackName, regionName: regionName, startBar: startBar
         )
-        guard try selectedRegionCount() == 1 else {
-            throw LogicianError.verificationFailed(
-                requested: "exactly one selected region before nudging",
-                actual: "selection drifted; refusing", restored: true
-            )
-        }
+        let selection = exclusive.region
         let oldStart = selection["start_bar"] as? Int ?? 0
         for _ in 0..<abs(byBars) {
             try fireKeyCommand(byBars > 0
@@ -1196,9 +1354,10 @@ extension LogicAccessibility {
         }
         Thread.sleep(forTimeInterval: 0.4)
         // Whole-bar moves verify exactly; beat moves verify that the region
-        // left its old slot (Logic's help text rounds to bars+beats).
-        let after = try regionSnapshot(trackName: trackName)
-        let target = after.first {
+        // left its old slot (Logic's help text rounds to bars+beats). One
+        // census walk answers both that and the project-wide count check below.
+        let after = try arrangementCensus(trackName: trackName)
+        let target = after.targetRegions.first {
             ($0["name"] as? String) == (selection["name"] as? String)
                 && ($0["selected"] as? Bool) == true
         }
@@ -1225,18 +1384,60 @@ extension LogicAccessibility {
                 restored: false
             )
         }
+        // A Nudge moves regions; it never creates or destroys one. A rendered
+        // total that moved therefore means either that the Nudge reached a
+        // region this call never named, or that the move overlaid a neighbour
+        // completely and Logic swallowed it — the second of which this tool's
+        // own description warns about, and neither of which may come back as a
+        // clean success. What the count CANNOT see is a second selected region
+        // that moved without landing on anything; the project-wide clear above
+        // is what covers that, and this is the backstop under it.
+        if case .unexpected = RegionEditGuard.delta(
+            expected: 0, before: before.totalRegions, after: after.totalRegions
+        ) {
+            throw LogicianError.verificationFailed(
+                requested: "one region moved and no region gained or lost",
+                actual: RegionEditGuard.unexpectedTotalSentence(
+                    command: .nudge, expectedDelta: 0,
+                    before: before.totalRegions, after: after.totalRegions
+                ),
+                restored: false
+            )
+        }
         var result: [String: Any] = [
             "success": true, "verified": true, "state": "moved",
             "track": trackName, "track_name": trackName,
             "region": selection["name"] ?? "?",
             "from_bar": oldStart,
             "to_bar": moved["start_bar"] ?? NSNull(),
-            "to_beat": moved["start_beat"] ?? 1
+            "to_beat": moved["start_beat"] ?? 1,
+            "project_regions_before": before.totalRegions,
+            "project_regions_after": after.totalRegions,
+            "note": "The region total across every rendered row is unchanged at "
+                + "\(after.totalRegions), so the nudge did not swallow a neighbour it landed on. "
+                + Self.exclusivityNote(scope: exclusive.scope, command: .nudge)
+                + "Relative: a repeat moves again. Undo puts it back."
         ]
-        if let keyFocus = selection["key_focus"] { result["key_focus"] = keyFocus }
+        exclusive.decorate(&result)
+        annotateCoverage(coverage, in: &result)
+        if let keyFocus = exclusive.anchor["key_focus"] { result["key_focus"] = keyFocus }
         return result
     }
 
+    /// Copies (or, with `move`, Cuts and Pastes) ONE region — and the "one" is
+    /// established, not hoped for.
+    ///
+    /// Logic's `Cut` removes every SELECTED region project-wide and `Copy` puts
+    /// every one of them on the clipboard for `Paste` to put back down. This
+    /// guarded on a count over `regionRows()`, which sees only the rows Logic
+    /// has RENDERED, and then claimed `restored: true` on a refusal taken AFTER
+    /// `selectRegion` had already cleared every other region's selection — both
+    /// the same fictions `logic_delete_region` gave up on 2026-09-01. `move:
+    /// true` made it the more dangerous of the two, because a Cut that reached
+    /// a hidden row removed a region the Paste never put back. Exclusivity now
+    /// comes from Logic's own project-wide `Deselect All`, proven to have
+    /// landed; see `RegionEditGuard`.
+    ///
     /// - Parameters:
     ///   - fromTrackNumber: addresses the SOURCE row by number instead of by
     ///     name (duplicate track names; see `selectRegion`).
@@ -1246,16 +1447,19 @@ extension LogicAccessibility {
         toBar: Int, toTrack: String?, move: Bool,
         fromTrackNumber: Int? = nil, toTrackNumber: Int? = nil
     ) throws -> [String: Any] {
-        let selection = try selectRegion(
-            trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true,
-            trackNumber: fromTrackNumber, forKeyCommand: true
+        let command: RegionEditGuard.Command = move ? .cut : .copy
+        // The count baseline is taken BEFORE the Cut, and before any write at
+        // all, so the refusal below can honestly say the project is untouched.
+        let before = try arrangementCensus(
+            trackName: trackName, trackNumber: fromTrackNumber
         )
-        guard try selectedRegionCount() == 1 else {
-            throw LogicianError.verificationFailed(
-                requested: "exactly one selected region before \(move ? "Cut" : "Copy")",
-                actual: "selection drifted; refusing", restored: true
-            )
-        }
+        let (coverage, plan) = try regionEditPlan(command, regionRowNumbers: before.rowNumbers)
+        let exclusive = try establishExclusiveRegionSelection(
+            command, plan: plan,
+            trackName: trackName, regionName: regionName, startBar: startBar,
+            trackNumber: fromTrackNumber
+        )
+        let selection = exclusive.region
         try fireKeyCommand(move ? KeyCommandRegistry.Name.cut : KeyCommandRegistry.Name.copy)
         // No sleep here. The clipboard is not readable, so a wait for it can
         // never be verified — but it does not need one either: measured
@@ -1335,9 +1539,9 @@ extension LogicAccessibility {
         let pasteFocus = ensureTracksAreaKeyFocus(
             trackName: destinationTrack, trackNumber: destinationNumber
         )
-        let destinationBefore = (try? regionSnapshot(
+        let destinationBefore = (try? arrangementCensus(
             trackName: destinationTrack, trackNumber: destinationNumber
-        )) ?? []
+        ))?.targetRegions ?? []
         let atBarBefore = destinationBefore.filter { $0["start_bar"] as? Int == toBar }
         try fireKeyCommand(KeyCommandRegistry.Name.paste)
         // Look BEFORE sleeping. Measured 2026-09-01 with a probe taken
@@ -1348,11 +1552,13 @@ extension LogicAccessibility {
         // and short: ten 0.4 s iterations cost 5.7 s to say "it did not land",
         // and nine of them only ever ran when the answer was already no.
         var pasted: [String: Any]?
+        var afterCensus = before
         let deadline = Date().addingTimeInterval(2.0)
         repeat {
-            let after = try regionSnapshot(
+            afterCensus = try arrangementCensus(
                 trackName: destinationTrack, trackNumber: destinationNumber
             )
+            let after = afterCensus.targetRegions
             let atBar = after.filter { $0["start_bar"] as? Int == toBar }
             if after.count > destinationBefore.count || atBar.count > atBarBefore.count {
                 // Prefer a region at toBar that was not there before; fall
@@ -1377,6 +1583,30 @@ extension LogicAccessibility {
                 restored: false
             )
         }
+        // A Copy+Paste adds exactly one region to the project; a Cut+Paste adds
+        // none, because the one it removed is the one it put back. Any other
+        // movement of the RENDERED total means either that Cut/Copy reached a
+        // region this call never named, or that the Paste landed on top of one
+        // and Logic swallowed it whole - the second of which this tool's own
+        // description warns about, and neither of which may come back as a
+        // clean success. The check is one subtraction on a walk the poll above
+        // already paid for.
+        let expectedDelta = move ? 0 : 1
+        if RegionEditGuard.delta(
+            expected: expectedDelta,
+            before: before.totalRegions, after: afterCensus.totalRegions
+        ) != .asExpected {
+            throw LogicianError.verificationFailed(
+                requested: move
+                    ? "one region cut from '\(trackName)' and pasted onto '\(destinationTrack)'"
+                    : "exactly one new region on '\(destinationTrack)'",
+                actual: RegionEditGuard.unexpectedTotalSentence(
+                    command: command, expectedDelta: expectedDelta,
+                    before: before.totalRegions, after: afterCensus.totalRegions
+                ) + " The region DID land at bar \(toBar).",
+                restored: false
+            )
+        }
         var result: [String: Any] = [
             "success": true, "verified": true,
             "state": move ? "moved_via_clipboard" : "copied",
@@ -1385,20 +1615,33 @@ extension LogicAccessibility {
             "to": ["track": destinationTrack, "start_bar": landed["start_bar"] ?? toBar],
             "playhead": parked,
             "key_focus": pasteFocus.dictionary,
-            "note": "Paste lands at the playhead on the selected track, and the playhead was parked on bar \(toBar) beat 1 with its sub-beat fields zeroed as well - `playhead.on_grid` is the control surface's own confirmation of that, and a false one refuses before Paste rather than pasting inside the beat."
+            "project_regions_before": before.totalRegions,
+            "project_regions_after": afterCensus.totalRegions,
+            "note": "Paste lands at the playhead on the selected track, and the playhead was parked on bar \(toBar) beat 1 with its sub-beat fields zeroed as well - `playhead.on_grid` is the control surface's own confirmation of that, and a false one refuses before Paste rather than pasting inside the beat. "
+                + "The region total across every rendered row moved by exactly the amount this "
+                + "call can produce ("
+                + (move ? "+0: the one Cut took is the one Paste put back" : "+1")
+                + "), so nothing else was " + (move ? "cut" : "copied")
+                + " and nothing was overlaid out of existence. "
+                + Self.exclusivityNote(scope: exclusive.scope, command: command)
         ]
         // BOTH focus verdicts, because they answer different questions: the
         // first says what state the call INHERITED (and whether the caller's
         // previous tool left the Tracks area focused), the second what Paste
         // actually fired into after the park had driven the control bar.
-        if let focusAtCopy = selection["key_focus"] { result["key_focus_at_copy"] = focusAtCopy }
+        if let focusAtCopy = exclusive.anchor["key_focus"] { result["key_focus_at_copy"] = focusAtCopy }
         if parked["on_grid"] as? Bool == nil {
-            result["warning"] = "Whether the paste landed exactly on the bar line is UNVERIFIED: "
-                + "the MCU position display could not be read, and the control bar publishes bars "
-                + "and beats only - it cannot see a sub-beat offset, and neither can the region "
-                + "map this result was verified against. "
-                + ((parked["on_grid_note"] as? String) ?? "")
+            appendWarning(
+                "Whether the paste landed exactly on the bar line is UNVERIFIED: "
+                    + "the MCU position display could not be read, and the control bar publishes bars "
+                    + "and beats only - it cannot see a sub-beat offset, and neither can the region "
+                    + "map this result was verified against. "
+                    + ((parked["on_grid_note"] as? String) ?? ""),
+                to: &result
+            )
         }
+        exclusive.decorate(&result)
+        annotateCoverage(coverage, in: &result)
         return result
     }
 

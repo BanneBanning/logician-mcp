@@ -445,6 +445,36 @@ with every render coming back as audio the agent can listen to.
   actually costs on the wire (~70 KB for the default 8 s, ~179 KB at 20 s, ~1.3 KB with
   `include_audio: false`).
 
+- **`logic_copy_region`, `logic_move_region` and `logic_split_region` stopped guarding on
+  rows they cannot see.** Cut removes every selected region in the PROJECT, Copy puts
+  every one of them on the clipboard for Paste to put down, Nudge moves all of them and
+  Split cuts all of them at the playhead — while the arrangement map this server reads
+  holds only the track rows Logic has RENDERED, which on the reference project is 19 of
+  29 with ten subtracks hidden under a collapsed stack. All three counted the selection
+  over those rendered rows and called it exclusive, and all three checked their work
+  against the target track's region count alone, so an edit that also reached four
+  regions off screen came back `success: true, verified: true`. They now do what
+  `logic_delete_region` started doing: Logic's own project-wide `Deselect All` fires
+  before the destructive command and has to be PROVEN — the rendered selection is watched
+  falling to zero — before the one named region is selected back, and the result says
+  `selection_scope: "project"` with that receipt. Without that command in the key command
+  registry they refuse when any row is provably hidden, naming the rows and both ways to
+  fix it, and otherwise proceed with `selection_scope: "rendered_rows"` and a warning.
+  The after-checks count the whole project too: a split must raise the rendered region
+  total by exactly 1, a nudge and a cut-paste must leave it alone, a copy must add
+  exactly 1 — so a region swallowed by an overlay, or one that a Cut took and the Paste
+  never brought back, is a loud failure instead of a silent one. Two `restored: true`
+  flags that were fictions — both claimed after the call had already cleared every other
+  region's selection — now say `false`. Measured live on the sandbox project (19 rendered
+  rows, 54 regions, rows 10–19 hidden), warm: a copy onto a bar line 2.3 s, a one-bar
+  nudge 2.6–2.7 s, a split 3.9 s. The clear costs about 0.9 s of that in every call, and
+  it was measured as its own two parts on the same project: Logic's `Deselect All` with
+  its proof 464–487 ms, the re-selection pass 388–440 ms. There is no fast path that
+  skips it, and that is deliberate: the coverage verdict is `partial` or `unknown` and
+  can never be `complete`, because Accessibility publishes what is rendered and says
+  nothing at all about what is not — spending that silence as a guarantee in front of a
+  destructive command is the exact bug being fixed.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.
