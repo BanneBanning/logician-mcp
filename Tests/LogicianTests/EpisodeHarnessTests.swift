@@ -262,6 +262,200 @@ final class EpisodeHarnessTests: XCTestCase {
         XCTAssertTrue(SnapshotBuilder().sortedUnavailable.isEmpty)
     }
 
+    // MARK: - The OTHER half of completeness: sections that read, and are short
+
+    /// The reference project's shape, live on all 12 snapshot calls of the
+    /// 2026-09-02 profile: nothing threw, and ten track rows plus every region
+    /// on them were missing from a document that called itself complete.
+    private var collapsedStackTracks: [String: Any] {
+        [
+            "visible_tracks": 19,
+            "partial": true,
+            "completeness": "partial",
+            "partial_evidence": [
+                "track number(s) 10, 11 fall inside the rendered range and are not listed;"
+                    + " they follow collapsed track stack 9 “Drums” immediately"
+            ],
+            "missing_track_numbers": [10, 11]
+        ]
+    }
+
+    func testASectionThatReportsItselfPartialMakesTheSnapshotIncomplete() {
+        var builder = SnapshotBuilder()
+        builder.capture(.tracks) { self.collapsedStackTracks }
+        XCTAssertTrue(builder.sortedUnavailable.isEmpty, "nothing threw")
+        XCTAssertFalse(builder.complete, "19 of 21 track rows is not the whole picture")
+        XCTAssertEqual(builder.caveats.partialSections, ["tracks"])
+        XCTAssertEqual(builder.caveats.missingTrackNumbers, [10, 11])
+    }
+
+    /// The two conditions are different and BOTH stay visible: one section that
+    /// read nothing and one that read what it could and knows it is short.
+    func testThrownAndPartialSectionsAreReportedSeparately() {
+        var builder = SnapshotBuilder()
+        builder.capture(.markers) { throw LogicianError.logicNotRunning }
+        builder.capture(.tracks) { self.collapsedStackTracks }
+        XCTAssertFalse(builder.complete)
+        XCTAssertEqual(builder.sortedUnavailable, ["markers"])
+        XCTAssertEqual(builder.caveats.partialSections, ["tracks"])
+    }
+
+    /// A section that threw is named ONCE, in `unavailable_sections`. It has no
+    /// payload to be partial with, and counting it twice would make one failure
+    /// look like two.
+    func testAThrownSectionIsNotAlsoCountedAsPartial() {
+        var builder = SnapshotBuilder()
+        builder.capture(.regions) { throw LogicianError.logicNotRunning }
+        XCTAssertEqual(builder.caveats.partialSections, [])
+        XCTAssertEqual(builder.sortedUnavailable, ["regions"])
+    }
+
+    /// Neither condition: a snapshot of a fully rendered project still says
+    /// complete. Without this the fix would just be a louder way of never
+    /// answering yes.
+    func testAWholeSnapshotIsStillComplete() {
+        var builder = SnapshotBuilder()
+        builder.capture(.tracks) {
+            ["visible_tracks": 19, "partial": false, "completeness": "unknown",
+             "partial_evidence": [String]()]
+        }
+        builder.capture(.regions) { ["partial": false, "coverage_checked": "row_numbering"] }
+        builder.capture(.markers) { ["marker_count": 4] }
+        XCTAssertTrue(builder.complete)
+        XCTAssertTrue(builder.caveats.partialSections.isEmpty)
+        XCTAssertTrue(builder.caveats.missingTrackNumbers.isEmpty)
+    }
+
+    /// Rows Logic counted and did not draw are the List Editors' own way of
+    /// saying "short", and they carry a count rather than a `partial` flag.
+    func testUnreadableListRowsCountAsPartial() {
+        var builder = SnapshotBuilder()
+        builder.capture(.markers) {
+            ["marker_count": 6, "markers_read": 4, "unreadable_rows": 2,
+             "warning": "2 row(s) are published and not drawn"]
+        }
+        XCTAssertFalse(builder.complete)
+        XCTAssertEqual(builder.caveats.partialSections, ["markers"])
+        XCTAssertEqual(
+            builder.caveats.partialEvidence, ["markers: 2 row(s) are published and not drawn"]
+        )
+    }
+
+    /// `max_tracks` makes the chain sections a SAMPLE, and they say so — the
+    /// third shape of "there is more of this project than I am showing you".
+    func testATruncatedChainWalkCountsAsPartial() {
+        var builder = SnapshotBuilder()
+        builder.record(
+            .inserts,
+            payload: ["walked": 8, "truncated": true, "addressable_tracks": 19,
+                      "warning": "Only the first 8 of 19 addressable tracks were walked"],
+            milliseconds: 9000
+        )
+        XCTAssertFalse(builder.complete)
+        XCTAssertEqual(builder.caveats.partialSections, ["inserts"])
+    }
+
+    /// A section claiming `partial: true` with no sentence still counts, and
+    /// still says something: silence must not read as "not partial after all".
+    func testPartialWithoutEvidenceStillCountsAndSaysSo() {
+        let audit = SnapshotCaveats.audit(sections: ["tracks": ["partial": true]])
+        XCTAssertEqual(audit.partialSections, ["tracks"])
+        XCTAssertEqual(audit.partialEvidence.count, 1)
+        XCTAssertTrue(audit.partialEvidence[0].contains("without an evidence sentence"))
+    }
+
+    func testPartialSectionsAndEvidenceAreSortedForACleanDiff() {
+        let audit = SnapshotCaveats.audit(sections: [
+            "tracks": ["partial": true, "partial_evidence": ["t"],
+                       "missing_track_numbers": [12, 3]],
+            "regions": ["partial": true, "partial_evidence": ["r"],
+                        "missing_track_numbers": [3]],
+            "markers": ["marker_count": 4]
+        ])
+        XCTAssertEqual(audit.partialSections, ["regions", "tracks"])
+        XCTAssertEqual(audit.partialEvidence, ["regions: r", "tracks: t"])
+        XCTAssertEqual(audit.missingTrackNumbers, [3, 12])
+    }
+
+    // MARK: - The cache caveat, promoted
+
+    func testACachedSectionIsNamedAndItsCaveatIsCarriedUp() {
+        let audit = SnapshotCaveats.audit(sections: [
+            "meter_map": [
+                "read": true, "read_route": "signature_list_cache",
+                "warning": MeterKnowledge.cacheWarning
+            ],
+            "tempo_map": ["read_route": "tempo_list", "event_count": 2]
+        ])
+        XCTAssertEqual(audit.cachedSections, ["meter_map"])
+        XCTAssertEqual(audit.cacheCaveats.count, 1)
+        XCTAssertTrue(
+            audit.cacheCaveats[0].hasPrefix("meter_map (read_route signature_list_cache)")
+        )
+        XCTAssertTrue(audit.cacheCaveats[0].contains("SERVED FROM CACHE, UNVERIFIED"))
+    }
+
+    /// Both map caches, both promoted, in a stable order.
+    func testEveryCacheRouteIsRecognisedByItsSuffix() {
+        let audit = SnapshotCaveats.audit(sections: [
+            "tempo_map": ["read_route": "tempo_list_cache", "warning": MCPServer.tempoCacheWarning],
+            "meter_map": ["read_route": "signature_list_cache", "warning": "cached"]
+        ])
+        XCTAssertEqual(audit.cachedSections, ["meter_map", "tempo_map"])
+    }
+
+    /// A cache route with no caveat of its own is still reported as one: the
+    /// route is the fact, the sentence is the courtesy.
+    func testACachedSectionWithoutAWarningStillGetsOne() {
+        let audit = SnapshotCaveats.audit(
+            sections: ["tempo_map": ["read_route": "tempo_list_cache"]]
+        )
+        XCTAssertEqual(audit.cachedSections, ["tempo_map"])
+        XCTAssertTrue(audit.cacheCaveats[0].contains("SERVED FROM CACHE"))
+    }
+
+    /// Cache and completeness are INDEPENDENT: a cached map does not make the
+    /// document short of a section, and `complete` must not claim it does.
+    func testACachedSectionDoesNotMakeTheSnapshotIncomplete() {
+        var builder = SnapshotBuilder()
+        builder.capture(.meterMap) { ["read": true, "read_route": "signature_list_cache"] }
+        XCTAssertTrue(builder.complete)
+        XCTAssertEqual(builder.caveats.cachedSections, ["meter_map"])
+    }
+
+    /// The words the snapshot's `tempo_map` section now carries are
+    /// logic_tempo_events' own — one constant, so the two cannot drift.
+    func testTempoEventsPayloadAndTheSnapshotSectionShareTheCacheWording() throws {
+        let map = try XCTUnwrap(
+            TempoMap(events: [TempoEvent(bar: 1, bpm: 120)], source: .tempoList)
+        )
+        let cached = MCPServer.tempoEventsListPayload(map: map, liveCrossChecked: false)
+        XCTAssertEqual(cached["read_route"] as? String, "tempo_list_cache")
+        XCTAssertEqual(cached["warning"] as? String, MCPServer.tempoCacheWarning)
+        XCTAssertEqual(cached["verified"] as? Bool, false)
+    }
+
+    // MARK: - One pane cycle per call
+
+    /// The handler runs the List Editors sections inside ONE pane hold, which
+    /// is only correct while they are contiguous in the emission order — and
+    /// only safe while `tracks` and `regions` come AFTER the pane is closed
+    /// again (an open pane shrinks the Tracks viewport those two read).
+    func testTheListEditorSectionsAreContiguousAndPrecedeTheTrackWalks() {
+        for scope in SnapshotScope.allCases {
+            let positions = scope.sections.enumerated()
+                .filter { SnapshotSection.listEditorTabs.contains($0.element) }
+                .map(\.offset)
+            XCTAssertEqual(positions.count, 3, scope.rawValue)
+            XCTAssertEqual(positions, Array(positions[0]...positions[2]), scope.rawValue)
+            for late in [SnapshotSection.tracks, .regions] {
+                let index = scope.sections.firstIndex(of: late)
+                XCTAssertNotNil(index, scope.rawValue)
+                XCTAssertGreaterThan(index ?? -1, positions[2], scope.rawValue)
+            }
+        }
+    }
+
     // MARK: - The two tools as the registry advertises them
 
     func testResetToRequiresBothPathAndConfirmDiscard() throws {

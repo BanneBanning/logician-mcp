@@ -345,10 +345,16 @@ extension MCPServer {
     /// `liveCrossChecked` is false in exactly one case: the map came from the
     /// cache AND the control bar could not be read, so the staleness check
     /// never ran. A fresh Tempo List read is its own evidence and reports true.
-    func resolveTempoMap() -> (
+    ///
+    /// `projectPath`, when the caller already has it, saves this reader the
+    /// document resolution it would otherwise make for the cache scope —
+    /// measured 1.2–6.1 ms, and up to 60 ms on a cold process (2026-09-02).
+    /// Nil means "not supplied", so a caller that could not resolve it loses
+    /// nothing but the saving.
+    func resolveTempoMap(projectPath: String? = nil) -> (
         map: TempoMap?, failure: TempoListFailure?, liveCrossChecked: Bool
     ) {
-        let projectPath = try? logic.projectDocumentPath()
+        let projectPath = projectPath ?? (try? logic.projectDocumentPath())
         if let cached = loadScopedCache(
             MCPServer.tempoMapCacheURL, projectPath: projectPath, as: TempoMap.self
         ) {
@@ -393,15 +399,26 @@ extension MCPServer {
     /// so it can only ever contradict the map, never confirm it; a signature the
     /// map cannot account for at any bar therefore discards the cache, and a
     /// signature it can does not prove the map is current.
-    func resolveMeterMap() -> (
+    ///
+    /// `projectPath` and `liveSignature` are values the CALLER may already
+    /// hold: the document path (same saving as the tempo twin's) and the
+    /// control bar's time signature, which is one field of a `getTransport()`
+    /// walk this reader otherwise pays for twice over in a call that read the
+    /// transport anyway — 5.5–9.1 ms warm, 109–132 ms when it is the call's
+    /// first AX walk (2026-09-02, `logic_project_snapshot` profile K4). Nil
+    /// means "not supplied", never "there is none": the read happens here as it
+    /// always did.
+    func resolveMeterMap(
+        projectPath: String? = nil, liveSignature: String? = nil
+    ) -> (
         map: MeterMap?, failure: ListEditorFailure?, servedFromCache: Bool,
         keySignatureRows: Int?
     ) {
-        let projectPath = try? logic.projectDocumentPath()
+        let projectPath = projectPath ?? (try? logic.projectDocumentPath())
         if let cached = loadScopedCache(
             MCPServer.meterMapCacheURL, projectPath: projectPath, as: MeterMap.self
         ) {
-            let live = (try? logic.getTransport())?["time_signature"] as? String
+            let live = liveSignature ?? (try? logic.getTransport())?["time_signature"] as? String
             let liveSignature = live.flatMap(MeterMap.parseSignature)
             if liveSignature == nil || cached.events.contains(where: {
                 $0.numerator == liveSignature?.numerator
@@ -436,8 +453,10 @@ extension MCPServer {
     /// unreadable one warn — that is the assumption this server has always made,
     /// and it is documented in every affected tool's description; the payload
     /// block still names the reason so an agent can see the read was attempted.
-    func resolveMeterKnowledge() -> MeterKnowledge {
-        let resolved = resolveMeterMap()
+    func resolveMeterKnowledge(
+        projectPath: String? = nil, liveSignature: String? = nil
+    ) -> MeterKnowledge {
+        let resolved = resolveMeterMap(projectPath: projectPath, liveSignature: liveSignature)
         return MeterKnowledge(
             map: resolved.map, failure: resolved.failure,
             servedFromCache: resolved.servedFromCache,
