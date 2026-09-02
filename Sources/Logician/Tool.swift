@@ -149,6 +149,29 @@ struct Tool {
         return listenNote ?? Tool.soundListenNote
     }
 
+    /// Did this SUCCESSFUL result actually change anything?
+    ///
+    /// `listenNoteText` above keys off the tool's STATIC flags, which is right
+    /// for what a tool CAN do and wrong for what a call DID. Measured
+    /// 2026-09-02: every `logic_remove_silence {apply: false}` result — the
+    /// tool's DEFAULT and documented pure-read mode — carried its own
+    /// `"note": "NOTHING WAS CHANGED…"` and, beside it, 460 bytes telling the
+    /// agent to bounce a range, listen across the seam and undo a copy it had
+    /// never made. The flag says the tool changes the arrangement; the payload
+    /// says this call did not, and the payload is the one that knows.
+    ///
+    /// The same rule covers the verified no-ops the whole server publishes as
+    /// `already_*` (`already_muted`, `already_-6.0 dB`): the song sounds
+    /// exactly as it did before the call, so there is nothing to judge by ear.
+    ///
+    /// Pure, and deliberately keyed on the RESULT CONTRACT rather than on a
+    /// list of tool names: a new preview mode gets this for free.
+    static func changedNothing(_ payload: [String: Any]) -> Bool {
+        if payload["applied"] as? Bool == false { return true }
+        guard let state = payload["state"] as? String else { return false }
+        return state == "previewed" || state == "unchanged" || state.hasPrefix("already_")
+    }
+
     static let soundListenNote = "You changed how the song SOUNDS. Judge the result by LISTENING (bounce the section, open the preview with your client's file viewer) - a fader or parameter value is not loudness; recordings and plugins differ."
 
     static let arrangementListenNote = "You changed the ARRANGEMENT. Bounce a range that includes a few bars BEFORE your edit and listen across the seam: the classic failure is the copied phrase landing displaced (snare on the wrong beat) even though the region boundaries read as bar-aligned - region positions do NOT prove the groove inside is aligned. If the pattern does not match the original groove exactly, undo and copy from a region that starts ON the beat (watch out for pickup regions)."

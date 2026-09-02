@@ -128,9 +128,17 @@ enum LogicUIStrings {
         /// `AXCancelButton` = `Annuler`, so answering it is already
         /// locale-independent and only the recognition above needed checking.
         static let bouncePrefix = "Bounce"
-        /// The Remove Silence floating window. Read by `removeSilenceWindow()`.
-        /// If it drifts, `logic_remove_silence` reports the command fired and
-        /// no window appeared; nothing is left standing.
+        /// The Remove Silence floating window. NO LONGER THE GATE, only the
+        /// corroboration: `removeSilence(…)` snapshots the window list, fires
+        /// the command and takes the window that APPEARED
+        /// (`pollNewWindow(before:)`), so a translated title costs the result
+        /// nothing but the word `identified_by: "title"`.
+        ///
+        /// It used to be the gate, and the comment here claimed the failure was
+        /// safe. MEASURED 2026-09-02 (`logic_remove_silence` profile §4): the
+        /// window is `AXModal = 1`, so a title miss left a MODAL standing that
+        /// swallowed Logic's keyboard and every later tool call with it. That is
+        /// the hole this string is no longer load-bearing for.
         static let removeSilence = "Remove Silence"
         /// The split-a-MIDI-region confirmation. Read by
         /// `notesCrossingSplitDialog()`. If it drifts, the modal is not found,
@@ -376,6 +384,37 @@ enum LogicUIStrings {
         }
 
         static let listEditorTabs = ListEditorTab.all
+
+        /// The Remove Silence window's four numeric field LABELS, as the
+        /// fragment each one is recognised by (compared lowercased, so the
+        /// trailing colon and the `-Time` suffix are not part of the gate).
+        ///
+        /// MEASURED 2026-09-02, identical on 5/5 openings, the window's direct
+        /// children in tree order — value first, then the label that follows
+        /// it:
+        ///
+        /// ```
+        /// AXGroup "0,1000"  → AXStaticText "Minimum Time to accept as Silence:"
+        /// AXGroup "0,0000"  → AXStaticText "Post Release-Time:"
+        /// AXGroup "0,0060"  → AXStaticText "Pre Attack-Time:"
+        /// AXGroup "-28"     → AXStaticText "Threshold:"
+        /// ```
+        ///
+        /// These are the labels Logic PRINTS, so they translate — which is why
+        /// `logic_remove_silence` reports every value with the label it was
+        /// printed beside no matter what, and adds the stable keys
+        /// (`threshold_db`, …) only for the labels it recognises. A label that
+        /// matches nothing costs the caller a key, never a wrong number: the
+        /// tool says `fields_identified_by: "label"` when the four resolved and
+        /// `"unrecognised"` when they did not, and the value is always paired
+        /// with its own label in `settings.fields`. Checklist item for a
+        /// locale session.
+        enum RemoveSilenceLabel {
+            static let threshold = "threshold"
+            static let minimumSilence = "silence"
+            static let preAttack = "pre attack"
+            static let postRelease = "post release"
+        }
         /// The count text every List Editors tab publishes.
         static let numberOfItems = "Number of Items"
         /// The Event tab's "what am I showing?" field.

@@ -116,7 +116,7 @@ final class RegionEditGuardTests: XCTestCase {
     /// Every command this guard fronts. Kept as a list so a new one cannot be
     /// added without the plan tests covering it.
     private static let allCommands: [RegionEditGuard.Command] =
-        [.delete, .cut, .copy, .nudge, .split]
+        [.delete, .cut, .copy, .nudge, .split, .removeSilence]
 
     /// The whole point: with Logic's project-wide clear available, it is used —
     /// on EVERY destructive region command, not only the ones that look partial.
@@ -158,8 +158,8 @@ final class RegionEditGuardTests: XCTestCase {
         XCTAssertTrue(reason.contains("3, 4, 5"))
     }
 
-    /// THE REASON THIS GUARD IS SHARED. Cut, Copy, Nudge and Split refuse on the
-    /// same evidence as Delete, each in its own words — a refusal that says
+    /// THE REASON THIS GUARD IS SHARED. Cut, Copy, Nudge, Split and Remove
+    /// Silence refuse on the same evidence as Delete, each in its own words — a refusal that says
     /// "Delete" while the agent called `logic_split_region` is a refusal the
     /// agent will not believe.
     func testEveryCommandRefusesInItsOwnWords() {
@@ -168,7 +168,8 @@ final class RegionEditGuardTests: XCTestCase {
             (.cut, "Refusing to fire Cut blind", "Nothing was cut"),
             (.copy, "Refusing to fire Copy blind", "Nothing was copied"),
             (.nudge, "Refusing to fire Nudge blind", "Nothing was moved"),
-            (.split, "Refusing to fire Split blind", "Nothing was split")
+            (.split, "Refusing to fire Split blind", "Nothing was split"),
+            (.removeSilence, "Refusing to fire Remove Silence blind", "Nothing was stripped")
         ]
         for (command, refusal, nothing) in expected {
             let plan = RegionEditGuard.plan(

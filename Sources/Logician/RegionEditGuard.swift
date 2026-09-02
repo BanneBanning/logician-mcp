@@ -4,7 +4,8 @@ import Foundation
 
 /// The guard in front of every region key command that acts on the SELECTION,
 /// as pure decisions: `logic_delete_region`'s Delete, `logic_copy_region`'s
-/// Cut/Copy, `logic_move_region`'s Nudge and `logic_split_region`'s Split.
+/// Cut/Copy, `logic_move_region`'s Nudge, `logic_split_region`'s Split and
+/// `logic_remove_silence {apply: true}`'s Remove Silence.
 ///
 /// WHY IT EXISTS. Logic's `Delete` acts on the SELECTION, and the selection is
 /// project-wide: every selected region goes, on every track, rendered or not.
@@ -49,7 +50,7 @@ enum RegionEditGuard {
 
     // MARK: The command being guarded
 
-    /// The five destructive region commands, in the words the messages need.
+    /// The six destructive region commands, in the words the messages need.
     ///
     /// They differ only in vocabulary, never in the problem: each acts on
     /// Logic's selection, and Logic's selection is project-wide while this
@@ -67,6 +68,14 @@ enum RegionEditGuard {
         case nudge
         /// `logic_split_region` — `Split Regions/Events at Playhead Position`.
         case split
+        /// `logic_remove_silence {apply: true}` — `Remove Silence from Audio
+        /// Region…`. The sixth member, and the one that shipped for a week
+        /// with none of this: it inferred exclusivity from
+        /// `selectRegion(exclusive: true)` alone and verified against the
+        /// TARGET TRACK's region count, so a Remove Silence that also stripped
+        /// a selected region on an unrendered row came back
+        /// `success: true, verified: true` (measured 2026-09-02, profile §5 D3).
+        case removeSilence
 
         /// Logic's own word for the command, so a refusal matches what the agent
         /// will find in the Key Commands window.
@@ -77,6 +86,7 @@ enum RegionEditGuard {
             case .copy: return "Copy"
             case .nudge: return "Nudge"
             case .split: return "Split"
+            case .removeSilence: return "Remove Silence"
             }
         }
 
@@ -92,6 +102,8 @@ enum RegionEditGuard {
             case .nudge: return "A region selected on one of those rows would be nudged too"
             case .split:
                 return "A region selected on one of those rows would be cut at the playhead too"
+            case .removeSilence:
+                return "A region selected on one of those rows would be stripped too"
             }
         }
 
@@ -104,6 +116,7 @@ enum RegionEditGuard {
             case .copy: return "Nothing was copied"
             case .nudge: return "Nothing was moved"
             case .split: return "Nothing was split"
+            case .removeSilence: return "Nothing was stripped"
             }
         }
     }

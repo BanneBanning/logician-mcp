@@ -1244,6 +1244,41 @@ with every render coming back as audio the agent can listen to.
   control bar's signature AT THE PLAYHEAD: it comes from the project's Signature List at
   the first point's own bar, which also makes 6/8 three beats a bar instead of six.
 
+- **Strip silence tells you which number is which, and can no longer walk away from
+  its own modal.** `logic_remove_silence` now reports each of the Remove Silence
+  window's four numeric fields WITH the label Logic printed beside it, plus stable
+  keys (`threshold_db`, `minimum_silence_seconds`, `pre_attack_seconds`,
+  `post_release_seconds`) and the value parsed for you — Logic prints these in the
+  system's locale, so the reference Mac's `-28` threshold arrives beside `0,1000`
+  and a caller running `Double()` over the string gets nothing. The result note and
+  the tool description used to name those four in an order that was not the order
+  they came in, so an agent read the −28 dB threshold as a post-release TIME; both
+  now match what the window publishes, and the zero-crossing flag is keyed
+  `zero_crossing` instead of by Logic's own English label. **The window is found by
+  APPEARANCE, not by its English title.** It is modal (measured), so a translated
+  title used to leave it standing — swallowing Logic's keyboard and every later tool
+  call — while the source comment claimed the failure was safe; the tool now takes
+  the window that opened when the command fired, corroborates the title or the
+  shape, and Cancel-and-refuses anything else rather than pressing OK on a dialog it
+  does not recognise. The Cancel is now PROVEN: the modal is watched out of Logic's
+  window list instead of being followed by a 0.3 s sleep that checked nothing —
+  measured 2026-09-02, it leaves at once on about half of calls (60 ms) and lingers
+  half a second on the rest, which the old sleep was returning through. **And it is
+  the sixth region command to get the guard the other five share**: `apply: true`
+  clears the project-wide selection with Logic's own Deselect All, proves it landed,
+  selects the target back and checks the region total across EVERY rendered row —
+  so a strip that also cut a region on one of the ten unrendered rows of the
+  reference project is now a loud failure instead of `success: true, verified: true`.
+  The result says `selection_scope`, names the regions Logic made in
+  `produced_regions` and warns that all of them come back SELECTED. Measured on the
+  sandbox: preview 187–1 245 ms (best 187 ms against a flat 505 ms before — one
+  arrangement walk instead of two, and no blind sleeps), apply 1 245 ms against
+  733 ms, the difference being the project-wide clear that makes the exclusivity
+  claim true. A preview that changes nothing also stopped shipping "You changed the
+  ARRANGEMENT" beside its own "NOTHING WAS CHANGED": the listen note is gated on the
+  payload now, so every preview and every verified `already_*` no-op across the
+  server is quiet.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.
