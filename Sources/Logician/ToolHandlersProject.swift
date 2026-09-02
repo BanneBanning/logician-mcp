@@ -13,7 +13,7 @@ extension MCPServer {
     }
 
     func handleNewProject(_ arguments: [String: Any]) throws -> Any {
-        return try logic.openProject(
+        return try openAndForgetTheOldProject(
             path: requiredString("path", in: arguments),
             createFromTemplate: true,
             ifCurrentModified: (arguments["if_current_modified"] as? String) ?? "fail"
@@ -21,11 +21,66 @@ extension MCPServer {
     }
 
     func handleOpenProject(_ arguments: [String: Any]) throws -> Any {
-        return try logic.openProject(
+        return try openAndForgetTheOldProject(
             path: requiredString("path", in: arguments),
             createFromTemplate: false,
             ifCurrentModified: (arguments["if_current_modified"] as? String) ?? "fail"
         )
+    }
+
+    /// The open, plus the four per-project caches — the pairing
+    /// `logic_close_project` (above) and `logic_reset_to`
+    /// (`ProjectReset.invalidateAllProjectCaches`) already make, and the one
+    /// `logic_new_project` and `logic_open_project` were missing until
+    /// 2026-09-02.
+    ///
+    /// The caches are stamped `cacheScopeToken(projectPath:)` =
+    /// `v<version>|<path>`, so a switch to a DIFFERENT path invalidates them by
+    /// construction — and that is exactly the case the token CAN see. What it
+    /// cannot see is the same path holding a different project: delete a
+    /// project and create a new one at that path, which is the eval-loop shape
+    /// and what `logic_new_project` exists for. A bank map, a meter map, the
+    /// parameter names and a tempo map measured against the project that used
+    /// to live there then match by scope and describe nothing — the cache that
+    /// is not stale but WRONG. A create from the empty template makes any
+    /// surviving bank map wrong by definition: the new project has one bank.
+    ///
+    /// Cleared AFTER the open rather than before, unlike the reset's (which
+    /// clears between its own close and open so a racing read cannot
+    /// re-populate from the old scope): nothing on this path reads or writes
+    /// them — the open is a `/usr/bin/open`, an Accessibility walk and two
+    /// Apple Events, no MCU — so there is no race to lose, and clearing after
+    /// means a REFUSED open (nothing written, nothing closed) does not cost the
+    /// still-open project its caches and a 5–12 s rescan it did not need.
+    /// A verification TIMEOUT is the one failure where the project may have
+    /// switched anyway, so that one clears too, on the way out.
+    ///
+    /// Cost: 0.5–2.5 ms, measured. `caches_cleared` names what was actually
+    /// there to forget.
+    private func openAndForgetTheOldProject(
+        path: String, createFromTemplate: Bool, ifCurrentModified: String
+    ) throws -> [String: Any] {
+        do {
+            var result = try logic.openProject(
+                path: path,
+                createFromTemplate: createFromTemplate,
+                ifCurrentModified: ifCurrentModified
+            )
+            result["caches_cleared"] = invalidateAllProjectCaches()
+            return result
+        } catch LogicianError.verificationFailed(let requested, let actual, let restored) {
+            // The open may well have LANDED and only the proof failed, so the
+            // caches can already be describing the wrong project. Clearing
+            // costs a rescan; keeping them costs correctness.
+            _ = invalidateAllProjectCaches()
+            throw LogicianError.verificationFailed(
+                requested: requested,
+                actual: actual + ". Every per-project cache was cleared anyway — the open may"
+                    + " have happened and only the proof failed, and a cache describing the"
+                    + " wrong project is worse than an absent one",
+                restored: restored
+            )
+        }
     }
 
     func handleDuplicateProject(_ arguments: [String: Any]) throws -> Any {

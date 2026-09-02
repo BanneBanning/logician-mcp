@@ -1117,7 +1117,7 @@ extension MCPServer {
             Tool(
                 name: "logic_new_project",
                 title: "New project",
-                description: "Create a NEW Logic project at the given .logicx path — dialog-free, from a bundled empty project template — and open it. Logic runs single-project: if the current project has unsaved changes the call fails unless if_current_modified explicitly chooses 'save' or 'dont_save'. That refusal happens BEFORE the template is written, so a refused call leaves NOTHING at `path` and the retry carrying your decision uses the same path — it does not collide with a half-made project. The created project is already saved on disk.",
+                description: "Create a NEW Logic project at the given .logicx path — from a bundled empty project template — and open it, with no dialog left on screen. Logic runs single-project: if the current project has unsaved changes the call fails unless if_current_modified explicitly chooses 'save' or 'dont_save'. That refusal happens BEFORE the template is written, so a refused call leaves NOTHING at `path` and the retry carrying your decision uses the same path — it does not collide with a half-made project. The created project is already saved on disk. Logic will not show a project with no tracks: it raises its 'Create New Track' sheet over every empty project, and CANCELLING that sheet closes the project (measured), so this tool answers it with Create and reports it in `dialogs_answered` — the new project therefore has ONE track, of the kind that sheet offered; logic_list_tracks names it and logic_delete_track removes it. Nothing is left standing on screen. `caches_cleared` names the per-project caches forgotten, which matters when you recreate a project at a path you deleted.",
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -1139,7 +1139,7 @@ extension MCPServer {
             Tool(
                 name: "logic_open_project",
                 title: "Open a project",
-                description: "Open an existing .logicx project. Single-project semantics as logic_new_project: unsaved changes in the current project require an explicit if_current_modified decision.",
+                description: "Open an existing .logicx project. Single-project semantics as logic_new_project: unsaved changes in the current project require an explicit if_current_modified decision. Opening a project with NO TRACKS raises Logic's 'Create New Track' sheet, which cancelling would close the project out from under you; it is answered with Create and reported in `dialogs_answered`, so such a project opens with one more track than the file holds. `caches_cleared` names the per-project caches forgotten on the way in.",
                 inputSchema: [
                     "type": "object",
                     "properties": [
