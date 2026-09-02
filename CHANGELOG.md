@@ -1215,6 +1215,35 @@ with every render coming back as audio the agent can listen to.
   the tail sleep was 411 ms). The anchor selection also stops re-walking the arrangement
   the call has just walked, which is another ~60 ms.
 
+- **A recorded automation curve now carries the point it was asked for, and it costs ten
+  seconds less.** `logic_record_automation`'s Latch pass could not write the range's FIRST
+  instant: the schedule's own start could only be sent once the crossing into that bar had
+  been seen, so bar N beat 1 kept whatever the lane held before — measured on a lane
+  holding −0.5 dB, where `logic_read_automation` read −0.5 dB back after a pass that asked
+  for −14 dB there — and the verification, which samples that same moment, called correct
+  passes failures twice in three runs and, when the old value happened to be close, called
+  a point that had not landed verified. The first value is now armed a tenth of a second
+  before the range (Latch records from the touch, and the arming point is read off Logic's
+  own beat-and-tick display so a park's sub-beat residue cannot make it miss), and the same
+  curve reads back −14.2 dB at bar 2 beat 1 with both points verified to the unit. Two more
+  things that could have written a whole curve in the wrong bar are closed: the roll anchor
+  now has to SEE a bar before the range before it accepts a crossing (`logic_set_playing`
+  was measured starting at bar 40 with the playhead reading 51 — the old one-sided test
+  would have anchored there, written the curve there, and had its own replay confirm it),
+  and every verification park is read back so a sample is filed under the position the
+  playhead reached, never under the one that was requested. **Faster with it**: the dB →
+  fader translation that used to run per call — 10 003 ms of a 26 523 ms pass, and the
+  reason a curve tool moved the track's static volume — is cached per project and Logic
+  build, cross-checked against the strip's own dB and Logic's fader echo before any of it
+  is reused, and retired outright when it disagrees; a 2-bar curve measured 20 629 ms with
+  the playhead 38 bars away against 30 739 ms before, and 6 049 ms for a one-bar pass that
+  moved no fader at all. A strip with no track header — an aux, a bus, Master — is refused
+  in ~1 s with the cause named and nothing written, where it used to spend 10 364 ms,
+  write and restore the strip's fader, and report a "readback mismatch" that reads like
+  something worth retrying. Point placement also stopped taking its beats-per-bar from the
+  control bar's signature AT THE PLAYHEAD: it comes from the project's Signature List at
+  the first point's own bar, which also makes 6/8 three beats a bar instead of six.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

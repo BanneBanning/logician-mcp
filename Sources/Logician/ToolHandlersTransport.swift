@@ -538,6 +538,11 @@ extension MCPServer {
             return (bar, beat, value)
         }
         let automationTrack = try requiredString("track_name", in: arguments)
+        // The pre-roll rule FIRST: it is a pure argument check, and it used to
+        // be made after the tempo and meter maps had been read — 144 ms warm
+        // and ~1.8 s with cold caches to reject an argument nothing could fix.
+        let automationFirstBar = automationPoints.map(\.bar).min() ?? 0
+        try MCUController.automationPreRollBar(firstBar: automationFirstBar)
         let ramp = arguments["ramp"] as? Bool ?? true
         let verifyCurve = arguments["verify"] as? Bool ?? true
         let toleranceArg = (arguments["tolerance"] as? Double)
@@ -561,7 +566,8 @@ extension MCPServer {
                 ramp: ramp,
                 verify: verifyCurve,
                 tempoMap: automationTempoMap,
-                meterMap: automationMeterMap
+                meterMap: automationMeterMap,
+                meterKnowledge: automationMeter.map
             )
         case "pan":
             automationResult = try MCUController.recordVpotAutomation(
@@ -582,7 +588,8 @@ extension MCPServer {
                 },
                 restoreView: { },
                 tempoMap: automationTempoMap,
-                meterMap: automationMeterMap
+                meterMap: automationMeterMap,
+                meterKnowledge: automationMeter.map
             )
         case "send":
             guard let sendSlot = arguments["send"] as? Int, (1...8).contains(sendSlot) else {
@@ -621,7 +628,8 @@ extension MCPServer {
                 },
                 restoreView: { MCUController.exitToPan() },
                 tempoMap: automationTempoMap,
-                meterMap: automationMeterMap
+                meterMap: automationMeterMap,
+                meterKnowledge: automationMeter.map
             )
         case "plugin":
             guard let slot = arguments["insert_slot"] as? Int else {
@@ -667,7 +675,8 @@ extension MCPServer {
                 },
                 restoreView: { MCUController.exitToPan() },
                 tempoMap: automationTempoMap,
-                meterMap: automationMeterMap
+                meterMap: automationMeterMap,
+                meterKnowledge: automationMeter.map
             )
         default:
             throw LogicianError.invalidArguments("parameter must be volume, pan, send or plugin")
