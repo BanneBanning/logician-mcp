@@ -1243,7 +1243,33 @@ with every render coming back as audio the agent can listen to.
   something worth retrying. Point placement also stopped taking its beats-per-bar from the
   control bar's signature AT THE PLAYHEAD: it comes from the project's Signature List at
   the first point's own bar, which also makes 6/8 three beats a bar instead of six.
-
+- **A rename now proves itself in both channels, and takes 0.18 s doing it.**
+  `logic_rename_region`'s description promised the rename was verified twice over; the
+  inspector readback was taken and thrown away, and the one comparison that ran was
+  case-insensitive — so `Crash` → `CRASH` went down the write path and could not be
+  verified by the only check present. Both channels are now compared exactly, case
+  included: the arrangement map has to show the new name on the region at that position
+  AND Logic's own inspector has to read it back, and the two disagreeing is a
+  `verification_failed` naming both values. Two names are refused before anything is
+  written — `2 selected` and `... Defaults`, the strings Logic prints in that same name
+  field for itself — because a region carrying one reads as a selection STATE to every
+  Region-inspector tool: the rename path reads the panel before it writes, so the region
+  could never have been renamed back, and its quantize, transpose, gain and fades would
+  have become unwritable too. A region that already carries such a name (Logic's own UI
+  will make one) is still renamed back normally, because the panel's subject is now
+  settled by the arrangement — one region selected, and the map's name for it — instead of
+  by sniffing a field the user can write. **Faster, and everything that was cut was a
+  wait**: the 0.5 s blind sleep after the confirm is gone (both channels already carried
+  the new name on the first look, 7 of 7), three arrangement walks before the write became
+  one, and a warm rename measured **159–197 ms against 816 ms**, the region family's first
+  sub-200 ms verified write; the no-op repeat is **70 ms against 209 ms**, a compare-and-set
+  refusal **78 ms against 224 ms**, and a reserved name is refused in **0.3 ms** without
+  touching Logic at all. The response lost the copy/paste groove note it never should have
+  carried — a rename changes metadata, and that note was sending agents off to bounce a
+  range and hunt a displaced snare a name change cannot cause — taking a successful call
+  from **890 B to 434 B** and the no-op from 709 B to 259 B. Also new in the payload: the
+  `track_number` the call resolved, so a rename on a project with two rows of one name says
+  which row it wrote.
 - **Taking a plugin off a track is as quick as putting one on.** `logic_remove_plugin` was
   8 553 ms and is 4 354 ms warm, measured over five removals on 2026-09-02 — the mouse-free
   removal was still running the browse loop the insertion side replaced two days earlier, and

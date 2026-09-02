@@ -255,4 +255,45 @@ final class RegionTrackNumberSchemaTests: XCTestCase {
             XCTAssertEqual((error as? LogicianError)?.code, "invalid_arguments")
         }
     }
+
+    /// A rename writes a region's NAME, so it must not carry the standing
+    /// instruction to bounce a range and listen across the seam for a
+    /// displaced groove: 457 B of an 890 B response (51%), attached to the
+    /// `already_set` no-op too, sending the agent after a snare a metadata
+    /// write cannot move. The tools that CAN displace one keep it.
+    func testARenameCarriesNoBounceAndListenInstruction() throws {
+        let registry = MCPServer().toolRegistry()
+        let rename = try XCTUnwrap(registry.first { $0.name == "logic_rename_region" })
+        XCTAssertFalse(rename.changesArrangement)
+        XCTAssertFalse(rename.changesSound)
+        XCTAssertNil(rename.listenNoteText)
+        // Still a write, still idempotent, and the Undo sentence stays in the
+        // description: nothing about the classification changes what it does.
+        XCTAssertEqual(rename.safety, .write)
+        XCTAssertTrue(rename.idempotent)
+        XCTAssertTrue(rename.description.contains("Undo restores the old name"))
+        for name in [
+            "logic_copy_region", "logic_move_region", "logic_split_region", "logic_import_midi"
+        ] {
+            let tool = try XCTUnwrap(registry.first { $0.name == name })
+            XCTAssertTrue(
+                tool.changesArrangement, "\(name) can displace a groove and must keep the note"
+            )
+        }
+    }
+
+    /// The description is the tool's contract, and it used to promise a
+    /// verification the code did not perform ("verified TWICE" while the
+    /// inspector readback was taken and thrown away).
+    func testTheRenameDescriptionPromisesOnlyWhatTheCodeChecks() throws {
+        let rename = try XCTUnwrap(
+            MCPServer().toolRegistry().first { $0.name == "logic_rename_region" }
+        )
+        XCTAssertFalse(rename.description.contains("verified TWICE"))
+        XCTAssertTrue(rename.description.contains("BOTH channels"))
+        XCTAssertTrue(rename.description.contains("case included"))
+        // And it warns about the names Logic keeps for itself, which the tool
+        // now refuses before it writes.
+        XCTAssertTrue(rename.description.contains("2 selected"))
+    }
 }
