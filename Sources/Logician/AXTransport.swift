@@ -1208,8 +1208,9 @@ extension LogicAccessibility {
             let residual = lastGapBars.map {
                 ", and the last one left the region \(String(format: "%.2f", $0)) bars from the playhead"
             } ?? ""
-            throw LogicianError.openVerificationFailed(
-                "Could not anchor the cycle region to a bar line via the playhead thumb (tried bar"
+            throw LogicianError.stateVerificationFailed(
+                subject: "the cycle range",
+                detail: "Could not anchor the cycle region to a bar line via the playhead thumb (tried bar"
                     + (tried.count == 1 ? " " : "s ")
                     + tried.map(String.init).joined(separator: ", ") + residual + ")."
             )
@@ -1342,8 +1343,9 @@ extension LogicAccessibility {
                     try setRegionPosition(x: min(fromX + preDrag.slope, preDrag.rulerFrame.maxX - 2))
                     currentFrame = try regionFrameNow()
                     guard !covers(currentFrame, fromX) else {
-                        throw LogicianError.openVerificationFailed(
-                            "Could not move the existing cycle region away from the drag start point."
+                        throw LogicianError.stateVerificationFailed(
+                            subject: "the cycle range",
+                            detail: "Could not move the existing cycle region away from the drag start point."
                         )
                     }
                 }
@@ -1445,6 +1447,8 @@ extension LogicAccessibility {
                 )
             case .openVerificationFailed(let detail):
                 return LogicianError.openVerificationFailed("\(detail) \(sentence)")
+            case .stateVerificationFailed(let subject, let detail):
+                return LogicianError.stateVerificationFailed(subject: subject, detail: "\(detail) \(sentence)")
             case .writeFailed(let detail):
                 return LogicianError.writeFailed("\(detail). \(sentence)")
             default:
@@ -1673,7 +1677,10 @@ extension LogicAccessibility {
         let endX = try frame(of: end).origin.x
         let slope = (endX - startX) / CGFloat(endBar - startBar)
         guard slope > 1 else {
-            throw LogicianError.openVerificationFailed("Ruler scale too small (\(slope) px/bar); zoom in horizontally.")
+            throw LogicianError.stateVerificationFailed(
+                subject: "the ruler scale",
+                detail: "Ruler scale too small (\(slope) px/bar); zoom in horizontally."
+            )
         }
         return slope
     }

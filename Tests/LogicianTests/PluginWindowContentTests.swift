@@ -232,4 +232,60 @@ final class PluginWindowContentTests: XCTestCase {
         XCTAssertFalse(pluginNamesMatch("Channel EQ", ""))
         XCTAssertFalse(pluginNamesMatch("Compressor", "Channel EQ"))
     }
+
+    // MARK: - logic_survey_plugins: classification must not claim more than open_state proved
+
+    /// The live defect: an `unverified` open (Logic accepted the press,
+    /// no window ever provably appeared) used to classify an empty parameter
+    /// list as `"no_semantic_sliders"` — indistinguishable from a plugin that
+    /// really has none. It must come back `{"unavailable": reason}` instead,
+    /// whether or not the parameter list happened to be empty.
+    func testUnverifiedOpenIsUnavailableNotNoSemanticSliders() {
+        let classification = LogicAccessibility.pluginSurveyClassification(
+            openState: "unverified", parametersEmpty: true, allWritable: true
+        )
+        guard let dict = classification as? [String: String] else {
+            return XCTFail("expected an {\"unavailable\": reason} dictionary, got \(classification)")
+        }
+        XCTAssertNotNil(dict["unavailable"])
+        XCTAssertTrue(dict["unavailable"]?.contains("unverified") == true)
+    }
+
+    func testUnverifiedOpenIsUnavailableEvenWithParametersPresent() {
+        // Belt and braces: `unverified` outranks the parameter read regardless
+        // of what settledPluginParameters happened to see on the way past.
+        let classification = LogicAccessibility.pluginSurveyClassification(
+            openState: "unverified", parametersEmpty: false, allWritable: true
+        )
+        XCTAssertNotNil(classification as? [String: String])
+    }
+
+    func testConfirmedOpenWithNoParametersIsNoSemanticSliders() {
+        for state in ["opened", "swapped_in", "already_open"] {
+            XCTAssertEqual(
+                LogicAccessibility.pluginSurveyClassification(
+                    openState: state, parametersEmpty: true, allWritable: true
+                ) as? String,
+                "no_semantic_sliders"
+            )
+        }
+    }
+
+    func testConfirmedOpenWithWritableParametersIsReadWriteCandidate() {
+        XCTAssertEqual(
+            LogicAccessibility.pluginSurveyClassification(
+                openState: "opened", parametersEmpty: false, allWritable: true
+            ) as? String,
+            "read_write_candidate"
+        )
+    }
+
+    func testConfirmedOpenWithANonWritableParameterIsPartiallyWritable() {
+        XCTAssertEqual(
+            LogicAccessibility.pluginSurveyClassification(
+                openState: "already_open", parametersEmpty: false, allWritable: false
+            ) as? String,
+            "partially_writable"
+        )
+    }
 }

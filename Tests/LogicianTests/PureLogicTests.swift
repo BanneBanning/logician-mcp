@@ -141,6 +141,42 @@ final class PureLogicTests: XCTestCase {
         )
     }
 
+    // MARK: - openVerificationFailed vs. stateVerificationFailed
+
+    /// `openVerificationFailed`'s template hard-codes "the plugin window
+    /// state" — right for its real callers (every one of them IS a plugin
+    /// window refusal), wrong for a ruler/menu/pane site that used to borrow
+    /// the same case and so misreported a `logic_set_cycle_range` ruler
+    /// refusal as being about a plugin window that was never involved.
+    /// `stateVerificationFailed` exists so a non-plugin site names its own
+    /// subject instead; this pins both shapes so the plugin wording never
+    /// drifts while the ruler one stays honest.
+    func testOpenVerificationFailedKeepsItsPluginWindowWording() {
+        let error = LogicianError.openVerificationFailed("the window never appeared")
+        XCTAssertEqual(error.code, "verification_failed")
+        XCTAssertEqual(
+            error.errorDescription,
+            "Could not verify that the plugin window state changed as requested: the window never appeared"
+        )
+    }
+
+    func testStateVerificationFailedNamesItsOwnSubjectNotAPluginWindow() {
+        let error = LogicianError.stateVerificationFailed(
+            subject: "the cycle range",
+            detail: "Could not anchor the cycle region to a bar line via the playhead thumb."
+        )
+        XCTAssertEqual(error.code, "verification_failed")
+        XCTAssertEqual(
+            error.errorDescription,
+            "Could not verify that the cycle range changed as requested: Could not anchor the cycle"
+                + " region to a bar line via the playhead thumb."
+        )
+        XCTAssertFalse(
+            error.errorDescription?.contains("plugin window") ?? true,
+            "a ruler refusal must never claim to be about a plugin window"
+        )
+    }
+
     // MARK: - Two-point tempo sampling (tempo-map honesty guards)
 
     private func span(

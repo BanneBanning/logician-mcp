@@ -1942,6 +1942,28 @@ with every render coming back as audio the agent can listen to.
   or bus is out of reach and says so, and it leaves the control where the automation last
   put it rather than where it stood before the pass.
 
+- **Refusal and survey messages stop claiming more than they know.** A ruler refusal
+  (`logic_set_cycle_range`'s anchor search, its drag-clear step, and the pixels-per-bar
+  guard) no longer renders as "the plugin window state changed as requested" — a template
+  meant for plugin windows that used to answer for every non-plugin site sharing the same
+  error case; it now names its own subject (`stateVerificationFailed`), and every genuine
+  plugin refusal keeps its exact old wording. `logic_remove_plugin`'s not-found list is now
+  read off the channel strip inspector, never the raw MCU browse cells, which could still
+  be showing a stale catalog-scroll entry one cell had not yet repainted over after an
+  earlier aborted add. `logic_survey_plugins` reports `{"unavailable": "<reason>"}` instead
+  of the false `no_semantic_sliders` when a plugin's open could not be verified — an empty
+  parameter list on an `unverified` open proved nothing about the plugin, only about a
+  window that never appeared. And `logic_trigger_key_command`'s description now says
+  plainly what its own profile proved live: a `success: true` means only that the bridge
+  accepted the MIDI send, never that Logic acted on it — two identical `{name: 'Create
+  Marker'}` calls returned byte-identical success while the marker count went 4 → 5 → 5,
+  the second a silent no-op indistinguishable from the first without a readback. Several
+  tool descriptions also lose their last stale timing literals: the Tempo/Signature List's
+  flat "~2 s" becomes the measured 0.38-0.79 s / 0.23-0.66 s cold and ~7 ms cached, and the
+  playhead-travel costs quoted by `logic_record_midi`, `logic_render_track` and
+  `logic_read_automation` drop from the old ~0.13 s/bar to the 1-2.5 ms/bar fast locate
+  `logic_set_playhead` already shipped (7ddf884).
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

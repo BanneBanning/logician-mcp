@@ -314,6 +314,30 @@ extension LogicAccessibility {
 
     // MARK: - Plugin survey
 
+    /// What one insert's `classification` should say, pure of any AX call so
+    /// the decision is testable without a live plugin window.
+    ///
+    /// `openState == "unverified"` means Logic accepted the open-button press
+    /// and never provably showed a window (observed live 2026-09-03 on all 7
+    /// inserts of `808` and `Stereo Out`, on both the old and the new binary)
+    /// — on that path an empty parameter list is evidence of nothing, and
+    /// calling it `"no_semantic_sliders"` asserted a fact this call never
+    /// established. House style: `{"unavailable": reason}`, never a value
+    /// that quietly claims more than was proven.
+    static func pluginSurveyClassification(
+        openState: String, parametersEmpty: Bool, allWritable: Bool
+    ) -> Any {
+        guard openState != "unverified" else {
+            return [
+                "unavailable": "the plugin window's open could not be verified"
+                    + " (open_state: unverified) — an empty parameter list proves"
+                    + " nothing about this insert's sliders"
+            ]
+        }
+        guard !parametersEmpty else { return "no_semantic_sliders" }
+        return allWritable ? "read_write_candidate" : "partially_writable"
+    }
+
     func surveyPlugins(trackName: String, trackNumber: Int?) throws -> [String: Any] {
         // Output/aux strips (e.g. "Stereo Out") live in the right inspector
         // strip and are not track headers; fall back to any strip whose name
@@ -380,10 +404,11 @@ extension LogicAccessibility {
                         "writable": parameter["writable"] ?? false
                     ]
                 }
-                entry["classification"] = parameters.isEmpty
-                    ? "no_semantic_sliders"
-                    : (parameters.allSatisfy { ($0["writable"] as? Bool) == true }
-                        ? "read_write_candidate" : "partially_writable")
+                entry["classification"] = LogicAccessibility.pluginSurveyClassification(
+                    openState: openState,
+                    parametersEmpty: parameters.isEmpty,
+                    allWritable: parameters.allSatisfy { ($0["writable"] as? Bool) == true }
+                )
                 if parameters.isEmpty {
                     // Distinguish "custom canvas with nothing" from "controls
                     // exposed with other roles than the Compressor-style sliders".
