@@ -131,11 +131,11 @@ extension MCPServer {
                 "notes required: [{pitch, bar, beat?, duration_beats?, velocity?, channel?}, ...]"
             )
         }
-        if let tracks = (try? logic.listTracks())?["tracks"] as? [[String: Any]],
-           let header = tracks.first(where: {
-               ($0["track_name"] as? String)?.caseInsensitiveCompare(trackName) == .orderedSame
-           }),
-           header["is_stack"] as? Bool == true {
+        let trackHeader = ((try? logic.listTracks())?["tracks"] as? [[String: Any]])?
+            .first(where: {
+                ($0["track_name"] as? String)?.caseInsensitiveCompare(trackName) == .orderedSame
+            })
+        if trackHeader?["is_stack"] as? Bool == true {
             throw LogicianError.trackNotExposed(
                 requested: "MIDI recording on '\(trackName)'",
                 exposed: "'\(trackName)' is a track stack — record on one of its subtracks"
@@ -247,19 +247,25 @@ extension MCPServer {
         // long a range the tempo/meter were read for.
         let resolved = try resolveTempoAndMeter(logic: logic, arguments: arguments)
         let beatsPerBar = resolved.beatsPerBar
+        // Which track number the region will land on, taken off the listing the
+        // stack guard above already read, so it costs nothing — part of
+        // `created_region`, the handle this result used to withhold.
+        let resolvedTrackNumber = (arguments["track_number"] as? Int)
+            ?? trackHeader?["track_number"] as? Int
         // The METER map, read once and honoured only when it varies: where the
         // take ENDS is a bar count, and under a changing signature that is a
         // walk over the bars rather than one division. A constant-meter project
         // takes the arithmetic it always did.
         let meterKnowledge = resolveMeterKnowledge()
         let meterMap = meterKnowledge.integratedMap
-        let endBar = MCPServer.takeEnd(
+        let take = MCPServer.takeEnd(
             startBar: startBar,
             beatsPerBar: beatsPerBar,
             notes: parsed.map { (bar: $0.bar, beat: $0.beat, durationBeats: $0.durationBeats) },
             extraEventBars: extraBars,
             meterMap: meterMap
-        ).endBar
+        )
+        let endBar = take.endBar
         // What we know about the tempo, resolved ONCE for this invocation: the
         // note scheduling and the verification render's slice cover the same
         // bars, so they share one answer. With Logic's Tempo List readable that
@@ -353,6 +359,22 @@ extension MCPServer {
             meterMap?.beatOffset(fromBar: startBar, toBar: bar, beat: beat)
                 ?? (Double(bar - startBar) * range.beatsPerBar + (beat - 1))
         }
+        // WHAT THE SYNC IS TOLD ABOUT THE PRE-ROLL BAR, and it is the project's
+        // own answer about THAT bar rather than the control bar's about
+        // wherever the playhead happens to be (defect D3, 2026-09-02). Both
+        // numbers ride the arithmetic the notes themselves are placed by: the
+        // Signature List for how many beats bar `startBar - 1` has, and the
+        // Tempo List — integrated — for how long its last beat lasts.
+        let preRollBar = startBar - 1
+        let preRollBeats = MCUController.automationBeatSlots(
+            inBar: preRollBar, meter: meterMap, fallback: max(Int(range.beatsPerBar.rounded()), 1)
+        )
+        // How long the pre-roll bar's LAST BEAT lasts: negative offsets are
+        // before the take's origin, so it is the negation of that position's.
+        // The sync scales it by the fraction of the beat the display says is
+        // still to run, so this is a beat length, not the lead itself.
+        let preRollLastBeatMs = max(0, -offsetMs(eventBeats(bar: preRollBar, beat: Double(preRollBeats))))
+        let meterRoute = meterMap == nil ? "control_bar_at_playhead" : "signature_list_map"
         var events: [(offsetMs: Double, bytes: [UInt8])] = []
         for note in parsed {
             let offsetBeats = eventBeats(bar: note.bar, beat: note.beat)
@@ -403,6 +425,16 @@ extension MCPServer {
             }
         }
         events.sort { $0.offsetMs < $1.offsetMs }
+        // What `logic_list_events` will count on the region: Logic's Event List
+        // prints a note as ONE row carrying its length, so the wire count (a
+        // note-on plus a note-off each) is not a number that can be diffed
+        // against the take. CC and pitch-bend events are one row each.
+        let listedEvents = parsed.count
+            + ((arguments["cc_events"] as? [[String: Any]]) ?? []).count
+            + ((arguments["pitch_bends"] as? [[String: Any]]) ?? []).count
+        // How long Logic keeps recording past the last event. It is also why
+        // the region is wider than `end_bar`, which `created_region` now says.
+        let takeTailMs: Double = 600
         if effectiveSpeed > 1.001 {
             _ = try logic.setTempo(recordingTempo)
         }
@@ -414,14 +446,18 @@ extension MCPServer {
             result = try withProgressScope(0...65) { try MCUController.recordMIDI(
                 logic: logic,
                 trackName: trackName,
-                trackNumber: arguments["track_number"] as? Int,
+                trackNumber: resolvedTrackNumber,
                 events: events,
+                listedEvents: listedEvents,
                 startBar: startBar,
-                tailMs: 600,
-                tempo: recordingTempo,
-                beatsPerBar: range.beatsPerBar,
+                tailMs: takeTailMs,
+                preRollLastBeat: preRollBeats,
+                preRollLastBeatMs: preRollLastBeatMs,
+                meterRoute: meterRoute,
+                // nil = let the take pick the default for the pre-roll route
+                // it ends up taking; the two measured lags differ by 22 ms.
                 syncCompensationMs: (arguments["sync_compensation_ms"] as? Double)
-                    ?? (arguments["sync_compensation_ms"] as? Int).map(Double.init) ?? 45
+                    ?? (arguments["sync_compensation_ms"] as? Int).map(Double.init)
             ) }
         } catch {
             if effectiveSpeed > 1.001 { _ = try? logic.setTempo(range.tempo) }
@@ -438,7 +474,53 @@ extension MCPServer {
         result["track_name"] = trackName
         result["notes"] = parsed.count
         result["start_bar"] = startBar
-        result["tempo"] = range.tempo
+        result["end_bar"] = endBar
+        // THE HANDLE ON WHAT THIS CALL MADE. The description used to send the
+        // caller to Undo in Logic while `logic_delete_region` had been removing
+        // these takes in 683-847 ms, 5/5 (measured 2026-09-02) — and the result
+        // named no region at all, so an agent wanting its own take back had to
+        // list the track's regions and guess which one was new. Reported the
+        // way `logic_create_track` reports `created_track`: the address, not a
+        // diff. `recorded_end_bar` is wider than `end_bar` because Logic keeps
+        // recording until the transport stops; the take waits out the stream
+        // plus its tail first.
+        let recordedEndBar = MIDITakePlan.recordedEndBar(
+            startBar: startBar, lastBeat: take.lastBeat,
+            tailBeats: takeTailMs / (60000.0 / recordingTempo),
+            beatsPerBar: range.beatsPerBar, meterMap: meterMap
+        )
+        var createdRegion: [String: Any] = [
+            "track_name": trackName,
+            "track_number": resolvedTrackNumber ?? NSNull(),
+            "start_bar": startBar,
+            "end_bar": endBar,
+            "recorded_end_bar": recordedEndBar,
+            "note": "Remove it with logic_delete_region {track_name: '\(trackName)', start_bar: \(startBar)} (measured 0.7 s, with regions_before/regions_after as evidence) - not with Undo. recorded_end_bar is where the region's right edge lands: Logic records until the transport stops, which is \(Int(takeTailMs)) ms past the take's last event, so the region is wider than end_bar."
+        ]
+        if let number = resolvedTrackNumber {
+            createdRegion["delete_with"] =
+                "logic_delete_region {track_name: '\(trackName)', track_number: \(number), start_bar: \(startBar)}"
+        } else {
+            createdRegion["delete_with"] =
+                "logic_delete_region {track_name: '\(trackName)', start_bar: \(startBar)}"
+        }
+        result["created_region"] = createdRegion
+        // The tempo this take actually RAN at, which on a project with a tempo
+        // map is not the control bar's reading: that one is the tempo in force
+        // AT THE PLAYHEAD, and the profile caught this field answering 121 for
+        // a take that ran at 120 because the user had left the playhead 39 bars
+        // away (defect D3). The notes were always placed by integrating the
+        // map; only the reported number came from somewhere else.
+        if let map = tempoMap {
+            result["tempo"] = (map.bpm(
+                atBeatOffset: takeStartBeats, beatsPerBar: range.beatsPerBar, meter: meterMap
+            ) * 100).rounded() / 100
+            result["tempo_route"] = "tempo_map_at_start_bar"
+            result["tempo_at_playhead"] = range.tempo
+        } else {
+            result["tempo"] = range.tempo
+            result["tempo_route"] = "control_bar_at_playhead"
+        }
         if let name = projectTempoMode.name {
             result["project_tempo_mode"] = name
             result["project_tempo_mode_route"] = tempoModeVisit == nil
@@ -496,6 +578,14 @@ extension MCPServer {
             // trap - silence is a fact about the music, not about the write.
             reportProgress("verifying the take with a freeze render", percent: 66)
             if let render = try? withProgressScope(66...100, {
+                // METRICS ONLY. This caller reads `slice.path` and
+                // `slice.metrics` and nothing else, while the shared renderer
+                // was building an AAC preview of the WHOLE track (1 281-1 340
+                // ms on a 48.2 MB freeze) plus an MCP ear copy (70-136 ms) and
+                // dropping both on the floor — 9% of the warm call, measured
+                // 2026-09-02. The slice is still written and its path is still
+                // reported, so `logic_get_audio_clip` will play the take back
+                // to anyone who wants to hear it.
                 try MCUController.renderSelectedTrack(
                     projectPath: logic.projectDocumentPath(),
                     label: "midi-verify",
@@ -518,7 +608,7 @@ extension MCPServer {
                     "rendered_slice": slice?["path"] ?? NSNull(),
                     "metrics": slice?["metrics"] ?? NSNull(),
                     "note": audible == true
-                        ? "freeze render of bars \(startBar)-\(endBar) after recording; non-silent metrics prove the notes landed and sound"
+                        ? "freeze render of bars \(startBar)-\(endBar) after recording; non-silent metrics prove the notes landed and sound. To HEAR it, pass rendered_slice to logic_get_audio_clip - this render skips the audio encode that its caller would only have discarded"
                         : "freeze render of bars \(startBar)-\(endBar) came back silent. The recording itself completed - this can mean the instrument made no sound (muted, no patch, notes out of range), not that the notes are missing."
                 ]
             } else {

@@ -1382,6 +1382,64 @@ with every render coming back as audio the agent can listen to.
   exactly one differing cell, which is exactly what a rename produces), so it survived a whole
   session. The next surface call rescans instead, measured at 1 378 ms on the reference
   project.
+- **A recorded take contains only what was played.** `logic_record_midi` wrote sixteen
+  spurious `Control 64 = Sustain, 0` events into every region it made: the cleanup fired
+  the stream's stuck-note all-notes-off BEFORE it stopped the transport, and that blast
+  goes into the very "Logic MCP MIDI In" port Logic is recording from. A two-note take read
+  back through `logic_list_events` as **eighteen** events, twice, while the result claimed
+  four. The transport is stopped first now, out of record is CONFIRMED on the MCU record
+  LED, and only then is the stream silenced — and where that confirmation fails the blast is
+  withheld and named in a `warning`, because a stuck note is a sound the user can stop and
+  sixteen controller events in their region are not. A two-note take now reads back as
+  exactly two notes, 4/4 takes, and `events_streamed` counts events the way Logic's Event
+  List does so it can be diffed against it (the wire count lives on as
+  `midi_messages_streamed`).
+- **The take lands on the beat instead of somewhere in a 46 ms band.** The sync waits for
+  the pre-roll bar's last beat and used to assume exactly one beat of lead remained —
+  but the edge is seen when Logic next repaints the position display, not when it happens,
+  and five measured takes landed anywhere from 22.9 ms early to 23.4 ms late on identical
+  arguments. The same repaint publishes the sub-beat digits, so the lead is now READ off
+  the position (`sync_lead_route`, `sync_position`) rather than assumed: three takes with
+  no compensation at all then landed 16.1, 17.2 and 20.3 ms late — a **4.2 ms** band where
+  the assumed beat gave 46 — so 18 ms, the mean of those three, is what the default
+  subtracts, and two takes at it landed **0.0, 1.0, 2.6 and 2.6 ms** off the beat. Where Logic blanks those digits the lead is the nominal beat again and the
+  route's own measured latency is subtracted instead (46 ms inside Logic's count-in bar,
+  23 ms inside a pre-roll bar the tool parked; the single 45 ms default that shipped put
+  the latter 21.5 ms early), which centres the band rather than removing it, and the note
+  says so. Which branch ran is in the result:
+  `bar_line` means the edge was missed, there is no lead to schedule into,
+  `sync_compensation_ms` does not apply — it silently did nothing there before — and the
+  notes land ~39 ms late.
+- **A take at bar 2 no longer times differently because the playhead was left in a 5/4
+  bar.** The pre-roll bar's beat count came from the control bar, which publishes the
+  signature AT THE PLAYHEAD: with the playhead 39 bars away in the project's 5/4 stretch,
+  the sync waited for a fifth beat of a four-beat bar, never saw it, and fell into the
+  uncompensated branch. It reads the Signature List at that bar now (`sync_meter_route`),
+  the same map the notes are placed by, and the beat edge fires from anywhere in the
+  project. `tempo` in the result is likewise the tempo the take RAN at rather than the one
+  in force wherever the playhead was parked (121 was reported for a take at 120).
+- **The result names the region it made.** `created_region` carries the track number, the
+  start bar, `recorded_end_bar` and the `logic_delete_region` call that removes it —
+  measured 0.7 s with `regions_before`/`regions_after` as evidence — instead of a
+  description telling the caller to reach for Undo. `recorded_end_bar` is past `end_bar` on
+  purpose: Logic keeps recording for the 600 ms tail after the last event.
+- **A MIDI take costs a third less wall clock.** Measured end to end on the same two-note
+  take with the playhead 39 bars away: **26.5 s before, 18.3 s after**. `setPlaying(true)`
+  before a freeze render waited out its full 2.25 s budget for a play LED Logic never
+  lights during an offline render — 2 487 / 2 487 / 2 474 ms, three values inside 13 ms of
+  each other, with the throw swallowed by a `try?` and the render's own proof (the `.aif`
+  and `FreezeInProgress.lock`) found 0.2 ms later — so it is a press now, and that lands on
+  `logic_render_track` and `logic_evaluate_change` as well. Logic's own count-in bar is
+  read rather than paid for blind: it is a whole extra bar of real time that nothing in the
+  tool looked at although `logic_get_transport` has always reported the flag, so with
+  count-in on the playhead parks ON `start_bar` and the count-in bar leads in — one bar of
+  wall clock instead of two, −2.0 s at 120 BPM 4/4. And the 0.6 s blind sleep before the
+  record press became the decisive display read that was already written eight lines below
+  it, which costs 0.4–1.3 ms and catches strictly more.
+- **A take can no longer start at the wrong bar and call itself verified.** The sync
+  accepted the first position at or past `start_bar` once the timecode had visibly moved,
+  which proves motion and not position; the pre-roll bar must be observed first now, and a
+  transport already past it refuses instead of streaming the whole take somewhere else.
 
 ### Known limitations (honest by design)
 
