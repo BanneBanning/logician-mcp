@@ -416,6 +416,7 @@ extension MCPServer {
                     "type": "object",
                     "properties": [
                         "track_name": ["type": "string"],
+                        "track_number": ["type": "integer", "description": "Breaks a tie when several strips abbreviate alike on the control surface (duplicate track names) — the same numbers a matches-N-strips refusal names."],
                         "parameter": [
                             "type": "string",
                             "enum": ["volume", "pan", "send", "plugin"],
@@ -2213,6 +2214,7 @@ extension MCPServer {
                     "type": "object",
                     "properties": [
                         "track_name": ["type": "string"],
+                        "track_number": ["type": "integer", "description": "Breaks a tie when several strips abbreviate alike on the control surface (duplicate track names) — the same numbers a matches-N-strips refusal names."],
                         "parameter": [
                             "type": "string",
                             "enum": ["volume", "pan", "send", "plugin"],

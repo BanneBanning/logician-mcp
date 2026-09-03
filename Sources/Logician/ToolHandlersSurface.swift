@@ -55,6 +55,7 @@ extension MCPServer {
         }
         return try readAutomationLane(
             trackName: try requiredString("track_name", in: arguments),
+            trackNumber: arguments["track_number"] as? Int,
             parameter: (arguments["parameter"] as? String) ?? "volume",
             send: arguments["send"] as? Int,
             insertSlot: arguments["insert_slot"] as? Int,
@@ -76,6 +77,7 @@ extension MCPServer {
     /// would be verifying the wrong thing.
     func readAutomationLane(
         trackName track: String,
+        trackNumber: Int? = nil,
         parameter: String,
         send: Int?,
         insertSlot: Int?,
@@ -96,7 +98,7 @@ extension MCPServer {
         switch parameter {
         case "volume":
             return try MCUController.readAutomation(
-                logic: logic, trackName: track, kindLabel: "volume",
+                logic: logic, trackName: track, trackNumber: trackNumber, kindLabel: "volume",
                 startBar: startBar, endBar: endBar, resolutionBeats: resolution,
                 maxPoints: maxPoints, settleSeconds: settle, meter: meter,
                 enterView: { channel in try MCUController.volumeReader(channel: channel) },
@@ -111,7 +113,7 @@ extension MCPServer {
             )
         case "pan":
             return try MCUController.readAutomation(
-                logic: logic, trackName: track, kindLabel: "pan",
+                logic: logic, trackName: track, trackNumber: trackNumber, kindLabel: "pan",
                 startBar: startBar, endBar: endBar, resolutionBeats: resolution,
                 maxPoints: maxPoints, settleSeconds: settle, meter: meter,
                 // Pan is read off the inspector strip's own knob, exactly as
@@ -124,7 +126,7 @@ extension MCPServer {
                 throw LogicianError.invalidArguments("parameter 'send' requires send: 1-8")
             }
             return try MCUController.readAutomation(
-                logic: logic, trackName: track, kindLabel: "send \(send) level",
+                logic: logic, trackName: track, trackNumber: trackNumber, kindLabel: "send \(send) level",
                 startBar: startBar, endBar: endBar, resolutionBeats: resolution,
                 maxPoints: maxPoints, settleSeconds: settle, meter: meter,
                 enterView: { _ in
@@ -157,7 +159,7 @@ extension MCPServer {
                 )
             }
             return try MCUController.readAutomation(
-                logic: logic, trackName: track,
+                logic: logic, trackName: track, trackNumber: trackNumber,
                 kindLabel: "plugin slot \(slot): \(parameterName)",
                 startBar: startBar, endBar: endBar, resolutionBeats: resolution,
                 maxPoints: maxPoints, settleSeconds: settle, meter: meter,
@@ -276,8 +278,13 @@ extension MCPServer {
         let deselected = try logic.narrowSelectionToOneTrack(target.name, number: target.number)
 
         // 3. The evidence: what is on the lane the caller nominated as proof.
+        //    `target.number` is already the disambiguated row `resolveTrack`
+        //    picked above — passing it on means the MCU channel resolution
+        //    below can break the same tie the header plane already broke,
+        //    instead of re-asking the LCD scan by name alone.
         let before = try readAutomationLane(
-            trackName: target.name, parameter: parameter, send: send, insertSlot: insertSlot,
+            trackName: target.name, trackNumber: target.number,
+            parameter: parameter, send: send, insertSlot: insertSlot,
             pluginParameter: pluginParameter, startBar: startBar, endBar: endBar,
             resolutionBeats: resolution, maxPoints: maxPoints, settleSeconds: 0.8
         )
@@ -402,7 +409,8 @@ extension MCPServer {
 
         // 6. The proof: the same grid, read again.
         let after = try readAutomationLane(
-            trackName: target.name, parameter: parameter, send: send, insertSlot: insertSlot,
+            trackName: target.name, trackNumber: target.number,
+            parameter: parameter, send: send, insertSlot: insertSlot,
             pluginParameter: pluginParameter, startBar: startBar, endBar: endBar,
             resolutionBeats: resolution, maxPoints: maxPoints, settleSeconds: 0.8
         )

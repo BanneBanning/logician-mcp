@@ -170,6 +170,207 @@ final class StripAddressingTests: XCTestCase {
         XCTAssertFalse(cells.contains(""))
     }
 
+    // MARK: - Tie-breaking a multi-way LCD-name match by AX track number
+    //
+    // FIX_SPEC 2026-09-03: `resolveChannel`'s LCD-name scan had no row numbers
+    // to compare against, so no `track_number` argument could break a tie
+    // between two strips that legitimately abbreviate alike (the sandbox's
+    // two `Ivan Vocals` rows, 21 and 22, both read `IvnVoc`) — and a STALE LCD
+    // cell (the same strip's row read twice) could make `logic_read_automation
+    // {track_name: "Audio 9"}` die with "matches 2 control-surface strips"
+    // once and succeed on the immediate retry.
+
+    private func candidate(bank: Int, channel: Int, cell: String) -> MCUController.ChannelCandidate {
+        MCUController.ChannelCandidate(match: MCUController.BankMatch(bank: bank, channel: channel), cell: cell)
+    }
+
+    func testTwoIdenticalAbbreviationsAreSettledByTheirOwnTrackNumbers() {
+        // The sandbox's two "Ivan Vocals" rows, 21 and 22, both abbreviate to
+        // "IvnVoc" and sit at bank 1's channels 2 and 3 in project order.
+        let candidates = [
+            candidate(bank: 1, channel: 2, cell: "IvnVoc"),
+            candidate(bank: 1, channel: 3, cell: "IvnVoc")
+        ]
+        let headers = [
+            TrackRowAddressing.Row(number: 21, name: "Ivan Vocals"),
+            TrackRowAddressing.Row(number: 22, name: "Ivan Vocals")
+        ]
+        XCTAssertEqual(
+            MCUController.tieBreakChannelMatches(
+                candidates, trackName: "Ivan Vocals", headers: headers, trackNumber: 21
+            ),
+            .resolved(MCUController.BankMatch(bank: 1, channel: 2)),
+            "row 21 is the FIRST header by number, which is the FIRST candidate by project position"
+        )
+        XCTAssertEqual(
+            MCUController.tieBreakChannelMatches(
+                candidates, trackName: "Ivan Vocals", headers: headers, trackNumber: 22
+            ),
+            .resolved(MCUController.BankMatch(bank: 1, channel: 3))
+        )
+    }
+
+    func testNoTrackNumberAgainstADuplicateHeaderNameNamesTheNumbers() {
+        // The AX track list itself carries the collision: refuse naming 21
+        // and 22, the same shape `track_info` already refuses a duplicate
+        // header name with — never guess the first one.
+        let candidates = [
+            candidate(bank: 1, channel: 2, cell: "IvnVoc"),
+            candidate(bank: 1, channel: 3, cell: "IvnVoc")
+        ]
+        let headers = [
+            TrackRowAddressing.Row(number: 21, name: "Ivan Vocals"),
+            TrackRowAddressing.Row(number: 22, name: "Ivan Vocals")
+        ]
+        XCTAssertEqual(
+            MCUController.tieBreakChannelMatches(
+                candidates, trackName: "Ivan Vocals", headers: headers, trackNumber: nil
+            ),
+            .ambiguousNumbered(numbers: [21, 22])
+        )
+    }
+
+    func testATrackNumberNotAmongTheCollidingHeadersStillNamesTheRealOnes() {
+        let candidates = [
+            candidate(bank: 1, channel: 2, cell: "IvnVoc"),
+            candidate(bank: 1, channel: 3, cell: "IvnVoc")
+        ]
+        let headers = [
+            TrackRowAddressing.Row(number: 21, name: "Ivan Vocals"),
+            TrackRowAddressing.Row(number: 22, name: "Ivan Vocals")
+        ]
+        XCTAssertEqual(
+            MCUController.tieBreakChannelMatches(
+                candidates, trackName: "Ivan Vocals", headers: headers, trackNumber: 7
+            ),
+            .ambiguousNumbered(numbers: [21, 22]),
+            "a number that names neither colliding row is not a silent pick of either one"
+        )
+    }
+
+    func testOneStaleDuplicateCellCannotBeSettledByHeadersAlone() {
+        // Exactly ONE header is named "Audio 9"; the scan found the SAME cell
+        // text at two positions — the live signature of a repaint racing the
+        // scan, not of two real strips. The tie-break has no way to tell
+        // WHICH position is real from headers alone (the counts disagree:
+        // one header, two candidates), so it refuses to guess.
+        let candidates = [
+            candidate(bank: 2, channel: 2, cell: "Audio9"),
+            candidate(bank: 3, channel: 1, cell: "Audio9")
+        ]
+        let headers = [TrackRowAddressing.Row(number: 9, name: "Audio 9")]
+        XCTAssertEqual(
+            MCUController.tieBreakChannelMatches(
+                candidates, trackName: "Audio 9", headers: headers, trackNumber: nil
+            ),
+            .unresolved
+        )
+        XCTAssertEqual(
+            MCUController.tieBreakChannelMatches(
+                candidates, trackName: "Audio 9", headers: headers, trackNumber: 9
+            ),
+            .unresolved,
+            "the one number that exists cannot say which of two identical-looking cells is real"
+        )
+        XCTAssertTrue(MCUController.isStaleDuplicateCellSuspect(
+            cells: candidates.map(\.cell), sameNameHeaderCount: 1
+        ), "one header, several BYTE-IDENTICAL cells is exactly the stale-read shape worth a re-read")
+    }
+
+    func testIsStaleDuplicateCellSuspectRejectsShapesThatAreNotIt() {
+        // Two REAL duplicate strips (two headers) is not a stale read, however
+        // identical their cells look.
+        XCTAssertFalse(MCUController.isStaleDuplicateCellSuspect(
+            cells: ["IvnVoc", "IvnVoc"], sameNameHeaderCount: 2
+        ))
+        // A coincidental collision between two DIFFERENT names that abbreviate
+        // alike is not this shape either — the cells actually differ.
+        XCTAssertFalse(MCUController.isStaleDuplicateCellSuspect(
+            cells: ["St Out", "StOutr"], sameNameHeaderCount: 1
+        ))
+        // A single cell is not a collision at all.
+        XCTAssertFalse(MCUController.isStaleDuplicateCellSuspect(
+            cells: ["Audio9"], sameNameHeaderCount: 1
+        ))
+    }
+
+    func testABannerCellIsDroppedBeforeAnythingIsCountedAsASecondStrip() {
+        // Logic's own press echo ("Mute") standing over a neighbour's cell is
+        // never a second strip really called that — it resolves straight
+        // through with no headers and no track_number needed at all.
+        let candidates = [
+            candidate(bank: 0, channel: 1, cell: "Bas"),
+            candidate(bank: 0, channel: 2, cell: "Mute")
+        ]
+        XCTAssertEqual(
+            MCUController.tieBreakChannelMatches(
+                candidates, trackName: "Bas", headers: [], trackNumber: nil
+            ),
+            .resolved(MCUController.BankMatch(bank: 0, channel: 1))
+        )
+    }
+
+    func testAUniqueCandidateResolvesWithNoHeadersAtAll() {
+        let candidates = [candidate(bank: 2, channel: 7, cell: "St Out")]
+        XCTAssertEqual(
+            MCUController.tieBreakChannelMatches(
+                candidates, trackName: "Stereo Out", headers: [], trackNumber: nil
+            ),
+            .resolved(MCUController.BankMatch(bank: 2, channel: 7))
+        )
+    }
+
+    func testNoCandidatesAtAllIsUnresolved() {
+        XCTAssertEqual(
+            MCUController.tieBreakChannelMatches([], trackName: "Bas", headers: [], trackNumber: nil),
+            .unresolved
+        )
+    }
+
+    func testAHeaderlessStripSharingTheNameIsNotGuessedAtEitherWithACountMismatch() {
+        // Two live cells, but only one AX header carries the name (the other
+        // candidate is a headerless strip that happens to share it) — the
+        // counts disagree, so this is NOT settled by ordinal correlation, and
+        // it is not the byte-identical stale shape either.
+        let candidates = [
+            candidate(bank: 0, channel: 3, cell: "Bas"),
+            candidate(bank: 2, channel: 5, cell: "Bass")
+        ]
+        let headers = [TrackRowAddressing.Row(number: 2, name: "Bas")]
+        XCTAssertEqual(
+            MCUController.tieBreakChannelMatches(
+                candidates, trackName: "Bas", headers: headers, trackNumber: 2
+            ),
+            .unresolved
+        )
+        XCTAssertFalse(MCUController.isStaleDuplicateCellSuspect(
+            cells: candidates.map(\.cell), sameNameHeaderCount: 1
+        ), "the two cells actually differ, so this is not the stale-read signature")
+    }
+
+    // MARK: - automationChannelError: the record path's own two-way refusal
+
+    func testAutomationChannelErrorNamesTheAXNumbersWhenTheyExist() {
+        let failure = MCUController.automationChannelError(
+            trackName: "Ivan Vocals",
+            resolution: .ambiguousNumbered(cells: ["IvnVoc", "IvnVoc"], numbers: [21, 22])
+        )
+        XCTAssertEqual(failure.code, "ambiguous")
+        let message = failure.errorDescription ?? ""
+        XCTAssertTrue(message.contains("21"))
+        XCTAssertTrue(message.contains("22"))
+        XCTAssertTrue(message.contains("track_number"))
+    }
+
+    func testAutomationChannelErrorFallsBackToCellsWhenNumbersCannotBeCorrelated() {
+        let failure = MCUController.automationChannelError(
+            trackName: "Audio 9",
+            resolution: .ambiguous(cells: ["Audio9", "Audio9"])
+        )
+        XCTAssertEqual(failure.code, "ambiguous")
+        XCTAssertTrue((failure.errorDescription ?? "").contains("Audio9"))
+    }
+
     // MARK: - Which plane addresses the name
 
     func testOnlyAMissingTrackHeaderReroutesToTheSurface() {
@@ -290,6 +491,18 @@ final class StripAddressingTests: XCTestCase {
         let message = failure.errorDescription ?? ""
         XCTAssertTrue(message.contains("St Out"))
         XCTAssertTrue(message.contains("StOutr"))
+    }
+
+    /// The AX track list settled WHICH rows are colliding: the two-plane
+    /// message names the numbers, not the bare LCD cells, so `track_number`
+    /// is a real way out rather than an unexplained suggestion.
+    func testANumberedCollisionNamesTheAXNumbersNotTheCells() {
+        let failure = error(for: .ambiguousNumbered(cells: ["IvnVoc", "IvnVoc"], numbers: [21, 22]))
+        XCTAssertEqual(failure.code, "ambiguous")
+        let message = failure.errorDescription ?? ""
+        XCTAssertTrue(message.contains("21"))
+        XCTAssertTrue(message.contains("22"))
+        XCTAssertTrue(message.contains("track_number"))
     }
 
     func testAnUnreachableSurfaceIsNotExposedAndCarriesTheReason() {

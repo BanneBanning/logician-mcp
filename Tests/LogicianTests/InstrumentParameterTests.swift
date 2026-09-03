@@ -122,6 +122,15 @@ final class InstrumentParameterTests: XCTestCase {
             ).code,
             "ambiguous"
         )
+        // The AX track list settled which cells are colliding: the numbers
+        // are the way out, not the bare LCD cells.
+        let numbered = MCUController.instrumentEditError(
+            .stripUnresolved(.ambiguousNumbered(cells: ["IvnVoc", "IvnVoc"], numbers: [21, 22])),
+            trackName: "Ivan Vocals"
+        )
+        XCTAssertEqual(numbered.code, "ambiguous")
+        XCTAssertTrue((numbered.errorDescription ?? "").contains("21"))
+        XCTAssertTrue((numbered.errorDescription ?? "").contains("22"))
         let unavailable = MCUController.instrumentEditError(
             .stripUnresolved(.unavailable(reason: "the pan-names view could not be reached")),
             trackName: "Bas"

@@ -1983,6 +1983,25 @@ with every render coming back as audio the agent can listen to.
   `logic_read_automation` drop from the old ~0.13 s/bar to the 1-2.5 ms/bar fast locate
   `logic_set_playhead` already shipped (7ddf884).
 
+- **A duplicate track name can be told apart on the control surface, by number.**
+  `resolveChannel`'s LCD-name scan had no row numbers to weigh against a collision, so
+  two strips that legitimately abbreviate alike — the sandbox's two `Ivan Vocals` rows,
+  21 and 22, both read `IvnVoc` — could never be told apart, and a `track_number`
+  argument had nowhere to plug in even where a tool accepted one. The AX track list's own
+  numbering now breaks the tie: the Nth header carrying the name (by number) is matched to
+  the Nth live cell (by bank position), so `track_number: 21` and `track_number: 22` land
+  on different strips, proven by `logic_list_strips`; with no number and the AX list itself
+  carrying the collision, the refusal names the numbers rather than guessing one, the same
+  shape `track_info` already refuses a duplicate header with. A control-press banner
+  standing over a neighbour's cell is dropped before it is ever counted as a second strip,
+  and a match that is the SAME strip's row read twice — the shape behind a live, once-only
+  failure (`'Audio 9' matches 2 control-surface strips (Audio9, Audio9)`, gone on the
+  immediate retry) — gets one settled re-read before it is condemned as ambiguous, the same
+  pattern the empty-bank-scan retry already uses. `logic_read_automation` and
+  `logic_record_automation` both gain `track_number` for this — the read path also threads
+  it into `logic_remove_automation`'s own two internal reads, so removing a lane on one of
+  two identically-named rows no longer risks reading (and reporting) the other one's curve.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

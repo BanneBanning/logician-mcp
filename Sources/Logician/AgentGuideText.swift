@@ -475,6 +475,7 @@ Parameters:
   - `send` (integer): Send slot 1-8, required when parameter is 'send'.
   - `tolerance` (number): Accepted deviation per verified point, in the parameter's own units.
   - `track_name` (string) **(required)**
+  - `track_number` (integer): Breaks a tie when several strips abbreviate alike on the control surface (duplicate track names) — the same numbers a matches-N-strips refusal names.
   - `verify` (boolean): Default true: replay the range in Read and sample the echo per point.
 
 #### `logic_remove_automation`
@@ -1282,5 +1283,6 @@ Parameters:
   - `settle_seconds` (number): How long to let Logic's echo settle at each position, default 0.8 s. Raise if values look like the previous position's.
   - `start_bar` (integer) **(required)**
   - `track_name` (string) **(required)**
+  - `track_number` (integer): Breaks a tie when several strips abbreviate alike on the control surface (duplicate track names) — the same numbers a matches-N-strips refusal names.
 
 """#

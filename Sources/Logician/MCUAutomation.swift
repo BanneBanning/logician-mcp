@@ -414,6 +414,7 @@ extension MCUController {
     static func recordVolumeAutomation(
         logic: LogicAccessibility,
         trackName: String,
+        trackNumber: Int? = nil,
         points: [(bar: Int, beat: Double, db: Double)],
         ramp: Bool,
         verify: Bool,
@@ -443,11 +444,12 @@ extension MCUController {
         // hours and the curve would be written at an arbitrary position.
         // Shape check before the calibration pass touches the fader at all.
         try requireBeatsDisplay(operation: "volume automation from bar \(first.bar)")
-        guard let channel = try findChannel(trackName: trackName) else {
-            throw LogicianError.trackNotExposed(
-                requested: "MCU channel for '\(trackName)'",
-                exposed: "not found in the bank view"
-            )
+        let volumeHeaders = ((try? logic.parsedTrackHeaders()) ?? [])
+            .map { TrackRowAddressing.Row(number: $0.number, name: $0.name) }
+        guard let channel = try findChannel(
+            trackName: trackName, trackNumber: trackNumber, headers: volumeHeaders
+        ) else {
+            throw automationChannelError(trackName: trackName, resolution: lastChannelResolution)
         }
         guard try selectFoundChannel(channel) else {
             throw LogicianError.writeFailed("MCU select failed")
@@ -975,6 +977,7 @@ extension MCUController {
     static func recordVpotAutomation(
         logic: LogicAccessibility,
         trackName: String,
+        trackNumber: Int? = nil,
         kindLabel: String,
         points: [(bar: Int, beat: Double, value: Double)],
         ramp: Bool,
@@ -1002,10 +1005,12 @@ extension MCUController {
             firstBar: first.bar, meterKnowledge: meterKnowledge,
             transportSignature: transport["time_signature"] as? String
         )
-        guard let channel = try findChannel(trackName: trackName) else {
-            throw LogicianError.trackNotExposed(
-                requested: "MCU channel for '\(trackName)'", exposed: "not in the bank view"
-            )
+        let vpotHeaders = ((try? logic.parsedTrackHeaders()) ?? [])
+            .map { TrackRowAddressing.Row(number: $0.number, name: $0.name) }
+        guard let channel = try findChannel(
+            trackName: trackName, trackNumber: trackNumber, headers: vpotHeaders
+        ) else {
+            throw automationChannelError(trackName: trackName, resolution: lastChannelResolution)
         }
         guard try selectFoundChannel(channel) else {
             throw LogicianError.writeFailed("MCU select failed")
