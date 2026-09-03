@@ -1983,6 +1983,26 @@ with every render coming back as audio the agent can listen to.
   `logic_read_automation` drop from the old ~0.13 s/bar to the 1-2.5 ms/bar fast locate
   `logic_set_playhead` already shipped (7ddf884).
 
+- **The tools/list surface a client pays for on every connect is smaller, and can no
+  longer drift apart tool by tool.** A token audit measured 26 sentences repeated
+  verbatim across the schema — the `track_number` disambiguation on 13 params, the
+  `region_name` mute-state note on 13 params, the `insert_slot`/`insert_index`
+  numbering caveat on 13 params, the `warning` and STRIP ADDRESSING pointers, the
+  `blind`/`include_audio`/`expected_project_path` boilerplate — costing 16,762 B of
+  pure repetition, none of it new information: the full explanation of each already
+  lived in the server instructions every session reads once. Every inline copy is now
+  the shortest pointer that still tells an agent where to look (`track_number`: "Row
+  number when several tracks share the name — see TRACK ADDRESSING in the server
+  instructions"), and the instructions gained two paragraphs — TRACK ADDRESSING and
+  REGION NAMES — to hold what moved out. `tools/list` drops from 238,211 to 230,343
+  bytes (52,837 → 50,992 tokens, cl100k_base); the server instructions grow by 955 B
+  for what they now hold instead; the net per-connect cost (`tools/list` +
+  `initialize.instructions`) falls from 247,596 to 240,683 bytes (54,894 → 53,257
+  tokens), a 2.8% cut with no caveat dropped and no schema or behavior changed. The two
+  `expected_project_path` compare-and-set wordings, still hand-typed on 10 tools, are
+  now shared Swift constants too, so a future edit can no longer land on some copies
+  and miss the rest.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

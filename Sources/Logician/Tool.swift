@@ -198,7 +198,12 @@ struct Tool {
     /// top-level `warning` (the `mayWarn` flag). The KEY, its joining rule and
     /// the instruction to read it first are in the instructions' RESULT
     /// CONTRACT; what the warning is ABOUT is the warning's own job to say.
-    static let warningNote = " MAY RETURN `warning` — read it before the rest of the result (RESULT CONTRACT in the server instructions)."
+    ///
+    /// Shortened 2026-09-03 (token audit Cut 1): "read it before the rest of
+    /// the result" is the RESULT CONTRACT paragraph's own instruction, not a
+    /// fact only this pointer carries — restating it on all 32 tools was a
+    /// second payment for something every session already reads once.
+    static let warningNote = " MAY RETURN `warning` — see RESULT CONTRACT in the server instructions."
 
     /// Appended to every tool whose `track_name` also accepts a strip that has
     /// no track header ('Stereo Out', 'Master', 'Aux 1', a bus).
@@ -214,7 +219,12 @@ struct Tool {
     /// take one. The full statement — which tools take which, and the measured
     /// reversal that makes converting between them dangerous — is the
     /// instructions' INSERT NUMBERING paragraph.
-    static let axInsertIndexNote = " ACCESSIBILITY ordinal (logic_list_inserts route 'ax'), NOT the Mackie insert_slot — see INSERT NUMBERING in the server instructions."
+    ///
+    /// Shortened 2026-09-03 (token audit Cut 1): the definition of each
+    /// numbering ("Accessibility ordinal" / "Mackie physical slot 1-8") is
+    /// restated in full by INSERT NUMBERING itself; the inline copy only
+    /// needs to say WHICH one this argument is and NOT to convert it.
+    static let axInsertIndexNote = " Accessibility ordinal, NOT the Mackie insert_slot — see INSERT NUMBERING in the server instructions."
 
     /// The `track_number` argument of every tool that addresses a REGION on a
     /// track row. One sentence, one place: it is on thirteen tools, and the
@@ -231,11 +241,13 @@ struct Tool {
     /// `ToolSearchTests` against the retrieval probe's query set). A sentence
     /// repeated across a family of tools is a ranking decision, not just
     /// prose.
-    static let regionTrackNumberNote = "Which ROW, when several tracks share the name — an import"
-        + " leaves a stack of 'Studio Grand' rows, because Logic names each new track after the"
-        + " default patch it loaded. The arrangement map prints every row's track_number. Pass it"
-        + " WITH track_name: the two are cross-checked, and a pair that disagrees is refused"
-        + " before anything is written."
+    ///
+    /// Shortened 2026-09-03 (token audit Cut 1): the full explanation — the
+    /// 'Studio Grand' example, the cross-check rule, "the arrangement map
+    /// prints every row's track_number" — now lives ONCE in the instructions'
+    /// TRACK ADDRESSING paragraph; nothing above was dropped, only moved.
+    static let regionTrackNumberNote = "Row number when several tracks share the name — see TRACK"
+        + " ADDRESSING in the server instructions."
 
     /// The one sentence every `region_name` argument owes the caller, because
     /// the name a region publishes is not always the name it has.
@@ -247,13 +259,18 @@ struct Tool {
     /// it exactly, so one soloed track made every region tool refuse the names
     /// the server itself had just printed. Both spellings are accepted now,
     /// which is what keeps a name replayed out of an older answer working.
-    static let regionNameNote = "The region's own name. Logic writes its mute state into the"
-        + " name it publishes (`Crash, muted` while the region is muted or another track is"
-        + " soloed); the arrangement map reports the CLEAN name with `muted` beside it, and both"
-        + " spellings are accepted here."
+    ///
+    /// Shortened 2026-09-03 (token audit Cut 1): the mechanism — which
+    /// `AXDescription` field, which string Logic appends, why the arrangement
+    /// map's CLEAN spelling and the muted spelling both have to match — now
+    /// lives ONCE in the instructions' REGION NAMES paragraph.
+    static let regionNameNote = "The region's own name — accepts either the clean name or the"
+        + " muted spelling Logic publishes, see REGION NAMES in the server instructions."
 
     /// The mirror of `axInsertIndexNote`, for the Mackie physical slot.
-    static let mcuInsertSlotNote = " MACKIE physical slot 1-8 (logic_list_inserts route 'mcu'), NOT the Accessibility insert_index — see INSERT NUMBERING in the server instructions."
+    ///
+    /// Shortened 2026-09-03 (token audit Cut 1): see `axInsertIndexNote`.
+    static let mcuInsertSlotNote = " Mackie physical slot 1-8, NOT the Accessibility insert_index — see INSERT NUMBERING in the server instructions."
 
     static let evaluateChangeListenNote = "Do not decide keep/rollback from the numbers alone: LISTEN to baseline_audio and after_audio (open the preview/clip files with your client's file viewer) before judging."
 
