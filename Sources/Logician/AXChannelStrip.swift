@@ -360,6 +360,24 @@ extension LogicAccessibility {
 
     // MARK: - logic_set_track_routing
 
+    /// How the slot is read back after a routing press.
+    ///
+    /// The budget is unchanged at 25 looks — a slot that repaints slowly is
+    /// still given every one of them. What changed on 2026-09-03 is what a
+    /// hopeless poll costs: `output: "Mono"` read the SAME unchanged label 25
+    /// times and paid 6.7 s for it, because each look re-walks the inspector
+    /// strip (130-165 ms) on top of its own 120 ms sleep. Reads that keep
+    /// answering the same non-matching value are not a slot still settling,
+    /// they are a slot that has settled — see `routingSettledMisses`.
+    static let routingConfirmAttempts = 25
+    static let routingConfirmInterval: TimeInterval = 0.12
+
+    /// How many identical, non-empty, non-matching reads in a row end the
+    /// confirm-poll early. Five spans ~1.2 s of settled evidence — four times
+    /// the whole cost of every successful confirm measured live (one look,
+    /// 140 ms) and a fifth of what the doomed poll used to burn.
+    static let routingSettledMisses = 5
+
     /// Writes the strip's routing slots — output, input, group — through their
     /// pop-up menus, one compare-and-set at a time, each verified by reading
     /// the slot back.
@@ -464,34 +482,46 @@ extension LogicAccessibility {
                     exposed: "it was there a moment ago and is not now — the inspector strip repainted"
                 )
             }
-            let pressed = try chooseRouting(slot: slotElement, titled: step.target)
+            let (pressed, menuRoute) = try chooseRouting(slot: slotElement, titled: step.target)
             // The slot REPAINTS after a routing change and publishes an EMPTY
             // description while it does — measured 2026-08-28, where a fixed
             // 0.35 s wait read `''` and called a write that had landed
             // perfectly a `verification_failed` (the very next read, two
             // seconds later, said `Bus 4`). So poll for a settled, non-empty
             // label instead of sleeping a guess.
-            var after = ""
-            for _ in 0..<25 {
-                Thread.sleep(forTimeInterval: 0.12)
-                let value = currentValue(step.kind) ?? ""
-                guard !value.isEmpty else { continue }
-                after = value
-                if ChannelStrip.routingMatches(item: value, requested: step.target) { break }
+            var watch = ChannelStrip.SettleWatch(
+                target: step.target, limit: Self.routingSettledMisses
+            )
+            var landed = false
+            for attempt in 0..<Self.routingConfirmAttempts {
+                if lookFirstShouldSleep(attempt: attempt) {
+                    Thread.sleep(forTimeInterval: Self.routingConfirmInterval)
+                }
+                let verdict = watch.observe(currentValue(step.kind) ?? "")
+                if verdict == .landed { landed = true }
+                if verdict == .landed || verdict == .settledOnAnother { break }
             }
-            let landed = ChannelStrip.routingMatches(item: after, requested: step.target)
+            let after = watch.last
             results[step.key] = [
                 "before": before,
                 "requested": step.target,
                 "menu_item_pressed": pressed,
+                "menu_route": menuRoute,
                 "after": after,
                 "state": landed ? "confirmed" : "unverified"
             ] as [String: Any]
             guard landed else {
                 throw LogicianError.verificationFailed(
                     requested: "\(step.key) = \(step.target)",
-                    actual: "the slot reads '\(after)' after pressing '\(pressed)'",
-                    restored: false
+                    actual: "the slot reads '\(after)' after pressing '\(pressed)'"
+                        + (after == before
+                            ? " — the same value it read before, so the press changed nothing"
+                            : " (it read '\(before)' before)"),
+                    // Nothing to put back and nothing tried: the only write on
+                    // this path is the menu press itself, and a slot that never
+                    // moved has no inverse. Saying `false` here read as "the
+                    // restore was attempted and failed" (D2, 2026-09-03).
+                    restored: nil
                 )
             }
         }
@@ -521,16 +551,6 @@ extension LogicAccessibility {
         return payload
     }
 
-    /// Presses a routing slot until its menu is actually up, raising and
-    /// focusing the project window first.
-    ///
-    /// MEASURED 2026-08-28: the first press in a session opened the menu every
-    /// time and later ones reported "the menu did not open" — the same failure
-    /// the plugin setting menu had (FINDINGS v0.53.0, finding 8). A press into
-    /// a window that does not hold the focus arrives nowhere, and Logic being
-    /// the frontmost APPLICATION says nothing about which of its windows is
-    /// focused. So: raise, focus, press, and retry the press rather than
-    /// reporting a failure that a second attempt fixes.
     /// Every open pop-up menu, searched DEEPER than `popupMenus()`.
     ///
     /// A channel strip's slot menu is not always parented where a plugin
@@ -559,8 +579,56 @@ extension LogicAccessibility {
         }
     }
 
-    private func openSlotMenu(_ slot: AXUIElement) -> [AXUIElement] {
-        for _ in 0..<5 {
+    /// What a slot press actually produced: the menus that came up, and how
+    /// they were found — which matters, because a menu found by hit test is
+    /// one `dismissPopupMenus()` cannot cancel and only the element itself
+    /// can.
+    struct OpenedSlotMenu {
+        let menus: [AXUIElement]
+        /// What finally opened it, reported to the caller: `ax_press`, or
+        /// `mouse_click` when Logic's own press action did nothing and the
+        /// synthetic click had to stand in for a hand on the mouse.
+        let route: String
+        /// Nothing came up. Spelled out rather than a static constant because
+        /// `AXUIElement` is not `Sendable` and a static one would be shared
+        /// mutable state.
+        init(menus: [AXUIElement] = [], route: String = "none") {
+            self.menus = menus
+            self.route = route
+        }
+    }
+
+    /// How a slot press's menu is waited for.
+    ///
+    /// MEASURED 2026-09-03: a press that opens the menu where the shallow
+    /// depth-7 walk can see it is answered on the FIRST look, so the poll
+    /// looks before it sleeps and steps in 25 ms instead of 100 ms. The deep
+    /// depth-14 walk costs far more than the shallow one, so it is asked once
+    /// per attempt and only after the shallow deadline has passed: it is the
+    /// answer to "the menu is up and I cannot see it", not a per-tick cost.
+    static let slotMenuShallowDeadline: TimeInterval = 0.4
+    static let slotMenuPollInterval: TimeInterval = 0.025
+
+    /// Attempts at the whole raise-clear-press cycle. Three, not five: the
+    /// measured cure for a press that opens nothing is the Escape between
+    /// attempts (2026-08-28 — one Escape and the very next press worked), and
+    /// the two extra attempts only ever bought a longer walk to the same
+    /// failure — 21 s of it on the slot state profiles/logic_set_track_routing
+    /// §3 found, where no attempt could ever have succeeded.
+    static let slotMenuAttempts = 3
+
+    /// Presses a routing slot until its menu is actually up, raising and
+    /// focusing the project window first.
+    ///
+    /// MEASURED 2026-08-28: the first press in a session opened the menu every
+    /// time and later ones reported "the menu did not open" — the same failure
+    /// the plugin setting menu had (FINDINGS v0.53.0, finding 8). A press into
+    /// a window that does not hold the focus arrives nowhere, and Logic being
+    /// the frontmost APPLICATION says nothing about which of its windows is
+    /// focused. So: raise, focus, press, and retry the press rather than
+    /// reporting a failure that a second attempt fixes.
+    private func openSlotMenu(_ slot: AXUIElement) -> OpenedSlotMenu {
+        for _ in 0..<Self.slotMenuAttempts {
             try? ensureLogicFrontmost(for: "the channel strip routing menu")
             if let window = try? projectWindow() {
                 _ = AXUIElementPerformAction(window, "AXRaise" as CFString)
@@ -586,14 +654,87 @@ extension LogicAccessibility {
             // thinks it is cancelling is not known; that it cancels it is.
             try? sendKeystrokeToFrontmostLogic(virtualKey: 53, label: "Escape (clearing pending UI state)")
             Thread.sleep(forTimeInterval: 0.25)
-            _ = AXUIElementPerformAction(slot, kAXPressAction as CFString)
-            for _ in 0..<15 {
-                Thread.sleep(forTimeInterval: 0.1)
-                let menus = popupMenus()
-                if !menus.isEmpty { return menus }
-            }
+            // The press opens a TRACKING menu, so Logic's menu runloop never
+            // answers it: waiting for the reply cost 1504 ms — 44% of a whole
+            // successful call — on every menu this tool opened
+            // (profiles/logic_set_track_routing §2, 2026-09-03). The menu is
+            // the only judge, and it is looked for below.
+            pressOpeningTrackingMenu(slot)
+            if let opened = lookForSlotMenu(over: slot) { return opened }
+        }
+        return OpenedSlotMenu()
+    }
+
+    /// The menu that is on screen OVER this slot, found by asking the window
+    /// server what is drawn at the slot's own centre and walking UP from it —
+    /// the opposite direction from every other search in this file.
+    ///
+    /// THIS IS THE CURE FOR THE `No Output` LOCKOUT, and the mechanism is
+    /// worth writing down. Measured live 2026-09-03: with the strip's output
+    /// set to `No Output`, three presses in a row opened NOTHING that any
+    /// downward walk could see — 0 menus at depth 7, 0 at depth 14, on 3
+    /// attempts × 4 calls, ~21 s per call in the shipped shape — and the tool
+    /// reported "the routing slot's menu did not open" while the menu was in
+    /// fact standing open on screen. A hit test at the slot's centre right
+    /// after the press found `AXMenuItem <- AXMenu(8 items: '', No Output, '',
+    /// Output, Bus, '', Pan, Binaural Panner) <- AXPopUpButton <- AXLayoutArea
+    /// 'Mixer' <- … <- AXApplication`: Logic had parented the menu under an
+    /// AXPopUpButton proxy that the layout area does not list among its own
+    /// AXChildren, so no walk down from the application can ever reach it.
+    /// The same strip with a real output parents the same menu where the
+    /// depth-7 walk finds it on the first look.
+    ///
+    /// The state was reachable in one call of this tool and escapable in none
+    /// of them: the profile had to leave the tool entirely and press Undo.
+    /// One AX call, ~2 ms, closes that hole.
+    func slotMenuOnScreen(over slot: AXUIElement) -> [AXUIElement] {
+        guard let frameValue = attribute(slot, "AXFrame"),
+              let frame = rectValue(frameValue), !frame.isEmpty else { return [] }
+        var hit: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(
+            AXUIElementCreateSystemWide(), Float(frame.midX), Float(frame.midY), &hit
+        ) == .success, var current = hit else { return [] }
+        // Up through the menu ITEM (and a submenu's own item) to the menu.
+        for _ in 0..<AXDepth.slotMenuAncestors {
+            if stringAttribute(current, kAXRoleAttribute as String) == "AXMenu" { return [current] }
+            guard let parent = attribute(current, kAXParentAttribute as String),
+                  CFGetTypeID(parent) == AXUIElementGetTypeID() else { return [] }
+            current = (parent as! AXUIElement)
         }
         return []
+    }
+
+    /// Look for the menu the press just opened, cheapest and most direct look
+    /// first: what is drawn over the slot, then the shallow depth-7 walk, and
+    /// — once, after the deadline — the deep depth-14 walk that this file has
+    /// carried since 2026-08-28 for the presses where Logic parents the menu
+    /// under the project window's own tree.
+    private func lookForSlotMenu(over slot: AXUIElement) -> OpenedSlotMenu? {
+        let deadline = Date().addingTimeInterval(Self.slotMenuShallowDeadline)
+        while true {
+            let onScreen = slotMenuOnScreen(over: slot)
+            if !onScreen.isEmpty {
+                return OpenedSlotMenu(menus: onScreen, route: "hit_test")
+            }
+            let menus = popupMenus()
+            if !menus.isEmpty {
+                return OpenedSlotMenu(menus: menus, route: "shallow_walk")
+            }
+            if Date() >= deadline { break }
+            Thread.sleep(forTimeInterval: Self.slotMenuPollInterval)
+        }
+        let deep = stripSlotMenus()
+        return deep.isEmpty ? nil : OpenedSlotMenu(menus: deep, route: "deep_walk")
+    }
+
+    /// Cancel the menus a slot press opened — the ones we HOLD first, because
+    /// a menu found by hit test is exactly the menu no walk can find again,
+    /// and then the shallow walk for anything else that came up with it.
+    func dismissSlotMenus(_ opened: OpenedSlotMenu) {
+        for menu in opened.menus {
+            _ = AXUIElementPerformAction(menu, kAXCancelAction as CFString)
+        }
+        dismissPopupMenus()
     }
 
     /// One entry of a routing slot's pop-up menu.
@@ -616,13 +757,15 @@ extension LogicAccessibility {
     /// titles carry their destination: `"Bus 2 → Aux 2"` on an output slot,
     /// `"Bus 2 ← Lofi Pad"` on an input slot.
     func routingChoices(of slot: AXUIElement) throws -> [RoutingChoice] {
-        let menus = openSlotMenu(slot)
+        let opened = openSlotMenu(slot)
         defer {
-            dismissPopupMenus()
+            dismissSlotMenus(opened)
             Thread.sleep(forTimeInterval: 0.25)
         }
-        guard let menu = menus.first else {
-            throw LogicianError.openVerificationFailed("the routing slot's menu did not open")
+        guard let menu = opened.menus.first else {
+            throw LogicianError.openVerificationFailed(
+                ChannelStrip.slotMenuFailure(attempts: Self.slotMenuAttempts)
+            )
         }
         var choices: [RoutingChoice] = []
         walk(from: menu, maximumDepth: AXDepth.routingMenuItem) { element in
@@ -641,16 +784,48 @@ extension LogicAccessibility {
         return choices
     }
 
+    /// Does this menu item merely CONTAIN destinations? A routing menu nests
+    /// its channel formats — `Mono`, `Stereo`, `Surround` — as submenus over
+    /// the actual physical outputs, and a submenu parent answers `AXPress`
+    /// with `.success` while routing nothing anywhere.
+    func routingItemIsCategory(_ item: AXUIElement) -> Bool {
+        children(of: item).contains {
+            stringAttribute($0, kAXRoleAttribute as String) == "AXMenu"
+        }
+    }
+
+    /// The destination titles inside a category item, in menu order.
+    func routingItemLeaves(_ item: AXUIElement) -> [String] {
+        var leaves: [String] = []
+        walk(from: item, maximumDepth: AXDepth.routingMenuItem) { element in
+            guard !CFEqual(element, item),
+                  stringAttribute(element, kAXRoleAttribute as String) == "AXMenuItem" else {
+                return .descend
+            }
+            let title = stringAttribute(element, kAXTitleAttribute as String)
+            if !title.isEmpty, !routingItemIsCategory(element) { leaves.append(title) }
+            return .descend
+        }
+        return leaves
+    }
+
     /// Opens a routing slot's menu and presses the item the caller named.
     /// Returns the exact title pressed. The menu is dismissed on every failure
     /// path, because an open menu swallows Logic's keyboard.
+    /// Returns the title pressed and HOW the menu was opened — `ax_press`, or
+    /// `mouse_click` when Logic's press action opened nothing and the
+    /// hit-tested synthetic click had to.
     @discardableResult
-    func chooseRouting(slot: AXUIElement, titled requested: String) throws -> String {
-        let menus = openSlotMenu(slot)
-        guard let menu = menus.first else {
-            throw LogicianError.openVerificationFailed("the routing slot's menu did not open")
+    func chooseRouting(slot: AXUIElement, titled requested: String) throws -> (title: String, route: String) {
+        let opened = openSlotMenu(slot)
+        guard let menu = opened.menus.first else {
+            dismissSlotMenus(opened)
+            throw LogicianError.openVerificationFailed(
+                ChannelStrip.slotMenuFailure(attempts: Self.slotMenuAttempts)
+            )
         }
         var target: AXUIElement?
+        var category: AXUIElement?
         var titles: [String] = []
         walk(from: menu, maximumDepth: AXDepth.routingMenuItem) { element in
             guard stringAttribute(element, kAXRoleAttribute as String) == "AXMenuItem" else {
@@ -659,14 +834,32 @@ extension LogicAccessibility {
             let title = stringAttribute(element, kAXTitleAttribute as String)
             guard !title.isEmpty else { return .descend }
             titles.append(title)
-            if target == nil, ChannelStrip.routingMatches(item: title, requested: requested) {
-                target = element
+            if ChannelStrip.routingMatches(item: title, requested: requested) {
+                // A CATEGORY is not a destination, and pressing one is the
+                // quiet failure D2 measured: `Mono` answered `.success` in
+                // 0.1 ms and left the slot reading `Stereo Output` through a
+                // 6.7 s confirm-poll (profiles/logic_set_track_routing §4,
+                // 2026-09-03). Remember it, keep looking for a real leaf, and
+                // refuse with its contents if a leaf never turns up.
+                if routingItemIsCategory(element) {
+                    if category == nil { category = element }
+                } else if target == nil {
+                    target = element
+                }
             }
             return .descend
         }
         guard let item = target else {
-            dismissPopupMenus()
+            dismissSlotMenus(opened)
             Thread.sleep(forTimeInterval: 0.25)
+            if let category {
+                throw LogicianError.invalidArguments(ChannelStrip.categoryRefusal(
+                    requested: requested,
+                    category: stringAttribute(category, kAXTitleAttribute as String),
+                    leaves: routingItemLeaves(category),
+                    offered: titles.filter { !$0.isEmpty }
+                ))
+            }
             throw LogicianError.parameterNotFound(
                 "routing destination '\(requested)'. The slot offers: \(titles.prefix(40).joined(separator: ", "))"
                     + (titles.count > 40 ? ", … (\(titles.count) in all)" : "")
@@ -675,19 +868,23 @@ extension LogicAccessibility {
         let title = stringAttribute(item, kAXTitleAttribute as String)
         let status = AXUIElementPerformAction(item, kAXPressAction as CFString)
         guard status == .success else {
-            dismissPopupMenus()
+            dismissSlotMenus(opened)
             Thread.sleep(forTimeInterval: 0.25)
             throw LogicianError.writeFailed(
                 "pressing '\(title)' in the routing menu returned AXError \(status.rawValue)"
             )
         }
-        Thread.sleep(forTimeInterval: 0.45)
-        // A menu that stayed up after a successful press is a menu that ate
-        // the press; never leave one open.
-        if !popupMenus().isEmpty {
-            dismissPopupMenus()
+        // No blind settle here any more. The 0.45 s this used to sleep bought
+        // exactly what the caller's own confirm-poll buys, twice over: 454 ms
+        // of a 3420 ms call, 13.3% of it, waiting for a repaint the poll then
+        // waited for again and actually checked (profiles/logic_set_track_routing
+        // §5.4, 2026-09-03). The one thing worth knowing right now is whether
+        // a menu is still standing — a menu that survived a successful press
+        // is a menu that ate it, and it would swallow Logic's keyboard.
+        if !popupMenus().isEmpty || !slotMenuOnScreen(over: slot).isEmpty {
+            dismissSlotMenus(opened)
             Thread.sleep(forTimeInterval: 0.25)
         }
-        return title
+        return (title, opened.route)
     }
 }

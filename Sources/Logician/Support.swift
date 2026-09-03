@@ -544,7 +544,15 @@ enum LogicianError: LocalizedError {
     case currentValueMismatch(expected: String, actual: String)
     case writeFailed(String)
     case confirmationFailed(String)
-    case verificationFailed(requested: String, actual: String, restored: Bool)
+    /// A write landed somewhere other than where it was asked to. `restored`
+    /// is THREE-VALUED on purpose: `true` an inverse write was made and
+    /// confirmed, `false` one was attempted and failed, `nil` none was
+    /// attempted at all. Measured 2026-09-03 (profiles/logic_set_track_routing
+    /// §4): `logic_set_track_routing` reported "Restored: false" on a press
+    /// that had changed nothing and that it had never tried to undo, which
+    /// reads to a caller as "a restore was attempted and failed" — the one
+    /// thing that had not happened.
+    case verificationFailed(requested: String, actual: String, restored: Bool?)
     case invalidArguments(String)
     case projectMismatch(expected: String, actual: String)
     /// Something the operation needed could not be reached. `requested` names
@@ -652,7 +660,8 @@ enum LogicianError: LocalizedError {
         case .confirmationFailed(let detail):
             return "Accessibility confirmation failed: \(detail)"
         case .verificationFailed(let requested, let actual, let restored):
-            return "Readback mismatch. Requested \(requested), found \(actual). Restored: \(restored)."
+            return "Readback mismatch. Requested \(requested), found \(actual). "
+                + (restored.map { "Restored: \($0)." } ?? "No restore was attempted.")
         case .invalidArguments(let detail):
             return "Invalid arguments: \(detail)"
         case .preconditionUnmet(let detail):

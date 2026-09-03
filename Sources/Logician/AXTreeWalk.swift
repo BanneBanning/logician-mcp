@@ -232,6 +232,12 @@ enum AXDepth {
     /// them only sometimes (measured 2026-08-28 as presses that "did not open
     /// a menu" while the menu was in fact up).
     static let stripSlotMenu = 14
+    /// A hit-tested element -> the AXMenu it belongs to, walking UP. MEASURED
+    /// live 2026-09-03 on the `No Output` output slot: the chain is
+    /// `AXMenuItem <- AXMenu`, two steps, and a submenu's item adds two more.
+    /// Six is headroom over both, and it is a walk of PARENTS, so it visits
+    /// six elements, not a subtree.
+    static let slotMenuAncestors = 6
     /// A channel strip routing slot's menu -> a destination. MEASURED
     /// 2026-08-28: the output menu nests root -> `Bus` -> the 32 bus items,
     /// and the `33 - 64` … `225 - 256` ranges one level deeper again, so a

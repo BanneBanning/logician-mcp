@@ -191,6 +191,99 @@ enum ChannelStrip {
         ("No Group", emptyGroupLabel)
     ]
 
+    /// What "no menu came up" is reported as. Written once, because both
+    /// halves of the read/write pair raise it, and it has to tell the caller
+    /// the two things it can act on: nothing was written, and there is a way
+    /// through that does not need this tool.
+    static func slotMenuFailure(attempts: Int) -> String {
+        "the routing slot's menu did not open — \(attempts) presses, each one followed by a look"
+            + " for the menu at both the depths Logic parents these menus at. NOTHING was written."
+            + " This is safe to retry (bring Logic to the front first); a slot that refuses every"
+            + " time can still be set by hand in Logic's own channel strip."
+    }
+
+    /// The confirm-poll's memory of what the slot has been saying.
+    ///
+    /// A routing press is verified by reading the slot back until it settles,
+    /// and a slot mid-repaint publishes an EMPTY label — so an empty read is
+    /// not evidence of anything and never counts. What this adds is the other
+    /// end: a slot that keeps answering the same NON-matching label has
+    /// settled on it, and the rest of the budget will only produce the same
+    /// answer later. Measured 2026-09-03: a doomed poll ran all 25 looks and
+    /// cost 6.7 s, because each look re-walks the inspector strip.
+    struct SettleWatch {
+        let target: String
+        let limit: Int
+        /// The last non-empty label read, which is what a failure reports.
+        private(set) var last = ""
+        private(set) var repeats = 0
+
+        enum Verdict: Equatable {
+            /// An empty label: the slot is repainting, look again.
+            case repainting
+            /// The requested destination is in force.
+            case landed
+            /// Something else, but not yet often enough to call it settled.
+            case keepLooking
+            /// The same wrong label, `limit` times over. Stop.
+            case settledOnAnother
+        }
+
+        mutating func observe(_ value: String) -> Verdict {
+            guard !value.isEmpty else { return .repainting }
+            if ChannelStrip.routingMatches(item: value, requested: target) {
+                last = value
+                return .landed
+            }
+            repeats = value == last ? repeats + 1 : 1
+            last = value
+            return repeats >= limit ? .settledOnAnother : .keepLooking
+        }
+    }
+
+    /// Why a routing name that IS in the menu still cannot be written: it
+    /// names a category the menu nests destinations under, not a destination.
+    ///
+    /// MEASURED live 2026-09-03 (profiles/logic_set_track_routing §4):
+    /// `output: "Mono"` found the item, pressed it with `.success` in 0.1 ms,
+    /// changed nothing, and then spent 6.7 s polling a slot that still read
+    /// `Stereo Output` before failing — twice. A category answers a press by
+    /// opening its submenu, which is not a routing change and never becomes
+    /// one, so this refuses BEFORE the press and hands over the names that
+    /// are real: the caller's next call is right instead of ten seconds late.
+    static func categoryRefusal(
+        requested: String, category: String, leaves: [String], offered: [String] = []
+    ) -> String {
+        let named = category.isEmpty ? requested : category
+        // Logic does not always publish a submenu's contents until the
+        // submenu has been opened (measured 2026-09-03: `Mono` came back with
+        // an AXMenu child and no items in it), so when the inside is empty the
+        // refusal offers the rest of the slot's menu rather than nothing.
+        // The category itself is not one of the alternatives to it.
+        let rest = offered.filter {
+            routingHead($0).localizedCaseInsensitiveCompare(routingHead(named)) != .orderedSame
+        }
+        let list: String
+        if !leaves.isEmpty {
+            list = "it holds: " + capped(leaves)
+        } else if !rest.isEmpty {
+            list = "Logic does not publish its contents until the submenu is opened, and the rest of"
+                + " this slot's menu is: " + capped(rest)
+        } else {
+            list = "open the slot in Logic to see what it holds"
+        }
+        return "'\(requested)' is a CATEGORY in this slot's menu, not a destination"
+            + (named.caseInsensitiveCompare(requested) == .orderedSame ? "" : " (Logic titles it '\(named)')")
+            + ". Pressing it opens its submenu and routes nothing, so nothing was written."
+            + " Name one of the destinations instead — \(list)."
+    }
+
+    /// A menu list an error message can carry without becoming the menu.
+    private static func capped(_ titles: [String], to limit: Int = 20) -> String {
+        titles.prefix(limit).joined(separator: ", ")
+            + (titles.count > limit ? ", … (\(titles.count) in all)" : "")
+    }
+
     /// Whether a routing menu item — or a slot's own label — is the one the
     /// caller asked for. A request may be the head alone (`"Bus 2"`), Logic's
     /// whole decorated title, or either half of an empty pair.

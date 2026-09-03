@@ -1781,6 +1781,30 @@ with every render coming back as audio the agent can listen to.
   session, old binary against new: a real toggle **1 527-1 557 ms → 331-374 ms**; a no-op
   **403-444 ms → 41-54 ms**. The refusal → expand → select hidden row → collapse round trip
   still works exactly as before, live, both directions.
+- **A track routed to `No Output` can be routed back.** It could not:
+  `logic_set_track_routing` set that value happily and then refused every attempt to leave
+  it, in either direction, three times over, ~21 s each, ending in "the routing slot's menu
+  did not open" — a one-way door the tool itself made, and the only way out was leaving the
+  tool for an Undo (profiles/logic_set_track_routing.md §3). The menu had opened every time.
+  Measured live 2026-09-03: on a strip with no output Logic parents the slot's menu under a
+  pop-up-button proxy that the inspector does not list among its own children, so no walk
+  down Logic's tree can ever see it. The tool now also asks the window server what is drawn
+  over the slot — one call, ~2 ms — and finds the menu there. `No Output` → `Stereo Output`
+  now lands **verified in ~2.0-2.2 s, 4 times out of 4**, where the old binary failed in
+  25.1 s on the same strip in the same session. Every routing write is faster with it: a real
+  output change **3 659 ms → 1 967 ms**, back again **3 635 ms → 2 004 ms**, because the press
+  that opens the menu no longer waits out a 1 504 ms reply Logic never sends and the blind
+  0.45 s settle after the item press is gone (the verified readback that followed it already
+  proved the same thing). The result now says which of the three looks found the menu in
+  `menu_route`.
+- **`output: "Mono"` is refused in 1.9 s instead of failing in 12.7 s.** It is a CATEGORY in
+  Logic's menu — an empty submenu over the physical outputs — so pressing it opened a submenu
+  and routed nothing; the tool then polled the slot 25 times over 6.7 s and reported a
+  readback mismatch that also claimed `Restored: false` for a restore it had never attempted.
+  Categories are now refused before anything is pressed, naming what to use instead, and a
+  failure that attempted no restore says "No restore was attempted." A confirm-poll keeps its
+  full 25-look budget but stops early when the slot has answered the same wrong label five
+  times in a row: it has settled, and the rest of the budget only says so later.
 
 - **A soloed or muted track no longer makes the region tools refuse their own answers.** Logic
   writes a track row's live state into the row's own description — `Track 26 “Crash”, solo` — and
