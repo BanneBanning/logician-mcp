@@ -220,6 +220,27 @@ extension MCUController {
         return result
     }
 
+    /// The cleanup-path stop every recording/rendering tool presses on its way
+    /// out — `logic_record_midi`, `logic_record_automation`,
+    /// `logic_render_track` — wrapped so the verdict is never thrown away.
+    /// `setPlaying(false)` may still press nothing (already stopped) or
+    /// refuse to press at all (an unresolved witness matrix); this turns
+    /// whichever happened into the `transport_stop` payload those tools
+    /// report, via the pure `transportStopReport`. Never throws: a cleanup
+    /// path must complete regardless of what the transport verdict was.
+    static func stopForCleanup() -> (payload: [String: Any], warning: String?) {
+        do {
+            guard let result = try setPlaying(false) else {
+                return transportStopReport(.unavailable(
+                    "the play/stop transport buttons on the control surface were not reachable"
+                ))
+            }
+            return transportStopReport(.result(result))
+        } catch {
+            return transportStopReport(.refused(error.localizedDescription))
+        }
+    }
+
     /// See `setPlaying` above: `requireSurface` wakes a merely-idle mirror
     /// instead of silently taking the AX fallback (profiles/
     /// logic_set_cycle.md N1). `nil` still means genuinely unavailable.

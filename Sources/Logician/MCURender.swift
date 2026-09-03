@@ -295,7 +295,13 @@ extension MCUController {
             if !renderStarted && Date() > startDeadline { break }
             Thread.sleep(forTimeInterval: 0.3)
         }
-        _ = try? setPlaying(false)
+        // The render's OWN stop, on the success path this feeds `result`
+        // below — captured rather than discarded, because Logic drives
+        // neither the play LED nor the position display during an offline
+        // freeze render (see `transportVerdict`'s doc comment), so this stop
+        // is routinely verified through a fallback witness rather than the
+        // LED, and that verdict used to be invisible.
+        let transportStop = stopForCleanup()
 
         guard let rendered = newAudio else {
             // Restore state: only toggle back when the track actually shows
@@ -417,8 +423,10 @@ extension MCUController {
             "unfrozen": unfroze,
             "note": unfroze
                 ? "Track rendered offline via Freeze (no dialogs) and unfrozen again; the file is the full track from project start, mono/stereo as the track."
-                : "Rendered file copied out, but the freeze file is still present — the track may still be frozen; toggle freeze manually or rerun."
+                : "Rendered file copied out, but the freeze file is still present — the track may still be frozen; toggle freeze manually or rerun.",
+            "transport_stop": transportStop.payload
         ]
+        appendWarning(transportStop.warning, to: &result)
         if let pruned { result["captures_pruned"] = pruned }
         // The playhead goes back where the caller had it, before anything
         // slow (the preview and the ear encode) is paid for: the render is

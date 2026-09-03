@@ -338,4 +338,92 @@ final class TransportWitnessTests: XCTestCase {
         }
         XCTAssertEqual(spent, 2.25, accuracy: 0.001)
     }
+
+    // MARK: transport_stop — the cleanup stop's verdict, no longer discarded
+    //
+    // `logic_record_midi`, `logic_record_automation` and `logic_render_track`
+    // all press `setPlaying(false)` on their way out through `try?`, which
+    // used to throw away whatever it answered. `transportStopReport` is the
+    // pure shaping step between that outcome and the `transport_stop` field
+    // those three tools now report, so every shape is pinned here without
+    // Logic running.
+
+    func testAConfirmedStopReportsItsStateWitnessesAndNoDesync() {
+        let (payload, warning) = transportStopReport(.result([
+            "success": true, "verified": true, "state": "stopped", "playing": false,
+            "readback_route": "mcu_transport_led",
+            "transport_witnesses": ["mcu_transport_leds": "stop", "ax_play_checkbox": NSNull(), "mcu_position_motion": NSNull()]
+        ]))
+        XCTAssertEqual(payload["state"] as? String, "stopped")
+        XCTAssertEqual(payload["led_desync"] as? Bool, false)
+        XCTAssertNotNil(payload["transport_witnesses"])
+        XCTAssertNil(warning)
+    }
+
+    /// A verified no-op — `setPlaying(false)` found the transport already
+    /// stopped and pressed nothing — is not an error, and still reports a
+    /// full shape.
+    func testAnAlreadyStoppedVerdictReportsCleanly() {
+        let (payload, warning) = transportStopReport(.result([
+            "success": true, "verified": true, "state": "already_stopped", "playing": false,
+            "readback_route": "ax_play_checkbox",
+            "transport_witnesses": ["mcu_transport_leds": "neither", "ax_play_checkbox": false, "mcu_position_motion": NSNull()]
+        ]))
+        XCTAssertEqual(payload["state"] as? String, "already_stopped")
+        XCTAssertEqual(payload["led_desync"] as? Bool, false)
+        XCTAssertNil(warning)
+    }
+
+    /// The LED never echoed, but a fallback witness confirmed the stop
+    /// anyway: `led_desync` is true and the warning `setPlaying` itself wrote
+    /// is what surfaces — that used to vanish behind `try?` entirely.
+    func testALedDesyncedStopCarriesItsWarningThrough() {
+        let (payload, warning) = transportStopReport(.result([
+            "success": true, "verified": true, "state": "stopped", "playing": false,
+            "readback_route": "ax_play_checkbox", "led_desync": true,
+            "warning": "The control surface's play/stop LEDs never echoed the press",
+            "transport_witnesses": ["mcu_transport_leds": "play", "ax_play_checkbox": false, "mcu_position_motion": NSNull()]
+        ]))
+        XCTAssertEqual(payload["led_desync"] as? Bool, true)
+        XCTAssertEqual(warning, "The control surface's play/stop LEDs never echoed the press")
+    }
+
+    /// No control surface at all: house style names the reason rather than
+    /// returning an empty dictionary, and there is nothing to warn about — a
+    /// tool with no surface has already failed elsewhere.
+    func testAnUnreachableSurfaceNamesWhyInsteadOfAnEmptyPayload() {
+        let (payload, warning) = transportStopReport(
+            .unavailable("the play/stop transport buttons on the control surface were not reachable")
+        )
+        XCTAssertEqual(payload.count, 1)
+        XCTAssertEqual(payload["unavailable"] as? String, "the play/stop transport buttons on the control surface were not reachable")
+        XCTAssertNil(warning)
+    }
+
+    /// The fix's whole point: a stop REFUSED because no witness could say the
+    /// transport was rolling (pressing would have been Logic's
+    /// rewind-to-bar-1) is reported, not silently swallowed — and it always
+    /// earns a warning, unconditionally.
+    func testARefusedStopIsReportedAndAlwaysWarns() {
+        let (payload, warning) = transportStopReport(.refused(
+            "not one of the three witnesses could say whether Logic is playing"
+        ))
+        XCTAssertEqual(payload["state"] as? String, "refused")
+        XCTAssertEqual(payload["reason"] as? String, "not one of the three witnesses could say whether Logic is playing")
+        XCTAssertNotNil(warning)
+        XCTAssertTrue(warning!.contains("not one of the three witnesses"), warning ?? "")
+    }
+
+    /// A press that landed but that not even the fallback witnesses could
+    /// confirm — `setPlaying`'s `verificationFailed` throw — is the other
+    /// thrown shape, and it is reported the same way as a refusal: something
+    /// is unconfirmed about the transport and the caller must not assume it
+    /// stopped silently.
+    func testAnUnconfirmedPressIsReportedLikeARefusal() {
+        let (payload, warning) = transportStopReport(.refused(
+            "the play LED never echoed the press and stopped could not be confirmed"
+        ))
+        XCTAssertEqual(payload["state"] as? String, "refused")
+        XCTAssertNotNil(warning)
+    }
 }
