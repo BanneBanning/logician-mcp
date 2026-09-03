@@ -1309,6 +1309,11 @@ extension MCUController {
     /// The selected track's insert slots as shown on the MCU (physical slot
     /// numbering, which can differ from the AX occupied-slot ordinals).
     static func pluginInsertNames() throws -> [String]? {
+        // Any earlier call's reason is stale the moment this one starts, and
+        // `browserUnavailabilityDetail` prefers the browser's record over the
+        // view's — so clear it here rather than let a read quote a write's
+        // week-old excuse.
+        lastBrowserRefusal = nil
         guard let status = try ensurePluginList(),
               let bottom = status["lcd_bottom"] as? String else { return nil }
         return lcdFields(bottom)

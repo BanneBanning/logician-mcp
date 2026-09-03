@@ -57,7 +57,7 @@ extension MCPServer {
         guard let inserts = try MCUController.pluginInsertNames() else {
             throw LogicianError.trackNotExposed(
                 requested: "MCU plugin insert list",
-                exposed: "the MCU bridge is unavailable or the insert list did not appear"
+                exposed: MCUController.browserUnavailabilityDetail
             )
         }
         // The surface stays on the insert list. `pluginInsertNames` proved that
@@ -112,9 +112,17 @@ extension MCPServer {
                 format: (arguments["format"] as? String) ?? "Stereo"
             )
         } else {
+            // WHY the MCU route bowed out, in its own words. The sentence
+            // this replaces said "the MCU bridge is unavailable" whatever had
+            // happened, and live on 2026-09-02 that was false three times out
+            // of three: the bridge was running, the strip resolved, and
+            // `ensurePluginList` had given up one press short of the insert
+            // list (see MCUController.browserUnavailabilityDetail).
             throw LogicianError.trackNotExposed(
                 requested: "mouse-free plugin insertion",
-                exposed: "the MCU bridge is unavailable; pass allow_mouse: true to permit the AX chooser fallback (takes over the pointer briefly)"
+                exposed: MCUController.browserUnavailabilityDetail
+                    + ". Pass allow_mouse: true to permit the AX chooser fallback"
+                    + " (takes over the pointer briefly)"
             )
         }
         return payload
@@ -157,7 +165,9 @@ extension MCPServer {
         } else {
             throw LogicianError.trackNotExposed(
                 requested: "mouse-free plugin removal",
-                exposed: "the MCU bridge is unavailable; pass allow_mouse: true to permit the AX chooser fallback (takes over the pointer briefly)"
+                exposed: MCUController.browserUnavailabilityDetail
+                    + ". Pass allow_mouse: true to permit the AX chooser fallback"
+                    + " (takes over the pointer briefly)"
             )
         }
         return payload

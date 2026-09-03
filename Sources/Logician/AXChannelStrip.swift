@@ -21,6 +21,14 @@ extension LogicAccessibility {
     /// "the PL view is pointed at another channel" for a strip that was
     /// correctly selected. `ChannelStrip.read` already separates the two by
     /// geometry, so the cross-checks ask it rather than guessing.
+    ///
+    /// AND THE SAME IS TRUE OF A SUMMING TRACK STACK'S MAIN CHANNEL, which is
+    /// an aux-shaped strip with no MIDI Effect slot at all: measured live
+    /// 2026-09-02 on `Drum Synth Kit`, Accessibility published eight names
+    /// (`Drum Machine Designer` among them) against the surface's seven
+    /// inserts plus one empty slot, and every plug-in write on that strip was
+    /// refused as "the PL view is pointed at another channel". See
+    /// `ChannelStrip.auxInstrument` for the rule that drops it.
     func insertPluginNames(trackName: String) throws -> [String] {
         ChannelStrip.read(children: stripChildren(of: try inspectorStrip(named: trackName))).plugins
     }

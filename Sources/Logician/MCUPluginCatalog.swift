@@ -246,6 +246,13 @@ extension MCUController {
     /// difference between "not found" and "never got near it".
     static let browseRemovalTailEntries = 6
 
+    /// How many entries from each END of a failed FORWARD search its refusal
+    /// quotes. Four, because that is enough to identify the catalog — the two
+    /// lists open `Parametric EQ (s/s)` / `Low Pass Filter (s/s)` and
+    /// `Low Pass Filter (m/m)` / `Chorus (m/m)` respectively (measured
+    /// 2026-09-02) — without pasting a plug-in inventory into a refusal.
+    static let browseRefusalSampleEntries = 4
+
     /// Blocks until Logic stops sending, or the deadline. `quiescentStatus`
     /// answers nil for "more arrived, ask again" rather than looping itself, so
     /// this is the loop — the positive proof that a multi-entry repaint has

@@ -57,12 +57,23 @@ extension MCUController {
     /// drops anything, so a cell far shorter than the cell width cannot be an
     /// abbreviation of a long name. A cell at least as long as the name is not
     /// abbreviated at all and passes on the subsequence match alone.
-    static func lcdAbbreviationPlausible(track: String, lcd: String) -> Bool {
+    /// `cellWidth` is how many characters were available to Logic for the
+    /// abbreviation, and it is not always `lcdNameCellWidth`: a BYPASSED insert
+    /// spends one of its six on the bypass marker, so `Overdrive` is painted
+    /// `*Ovrdr` — five characters of name — and the six-character floor
+    /// rejected it as implausible. Measured live 2026-09-02 on `Drum Synth
+    /// Kit`, whose row is `-- | *Ovrdr | *Bitcr | Pedlba | *Envlp | *St-De |
+    /// *PtVer | Cha EQ`: the two ENABLED cells passed the floor and all five
+    /// bypassed ones failed it, so the strip check refused a list that agreed
+    /// perfectly.
+    static func lcdAbbreviationPlausible(
+        track: String, lcd: String, cellWidth: Int = lcdNameCellWidth
+    ) -> Bool {
         guard lcdNameMatches(track: track, lcd: lcd) else { return false }
         let cell = lcd.trimmingCharacters(in: .whitespaces)
         let name = track.trimmingCharacters(in: .whitespaces)
         if cell.count >= name.count { return true }
-        return cell.count >= min(name.count, lcdNameCellWidth)
+        return cell.count >= min(name.count, cellWidth)
     }
 
     /// How many strips the rightmost bank shares with the bank before it.
@@ -141,14 +152,20 @@ extension MCUController {
     /// caller reports the check as unavailable instead.
     static func pluginListAgreesWithAX(mcuCells: [String], axNames: [String]) -> Bool? {
         guard !axNames.isEmpty else { return nil }
-        // A leading '*' is Logic's bypass marker, not part of the name.
+        // A leading '*' is Logic's bypass marker, not part of the name — and it
+        // costs the name one of the cell's six characters, which the width the
+        // match is judged against has to know about (see
+        // `lcdAbbreviationPlausible`).
         let occupied = mcuCells
-            .map {
-                $0.trimmingCharacters(
-                    in: CharacterSet(charactersIn: MCULCDStrings.bypassMarker + " ")
+            .map { raw -> (name: String, width: Int) in
+                let marker = MCULCDStrings.bypassMarker
+                let bypassed = raw.trimmingCharacters(in: .whitespaces).hasPrefix(marker)
+                return (
+                    raw.trimmingCharacters(in: CharacterSet(charactersIn: marker + " ")),
+                    lcdNameCellWidth - (bypassed ? marker.count : 0)
                 )
             }
-            .filter { !$0.isEmpty && $0 != MCULCDStrings.emptySlot }
+            .filter { !$0.name.isEmpty && $0.name != MCULCDStrings.emptySlot }
         // Counts must match EXACTLY, and the caller is responsible for handing
         // in a comparable list: the AX channel strip publishes an occupied
         // INSTRUMENT slot in the same shape as an insert, and the MCU plug-in
@@ -159,7 +176,7 @@ extension MCUController {
         var remaining = axNames
         for cell in occupied {
             guard let index = remaining.firstIndex(where: {
-                lcdAbbreviationPlausible(track: $0, lcd: cell)
+                lcdAbbreviationPlausible(track: $0, lcd: cell.name, cellWidth: cell.width)
             }) else { return false }
             remaining.remove(at: index)
         }

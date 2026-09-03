@@ -5,6 +5,41 @@ import LogicMCUBridge
 
 extension MCUController {
 
+    /// Why the last plug-in browser call came back `nil` — i.e. "the MCU route
+    /// is not available, try the other plane" — in words.
+    ///
+    /// `nil` is the browser's way of letting `allow_mouse: true` reach the
+    /// Accessibility chooser, so it cannot be replaced by a throw. But it used
+    /// to be the ONLY thing the caller got, and the caller spelled every one of
+    /// them *"the MCU bridge is unavailable"*: measured live 2026-09-02,
+    /// `logic_add_plugin` on `Sweeps` refused three times out of three with
+    /// that sentence while `logic_health` reported the bridge running, the
+    /// strip resolved and the insert list came up on screen a moment later —
+    /// the real cause was `ensurePluginList` giving up one press short
+    /// (`lastPluginListRefusal`). So every nil now leaves its reason here and
+    /// the refusals quote it.
+    nonisolated(unsafe) static var lastBrowserRefusal: String? // single-threaded server loop
+
+    /// The reason to put in a refusal after a browser call returned nil: what
+    /// the browser itself recorded, or what the plug-in list view recorded, or
+    /// — when neither did — the honest fallback that the surface is not
+    /// answering.
+    static var browserUnavailabilityDetail: String {
+        lastBrowserRefusal ?? lastPluginListRefusal
+            ?? "the control surface did not answer; logic_health reports whether the MCU bridge is running"
+    }
+
+    /// A browse message the bridge would not send: records why, abandons the
+    /// browse (which has written nothing) and hands the surface back to the
+    /// Pan view. Both browsers call it on the same three occasions — a jump, a
+    /// step, and the confirming press — so the reason is never lost to a bare
+    /// `nil` again.
+    static func browseSendFailed(_ what: String) {
+        lastBrowserRefusal = "the bridge refused to send \(what) to the surface."
+            + " The browse was abandoned before the confirming press, so nothing was written"
+        exitToPan()
+    }
+
     /// The third proof, taken after the PL view is up and before a browser
     /// write: the list the surface shows must agree with the one
     /// Accessibility reads off the same strip. Throws when they disagree,
@@ -37,6 +72,111 @@ extension MCUController {
         }
     }
 
+    // MARK: What a browse that found nothing has to say for itself
+
+    /// The refusal a forward search that never matched carries: how many
+    /// catalog entries it looked at, which bound stopped it, WHAT IT SAW at
+    /// both ends of the walk, and — the part that turns a dead end into an
+    /// instruction — which of Logic's two catalogs it was walking.
+    ///
+    /// MEASURED LIVE 2026-09-02, and it is the whole reason this function
+    /// exists. `logic_add_plugin {Crash, "Parametric EQ"}` walked **226
+    /// entries in 15 s** and refused; the identical call on `Sweeps` finds the
+    /// same plug-in at entry **1**. The difference is not the origin, the slot
+    /// or the session: `Sweeps`' inserts browse the `(s/s)` catalog, which
+    /// opens `Parametric EQ (s/s)` → `Low Pass Filter (s/s)` →
+    /// `High Pass Filter (s/s)`, and `Crash`'s browse the `(m/m)` catalog,
+    /// which opens `Low Pass Filter (m/m)` → `Chorus (m/m)` and had no
+    /// `Parametric EQ` in the 226 entries there was time for. **The strip's
+    /// channel format chooses the catalog**, `PluginCatalogMap` has said so
+    /// about its cached ordinals since 2026-08-31, and the refusal an agent
+    /// actually reads never mentioned it — so "not found" read as "not
+    /// installed" on a plug-in that is one strip away.
+    static func browseSearchRefusal(
+        pluginName: String,
+        slot: Int,
+        entriesSeen: Int,
+        opening: [String],
+        tail: [String],
+        format: String?,
+        stoppedOnCap: Bool
+    ) -> String {
+        var text = "the plug-in browser never showed '\(pluginName)' in the \(entriesSeen)"
+            + " catalog \(entriesSeen == 1 ? "entry" : "entries") it looked at"
+            + (stoppedOnCap
+                ? " (the \(browseEntryCap)-entry limit)"
+                : " in \(Int(browseSearchBudget)) s (the search budget)")
+            + ", and never came back round to where it started — so the catalog may well go on"
+            + " past there."
+        if !opening.isEmpty {
+            text += " It opened at [\(opening.joined(separator: ", "))]"
+            if !tail.isEmpty, tail != opening {
+                text += " and was showing [\(tail.joined(separator: ", "))] when it stopped"
+            }
+            text += "."
+        }
+        if let format {
+            text += " Slot \(slot) of this strip browses the \(format) catalog, and a MONO"
+                + " strip's catalog is not a stereo strip's: a plug-in can be missing from one"
+                + " of them, or sit far deeper in it (measured 2026-09-02 — 'Parametric EQ' is"
+                + " entry 1 of the (s/s) catalog and was not in the first 226 entries of the"
+                + " (m/m) one). Try the same plug-in on a strip of the other format, change this"
+                + " strip's channel format in Logic, or name a plug-in this catalog has."
+        } else {
+            text += " Check the spelling, or name a plug-in nearer the top of Logic's list."
+        }
+        return text + " Nothing was written: a browse writes nothing until the confirming press,"
+            + " and the press was never sent (browse abandoned)."
+    }
+
+    /// Whether the browse field is showing Logic's answer to the SELECT press —
+    /// the strip's own NAME — rather than a catalog entry.
+    ///
+    /// MEASURED LIVE 2026-09-03 on `Drum Synth Kit`: `selectChannelVerified`
+    /// presses SELECT, and Logic paints the channel's full name across the
+    /// three LCD cells the browse field spans, so the insert row reads
+    /// `Drum Synth Kit       Pedlba *Envlp …` while the slot's own content is
+    /// `--`. It does NOT clear on its own — 1.5 s of event-driven waiting saw
+    /// no further traffic — because the next thing to repaint that row is the
+    /// browse itself.
+    ///
+    /// It matters twice. The origin check must not read it as a browse someone
+    /// left standing; and the WALK must not count it as catalog entry 1, which
+    /// is what shifts every ordinal by one and writes a name that is not a
+    /// plug-in into `plugin-catalog-cache.json` — where three such entries were
+    /// found sitting at position 1 (`Gain`, `LoPass ParEQ`,
+    /// `Cha EQ Cha EQ Cha EQ Cha EQ`).
+    ///
+    /// The test is deliberately tighter than `lcdNameMatches`' subsequence
+    /// rule: an exact name, or a truncation of it at least as long as an LCD
+    /// name cell. A catalog entry that happened to be a subsequence of the
+    /// track's name would otherwise be skipped.
+    static func browseCellIsStripBanner(_ cell: String, trackName: String) -> Bool {
+        let shown = cell.trimmingCharacters(in: .whitespaces).lowercased()
+        let name = trackName.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !shown.isEmpty, !name.isEmpty else { return false }
+        return shown == name || (shown.count >= lcdNameCellWidth && name.hasPrefix(shown))
+    }
+
+    /// The refusal a browse that did not start at the No Plug-in entry carries.
+    /// An empty slot's browse always opens there (measured on three slots,
+    /// 2026-09-02), so a cell showing anything else means the slot is already
+    /// mid-browse — left standing by a call that was cut off, or by another
+    /// session driving the same surface — and every ordinal a walk from here
+    /// produced would be measured from the wrong zero.
+    static func browseOriginRefusal(
+        slot: Int, showing: String, row: String? = nil, view: String? = nil
+    ) -> String {
+        "the browse on slot \(slot) opened on '\(showing)' instead of the No Plug-in entry"
+            + (row.map { " (the surface's insert row reads '\($0)'" } ?? "")
+            + (view.map { ", assignment \($0))" } ?? (row == nil ? "" : ")"))
+            + ","
+            + " so a walk from here would be counted from the wrong place. That slot is already"
+            + " mid-browse: a browse writes nothing and is cancelled by leaving the view, so the"
+            + " surface has been returned to the Pan view and this call is safe to repeat —"
+            + " it will then start from the No Plug-in entry. Nothing was written"
+    }
+
     // MARK: Plugin insertion via the MCU plugin browser (mouse-free)
 
     /// Adds a plugin to the selected track's first empty insert slot by
@@ -47,12 +187,20 @@ extension MCUController {
     static func addPluginViaBrowser(
         pluginName: String, logic: LogicAccessibility, trackName: String
     ) throws -> [String: Any]? {
-        guard freshStatus() != nil else { return nil }
+        lastBrowserRefusal = nil
+        guard freshStatus() != nil else {
+            lastBrowserRefusal = "the surface's mirror is stale or the bridge is not running"
+            return nil
+        }
         // The PL channel view shows the MCU-SELECTED track's inserts without
         // naming it — and MCU selection can diverge from the AX selection
         // (this once put plugins on Stereo Out). Bind the MCU selection to
         // the target track explicitly before entering the view.
-        guard let channel = try findChannel(trackName: trackName) else { return nil }
+        guard let channel = try findChannel(trackName: trackName) else {
+            lastBrowserRefusal = "the strip could not be resolved on the surface"
+                + " (\(lastChannelResolution))"
+            return nil
+        }
         // Prove the surface is pointed at the intended strip BEFORE the view
         // that cannot name it is entered (see selectChannelVerified).
         try selectChannelVerified(channel: channel, expectedName: trackName)
@@ -162,10 +310,64 @@ extension MCUController {
             }
             return true
         }
+        // THE ORIGIN, READ RATHER THAN ASSUMED. Every coordinate below — the
+        // ordinal that gets cached, the jump's arithmetic, the "one more entry"
+        // counting — is measured from the No Plug-in entry an empty slot starts
+        // at, and until now that was an assumption resting on the slot having
+        // been picked for being empty two dozen lines up.
+        //
+        // The assumption held on every strip probed live 2026-09-02 (`Sweeps`
+        // slot 1 and slot 2, `Crash` slot 1: the cell reads `--`, the first
+        // tick only widens the browse field and still reads `--`, the second
+        // shows catalog entry 1, and −3 entries comes home to `--` exactly).
+        // It is checked anyway because the one state that breaks it — a browse
+        // left standing on this slot by an abandoned call — is invisible to the
+        // slot-content read, and walking from an unknown position is how a
+        // browse ends up looking at 226 entries with nothing to say about where
+        // it started.
+        //
+        // The read is a POSITIVE WAIT, not a snapshot, because the row this
+        // call has just been through paints over itself: `selectChannelVerified`
+        // presses SELECT and Logic answers by writing the strip's full name
+        // across the LCD for about a second (measured live 2026-09-02 — the
+        // first version of this check read `Drum Synth Kit` off slot 1 and
+        // refused a call that was perfectly fine). A banner clears; a standing
+        // browse does not, so waiting for the boundary to appear tells the two
+        // apart and costs nothing at all when the cell already reads `--`.
+        func atOrigin(_ cell: String) -> Bool {
+            cell.isEmpty || cell == MCULCDStrings.emptySlot
+                || browseCellIsStripBanner(cell, trackName: trackName)
+        }
+        var origin = browseName() ?? ""
+        if !atOrigin(origin) {
+            _ = waitFor(seconds: 1.5) { status in
+                (status["lcd_bottom"] as? String).map { atOrigin(browseCell(in: $0)) } ?? false
+            }
+            origin = browseName() ?? ""
+        }
+        guard atOrigin(origin) else {
+            // Read the evidence BEFORE the restore, and carry it as a value.
+            // The removal path learned this the expensive way: a message that
+            // interpolates a surface read AFTER `exitToPan()` reports the PAN
+            // view it just walked home to (see `removalDriftActual`).
+            let seen = freshStatus()
+            let refusal = browseOriginRefusal(
+                slot: emptyIndex + 1, showing: origin,
+                row: seen?["lcd_bottom"] as? String,
+                view: seen?["assignment"] as? String
+            )
+            exitToPan()
+            throw LogicianError.verificationFailed(
+                requested: "the No Plug-in entry at the start of the browse",
+                actual: refusal,
+                restored: true
+            )
+        }
         let searchDeadline = Date().addingTimeInterval(browseSearchBudget)
         while entries.count < browseEntryCap, Date() < searchDeadline {
             let name = browseName() ?? ""
-            if !name.isEmpty, name != MCULCDStrings.emptySlot {
+            if !name.isEmpty, name != MCULCDStrings.emptySlot,
+               !browseCellIsStripBanner(name, trackName: trackName) {
                 if matches(name) {
                     // The target is one more entry advanced, same as any other
                     // changed name — this is the ordinal that gets cached.
@@ -210,7 +412,7 @@ extension MCUController {
                     contiguous = false
                     guard try jump(
                         entries: hint - browseJumpUndershootEntries - position
-                    ) else { abortBrowse(); return nil }
+                    ) else { browseSendFailed("a jump toward the cached position"); return nil }
                     landedByJump = true
                     continue
                 }
@@ -229,7 +431,10 @@ extension MCUController {
                     catalog = nil
                 }
             }
-            guard try stepForward(from: name) else { abortBrowse(); return nil }
+            guard try stepForward(from: name) else {
+                browseSendFailed("a step forward through the catalog")
+                return nil
+            }
             landedByJump = false
         }
         guard found else {
@@ -243,14 +448,15 @@ extension MCUController {
             }
             abortBrowse()
             throw LogicianError.openVerificationFailed(
-                "the plugin browser never showed '\(pluginName)' in the \(entries.count)"
-                    + " catalog entries it looked at"
-                    + (entries.count >= browseEntryCap
-                        ? " (the \(browseEntryCap)-entry limit)"
-                        : " in \(Int(browseSearchBudget)) s (the search budget)")
-                    + ", and never came back round to where it started — so the catalog may well"
-                    + " go on past there. Check the spelling, or name a plug-in nearer the top of"
-                    + " Logic's list. Nothing was written"
+                browseSearchRefusal(
+                    pluginName: pluginName,
+                    slot: emptyIndex + 1,
+                    entriesSeen: entries.count,
+                    opening: Array(entries.prefix(browseRefusalSampleEntries)),
+                    tail: Array(entries.suffix(browseRefusalSampleEntries)),
+                    format: entries.lazy.compactMap(browseEntryFormat).first,
+                    stoppedOnCap: entries.count >= browseEntryCap
+                )
             )
         }
         // The display could still advance one more entry after the matching
@@ -308,7 +514,7 @@ extension MCUController {
         }
         // Confirm: vpot press instantiates and drops into the edit view.
         let response = try MCUBridge.send(.vpotPress(index: emptyIndex))
-        guard response.ok else { abortBrowse(); return nil }
+        guard response.ok else { browseSendFailed("the confirming press"); return nil }
         // The press drops the surface into the plugin-edit view, and it gets
         // there at once: measured 2026-08-31 over four live adds, the
         // assignment already read `P<slot>` on the FIRST status read after the
@@ -600,8 +806,16 @@ extension MCUController {
         pluginName: String, logic: LogicAccessibility, trackName: String,
         insertSlot: Int? = nil
     ) throws -> [String: Any]? {
-        guard freshStatus() != nil else { return nil }
-        guard let channel = try findChannel(trackName: trackName) else { return nil }
+        lastBrowserRefusal = nil
+        guard freshStatus() != nil else {
+            lastBrowserRefusal = "the surface's mirror is stale or the bridge is not running"
+            return nil
+        }
+        guard let channel = try findChannel(trackName: trackName) else {
+            lastBrowserRefusal = "the strip could not be resolved on the surface"
+                + " (\(lastChannelResolution))"
+            return nil
+        }
         try selectChannelVerified(channel: channel, expectedName: trackName)
         guard let inserts = try pluginInsertNames() else { return nil }
         let listEvidence = try verifyPluginListStrip(
@@ -704,6 +918,15 @@ extension MCUController {
         while entriesSeen < browseEntryCap, Date() < deadline {
             let name = browseName() ?? ""
             if atBoundary(name) { reached = true; break }
+            if browseCellIsStripBanner(name, trackName: trackName) {
+                // Logic's answer to the SELECT press, not an entry this walk
+                // passed (see browseCellIsStripBanner).
+                guard try stepBackward(from: name) else {
+                    browseSendFailed("a step back through the catalog")
+                    return nil
+                }
+                continue
+            }
             if !name.isEmpty, name != lastName {
                 // The first read is the slot's own insert name — where the
                 // browse STARTS, not an entry it has passed.
@@ -729,7 +952,10 @@ extension MCUController {
                     if let toJump = removalJumpEntries(
                         cachedOrdinal: hint, entriesTravelled: entriesTravelled
                     ) {
-                        guard try jump(entries: toJump) else { exitToPan(); return nil }
+                        guard try jump(entries: toJump) else {
+                            browseSendFailed("a jump back toward the No Plug-in entry")
+                            return nil
+                        }
                         jumpedEntries = toJump
                         entriesTravelled += toJump
                         // The landing is an entry the walk did not pass, so it
@@ -756,7 +982,10 @@ extension MCUController {
                     catalog = nil
                 }
             }
-            guard try stepBackward(from: name) else { exitToPan(); return nil }
+            guard try stepBackward(from: name) else {
+                browseSendFailed("a step back through the catalog")
+                return nil
+            }
         }
         guard reached else {
             // A jump is the one thing that could have carried this browse PAST
@@ -805,7 +1034,7 @@ extension MCUController {
         }
         let eventsBeforePress = freshStatus()?["received_events"] as? Int ?? -1
         let response = try MCUBridge.send(.vpotPress(index: slotIndex))
-        guard response.ok else { exitToPan(); return nil }
+        guard response.ok else { browseSendFailed("the confirming press"); return nil }
         // Logic's own answer to the press, positively: committing the slot
         // repaints the row. The blind `Thread.sleep(1.0)` this replaces was
         // 11.8% of the whole call (1006 ms mean, measured 2026-09-02) and it
