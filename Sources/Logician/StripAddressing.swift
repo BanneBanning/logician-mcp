@@ -50,7 +50,12 @@ enum StripPlane: String, Equatable {
 func isHeaderlessStripCandidate(_ error: LogicianError, trackNumberGiven: Bool) -> Bool {
     guard !trackNumberGiven else { return false }
     switch error {
-    case .trackNotFound:
+    case .trackNotFound, .trackNotRendered:
+        // `trackNotRendered` is the same signature with better evidence — the
+        // name is not a RENDERED header and rows are provably missing — and if
+        // anything it belongs on the surface more urgently: a track behind a
+        // collapsed stack has no header to select and a perfectly ordinary
+        // bank channel to write through.
         return true
     case .windowNotFound(let missing):
         return missing == LogicAccessibility.tracksHeaderGroupMissing
@@ -68,6 +73,11 @@ func headerPlaneMiss(_ trackMiss: LogicianError) -> String {
         return "the track-header column could not be read (a non-English Logic"
             + " publishes a localized description on it), so the name could not"
             + " be checked against track headers"
+    }
+    if case .trackNotRendered = trackMiss {
+        return "it is not among the RENDERED track headers, and rows are provably"
+            + " missing from them (a collapsed stack, or scrolled out), so it may"
+            + " be a track this plane cannot see"
     }
     return "it is not a track header"
 }

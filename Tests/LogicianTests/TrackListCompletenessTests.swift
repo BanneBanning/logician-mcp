@@ -199,6 +199,61 @@ final class TrackListCompletenessTests: XCTestCase {
         }
     }
 
+    // MARK: - What a refusal about a name owes the caller
+
+    /// Rows 10–19 of the reference project sit inside collapsed stack 9 and
+    /// are not rendered, so a name in there used to be refused in exactly the
+    /// words a typo gets — while this very verdict, off the same walk, was
+    /// already naming the stack that hides them.
+    func testHiddenRowsHintNamesTheStackAndTheCallThatOpensIt() {
+        var rows = self.rows(Array(1...8))
+        rows.append(
+            TrackListCompleteness.Row(number: 9, name: "Drums", isStack: true, expanded: false)
+        )
+        rows.append(contentsOf: self.rows(Array(20...29)))
+        let hint = TrackListCompleteness.hiddenRowsHint(
+            TrackListCompleteness.evaluate(rows: rows, scrollable: nil)
+        )
+        XCTAssertNotNil(hint)
+        XCTAssertTrue(hint!.contains("logic_set_track_stack"))
+        XCTAssertTrue(hint!.contains("\"Drums\""))
+        XCTAssertTrue(hint!.contains("track_number: 9"))
+        XCTAssertTrue(hint!.contains("expanded: true"))
+        // And it says WHICH rows are missing, so the caller can tell whether
+        // the name it asked for could plausibly be one of them.
+        XCTAssertTrue(hint!.contains("10, 11, 12, 13, 14, 15, 16, 17, 18, 19"))
+    }
+
+    /// The nil IS the feature: a genuinely nonexistent name on a listing that
+    /// proved nothing missing gets the plain refusal, so the two messages
+    /// differ exactly where the two situations do.
+    func testNoEvidenceOfMissingRowsMeansNoHint() {
+        XCTAssertNil(
+            TrackListCompleteness.hiddenRowsHint(
+                TrackListCompleteness.evaluate(rows: rows(Array(1...13)), scrollable: nil)
+            )
+        )
+        XCTAssertNil(
+            TrackListCompleteness.hiddenRowsHint(
+                TrackListCompleteness.evaluate(rows: rows(Array(1...13)), scrollable: false)
+            )
+        )
+    }
+
+    /// Rows can be missing with no stack to blame — a scrolled Tracks area, or
+    /// headers above the first one rendered. The hint still fires, and still
+    /// names a move, but it may not point at a stack that was never found.
+    func testHintWithoutAStackNamesScrollingInstead() {
+        let hint = TrackListCompleteness.hiddenRowsHint(
+            TrackListCompleteness.evaluate(rows: rows(Array(8...20)), scrollable: true)
+        )
+        XCTAssertNotNil(hint)
+        XCTAssertTrue(hint!.contains("logic_set_track_stack"))
+        XCTAssertTrue(hint!.contains("scroll"))
+        XCTAssertFalse(hint!.contains("track_number:"))
+        XCTAssertTrue(hint!.contains("1, 2, 3, 4, 5, 6, 7"))
+    }
+
     /// The standing note must keep saying the two things an agent forgets: this
     /// is not a census, and headerless strips are never in it.
     func testStandingNoteNamesBothLimits() {

@@ -263,6 +263,43 @@ enum TrackListCompleteness {
         }
     }
 
+    /// What a "no such track header" refusal owes the caller when the very
+    /// rows it just walked can PROVE they are not the whole project.
+    ///
+    /// The evidence already existed and the refusal simply did not carry it.
+    /// Rows 10–19 of the reference project sit inside collapsed track stack 9
+    /// and are not rendered at all, so `logic_select_track` on a name in there
+    /// was refused in exactly the words a typo gets — *"No visible track
+    /// header matches 'X'. Visible tracks: …"* — while `logic_list_tracks`,
+    /// off the same walk of the same tree, was already printing
+    /// `missing_track_numbers: [10…19]` and naming the stack that hides them.
+    /// One of those two answers sends the agent to `logic_set_track_stack` and
+    /// the other sends it to guess at spellings.
+    ///
+    /// Returns nil when nothing proved a row missing. That is the point of the
+    /// nil: the two refusals then read differently because the two situations
+    /// differ, and a genuinely nonexistent name is not handed a stack to go
+    /// and expand.
+    static func hiddenRowsHint(_ verdict: Verdict) -> String? {
+        guard verdict.partial else { return nil }
+        var sentence = "This is not the whole project, and the name may belong to a row that is"
+            + " not rendered: " + verdict.evidence.joined(separator: "; ") + "."
+        if !verdict.missingTrackNumbers.isEmpty {
+            sentence += " Track number(s) "
+                + verdict.missingTrackNumbers.map(String.init).joined(separator: ", ")
+                + " provably exist and are not listed."
+        }
+        if let hidden = verdict.hiddenBy {
+            sentence += " Expand the stack that hides them — logic_set_track_stack"
+                + " {track_name: \"\(hidden.trackName)\", track_number: \(hidden.trackNumber),"
+                + " expanded: true} — and call again."
+        } else {
+            sentence += " Expand any collapsed track stack (logic_set_track_stack) or scroll the"
+                + " Tracks area, re-read logic_list_tracks, and call again."
+        }
+        return sentence
+    }
+
     /// The sentence every listing carries, partial or not. It says the thing an
     /// agent must not forget: this plane cannot see the whole project, and the
     /// strips without track headers (`Stereo Out`, `Master`, auxes, buses) are

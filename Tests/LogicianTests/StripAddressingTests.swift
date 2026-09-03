@@ -178,6 +178,31 @@ final class StripAddressingTests: XCTestCase {
         ))
     }
 
+    /// A name behind a collapsed stack refuses with a different case now, and
+    /// it must keep falling through to the surface — if anything more so: a
+    /// track with no rendered header has no header to select and a perfectly
+    /// ordinary bank channel to write through.
+    func testANameBehindACollapsedStackStillReroutesToTheSurface() {
+        let miss = LogicianError.trackNotRendered(
+            "Kick In", available: ["1: Bas"], hint: "expand the stack"
+        )
+        XCTAssertTrue(isHeaderlessStripCandidate(miss, trackNumberGiven: false))
+        XCTAssertEqual(miss.code, "not_found")
+        // The two-plane message must not claim the name "is not a track
+        // header": the header column itself said it might be one.
+        XCTAssertTrue(headerPlaneMiss(miss).contains("RENDERED"))
+        XCTAssertNotEqual(headerPlaneMiss(miss), "it is not a track header")
+        // And the refusal a caller reads carries the way out, not just the
+        // rows it could see.
+        let text = miss.errorDescription ?? ""
+        XCTAssertTrue(text.contains("'Kick In'"))
+        XCTAssertTrue(text.contains("expand the stack"))
+        XCTAssertNotEqual(
+            text,
+            LogicianError.trackNotFound("Kick In", available: ["1: Bas"]).errorDescription
+        )
+    }
+
     func testAnUnreadableHeaderColumnReroutesToTheSurfaceToo() {
         // A non-English Logic publishes a localized description on the header
         // column, so EVERY track name dies with this exact signature before

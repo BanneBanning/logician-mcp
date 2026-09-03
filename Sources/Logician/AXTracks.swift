@@ -117,6 +117,29 @@ extension LogicAccessibility {
         number: Int?
     ) throws -> TrackHeader {
         let available = headers.map { "\($0.number): \($0.name)" }
+        // The rows this refusal is about are the rows that can say whether
+        // they are all of them — and they are already in hand, so the
+        // completeness verdict is free (no AX read: the numbering gap and the
+        // collapsed-stack flags come off `headers`; the scroll bar is not
+        // asked, and its silence adds no evidence anyway). Computed only on
+        // the failing branches, so the resolving call pays nothing.
+        func missing(_ requested: String) -> LogicianError {
+            let verdict = TrackListCompleteness.evaluate(
+                rows: headers.map {
+                    TrackListCompleteness.Row(
+                        number: $0.number,
+                        name: $0.name,
+                        isStack: $0.disclosure != nil,
+                        expanded: $0.expanded
+                    )
+                },
+                scrollable: nil
+            )
+            guard let hint = TrackListCompleteness.hiddenRowsHint(verdict) else {
+                return .trackNotFound(requested, available: available)
+            }
+            return .trackNotRendered(requested, available: available, hint: hint)
+        }
         let verdict = TrackRowAddressing.resolve(
             rows: headers.map { TrackRowAddressing.Row(number: $0.number, name: $0.name) },
             name: name, number: number, caseInsensitive: false
@@ -127,10 +150,10 @@ extension LogicAccessibility {
                 throw LogicianError.trackNotFound(name, available: available)
             }
             return header
-        case .numberNotFound(let missing):
-            throw LogicianError.trackNotFound("track \(missing)", available: available)
+        case .numberNotFound(let missingNumber):
+            throw missing("track \(missingNumber)")
         case .nameNotFound:
-            throw LogicianError.trackNotFound(name, available: available)
+            throw missing(name)
         case .ambiguous(let numbers):
             throw LogicianError.trackAmbiguous(name, numbers: numbers)
         case .mismatch(let number, let expected, let actual):
