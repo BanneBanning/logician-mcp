@@ -592,38 +592,102 @@ extension LogicAccessibility {
         up.post(tap: .cghidEventTap)
     }
 
+    /// Moves the playhead to a bar (and optionally a beat) by stepping the
+    /// control bar's position display, and proves the landing by reading it
+    /// back.
+    ///
+    /// THREE THINGS THIS OWES THE CALLER BESIDES THE MOVE, all added
+    /// 2026-09-03 after the profile caught them
+    /// (profiles/logic_set_playhead.md §5 defects 3 and 4):
+    ///
+    /// 1. **A bar the project cannot reach stops being expensive.** `bar: 93`
+    ///    on this 64-bar project used to cost 1 585 ms of stepping to Logic's
+    ///    ceiling before it could report the honest mismatch. There is still
+    ///    no way to know the ceiling without walking into it — the slider's
+    ///    `AXMaxValue` is a ±1 window, see `convergeSlider` — but the walk is
+    ///    now ~1.4 ms a bar, so the same refusal costs ~15 ms.
+    /// 2. **A beat nobody asked about is put back.** Logic resets the sub-bar
+    ///    position when the bar slider hits that ceiling — measured beat
+    ///    3 → 1, silently, with the error naming only the bar, leaving the
+    ///    corruption for the next unrelated caller to discover. The beat is
+    ///    read before and after every locate and, when the caller passed no
+    ///    `beat`, restored and reported in `warning`.
+    /// 3. **A failed locate does not leave the playhead mid-climb.** Like
+    ///    `sampleTempo` (:200) this writes the position it read back and says
+    ///    in `restored` whether that worked, instead of abandoning the
+    ///    playhead wherever the attempt stopped.
     func setPlayhead(barNumber: Int, beat: Int?) throws -> [String: Any] {
         let controlBar = try controlBarGroup()
         guard let lcd = playheadGroup(in: controlBar) else {
             throw LogicianError.windowNotFound("Playhead Position display in the control bar")
         }
-        let beforeBar = sliderValue(lcd, LogicUIStrings.Element.playheadBarSlider)
-        let beforeBeat = sliderValue(lcd, LogicUIStrings.Element.playheadBeatSlider)
+        let barSlider = LogicUIStrings.Element.playheadBarSlider
+        let beatSlider = LogicUIStrings.Element.playheadBeatSlider
+        let beforeBar = sliderValue(lcd, barSlider)
+        let beforeBeat = sliderValue(lcd, beatSlider)
 
-        try convergeSlider(in: controlBar, sliderName: LogicUIStrings.Element.playheadBarSlider, target: barNumber)
-        if let beat = beat {
-            try convergeSlider(in: controlBar, sliderName: LogicUIStrings.Element.playheadBeatSlider, target: beat)
+        /// Puts the playhead back where this call found it and folds the
+        /// outcome into the error, so a refusal never doubles as a move.
+        /// Costs nothing when nothing moved: `convergeSlider` returns on its
+        /// first read when the slider is already on target.
+        func abandoning(_ error: Error) -> Error {
+            var restored = true
+            if let beforeBar {
+                restored = (try? convergeSlider(in: controlBar, sliderName: barSlider, target: beforeBar)) != nil
+            }
+            if let beforeBeat, restored {
+                restored = (try? convergeSlider(in: controlBar, sliderName: beatSlider, target: beforeBeat)) != nil
+            }
+            guard case .verificationFailed(let requested, let actual, _)? = error as? LogicianError else {
+                return error
+            }
+            return LogicianError.verificationFailed(requested: requested, actual: actual, restored: restored)
+        }
+
+        do {
+            try convergeSlider(in: controlBar, sliderName: barSlider, target: barNumber)
+            if let beat = beat {
+                try convergeSlider(in: controlBar, sliderName: beatSlider, target: beat)
+            }
+        } catch {
+            throw abandoning(error)
         }
 
         guard let refreshed = playheadGroup(in: try controlBarGroup()),
-              let afterBar = sliderValue(refreshed, LogicUIStrings.Element.playheadBarSlider),
+              let afterBar = sliderValue(refreshed, barSlider),
               afterBar == barNumber,
-              beat == nil || sliderValue(refreshed, LogicUIStrings.Element.playheadBeatSlider) == beat else {
-            throw LogicianError.verificationFailed(
+              beat == nil || sliderValue(refreshed, beatSlider) == beat else {
+            let now = playheadGroup(in: (try? controlBarGroup()) ?? controlBar) ?? lcd
+            throw abandoning(LogicianError.verificationFailed(
                 requested: "bar \(barNumber)\(beat.map { ", beat \($0)" } ?? "")",
-                actual: "bar \(sliderValue(lcd, LogicUIStrings.Element.playheadBarSlider).map(String.init) ?? "?"), beat \(sliderValue(lcd, LogicUIStrings.Element.playheadBeatSlider).map(String.init) ?? "?")",
+                actual: "bar \(sliderValue(now, barSlider).map(String.init) ?? "?"), beat \(sliderValue(now, beatSlider).map(String.init) ?? "?")",
                 restored: false
-            )
+            ))
         }
 
-        return [
+        var landedBeat = sliderValue(refreshed, beatSlider)
+        var result: [String: Any] = [
             "success": true,
             "verified": true,
             "state": "moved",
             "before": ["bar": beforeBar ?? -1, "beat": beforeBeat ?? -1],
-            "after": ["bar": barNumber, "beat": beat ?? sliderValue(refreshed, LogicUIStrings.Element.playheadBeatSlider) ?? -1],
             "write_route": "ax_value_stepwise"
         ]
+        if let putBack = PlayheadLocate.unrequestedBeatDrift(
+            requested: beat, before: beforeBeat, after: landedBeat
+        ), let drifted = landedBeat {
+            let attempted = (try? convergeSlider(in: controlBar, sliderName: beatSlider, target: putBack)) != nil
+            let settled = playheadGroup(in: (try? controlBarGroup()) ?? controlBar)
+                .flatMap { sliderValue($0, beatSlider) }
+            let ok = attempted && settled == putBack
+            landedBeat = settled ?? landedBeat
+            result["beat_restored"] = ok
+            result["warning"] = PlayheadLocate.beatDriftWarning(
+                from: putBack, to: drifted, restored: ok
+            )
+        }
+        result["after"] = ["bar": barNumber, "beat": beat ?? landedBeat ?? -1]
+        return result
     }
 
     /// Presses one of the control bar's transport buttons by its
@@ -681,8 +745,14 @@ extension LogicAccessibility {
         // Never rewind a ROLLING transport: `Go to Beginning` would throw the
         // playhead back to bar 1 and keep playing, which is a far bigger
         // surprise than an inexact cut. The offset is then reported as it is.
-        let rolling = (MCUController.freshStatus()?["transport_leds"] as? [String: Any])?["play"]
-            as? Bool ?? false
+        // Three witnesses, not the play LED's word alone: that bit can be
+        // wrong and can stay wrong (TransportWitness.swift), and here a false
+        // "rolling" silently downgrades an exact cut while a false "stopped"
+        // rewinds a playing transport to bar 1. `observeTransport` pays for
+        // the position sample only when the cheap witnesses disagree.
+        let rolling = MCUController.observeTransport(
+            status: MCUController.freshStatus() ?? [:], logic: self
+        ).playing ?? false
         var rewound = false
         if isZero(before) != true && !rolling {
             try pressControlBarButton("Go to Beginning")
@@ -778,8 +848,70 @@ extension LogicAccessibility {
         )
     }
 
-    /// Logic's LCD sliders move exactly one step toward the requested value per
-    /// AXValue write (verified 2026-08-24), so write repeatedly until convergence.
+    /// Waits for one LCD stepper write to become READABLE instead of sleeping
+    /// through it, and hands back the value it stopped on so the converge
+    /// loop does not pay for the same read twice.
+    ///
+    /// The `Thread.sleep(0.12)` this replaces was the dominant cost of every
+    /// playhead move in the server: measured 125.4–131.8 ms per step across
+    /// eight legs and 2–23 bars (profiles/logic_set_playhead.md §3), against
+    /// an `AXUIElementSetAttributeValue` that is synchronous and lands in
+    /// 0–6 ms on the literal sibling control (the bounce dialog's position
+    /// field, ten writes back to back, nothing coalesced —
+    /// profiles/logic_bounce_range.md §8.1). Re-measured on THIS slider
+    /// 2026-09-03 before shipping: see the numbers in CHANGELOG.
+    ///
+    /// The deadline is the OLD sleep, unchanged: a slider that genuinely will
+    /// not move is given exactly as long as before to prove it, so the stall
+    /// verdict below is no less patient than it was. Only the common case —
+    /// a write that lands — stops waiting.
+    private func awaitSliderStep(
+        _ slider: AXUIElement,
+        changedFrom current: Int,
+        within deadline: TimeInterval = 0.12
+    ) -> Int? {
+        let limit = Date().addingTimeInterval(deadline)
+        while true {
+            let value = Int(stringAttribute(slider, kAXValueAttribute as String))
+            if let value, value != current { return value }
+            if Date() >= limit { return value }
+            Thread.sleep(forTimeInterval: 0.002)
+        }
+    }
+
+    /// Steps one of the control bar position display's sliders to `target`.
+    ///
+    /// Logic's LCD sliders move exactly ONE step toward the requested value
+    /// per `AXValue` write (verified 2026-08-24), so the written number is
+    /// only ever a DIRECTION and this is a loop rather than a write. It is
+    /// the shared engine under 16 call sites — `logic_set_playhead`,
+    /// `logic_set_cycle_range`, every region tool that parks, tempo sampling,
+    /// automation read/record, MIDI record, marker parking, `logic_import_midi`
+    /// — so what it costs per step, all of them pay.
+    ///
+    /// THERE IS NO PRE-WRITE BOUND CHECK, and the reason is a measurement.
+    /// The profile that asked for one (profiles/logic_set_playhead.md §5
+    /// defect 3) proposed reading the slider's own `AXMaxValue` to refuse a
+    /// bar past the project's end before paying the climb. Probed live
+    /// 2026-09-03 on this exact slider: with the playhead on bar 56 the bar
+    /// slider publishes `AXMinValue 55, AXMaxValue 57`, and the beat slider
+    /// `0`/`2` around beat 1 — a ±1 window that TRACKS THE CURRENT VALUE, not
+    /// the project's range. A check against it would have refused every move
+    /// longer than one bar. So the ceiling is still found the only way Logic
+    /// exposes it — by walking into it — and the stall check below reports it
+    /// in one extra step. What made the old defect expensive was never the
+    /// walk: it was 120 ms per step of it. Eight wasted steps now cost ~12 ms.
+    ///
+    /// (Also measured, and deliberately NOT used: `AXIncrement`/`AXDecrement`
+    /// move TEN bars per action on this slider, clamping at the project's
+    /// last bar — the same coarse gear the event-list steppers have. At
+    /// ~1.4 ms per fine step the whole 23-bar restore leg costs ~33 ms, so a
+    /// second gear would save tens of milliseconds for a second overshoot
+    /// mode to get wrong. Left in this comment for whoever needs it if the
+    /// per-step cost ever grows again.)
+    ///
+    /// The budget, the stall check and the final readback are unchanged: this
+    /// fix cut the WAIT between writes, never the proof.
     func convergeSlider(in controlBar: AXUIElement, sliderName: String, target: Int) throws {
         guard let lcd = playheadGroup(in: controlBar),
               let slider = children(of: lcd).first(where: {
@@ -788,7 +920,8 @@ extension LogicAccessibility {
               let start = Int(stringAttribute(slider, kAXValueAttribute as String)) else {
             throw LogicianError.windowNotFound("playhead \(sliderName) slider")
         }
-        let maximumSteps = min(abs(target - start) + 4, 512)
+        if start == target { return }
+        let maximumSteps = PlayheadLocate.stepBudget(from: start, to: target)
         var last = start
         for _ in 0..<maximumSteps {
             guard let current = Int(stringAttribute(slider, kAXValueAttribute as String)) else { break }
@@ -801,8 +934,7 @@ extension LogicAccessibility {
             guard status == .success else {
                 throw LogicianError.writeFailed("AXValue write on \(sliderName) returned AXError \(status.rawValue)")
             }
-            Thread.sleep(forTimeInterval: 0.12)
-            let after = Int(stringAttribute(slider, kAXValueAttribute as String)) ?? current
+            let after = awaitSliderStep(slider, changedFrom: current) ?? current
             if after == last && after != target {
                 throw LogicianError.verificationFailed(
                     requested: "\(sliderName) \(target)",
@@ -823,6 +955,36 @@ extension LogicAccessibility {
 
     // MARK: - Cycle range (locators)
 
+    /// Sets the cycle (locator) range to a whole-bar span.
+    ///
+    /// TWO KINDS OF HONESTY THIS OWES THE CALLER, both added 2026-09-03 after
+    /// the profile caught them (profiles/logic_set_cycle_range.md §4 defects
+    /// 3 and 4):
+    ///
+    /// - **Cycle mode is left as it was found.** A real drag in the ruler's
+    ///   cycle strip engages Cycle the way it would for a human, so a call
+    ///   that passed no `enabled` used to return `cycle_enabled: true` from a
+    ///   project where it had been false, and nothing put it back. The
+    ///   pre-call state is read on every path and reported as
+    ///   `cycle_enabled_before`; when `enabled` was omitted and the write
+    ///   flipped it, it is written back and verified.
+    /// - **A range that scrolled out of view is scrolled back.** Logic
+    ///   auto-scrolls the ruler to follow a drag, which used to strand an
+    ///   absolute bar range that had been reachable one call earlier: the
+    ///   profiler needed an out-of-band CGEvent scroll to reach bars 5–9
+    ///   again, and nothing in this server could do that. `recentreRuler`
+    ///   now posts that scroll itself, MEASURES what it did against the
+    ///   ruler's own Start marker, and only refuses when the ruler will not
+    ///   move — with the pixels it tried in the message.
+    ///
+    /// The playhead this tool borrows for its anchor/verify geometry is
+    /// restored EAGERLY in a `defer`, not deferred as a debt. Measured
+    /// 2026-09-03 after the `convergeSlider` fix: the restore leg is ~12 ms
+    /// per bar (~0.4 s for the sandbox's habitual 36-bar distance) against a
+    /// call that no longer costs ten seconds — a debt would have to be
+    /// settled by every position-sensitive tool in the server to save that,
+    /// and would leave the user's playhead visibly moved in the meantime.
+    /// Re-price it if the per-step cost ever grows again.
     func setCycleRange(startBar: Int, endBar: Int, enabled: Bool?) throws -> [String: Any] {
         guard startBar >= 1, endBar > startBar else {
             throw LogicianError.invalidArguments("start_bar must be >= 1 and end_bar > start_bar")
@@ -841,6 +1003,10 @@ extension LogicAccessibility {
               let savedBeat = sliderValue(lcd, LogicUIStrings.Element.playheadBeatSlider) else {
             throw LogicianError.windowNotFound("Playhead Position display in the control bar")
         }
+        // Read BEFORE anything is written, on every path — including the ones
+        // that never pass `enabled` — because that is the only moment the
+        // pre-call Cycle state still exists.
+        let cycleEnabledBefore = cycleButtonState()
         defer {
             try? convergeSlider(in: controlBar, sliderName: LogicUIStrings.Element.playheadBarSlider, target: savedBar)
             try? convergeSlider(in: controlBar, sliderName: LogicUIStrings.Element.playheadBeatSlider, target: savedBeat)
@@ -898,18 +1064,53 @@ extension LogicAccessibility {
         // A pure AXPosition write moves the region start exactly one grid-snapped
         // bar landing. Combine them so the drag start never touches the region.
         let preDrag = try snapshot()
-        let originBarX = preDrag.thumbX + anchored.thumbOffset // playhead is on the anchor bar
+        // The playhead is on the anchor bar, so the thumb plus the measured
+        // constant offset IS that bar's line. A horizontal scroll moves every
+        // pixel in the ruler by the same amount, so recovery only has to add
+        // the shift it measured.
+        var originBarX = preDrag.thumbX + anchored.thumbOffset
         func xForBar(_ bar: Int) -> CGFloat {
             originBarX + preDrag.slope * CGFloat(bar - anchored.bar)
         }
-        let startX = xForBar(startBar)
-        let endX = xForBar(endBar)
-        guard startX >= preDrag.rulerFrame.minX, endX <= preDrag.rulerFrame.maxX else {
-            throw LogicianError.trackNotExposed(
-                requested: "bars \(startBar)-\(endBar)",
-                exposed: "the target range is outside the visible ruler; scroll or zoom Logic so it is visible"
+        // A drag that ends on the ruler's last pixel is not really reachable,
+        // so demand three quarters of a bar of air at each edge.
+        let visibilityMargin = preDrag.slope * 0.75
+        func rangeIsVisible() -> Bool {
+            RulerVisibility.isVisible(
+                startX: xForBar(startBar),
+                endX: xForBar(endBar),
+                rulerMinX: preDrag.rulerFrame.minX,
+                rulerMaxX: preDrag.rulerFrame.maxX,
+                margin: visibilityMargin
             )
         }
+        var recentredBy: CGFloat = 0
+        if !rangeIsVisible() {
+            recentredBy = try recentreRuler(
+                shift: {
+                    RulerVisibility.shiftToReveal(
+                        startX: xForBar(startBar),
+                        endX: xForBar(endBar),
+                        rulerMinX: preDrag.rulerFrame.minX,
+                        rulerMaxX: preDrag.rulerFrame.maxX,
+                        margin: visibilityMargin
+                    )
+                },
+                apply: { moved in originBarX += moved },
+                satisfied: rangeIsVisible
+            )
+            guard rangeIsVisible() else {
+                throw LogicianError.trackNotExposed(
+                    requested: "bars \(startBar)-\(endBar)",
+                    exposed: "the target range is outside the visible ruler and scrolling it back "
+                        + "did not reach it (the ruler moved \(Int(recentredBy.rounded())) px of the "
+                        + "\(Int(RulerVisibility.shiftToReveal(startX: xForBar(startBar), endX: xForBar(endBar), rulerMinX: preDrag.rulerFrame.minX, rulerMaxX: preDrag.rulerFrame.maxX, margin: visibilityMargin).rounded())) px still needed). "
+                        + "Zoom the Tracks area out, or ask for a range nearer bar \(anchored.bar)"
+                )
+            }
+        }
+        let startX = xForBar(startBar)
+        let endX = xForBar(endBar)
         let stripY = preDrag.regionY + 10
         let writeRoute: String
 
@@ -990,13 +1191,23 @@ extension LogicAccessibility {
             )
         }
 
+        var cycleWarning: String?
         if let enabled = enabled {
             _ = try MCUController.setCycle(enabled) ?? setCycle(enabled: enabled)
+        } else if let before = cycleEnabledBefore, cycleButtonState() != before {
+            // The drag engages Cycle exactly as it would for a human. Nobody
+            // asked for that, so it goes back — measured live 2026-09-03:
+            // `cycle_enabled` false → true on a call with no `enabled` key.
+            _ = try? MCUController.setCycle(before) ?? setCycle(enabled: before)
+            if cycleButtonState() != before {
+                cycleWarning = "Setting the range switched Cycle mode "
+                    + (before ? "off" : "on") + ", which this call never asked for, and it could "
+                    + "NOT be put back. Set it explicitly with logic_set_cycle {enabled: \(before)}."
+            }
         }
-        let finalCycle = controlBarChild(try controlBarGroup(), LogicUIStrings.Element.cycleButton)
-            .map { stringAttribute($0, kAXValueAttribute as String) == "1" }
+        let finalCycle = cycleButtonState()
 
-        return [
+        var result: [String: Any] = [
             "success": true,
             "verified": true,
             "state": "cycle_range_set",
@@ -1009,9 +1220,107 @@ extension LogicAccessibility {
                 "length_bars": originalLength ?? -1
             ],
             "write_route": writeRoute,
+            "cycle_enabled_before": cycleEnabledBefore ?? NSNull(),
             "cycle_enabled": finalCycle ?? NSNull(),
             "verification": "playhead-thumb alignment at the start bar and AXSizeDescription reporting \(targetLength) bars"
         ]
+        if abs(recentredBy) >= 1 {
+            result["ruler_recentred_px"] = Int(recentredBy.rounded())
+        }
+        if let cycleWarning { result["warning"] = cycleWarning }
+        return result
+    }
+
+    /// The control bar's Cycle button as a Bool, or nil when the control bar
+    /// cannot be read — never a silent `false`, because "we could not tell"
+    /// and "it is off" lead to opposite decisions in the restore above.
+    func cycleButtonState() -> Bool? {
+        (try? controlBarGroup())
+            .flatMap { controlBarChild($0, LogicUIStrings.Element.cycleButton) }
+            .map { stringAttribute($0, kAXValueAttribute as String) == "1" }
+    }
+
+    /// Scrolls the Tracks ruler horizontally until `satisfied()` or until the
+    /// ruler stops moving, and reports the pixels it actually shifted.
+    ///
+    /// WHY THIS CAN MEASURE ITSELF. The ruler's Start marker is a child whose
+    /// frame stays readable when it is scrolled out of the window — that is
+    /// how `pixelsPerBar` measures a slope across a 64-bar project inside a
+    /// 20-bar window — so the shift in pixels is the difference in that
+    /// marker's x, read before and after each scroll. Nothing here assumes a
+    /// direction or a scale: the first post is a probe, and its measured
+    /// effect gives both the sign and the pixels-per-unit for the rest.
+    ///
+    /// Bounded at five posts and stopped by a ruler that will not move, so
+    /// the caller gets a refusal naming what was tried rather than a loop.
+    /// The scroll position is view state, not project content — Logic's own
+    /// drag moves it on every `cg_drag_create` call and the project is never
+    /// saved.
+    func recentreRuler(
+        shift: () -> CGFloat,
+        apply: (CGFloat) -> Void,
+        satisfied: () -> Bool
+    ) throws -> CGFloat {
+        let area = try rulerArea()
+        func markerX() -> CGFloat? {
+            rulerChild(area, LogicUIStrings.Element.startMarker)
+                .flatMap { try? frame(of: $0).origin.x }
+        }
+        /// The marker read once it has STOPPED moving. Measured 2026-09-03:
+        /// reading the shift straight after the wheel event under-counts —
+        /// Logic animates the scroll over several frames — and an accumulated
+        /// sum of under-counts put the pixel mapping 0.67 of a bar out, which
+        /// is enough to land a grid-snapped write on the wrong bar. Every
+        /// mapping update below is therefore an ABSOLUTE difference from the
+        /// marker's position before the first scroll, never a running sum.
+        func settledMarkerX() -> CGFloat? {
+            var last = markerX()
+            let limit = Date().addingTimeInterval(0.5)
+            while Date() < limit {
+                Thread.sleep(forTimeInterval: 0.02)
+                let now = markerX()
+                if let now, let previous = last, abs(now - previous) < 0.5 { return now }
+                last = now
+            }
+            return last
+        }
+        guard let origin = markerX() else { return 0 }
+        try ensureLogicFrontmost(for: "the Tracks ruler")
+        let target = try frame(of: area)
+        var applied: CGFloat = 0
+        var pixelsPerUnit: CGFloat?
+        for _ in 0..<5 {
+            if satisfied() { break }
+            let wanted = shift()
+            guard abs(wanted) >= 1 else { break }
+            // The first post is a probe: 200 pixel-units in the direction
+            // that is right if the wheel and the content agree in sign. Its
+            // measured effect gives both the sign and the scale for the rest.
+            let units = pixelsPerUnit.map { Int32((wanted / $0).rounded()) } ?? (wanted > 0 ? 200 : -200)
+            postRulerScroll(units: max(-4000, min(4000, units)), at: target)
+            guard let now = settledMarkerX() else { break }
+            let step = (now - origin) - applied
+            guard abs(step) >= 1 else { break }
+            if pixelsPerUnit == nil, units != 0 { pixelsPerUnit = step / CGFloat(units) }
+            applied = now - origin
+            apply(step)
+        }
+        return applied
+    }
+
+    /// One horizontal wheel event over the ruler. The caller reads the effect
+    /// off the Start marker once it has settled.
+    private func postRulerScroll(units: Int32, at target: CGRect) {
+        guard let event = CGEvent(
+            scrollWheelEvent2Source: CGEventSource(stateID: .hidSystemState),
+            units: .pixel,
+            wheelCount: 2,
+            wheel1: 0,
+            wheel2: units,
+            wheel3: 0
+        ) else { return }
+        event.location = CGPoint(x: target.midX, y: target.midY)
+        event.post(tap: .cghidEventTap)
     }
 
     func rulerArea() throws -> AXUIElement {

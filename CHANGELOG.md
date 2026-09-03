@@ -1654,6 +1654,38 @@ with every render coming back as audio the agent can listen to.
   `transport_stop` (`state`, `transport_witnesses`, `led_desync`), plus a top-level `warning`
   when the LEDs disagreed or the stop was refused. The cleanup order itself is unchanged —
   stop, then confirm out of record, then silence.
+- **Moving the playhead is instant now, and every tool that parks one got faster with it.**
+  The shared stepper behind `logic_set_playhead` slept a flat 0.12 s after each write to the
+  control bar's position display — one write per bar, so a locate cost 125–132 ms per bar of
+  distance. Measured per write on that slider (69 steps, 2–23 bars, both directions): the
+  write itself takes 0.7–1.9 ms and the display lands **0.05–1.4 ms later, median 0.08 ms**.
+  The sleep was 99% of the cost of every playhead move in the server. It now watches the
+  slider instead, with the old 0.12 s left as the deadline so a stuck display gets exactly as
+  long as before to prove it. Same session, old binary then new: `logic_set_playhead`
+  **266 → 21 ms** (2 bars), **1 281 → 20 ms** (10 bars), **2 982 → 72 ms** (23 bars),
+  **6 660 → 62 ms** (53 bars); `logic_set_cycle_range` **14 393 → 1 467 ms** (same length)
+  and **12 268 → 2 040 ms** (length change, which drags); `logic_copy_region`
+  **2 506 → 918 ms**; `logic_delete_region` **702 → 563 ms**. Sixteen call sites inherit it:
+  every region tool that parks, tempo sampling, automation read and record, MIDI record,
+  marker parking and `logic_import_midi`.
+- **A playhead move no longer changes a beat nobody asked about.** Logic shifts the sub-bar
+  position on longer bar moves — measured this session on the old binary: `bar: 33` from bar
+  56 landed on beat 4 having started on beat 1, silently, and the same happened at the
+  project's last bar (beat 3 → 1). `logic_set_playhead` now reads the beat before and after,
+  puts it back when the call passed no `beat`, and says so in `warning` — including when it
+  cannot put it back, which happens at the final bar. A locate that fails also returns the
+  playhead to where it found it instead of abandoning it mid-climb: asking for bar 93 on a
+  64-bar project used to cost 1 585 ms and leave the playhead at 64, and now costs 146 ms and
+  leaves it where it started (`Restored: true`).
+- **Setting the cycle range leaves Cycle mode exactly as it found it, and reaches ranges that
+  are scrolled out of view.** The drag that resizes the locators engages Cycle the way it
+  would for a human: a call with no `enabled` argument turned it on and nothing turned it
+  back (reproduced live). Both routes now read the button before anything is written, undo an
+  unrequested flip, and report `cycle_enabled_before` alongside `cycle_enabled`. And a range
+  outside the visible ruler used to be a dead end — the refusal said "scroll or zoom Logic",
+  which nothing in this server could do. It now scrolls the ruler itself, measures the shift
+  against the ruler's own Start marker until the range is in view, and only refuses if the
+  ruler will not move — naming the pixels it managed and the pixels it needed.
 
 ### Known limitations (honest by design)
 
