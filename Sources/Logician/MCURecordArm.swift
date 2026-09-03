@@ -112,7 +112,8 @@ extension MCUController {
         func read(_ rows: [LogicAccessibility.TrackHeader]) -> Bool? {
             guard let header = rows.first(where: { $0.name == trackName }),
                   let box = logic.children(of: header.item).first(where: {
-                      logic.stringAttribute($0, kAXDescriptionAttribute as String) == "Record Enable"
+                      logic.stringAttribute($0, kAXDescriptionAttribute as String)
+                          == LogicUIStrings.Element.recordEnable
                   })
             else { return nil }
             // `stringAttribute` answers "" for an attribute it could not read,
@@ -171,9 +172,16 @@ extension MCUController {
         // findChannel leaves the surface banked at the match in the pan-names
         // view, where the cells ARE painted — prove the strip before pressing,
         // the same third question `selectChannelVerified` asks, but without
-        // touching the project-wide selection (arming does not need it).
+        // touching the project-wide selection (arming does not need it). The
+        // arm-off half of a compare-and-set pair gets here ~200 ms after its
+        // own press, so the cell it reads is often `Record` rather than the
+        // name; `stripProvenByCell` accepts that ONLY as this server's own
+        // banner on this strip, which is why it is not a hole.
         guard let top = freshStatus()?["lcd_top"] as? String,
-              lcdAbbreviationPlausible(track: trackName, lcd: lcdFields(top)[channel]) else {
+              stripProvenByCell(
+                  track: trackName, cell: lcdFields(top)[channel], channel: channel,
+                  record: lastControlPressBanner
+              ) else {
             throw LogicianError.verificationFailed(
                 requested: "strip \(channel + 1) showing '\(trackName)'",
                 actual: "it shows '\(lcdFields(freshStatus()?["lcd_top"] as? String ?? "")[channel])'"
@@ -215,6 +223,17 @@ extension MCUController {
         guard response.ok else {
             throw LogicianError.writeFailed("MCU record-arm press failed: \(response.error ?? "?")")
         }
+        // Logic answers the press by painting `Record Enable` over this
+        // strip's LCD name cell AND its right-hand neighbour's, for about two
+        // seconds. Recording it is what lets the NEXT resolution of this track
+        // — the arm-off half of the pair the guide tells agents to write —
+        // know the odd-looking cells are its own echo rather than a stale bank
+        // map. Without it that pair paid a full rescan, ~5-7 s, on every
+        // repeat once e7c1a84 made the press itself fast enough to land inside
+        // the banner's window (`bankedAtMatch`, FS-1 follow-up).
+        noteControlPressBanner(
+            track: trackName, channel: channel, banner: MCULCDStrings.recordArmBanner
+        )
         _ = awaitEvents(since: events, timeoutMs: 800)
 
         // The same order as the pre-press read, for the same reason: the
@@ -244,6 +263,12 @@ extension MCUController {
             // press, and leaving an unproven arm behind is the one state a
             // vocal session must not start from.
             _ = try? MCUBridge.send(.press(note: 0x00 + channel))
+            // The undo press paints its own banner; the record has to name the
+            // newer one or the next resolution excuses a cell that has already
+            // repainted.
+            noteControlPressBanner(
+                track: trackName, channel: channel, banner: MCULCDStrings.recordArmBanner
+            )
             throw LogicianError.verificationFailed(
                 requested: "record_armed=\(enabled) on '\(trackName)' (strip \(channel + 1))",
                 actual: "neither the record LED"

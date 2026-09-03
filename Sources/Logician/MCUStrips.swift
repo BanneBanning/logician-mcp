@@ -214,18 +214,23 @@ extension MCUController {
         return BankScan(banks: banks, standingBanner: standingBanner)
     }
 
-    /// Is this ONE cell spelling a control name Logic paints over a strip's
-    /// name (`MCULCDStrings.controlNameBanners`) rather than a strip's name?
+    /// Is this ONE cell spelling part of a control name Logic paints over a
+    /// strip's name (`MCULCDStrings.controlNameBannerCells`) rather than a
+    /// strip's name?
     ///
-    /// Both planes' spellings come from the same list, so the census's
-    /// row-level check and `bankedAtMatch`'s cell-level one can never disagree
-    /// about what a banner looks like.
+    /// PART of, not all of, and that is the record-arm case: `Record Enable`
+    /// is thirteen characters laid down at a strip's cell origin, so the row
+    /// carries it as the two cells `Record` and `Enable` and each of them has
+    /// to be recognized on its own. The cell list is derived from the phrase
+    /// list, so the census's row-level check and `bankedAtMatch`'s cell-level
+    /// one can never disagree about what a banner looks like.
     static func isControlBannerCell(_ cell: String) -> Bool {
-        MCULCDStrings.controlNameBanners.contains(cell.trimmingCharacters(in: .whitespaces))
+        MCULCDStrings.controlNameBannerCells.contains(cell.trimmingCharacters(in: .whitespaces))
     }
 
     /// The first cell of `row` that has the exact spelling of one of the
-    /// control names Logic paints over a strip's name (`MCULCDStrings.controlNameBanners`).
+    /// control names Logic paints over a strip's name
+    /// (`MCULCDStrings.controlNameBannerCells`).
     static func controlBannerCell(in row: String) -> String? {
         lcdFields(row)
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -263,8 +268,19 @@ extension MCUController {
         let track: String
         /// The strip index within the showing bank.
         let channel: Int
+        /// How many cells the banner covers, counted from `channel` rightwards.
+        /// 1 for mute/solo/select, 2 for record-arm's `Record Enable` — the
+        /// press site says which, because only it knows which button it sent.
+        let cells: Int
         /// When the press went out.
         let at: Date
+
+        init(track: String, channel: Int, cells: Int = 1, at: Date) {
+            self.track = track
+            self.channel = channel
+            self.cells = max(1, cells)
+            self.at = at
+        }
     }
 
     nonisolated(unsafe) static var lastControlPressBanner: ControlPressBanner? // single-threaded server loop
@@ -272,8 +288,18 @@ extension MCUController {
     /// Records a per-strip press whose echo is a banner over that strip's name
     /// cell. Called at the press, not at the readback: the banner is up ~0.22 s
     /// later and the clock that matters is the press's.
-    static func noteControlPressBanner(track: String, channel: Int, at: Date = Date()) {
-        lastControlPressBanner = ControlPressBanner(track: track, channel: channel, at: at)
+    ///
+    /// `banner` is the phrase from `MCULCDStrings` that this press is expected
+    /// to paint, and it is passed rather than assumed because its WIDTH is the
+    /// whole difference between mute and record-arm: `Mute` covers the touched
+    /// cell, `Record Enable` covers that cell and its right-hand neighbour.
+    static func noteControlPressBanner(
+        track: String, channel: Int, banner: String, at: Date = Date()
+    ) {
+        lastControlPressBanner = ControlPressBanner(
+            track: track, channel: channel,
+            cells: MCULCDStrings.controlNameBannerSpan(banner), at: at
+        )
     }
 
     /// How long after our own press a banner on that cell is still credibly
@@ -301,9 +327,63 @@ extension MCUController {
     static func ownPressBannerStanding(
         _ record: ControlPressBanner?, track: String, channel: Int, now: Date
     ) -> Bool {
-        guard let record, record.track == track, record.channel == channel else { return false }
+        ownPressBannerCells(record, track: track, channel: channel, now: now) > 0
+    }
+
+    /// HOW MANY cells starting at `channel` this server's own press is
+    /// entitled to have painted — 0 when nothing here is ours.
+    ///
+    /// The same three-way agreement as `ownPressBannerStanding`; this is the
+    /// form the matcher wants, because a record-arm press paints `Record
+    /// Enable` across the touched cell AND its neighbour and "there is a
+    /// banner" is no longer enough to say which cells to excuse.
+    ///
+    /// The span is what the PRESS SITE recorded, never what the live row
+    /// looks like: a row that happens to show two banner-shaped cells after a
+    /// one-cell press gets one cell excused and takes the walk for the other,
+    /// which is the same conservative answer as before.
+    static func ownPressBannerCells(
+        _ record: ControlPressBanner?, track: String, channel: Int, now: Date
+    ) -> Int {
+        guard let record, record.track == track, record.channel == channel else { return 0 }
         let age = now.timeIntervalSince(record.at)
-        return age >= 0 && age <= ownPressBannerTrustSeconds
+        guard age >= 0, age <= ownPressBannerTrustSeconds else { return 0 }
+        return record.cells
+    }
+
+    /// Does the strip's own LCD cell prove it is the track about to be
+    /// written — either because it still spells the name, or because the only
+    /// thing standing on it is a banner THIS server painted there?
+    ///
+    /// The plain reading (`lcdAbbreviationPlausible`) is the first answer and
+    /// the usual one. The second exists because making the banner-aware
+    /// resolution fast MOVED this problem rather than solving it: with
+    /// `findChannel` no longer waiting the banner out, a compare-and-set pair
+    /// arrives here ~200 ms after its own press, reads `Record` where the
+    /// track is called `Bas`, and refuses a write to a strip it had just
+    /// proved. Measured live 2026-09-03: five consecutive record-arm calls
+    /// refused with "the surface is banked somewhere else" — safely (nothing
+    /// was pressed) but wrongly.
+    ///
+    /// Excusing the banner adds no trust that has not already been paid for.
+    /// The caller got here through `findChannel`, whose `bankedAtMatch` had to
+    /// match every OTHER cell of the row against the cached map for this bank
+    /// before it would answer — seven or eight names, where a neighbouring
+    /// bank differs in all of them. So the row has already said which bank the
+    /// surface is standing on, and the map says which strip of it carries this
+    /// name. What this check adds on top is that the surface has not moved
+    /// since; a banner cell says exactly that, because it is the echo of the
+    /// press that put us here.
+    ///
+    /// Pure, so the rule that lets a write through is pinned by a test rather
+    /// than by a surface.
+    static func stripProvenByCell(
+        track: String, cell: String, channel: Int,
+        record: ControlPressBanner?, now: Date = Date()
+    ) -> Bool {
+        if lcdAbbreviationPlausible(track: track, lcd: cell) { return true }
+        guard isControlBannerCell(cell) else { return false }
+        return ownPressBannerCells(record, track: track, channel: channel, now: now) > 0
     }
 
     /// What a look at a row carrying a control-name cell settled on.

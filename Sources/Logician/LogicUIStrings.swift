@@ -303,9 +303,27 @@ enum LogicUIStrings {
             "Mute": "mute",
             "Solo": "solo",
             "Freeze": "freeze",
-            "Record Enable": "record_enable",
+            recordEnable: "record_enable",
             "Input Monitoring": "input_monitoring"
         ]
+
+        /// The track header's record button, by `AXDescription`. Read by
+        /// `trackHeaderControls(_:)` and, on its own, by
+        /// `MCURecordArm.axRecordEnabled` — the independent witness that names
+        /// the TRACK when the control surface can only name a strip index.
+        ///
+        /// **It is also painted on the LCD.** Logic answers a rec/ready press
+        /// on the Mackie Control by drawing this same phrase over the touched
+        /// strip's name cell and its right-hand neighbour's, which is why the
+        /// control-surface plane carries it too as
+        /// `MCULCDStrings.recordArmBanner` (the two cannot be one constant:
+        /// `MCULCDStrings` lives in the bridge target, which this file's
+        /// module depends on and not the other way round). A locale pass has
+        /// to translate BOTH — translate only this one and the arm write still
+        /// verifies, but every arm-on → arm-off pair goes back to paying a
+        /// full bank rescan; translate neither and the arm write loses its
+        /// second witness and says so (`cross_check: "unavailable"`).
+        static let recordEnable = "Record Enable"
 
         /// A channel strip slot names itself in its `AXHelp`, which STARTS
         /// with one of these. Paired with a `ChannelStrip.SlotKind` in
