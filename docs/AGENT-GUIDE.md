@@ -930,7 +930,7 @@ Parameters:
 
 #### `logic_set_playhead`
 
-Move the playhead to a 1-based bar (and optional beat) by stepping the control bar position display, then verify. Requires the control bar display mode that exposes bar/beat (Beats & Project).
+Move the playhead to a 1-based bar (and optional beat) by stepping the control bar position display, then verify. Requires the control bar display mode that exposes bar/beat (Beats & Project). A bar past the end of the project is refused by name, saying which bar Logic stopped at. Nothing the call did not ask for is left changed: when 'beat' is omitted and Logic moves it anyway (it resets the sub-bar position at the last bar), the beat is put back and the result carries a warning saying so; when the move cannot be verified, the playhead is returned to where the call found it and 'restored' says whether that worked.
 
 Parameters:
 
@@ -939,7 +939,7 @@ Parameters:
 
 #### `logic_set_cycle_range`
 
-Set the cycle (loop) locators to a whole-bar range, e.g. bars 5-9. Anchors the ruler's grid-snapped cycle region to a bar line via the playhead thumb, moves the region start by writing its AXPosition, adjusts the length by dragging its right edge (hit-test guarded), verifies via the region's bar-denominated size description, and restores the playhead. The target range must be visible in the ruler. Optionally turns cycle on/off afterwards via 'enabled'.
+Set the cycle (loop) locators to a whole-bar range, e.g. bars 5-9. Anchors the ruler's grid-snapped cycle region to a bar line via the playhead thumb, moves the region start by writing its AXPosition, adjusts the length by dragging its right edge (hit-test guarded), verifies via the region's bar-denominated size description, and restores the playhead. A range that is not currently visible in the ruler is scrolled into view first - the ruler is moved by measured pixels and read back, and a range it cannot reach is refused with the pixels it managed. Cycle mode is left exactly as it was found: a drag engages Cycle the way it would for a human, so when 'enabled' is omitted that is undone, and 'cycle_enabled_before' and 'cycle_enabled' both appear in the result. Optionally turns cycle on/off afterwards via 'enabled'.
 
 Parameters:
 

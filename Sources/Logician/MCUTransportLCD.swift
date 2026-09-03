@@ -91,8 +91,10 @@ extension MCUController {
         return transportVerdict(evidence)
     }
 
-    /// The live binding of the three witnesses.
-    private static func observeTransport(
+    /// The live binding of the three witnesses. Shared with
+    /// `LogicAccessibility.parkPlayheadOnGrid`, which asks the same question
+    /// for a different reason (whether it may rewind to bar 1 first).
+    static func observeTransport(
         status: [String: Any], logic: LogicAccessibility
     ) -> TransportVerdict {
         observeTransport(
