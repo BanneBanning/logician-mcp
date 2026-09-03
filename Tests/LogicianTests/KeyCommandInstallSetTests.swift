@@ -98,13 +98,24 @@ final class KeyCommandInstallSetTests: XCTestCase {
     /// The companion that did NOT make it, pinned so nobody re-adds it from
     /// the review without re-running the experiment.
     ///
-    /// `logic_set_track_stack` was converted to Logic's own
-    /// `Open/Close Track Stack` and Logic would not learn the row: four
-    /// rounds on 2026-09-03, three candidate notes each, through both
-    /// `logic_setup_key_commands` and `logic_learn_key_command`, the row's
-    /// assignment column never changing and no neighbouring row picking
-    /// anything up either. A row here would be a one-time irreversible write
-    /// into the user's Logic that can only ever report `not_found`.
+    /// TWO reasons now, and the second one is the durable one. Logic would
+    /// not learn `Open/Close Track Stack` — four rounds on 2026-09-03, three
+    /// candidate notes each, through both `logic_setup_key_commands` and
+    /// `logic_learn_key_command`, the row's assignment column never changing
+    /// and no neighbouring row picking anything up either. And the fold does
+    /// not need a key command at all: `logic_set_track_stack` folds the stack
+    /// with an `AXPress` on its disclosure triangle (22-40 ms, 4/4, measured
+    /// the same day), which addresses the element instead of acting on the
+    /// SELECTED track the way a Tracks-scoped key command would. Logic ships
+    /// the directional `Open Track Stack` and `Close Track Stack` rows
+    /// (unassigned, read off the window that day); `Open Track Stack` was
+    /// attempted once with the user's explicit permission and answered exactly
+    /// as the toggle did (10.98 s, three candidate notes, nothing bound,
+    /// registry unchanged at 20) — under an inert Accessibility ACTION plane
+    /// that also disarms Logic's own Learn checkbox, so the row is recorded as
+    /// UNPROVEN rather than unbindable, and `Close Track Stack` was not spent
+    /// on a confounded experiment. Either way a row here is an irreversible
+    /// write into the user's own Logic, and nothing in this server fires one.
     func testTheStackFoldIsNotInTheInstallRoundAndIsNotSpelledAtAll() {
         for name in ["Open/Close Track Stack", "Open Track Stack", "Close Track Stack",
                      "Open/Close All Track Stacks"] {

@@ -443,6 +443,7 @@ extension MCPServer {
             trackName: requiredString("track_name", in: arguments),
             trackNumber: arguments["track_number"] as? Int,
             expanded: expanded,
+            allowMouse: arguments["allow_mouse"] as? Bool == true,
             expectedProjectPath: arguments["expected_project_path"] as? String
         )
     }

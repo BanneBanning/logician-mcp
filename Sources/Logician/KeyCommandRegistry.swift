@@ -399,9 +399,16 @@ enum KeyCommandRegistry {
         /// through both learn tools, the row's assignment column never
         /// changing and nothing landing on any neighbouring row either. This
         /// same driver bound `Open Mixer…` on the first try in the same
-        /// session, so the driver was fine. Logic's directional
-        /// `Open Track Stack` / `Close Track Stack` rows are the untried
-        /// candidate and cost two rows in the user's set rather than one.
+        /// session, so the driver was fine. The directional `Open Track Stack`
+        /// was then tried once with the user's explicit permission (search
+        /// `track stack`; the default `open track` scrolls past the row) and
+        /// answered identically — 10.98 s, three candidate notes, nothing
+        /// bound, registry unchanged at 20 — but that attempt ran while
+        /// Logic's Accessibility actions were inert app-wide, and arming
+        /// Logic's Learn checkbox IS an `AXPress`, so `Close Track Stack` was
+        /// left alone rather than spent on a confounded experiment. None of
+        /// them is needed: `logic_set_track_stack` folds the stack with an
+        /// `AXPress` on the disclosure triangle itself (22-40 ms, 4/4).
         static let openMixer = "Open Mixer\u{2026}"
 
         // MARK: Learned on demand (not in `standardCommands`)

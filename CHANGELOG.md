@@ -2165,23 +2165,47 @@ with every render coming back as audio the agent can listen to.
   first measurement of a single learn, against the 5.0–6.7 s the code had estimated and
   the 10.1 s per command the 22-command round averaged before this release's install-round
   fixes.
-- **And the track-stack fold stays on the mouse, because Logic will not give it up.**
-  `logic_set_track_stack` is the one write in this server that briefly takes the pointer
-  without an `allow_mouse` opt-in, and the plan was to retire it the same way. Logic has
-  the command — `Open/Close Track Stack` is a real row in its Key Commands window — and
-  Logic simply refuses to learn a MIDI note for it: four rounds on 2026-09-03, three
-  candidate notes each, through both `logic_setup_key_commands` and
-  `logic_learn_key_command`, with the row's assignment column never changing once and no
-  neighbouring row picking anything up either (the whole `track stack` filter was audited
-  row by row, before and after, byte-identical). The same driver bound `Open Mixer…` on
-  the first try in the same session, so this is Logic's answer and not a broken tool. The
-  conversion was reverted rather than shipped half-working. What the attempt did leave is
-  a warning worth having: on that same day six consecutive folds refused with *"hit test
-  at the position of disclosure triangle … did not resolve to that element"* while every
-  Accessibility read around them worked — a coordinate-driven route can go dead without
-  anything the server reads being able to see it. The tool now says all of this in its
-  own description, and `write_route` names `cg_click_on_ax_frame` so it is never a
-  surprise.
+- **And the track-stack fold lets go of the mouse: nothing in this server takes the
+  pointer without being asked any more.** `logic_set_track_stack` was the last write with
+  no `allow_mouse` opt-in, and the plan had been to retire it onto a key command. Logic
+  would not learn one — `Open/Close Track Stack` is a real row in its Key Commands window
+  and four rounds on 2026-09-03, three candidate notes each, through both
+  `logic_setup_key_commands` and `logic_learn_key_command`, never moved the row's
+  assignment column once; the directional `Open Track Stack` answered the same way on a
+  fifth attempt (10.98 s, nothing bound), though that one ran in the degraded state the
+  last bullet describes and so proves less than it looks. It did not matter, because the route was already
+  there and this codebase had written it off: **`AXPress` on the stack's own disclosure
+  triangle folds it in 22–40 ms**, both directions, with Logic in the BACKGROUND —
+  measured 4/4 the same day against the note in this file that called it a silent no-op.
+  So the fold is now an element-addressed Accessibility press (`write_route: ax_press`),
+  it costs no row in the user's key command set, it does not steal focus, and an expand
+  came down from **474 ms to 232 ms** (no-op unchanged at ~45 ms). The click survives only
+  as an `allow_mouse: true` fallback: if the press ever fails to fold the stack the call
+  REFUSES and names that argument rather than reaching for the pointer, and a call that
+  does use it comes back with `ax_press_inert: true`, `ax_press_ms` and a warning saying
+  the pointer moved. The two attribute routes really are closed, re-read the same session:
+  the triangle's `AXValue` is not settable and the header row publishes no `AXDisclosing`.
+- **And the six refusals nobody could explain have an explanation: the row was off the
+  screen.** *"Hit test at the position of disclosure triangle … did not resolve to that
+  element"* was recorded six times in a row on 2026-09-03 with every Accessibility read
+  around it working, and it read like the pointer route going randomly dead. It was not
+  random: a row Logic PUBLISHES is not a row Logic DRAWS, and after an expand scrolls the
+  Tracks area the stack's own triangle can be published at **y = -284** — above the top of
+  the screen, where the hit test resolves to nothing because no window covers that point.
+  `logic_set_track_stack` now measures the triangle against the Tracks viewport before it
+  writes and scrolls the header back with one `logic_select_track` when it is outside
+  (measured: -284 → 206, and the hit test resolves again), reporting `scrolled_into_view`.
+  This is the insurance the tool used to buy unconditionally on every call and lost when
+  that was optimised away in this same release — bought back, but only when the geometry
+  says it is needed.
+- **A write that Logic never carried out no longer reads like a write that failed.**
+  Logic's Accessibility ACTIONS can go inert on this machine app-wide — every `AXPress`
+  returns `.success` and does nothing, while reads and selection writes keep working
+  (caught live 2026-09-03: all three stacks' triangles and a header's `Has Focus` button,
+  0.0-0.1 ms each, against the 42-54 ms a press Logic really performs). The fold times its
+  own press, and a refusal in that state says so — this is not your call, it is every
+  element-addressed write in the server right now, and the `allow_mouse` click is the one
+  route unaffected because a synthetic click is not an Accessibility action.
 
 - **A strip's level, pan, mute and solo are ONE call, and one tool.** `logic_set_track_mix`
   takes any subset of the four — `{volume_db: -3, pan: 12, mute: false}` is a single round
