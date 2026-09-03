@@ -444,12 +444,14 @@ extension LogicAccessibility {
                     // nothing.
                     var initialTrack: [String: Any]?
                     var typeWarning: String?
+                    var selectedTrackType: ProjectOpen.TrackTypeOffer?
                     if let sheet = answerCreateTrackSheet(
                         waitingUpTo: createFromTemplate
                             ? ProjectOpen.createTrackSheetBudgetSeconds : 0,
                         wanting: initialTrackType
                     ) {
                         dialogsAnswered.append(sheet.entry)
+                        selectedTrackType = sheet.selectedType
                         // WHICH track the caller now owns. The sheet cannot be
                         // answered without making one, so the tool that made it
                         // names it rather than leaving the caller to diff a
@@ -497,6 +499,28 @@ extension LogicAccessibility {
                     // defect was a sheet nobody mentioned.
                     payload["dialogs_answered"] = dialogsAnswered
                     if let initialTrack { payload["initial_track"] = initialTrack }
+                    // A software-instrument initial_track makes Logic open
+                    // that track's own plug-in window ~1.1–1.8 s AFTER this
+                    // point (measured 2026-09-03) and leave it standing; an
+                    // audio initial_track opens none. Only the create path
+                    // can raise it (this window comes from the sheet's
+                    // track, never from opening an existing project), so the
+                    // check — and the key — exist only here, not on
+                    // logic_open_project/duplicate/reset_to, which share
+                    // this function but must never close a window a caller
+                    // has open on purpose. The wait is paid only when the
+                    // track just made is one measured to raise it.
+                    if createFromTemplate {
+                        let dialogsClosed = closeStrayPluginWindows(
+                            waitingUpTo: ProjectOpen.selectedTrackTypeExpectsStrayWindow(selectedTrackType)
+                                ? ProjectOpen.strayPluginWindowBudgetSeconds : 0
+                        )
+                        payload["dialogs_closed"] = dialogsClosed
+                        appendWarning(
+                            ProjectOpen.strayPluginWindowWarning(dialogsClosed: dialogsClosed),
+                            to: &payload
+                        )
+                    }
                     appendWarning(typeWarning, to: &payload)
                     if dialogsAnswered.contains(where: { $0["verified_gone"] as? Bool == false }) {
                         appendWarning(

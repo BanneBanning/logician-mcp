@@ -655,4 +655,69 @@ extension LogicAccessibility {
         ]
     }
 
+    /// Closes any plugin/auxiliary window standing over the project, waiting
+    /// for one to appear when it is expected — the fix for `logic_new_project`
+    /// leaving Logic's own instrument window open and unmentioned.
+    ///
+    /// MEASURED 2026-09-03 (`project-lifecycle-live.md` "Open" note; two
+    /// timed live runs of this fix): a `logic_new_project` whose
+    /// `initial_track` is a software instrument makes Logic open that
+    /// track's plug-in window (`Inst 1`, `kind: plugin_or_auxiliary`,
+    /// `AXDialog`) and leave it standing; an `audio` create opens none. Left
+    /// open, it is the window `key_focus: unverified` / `blocked_by` names
+    /// in every region tool (the region-focus fix, 0bafa09) — a brand-new
+    /// project starting life already degraded.
+    ///
+    /// **The window is not there yet when the track is.** A look taken the
+    /// instant `firstTrackRow` finds the new row finds NO plugin window on
+    /// 5/5 creates; Logic opens it asymchronously, **1.13–1.60 s and
+    /// 1.25–1.83 s after `openProject` would otherwise already have
+    /// returned** on two separately timed runs (0.1–0.15 s poll
+    /// resolution; the true edge is inside those brackets). This is Logic's
+    /// own delay — the loop spends every tick of it inside a look, touching
+    /// nothing else — not a blind sleep to cut, so `openProject` passes
+    /// `waitingUpTo` a real budget (`ProjectOpen.strayPluginWindowBudgetSeconds`,
+    /// 2.5 s, comfortably past the slower run's 1.83 s) only when the track
+    /// just created is one measured to raise the window at all; every other
+    /// kind gets `waitingUpTo: 0` — one look, ~1 ms, the same
+    /// `logicWindows()` read `listWindows()` already pays warm.
+    ///
+    /// Detection is `LogicWindowKind.classify`, the exact rule
+    /// `logic_list_windows` publishes — the poll only decides WHEN to look,
+    /// never invents what counts as a plugin window. Closing is
+    /// `closePluginWindow(title:)` itself, unchanged — the mechanism
+    /// `logic_close_plugin_window` exposes — so there is exactly one way
+    /// this server closes a plugin window, not two. A window this reuses
+    /// `windowNotClosable`/`windowAmbiguous` on (raced shut, or sharing a
+    /// title with another dialog) is reported unclosed rather than thrown,
+    /// because the project create it is cleaning up after already
+    /// succeeded. The report SHAPE lives in
+    /// `ProjectOpen.strayPluginWindowClosedEntry`, pure and unit-tested;
+    /// this function's only job is to supply it real inputs.
+    func closeStrayPluginWindows(waitingUpTo deadline: TimeInterval) -> [[String: Any]] {
+        let strayTitles: [String] = (try? pollWindowList(deadline: deadline) { windows -> [String]? in
+            let titles = windows.compactMap { window -> String? in
+                let title = stringAttribute(window, kAXTitleAttribute as String)
+                let subrole = stringAttribute(window, kAXSubroleAttribute as String)
+                let hasDocument = documentPath(of: window) != nil
+                let kind = LogicWindowKind.classify(subrole: subrole, title: title, hasDocument: hasDocument)
+                return kind == LogicWindowKind.pluginOrAuxiliary ? title : nil
+            }
+            return titles.isEmpty ? nil : titles
+        }) ?? []
+        guard !strayTitles.isEmpty else { return [] }
+        return strayTitles.map { title in
+            do {
+                let outcome = try closePluginWindow(title: title)
+                return ProjectOpen.strayPluginWindowClosedEntry(
+                    title: title, closed: outcome["state"] as? String == "closed"
+                )
+            } catch {
+                return ProjectOpen.strayPluginWindowClosedEntry(
+                    title: title, closed: false, detail: error.localizedDescription
+                )
+            }
+        }
+    }
+
 }

@@ -426,4 +426,71 @@ enum ProjectOpen {
     /// that ran BEFORE the loop's first look, so a project Logic finished
     /// opening in 300 ms was reported at 500 ms.
     static let pollIntervalSeconds: TimeInterval = 0.2
+
+    // MARK: - The plug-in window a fresh create can leave standing
+
+    /// Whether the track a create just made is one MEASURED to make Logic
+    /// open a plug-in window on its own — the gate `openProject` uses to
+    /// decide whether `closeStrayPluginWindows` is worth a poll at all.
+    ///
+    /// Only a software-instrument variant is measured to do this (`MIDI` and
+    /// `Pattern` both offer it under that name); an `audio` create opens
+    /// none, 5/5, and Session Player/Drummer and the rest are untested — this
+    /// says nothing about them, so they get the cheap `waitingUpTo: 0` path
+    /// rather than a guessed-at wait.
+    static func selectedTrackTypeExpectsStrayWindow(_ selected: TrackTypeOffer?) -> Bool {
+        guard let selected else { return false }
+        return normalizedTrackTypeName(selected.variant) == "software instrument"
+    }
+
+    /// How long `closeStrayPluginWindows` waits for the window it expects,
+    /// once `selectedTrackTypeExpectsStrayWindow` says one is coming.
+    ///
+    /// MEASURED 2026-09-03, two independently timed live creates: Logic's
+    /// `Inst 1` window appeared **1.13–1.60 s** and **1.25–1.83 s** after
+    /// `openProject` would otherwise already have returned (0.1–0.15 s poll
+    /// resolution — the true instant is inside each bracket, never before
+    /// it: a look taken the moment the track's own row exists finds nothing,
+    /// 5/5). This budget clears the slower run's edge with margin instead of
+    /// re-guessing a number between two live measurements.
+    static let strayPluginWindowBudgetSeconds: TimeInterval = 2.5
+
+    /// One `dialogs_closed` line for a plug-in window `closeStrayPluginWindows()`
+    /// found open right after a create — pure, so this SHAPE is unit-tested
+    /// without Logic running. `closeStrayPluginWindows()` (AXPlugins.swift)
+    /// supplies `closed` from `closePluginWindow(title:)`'s own result or from
+    /// whether it threw at all, and this function does nothing but describe
+    /// that outcome consistently.
+    ///
+    /// MEASURED 2026-09-03: a `logic_new_project` whose `initial_track` is a
+    /// software instrument leaves Logic's own `Inst 1` plug-in window
+    /// (`AXDialog`) open; an audio create opens none. Left standing, that
+    /// window is what every region tool's `key_focus: unverified` /
+    /// `blocked_by` names (the region-focus fix, 0bafa09) — a brand-new
+    /// project starting life already degraded, silently, until this line
+    /// existed to say so.
+    static func strayPluginWindowClosedEntry(
+        title: String, closed: Bool, detail: String? = nil
+    ) -> [String: Any] {
+        [
+            "phase": "post_create",
+            "dialog": "plugin_window",
+            "window": title,
+            "state": closed ? "closed" : "open",
+            "effect": closed
+                ? "closed Logic's own plug-in window, left open after the track was created, so"
+                    + " region and focus tools do not start blocked"
+                : "the window is still open"
+                    + (detail.map { " (\($0))" } ?? "")
+        ]
+    }
+
+    /// The `warning` naming the way out, or nil when every `dialogs_closed`
+    /// entry says `state: "closed"` — including the empty list (nothing to
+    /// close is not a warning).
+    static func strayPluginWindowWarning(dialogsClosed: [[String: Any]]) -> String? {
+        guard dialogsClosed.contains(where: { $0["state"] as? String != "closed" }) else { return nil }
+        return "A plug-in window Logic opened on its own could not be closed automatically;"
+            + " logic_close_plugin_window {window_title: \"<name>\"} is the way out."
+    }
 }

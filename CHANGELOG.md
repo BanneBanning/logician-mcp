@@ -1639,6 +1639,25 @@ with every render coming back as audio the agent can listen to.
   is read back off the sheet rather than assumed. A kind this Logic does not offer is not a
   refusal: by then the project exists and cancelling that sheet would close it, so it opens
   with the sheet's own selection and a warning lists the real vocabulary.
+- **A freshly created project no longer starts life with a plug-in window standing over it.**
+  Logic opens the new track's own instrument window unasked whenever `initial_track` is a
+  software instrument — measured 2026-09-03, `Inst 1` as an `AXDialog`; an `audio` create opens
+  none, 5/5 — and `logic_new_project` neither reported nor closed it, so the very first call an
+  agent made against a new project could land on the window every region tool's
+  `key_focus: unverified` already names as the cause. The tool now detects it the way
+  `logic_list_windows` does (the subrole, never a guess) and closes it the way
+  `logic_close_plugin_window` does — one mechanism, not two — reporting the outcome in
+  `dialogs_closed` (always present, empty when there was nothing to close). **The window is not
+  there yet when the track is**: Logic opens it asynchronously, 1.13–1.60 s and 1.25–1.83 s after
+  the old call would already have returned, on two independently timed live creates — a look
+  taken the instant the track exists finds nothing, 5/5 — so a software-instrument create now
+  waits up to 2.5 s (look-first, no blind sleep) for the window it expects before returning; an
+  audio create, measured to never raise one, pays a single ~1 ms look instead. Live proof
+  2026-09-03: two software-instrument creates at 5.69 s and 4.75 s each closed their own `Inst 1`
+  window (`logic_list_windows` showing the project window alone afterwards), one audio create at
+  2.63 s reported `dialogs_closed: []` honestly with no window ever appearing over 5.7 s of
+  watching. A window that will not close carries a `warning` naming `logic_close_plugin_window`
+  as the way out rather than going silent about it.
 - **With a plug-in window or the Mixer in front, the region tools stop stalling and start
   telling you why.** Every region tool checks that Logic's Tracks area has the keyboard
   focus before it fires a key command, and repairs it if it does not — a real cure, when the
