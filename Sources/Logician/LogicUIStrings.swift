@@ -250,6 +250,30 @@ enum LogicUIStrings {
         /// locale session may find Logic translates one and not the other.
         static let playheadBarSlider = "bar"
         static let playheadBeatSlider = "beat"
+        /// The LCD's sub-bar cells. Present on the position display in the
+        /// display modes that show them, and on BOTH cycle locator cells,
+        /// where `setCycleRange` writes them to 1 so a locator sits exactly on
+        /// its bar line. Read by `writeLocator`/`restoreLocator`; a rename
+        /// only costs the sub-bar part (the bar itself is the entry above),
+        /// and a locator left off a bar line then fails this tool's own
+        /// verification rather than passing silently.
+        static let lcdDivisionSlider = "division"
+        static let lcdTickSlider = "tick"
+
+        /// The LCD's Display Mode pop-up, and the mode that carries the cycle
+        /// locator cells. Read by `setCycleRange`, which switches the display
+        /// only when the locators are not already shown — a user whose LCD
+        /// shows them needs neither of these strings, because the cells
+        /// themselves are recognised by their digits (`0005  1  1  001`) and
+        /// do not translate.
+        ///
+        /// MEASURED 2026-09-03, Logic Pro 12.3.1: of the fixed modes only
+        /// `Custom` carries the locators (`Beats & Project` and `Beats & Time`
+        /// publish none), and which cells `Custom` shows is the user's own
+        /// setting in Customize Control Bar and Display — which is what the
+        /// refusal in `LocatorCells.noCellsRefusal` names.
+        static let displayModePopUp = "Display Mode"
+        static let customDisplayMode = "Custom"
 
         // MARK: Channel strips
 

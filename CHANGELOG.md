@@ -2220,6 +2220,40 @@ with every render coming back as audio the agent can listen to.
   scored queries in the top five, because a shorter description ranks its own keywords
   higher rather than lower.
 
+- **The cycle range is set without touching the mouse — and changing its LENGTH works
+  again.** `logic_set_cycle_range` writes both locators as NUMBERS, into the control bar
+  LCD's own locator cells, one step per `AXValue` write: measured **0.1–1.6 ms per step,
+  7 ms for both locators of a 15-bar move**, and **72 ms** for the whole round trip when
+  the LCD is already showing its locators. Until now a length change meant DRAGGING THE
+  RULER with synthetic mouse events — the last ungated pointer write in the server. That
+  route took the user's pointer, engaged Cycle mode by itself, scrolled the ruler out
+  from under the next call, needed the range to be on screen, and borrowed the playhead
+  to park on up to five candidate bars just to work out which bar the cycle region sat
+  on. It had also simply stopped working: three consecutive length changes on 2026-09-03
+  refused with *"hit test at the cycle strip of the ruler resolved to AXTable ''"*
+  (716–1 043 ms each), because a drag aims at screen coordinates and cannot see what the
+  window stack has done to them. Numbers have none of that. Nothing has to be visible —
+  a range past the right edge of the ruler needs no scrolling — nothing is borrowed, and
+  Cycle mode does not change (measured `false` before and after, where the drag flipped
+  it every time). Verified on two planes, both exact: **both locator cells read back the
+  requested bars, on beat 1 division 1 tick 1, and the ruler's own cycle region reports
+  the requested bar count**; either disagreeing puts the range back by the same route and
+  says `Restored: true`. A range already set is reported `already_set` with nothing
+  written. A bar past the end of the project is refused by name — measured, the locator
+  clamps at the project's last bar exactly as the playhead's does — with the range put
+  back and verified. When the LCD is not already showing the locators it is switched to
+  the display mode that carries them and switched back afterwards (198 ms each way, and
+  the switch back now waits for Logic to finish rebuilding the LCD, so a
+  `logic_get_transport` fired straight afterwards no longer reads a half-built control
+  bar); `display_mode` reports what was found and whether it went back, and the whole
+  call then costs 0.7–1.2 s. If the locators cannot be shown at all, the call is REFUSED
+  and names the one-time *Customize Control Bar and Display* setting that fixes it —
+  there is no mouse fallback any more, on purpose. `write_route` says `lcd_locator_cells`
+  on every call; `ax_position_grid_snap` and `cg_drag_create` are gone, and with them the
+  ruler-recentring, bar-line-anchoring and pixels-per-bar machinery they needed. A new
+  unit test keeps the census of files that synthesize pointer input at two, so a fourth
+  route cannot appear quietly.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.
