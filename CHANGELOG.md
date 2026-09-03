@@ -2170,6 +2170,21 @@ with every render coming back as audio the agent can listen to.
   `logic_set_track_volume`, `logic_set_track_pan`, `logic_set_track_mute`,
   `logic_set_track_solo`, `logic_select_region` — are listed with their replacements
   under "Renamed and removed" in the agent guide.
+- **Every tool now says what it is for in its first sentence, and the machinery moved
+  to the guide.** The twenty-one biggest tool descriptions were rewritten to open with
+  one plain sentence an agent can pick the tool by — `logic_record_midi` starts with
+  "PERFORM a MIDI part onto an existing software-instrument track", not with its timing
+  model; `logic_set_region_params` with "Shape how a region PLAYS BACK without touching
+  what was recorded" — and then keep only what changes what an agent DOES: the
+  destructive warning, the refusals, the one non-obvious argument rule, and the result
+  keys the tool promises. Nothing was dropped. Every measured number, sweep and Logic
+  quirk those descriptions carried is now in a new "Mechanism and measured costs"
+  section of the agent guide, one entry per tool, with its date — and the guide is
+  fetched on demand, so it costs nothing at connect. `tools/list` is 21,268 bytes /
+  5,119 tokens smaller in every session (232,297 → 211,029 B; 51,559 → 46,440 tokens,
+  −9.9%), the guide grew 3,771 B, and the retrieval probe still surfaces all 57 of its
+  scored queries in the top five, because a shorter description ranks its own keywords
+  higher rather than lower.
 
 ### Known limitations (honest by design)
 
