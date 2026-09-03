@@ -209,6 +209,13 @@ extension LogicAccessibility {
         var tabs = heldStrip ?? tempoListTabs(in: window)
         let wasOpen = tabs.isEmpty == false
         if !wasOpen {
+            // `pressMenuItem` itself guards `ensureLogicFrontmost` now (fixed
+            // 2026-09-03): this call used to trust `View > List Editors`'s
+            // `.success` status with Logic possibly backgrounded, which
+            // measured as a silent no-op that then read back as `tabNotFound`
+            // — "the pane opened but has no such tab" — instead of the true
+            // `paneUnavailable`, because `settleForListEditorsPane` below
+            // found an empty strip and nothing here asked why.
             guard (try? pressMenuItem(
                 containing: LogicUIStrings.Menu.listEditors, underMenu: LogicUIStrings.Menu.view
             )) != nil else {
