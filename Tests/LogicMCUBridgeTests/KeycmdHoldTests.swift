@@ -1,23 +1,30 @@
 import XCTest
 @testable import LogicMCUBridge
 
-/// The key-command hold — `pressButton`'s UNSWEPT sibling.
+/// The key-command hold — `pressButton`'s formerly-unswept sibling.
 ///
-/// `keycmd` slept a flat 40 ms between its note-on and note-off, unnamed and
-/// unconfigurable, and it is ~96% of `logic_trigger_key_command`'s 50-52 ms
+/// `keycmd` used to sleep a flat 40 ms between its note-on and note-off,
+/// unnamed and unconfigurable, ~96% of `logic_trigger_key_command`'s 50-52 ms
 /// wall clock (KEY-COMMANDS-REVIEW.md, 2026-09-03). The MCU button press hold
 /// next to it was swept live 2026-09-02 (`bf511e5`) and its default dropped
-/// to a measured 0 ms; the key-command hold has had NO equivalent live sweep
-/// yet, so this change is plumbing only — a named constant, settable per
-/// message and by an environment override — with the default left at its
-/// historical 40 ms. `keycmd_hold_sweep.py` (scratchpad) is the harness that
-/// will make the live measurement these tests deliberately do not attempt.
+/// to a measured 0 ms; a first pass here added the plumbing — a named
+/// constant, settable per message and by an environment override — while
+/// leaving the default at its historical 40 ms pending the key-command
+/// plane's own sweep. That sweep has now run, live, 2026-09-03
+/// (`keycmd_hold_sweep.py`, sandbox "Testlåt Copy"): firing
+/// `Create Marker` at hold_ms 0, 1, 5, 10, 20 and 40, plus ten more fires at
+/// 0, created exactly one marker every time — sixteen fires at 0 ms, sixteen
+/// markers, zero duplicates, zero drops. The compiled default moves to that
+/// measured 0 ms (`resolveKeycmdDefaultHoldMs`'s doc comment carries the
+/// table). The ~0.2 ms point the button sweep also cleared is not reachable
+/// through `hold_ms` (an `Int` count of milliseconds) and was not attempted.
 ///
 /// These tests hold: that an absent hold_ms resolves to the DAEMON'S default
-/// (not zero, unlike `pressHoldMs`), that a caller who asks for a hold —
-/// including zero — gets exactly that, that the field stays additive and
-/// lenient the same way `pressHoldMs` is, that the ceiling still applies, and
-/// that the environment-override resolver is a pure function of its input.
+/// (not zero, unlike `pressHoldMs`, though the two now happen to agree at
+/// 0 ms), that a caller who asks for a hold — including zero — gets exactly
+/// that, that the field stays additive and lenient the same way `pressHoldMs`
+/// is, that the ceiling still applies, and that the environment-override
+/// resolver is a pure function of its input.
 ///
 /// No CoreMIDI endpoints exist in a test process, so the `sendCommandPort`
 /// calls inside `handleCommand`'s `.keycmd` branch reach an invalid endpoint
@@ -115,11 +122,12 @@ final class KeycmdHoldTests: XCTestCase {
 
     // MARK: - What the daemon actually does with it
 
-    /// The saving itself, mirroring PressHoldTests' timing proof: a keycmd
-    /// with no hold_ms takes the compiled 40 ms default, and one that asks
-    /// for zero returns immediately. The two bounds are 15 ms apart, well
-    /// clear of scheduler noise.
-    func testTheDefaultKeycmdSleepsFortyMsAndAnExplicitZeroDoesNot() throws {
+    /// The saving itself, mirroring PressHoldTests' timing proof: measured
+    /// live 2026-09-03, the compiled default dropped from 40 ms to 0 ms, so
+    /// a keycmd with no hold_ms now returns near-instantly, same as one that
+    /// explicitly asks for zero — both stay well clear of the 35 ms an
+    /// explicit hold below is asked to clear.
+    func testTheDefaultKeycmdIsNearInstantAndAnExplicitHoldSleeps() throws {
         func elapsedMs(_ request: String) throws -> Double {
             let command = try bridgeJSONDecoder.decode(
                 BridgeCommand.self, from: Data(request.utf8)
@@ -128,8 +136,9 @@ final class KeycmdHoldTests: XCTestCase {
             XCTAssertTrue(handleCommand(command).ok, request)
             return Date().timeIntervalSince(started) * 1000
         }
-        XCTAssertGreaterThanOrEqual(try elapsedMs(#"{"cmd":"keycmd","note":104}"#), 35)
+        XCTAssertLessThan(try elapsedMs(#"{"cmd":"keycmd","note":104}"#), 25)
         XCTAssertLessThan(try elapsedMs(#"{"cmd":"keycmd","note":104,"hold_ms":0}"#), 25)
+        XCTAssertGreaterThanOrEqual(try elapsedMs(#"{"cmd":"keycmd","note":104,"hold_ms":40}"#), 35)
     }
 
     /// A hold explicitly requested still takes it, distinct from both the
@@ -164,24 +173,26 @@ final class KeycmdHoldTests: XCTestCase {
 
     // MARK: - The environment override resolver
 
-    /// Pure: no override string resolves to the historical 40 ms.
-    func testNoOverrideResolvesToTheHistoricalDefault() {
-        XCTAssertEqual(resolveKeycmdDefaultHoldMs(envOverride: nil), 40)
+    /// Pure: no override string resolves to the measured default, 0 ms as
+    /// of the 2026-09-03 sweep (was 40 ms before it).
+    func testNoOverrideResolvesToTheMeasuredDefault() {
+        XCTAssertEqual(resolveKeycmdDefaultHoldMs(envOverride: nil), 0)
     }
 
-    /// A valid override — including zero — replaces the compiled default.
-    /// This is the lever `keycmd_hold_sweep.py` would use to change the
-    /// daemon's default without touching every message, if a future sweep
-    /// wants that instead of per-message hold_ms.
+    /// A valid override — including a non-zero one — still replaces the
+    /// compiled default. This is the lever the next sweep of some other
+    /// surface would use to change the daemon's default without touching
+    /// every message, instead of per-message hold_ms.
     func testAValidOverrideReplacesTheDefault() {
         XCTAssertEqual(resolveKeycmdDefaultHoldMs(envOverride: "0"), 0)
         XCTAssertEqual(resolveKeycmdDefaultHoldMs(envOverride: "20"), 20)
     }
 
     /// A malformed override is not a crash and not a wrong number — it is
-    /// "no opinion", the same leniency every other field on this wire gets.
+    /// "no opinion", the same leniency every other field on this wire gets,
+    /// and falls back to the same measured default an absent override does.
     func testAMalformedOverrideFallsBackToTheDefault() {
-        XCTAssertEqual(resolveKeycmdDefaultHoldMs(envOverride: "fast"), 40)
-        XCTAssertEqual(resolveKeycmdDefaultHoldMs(envOverride: ""), 40)
+        XCTAssertEqual(resolveKeycmdDefaultHoldMs(envOverride: "fast"), 0)
+        XCTAssertEqual(resolveKeycmdDefaultHoldMs(envOverride: ""), 0)
     }
 }

@@ -2053,6 +2053,24 @@ with every render coming back as audio the agent can listen to.
   (`keycmd_hold_sweep.py`) is ready to fire `Create Marker` across a range of holds and
   count markers the way the press sweep counted transitions. No speed claim ships with
   this change — it is the plumbing the measurement needs, not the measurement.
+- **The key-command plane's hold dropped to the same measured 0 ms as the MCU button
+  press.** `keycmd_hold_sweep.py` ran live 2026-09-03 (sandbox "Testlåt Copy", daemon
+  restarted from `1e393a7`): firing `Create Marker` through `logic_mcu_command`'s
+  `keycmd` route at `hold_ms` 0, 1, 5, 10, 20 and 40, then ten more fires at 0, with the
+  playhead parked on an unmarked bar and every marker counted and deleted afterwards.
+  Sixteen fires at a 0 ms hold made sixteen markers — zero duplicates, zero drops — the
+  same 16/16 result the MCU button sweep got the day before (`bf511e5`) on the same
+  dedicated "Logic MCP Commands" port. The compiled default
+  (`resolveKeycmdDefaultHoldMs`) moves from the historical 40 ms to that measured 0 ms;
+  `logic_trigger_key_command` and the 18 other tools riding this plane — the Inspector-
+  visibility guard's own `Deselect All` included — inherit the saving the next time the
+  bridge daemon starts from this build, expected to bring `logic_trigger_key_command`'s
+  50–52 ms wall clock down to roughly 1–3 ms, the same order of magnitude the button
+  sweep found. The ~0.2 ms point the button sweep also cleared is not reachable through
+  `hold_ms` (an integer count of milliseconds) and was not measured here, so the honest
+  claim is "0–40 ms all work," not "anything smaller would too." The environment override
+  and per-message `hold_ms` this plumbing added are unchanged, for whichever surface gets
+  swept next.
 
 ### Known limitations (honest by design)
 

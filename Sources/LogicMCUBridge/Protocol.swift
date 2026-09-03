@@ -334,18 +334,17 @@ public struct BridgeCommand: Codable, Sendable, Equatable {
     /// milliseconds, resolved against `defaultMs` and clamped to the same
     /// ceiling every held press shares.
     ///
-    /// UNLIKE `pressHoldMs`, an ABSENT `hold_ms` here does NOT mean zero:
-    /// the key-command plane's hold (Bridge.swift, historically a bare
-    /// `usleep(40000)`) is the `pressHoldMs` sweep's UNSWEPT sibling — ~96%
-    /// of `logic_trigger_key_command`'s 50-52 ms wall clock
-    /// (KEY-COMMANDS-REVIEW.md, 2026-09-03) — and nothing has yet measured
-    /// live whether Logic's key-command intercept tolerates a shorter hold
-    /// the way the MCU button's did (`bf511e5`). So a caller who says
-    /// nothing about the hold gets whatever the DAEMON was told to default
-    /// to (`defaultMs` — see `keycmdDefaultHoldMs` in Bridge.swift, compiled
-    /// to 40 ms and overridable by `LOGICIAN_KEYCMD_HOLD_MS` for the live
-    /// sweep), not zero. A caller that DOES ask — including for 0 — gets
-    /// exactly that, which is how `keycmd_hold_sweep.py` drives the sweep.
+    /// UNLIKE `pressHoldMs`, an ABSENT `hold_ms` here does NOT mean zero —
+    /// it means whatever the DAEMON was told to default to (`defaultMs`,
+    /// see `resolveKeycmdDefaultHoldMs` in Bridge.swift). That default was
+    /// a historical, unswept `usleep(40000)` until it was measured live
+    /// 2026-09-03 with `keycmd_hold_sweep.py` the same way the MCU button
+    /// hold was the day before (`bf511e5`): 16 fires at a 0 ms hold on
+    /// `Create Marker`, 16 markers, zero duplicates, zero drops. The
+    /// compiled default is now 0 ms, overridable by
+    /// `LOGICIAN_KEYCMD_HOLD_MS` for whatever gets swept next. A caller
+    /// that DOES ask for a hold — including for 0 — gets exactly that,
+    /// which is how `keycmd_hold_sweep.py` drove this sweep.
     public func keycmdHoldMs(default defaultMs: Int) -> Int {
         min(max(holdMs ?? defaultMs, 0), BridgeCommand.maxPressHoldMs)
     }
