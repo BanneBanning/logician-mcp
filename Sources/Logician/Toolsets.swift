@@ -1,7 +1,7 @@
 import Foundation
 
 /// A named slice of the tool surface, so a session can advertise the tools it
-/// will actually use instead of all 84.
+/// will actually use instead of all 85.
 ///
 /// WHY THIS EXISTS. A typed per-operation schema is the thing this server has
 /// that a dispatcher-style MCP does not: the model sees `start_bar` with its
@@ -146,6 +146,7 @@ enum Toolset: String, CaseIterable {
         "logic_import_midi": [.composition],
         "logic_record_automation": [.composition],
         "logic_read_automation": [.composition],
+        "logic_remove_automation": [.composition],
         "logic_list_events": [.composition],
         "logic_edit_event": [.composition],
         "logic_set_tempo": [.composition],
