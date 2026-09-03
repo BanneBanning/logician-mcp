@@ -118,8 +118,22 @@ enum MCUBridge {
         process.executableURL = serverURL
         process.arguments = ["--bridge"]
         process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        guard (try? process.run()) != nil else { return .failed }
+        // The daemon's own words, kept. They used to go to /dev/null, which
+        // meant the four sentences it can say — "could not claim the fixed
+        // unique ID", "failed to create virtual MIDI endpoints", "another
+        // instance is already running", "running; ports 'Logic MCP MCU'" —
+        // were the exact four sentences a support case needed and nobody
+        // could ever produce. It writes a handful of lines per lifetime, so
+        // the file is capped rather than rotated. `logician doctor` tails it.
+        let log = bridgeLogHandle()
+        process.standardError = log ?? FileHandle.nullDevice
+        guard (try? process.run()) != nil else {
+            try? log?.close()
+            return .failed
+        }
+        // The child holds its own descriptor; ours would otherwise leak one
+        // per spawn for the life of the server.
+        try? log?.close()
         for _ in 0..<30 {
             usleep(100_000)
             if (try? send(.ping))?.ok == true {
@@ -128,6 +142,45 @@ enum MCUBridge {
             }
         }
         return .failed
+    }
+
+    /// Where the daemon's stderr is kept, next to its state file and its
+    /// lockfile.
+    static var bridgeLogURL: URL { directory.appendingPathComponent("bridge.log") }
+
+    /// Past this the log is emptied before the next daemon starts. A daemon
+    /// writes about four lines per lifetime, so this is a guard against a
+    /// pathological restart loop rather than a rotation policy — and a support
+    /// tool that quietly grew a file in the user's Library would be a bug of
+    /// its own.
+    static let bridgeLogSizeCap = 128 * 1024
+
+    /// A handle positioned at the end of the log, with a dated banner already
+    /// written so consecutive daemon lifetimes can be told apart. `nil` when
+    /// the file cannot be opened, and the caller falls back to /dev/null:
+    /// failing to open a log must never stop a daemon from starting.
+    static func bridgeLogHandle() -> FileHandle? {
+        let manager = FileManager.default
+        try? manager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let path = bridgeLogURL.path
+        let size = (try? manager.attributesOfItem(atPath: path))?[.size] as? Int ?? 0
+        if size > bridgeLogSizeCap || !manager.fileExists(atPath: path) {
+            manager.createFile(atPath: path, contents: nil)
+        }
+        guard let handle = FileHandle(forWritingAtPath: path) else { return nil }
+        handle.seekToEndOfFile()
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        handle.write(Data("[\(stamp)] starting bridge daemon (logician \(serverVersion))\n".utf8))
+        return handle
+    }
+
+    /// The last `lines` lines of the daemon log, oldest first. `nil` when
+    /// there is no log at all — which is a different answer from an empty one
+    /// and is reported as such.
+    static func tailBridgeLog(lines: Int) -> [String]? {
+        guard let text = try? String(contentsOf: bridgeLogURL, encoding: .utf8) else { return nil }
+        let all = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        return Array(all.suffix(lines))
     }
 
     /// Stops the daemon that currently owns the socket, and CONFIRMS it is

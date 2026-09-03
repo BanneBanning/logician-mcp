@@ -2403,6 +2403,32 @@ with every render coming back as audio the agent can listen to.
   release step that fills it in rather than passing quietly. CI now also runs on a
   pushed `v*` tag — still not on every push, which is what burned 90% of a month of
   macOS runner minutes in two days.
+- **`logician doctor` — one command that answers a support question without
+  handing over your project.** Run it in Terminal and it prints the setup report a
+  maintainer actually needs: Logician's version, build kind and Swift version, macOS
+  version and build, Apple Silicon or Intel and whether it is running under Rosetta,
+  Logic Pro's installed version and build read straight off the app bundle (Logic does
+  not have to be running), whether Logic is running, whether a dialog is blocking it,
+  its UI language, Accessibility trust and the app that grants it, the bridge daemon's
+  pid, uptime and protocol, every one of our MIDI ports with any stale twin named, how
+  many seconds since Logic last spoke to the surface and which view it is in, which MCP
+  clients are installed and whether Logician is registered in each, and the last lines
+  of the daemon's own log — which the server now keeps instead of discarding
+  (`~/Library/Application Support/LogicMCPMCU/bridge.log`, the four sentences a failing
+  daemon says, capped at 128 kB). Every problem line carries its fix in the same
+  sentence, every reading that could not be taken says `unavailable: why` rather than
+  going blank, and the exit code is 0 only when everything essential is there — so a
+  support reply can be "run it; if it exits non-zero, paste the output".
+  **Redaction is on by default**: your home folder reads as `~`, the open project as
+  `<project>`, bounce and take names as `<file>`, your account name as `<user>`, and the
+  report says so and names `--no-redact` for the day a maintainer needs a real path.
+  The old ask — paste `logic_health` — shipped the project's full path and name into a
+  thread that is indexed forever. `--bundle` writes the same text to
+  `logician-doctor-<timestamp>.txt` for attaching. It only READS: no daemon is started,
+  no MIDI is sent, no config file is touched. 68 new unit tests, 19 of them on the
+  redactor alone — a path carrying the account name, a project name with spaces and
+  diacritics, a capture file name, an absolute path inside a quoted JSON string,
+  idempotence, and a sweep asserting no output ever carries the identity.
 
 ### Known limitations (honest by design)
 
