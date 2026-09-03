@@ -576,8 +576,21 @@ extension MCPServer {
         var names: [String]?
         if let single = arguments["track_name"] as? String { names = [single] }
         if let list = arguments["track_names"] as? [String] { names = list }
+        let number = arguments["track_number"] as? Int
+        // `track_number` disambiguates ONE name, the way it does everywhere
+        // else in the track family. Paired with a list it would have to mean
+        // "this number goes with… which of them?", so it is refused instead of
+        // answered by guessing.
+        if number != nil, (names?.count ?? 0) > 1 {
+            throw LogicianError.invalidArguments(
+                "track_number disambiguates a single track_name. With track_names, read the rows"
+                    + " you want one call at a time (track_name + track_number), or pass all: true"
+                    + " and pick by track_number from the result."
+            )
+        }
         return try logic.trackInfo(
             trackNames: names,
+            trackNumber: number,
             all: arguments["all"] as? Bool ?? false
         )
     }

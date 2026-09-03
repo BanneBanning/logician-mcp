@@ -828,6 +828,60 @@ struct InsertSlot {
 /// than attempt 0 of a `for` range.
 func lookFirstShouldSleep(attempt: Int) -> Bool { attempt > 0 }
 
+/// Is the inspector already showing the row about to be read, so that reading
+/// it costs no selection?
+///
+/// By NUMBER, and pure so that it stays that way. `logic_track_info`'s loop
+/// asked this by comparing NAMES until 2026-09-03, and the reference project
+/// has two tracks called `Ivan Vocals` (rows 21 and 22): row 22's name equalled
+/// the name already showing, the re-selection was skipped, and row 21's strip
+/// was read a second time and reported under `track_number: 22` — identical
+/// payloads, `success: true`, no note (profiles/logic_track_info.md D1). Names
+/// are not unique in Logic and never were; row numbers are.
+///
+/// `showing == nil` means "no longer known" — a selection that failed leaves
+/// the inspector wherever it left it, and the next row must move rather than
+/// assume.
+func inspectorAlreadyShows(row: Int, showing: Int?) -> Bool { showing == row }
+
+/// What a look-first STABILITY poll should do after one look — the shape that
+/// replaced two blind `Thread.sleep(0.3)` waits on the Accessibility plane
+/// (`trackInfo`'s post-selection strip read and `surveyPlugins`'s post-open
+/// parameter read, both fixed 2026-09-03; measured 300-310 ms every time they
+/// fired, 18/18 and 11/11 respectively).
+///
+/// A blind sleep waits its full duration whether or not anything is still
+/// moving. This waits only while two consecutive looks DISAGREE, and not at
+/// all when a single look already carries its own proof.
+enum SettleDecision: Equatable {
+    /// This answer is settled: take it.
+    case accept
+    /// Not proven yet — sleep the gap and look again.
+    case lookAgain
+    /// The budget is spent. Take the last answer and SAY it is unproven: a
+    /// poll that ran out is a different fact from one that converged, and the
+    /// caller reports that rather than swallowing it.
+    case giveUp
+}
+
+/// - Parameters:
+///   - attempt: 0-based look number.
+///   - budget: how many looks the caller will pay for at most.
+///   - proven: the look-first fast path — this one look carries evidence that
+///     what is being read has finished repainting (the channel strip's own
+///     name row already names the track just selected; a plug-in window with
+///     no sliders but a populated control census). True on attempt 0 means
+///     zero waiting, which is the whole point.
+///   - matchedPrevious: this look returned exactly what the previous one did.
+///     Attempt 0 has no previous look, so it is ignored there.
+func settleDecision(
+    attempt: Int, budget: Int, proven: Bool, matchedPrevious: Bool
+) -> SettleDecision {
+    if proven { return .accept }
+    if attempt > 0, matchedPrevious { return .accept }
+    return attempt + 1 < budget ? .lookAgain : .giveUp
+}
+
 struct WindowKey: Hashable {
     let element: AXUIElement
 

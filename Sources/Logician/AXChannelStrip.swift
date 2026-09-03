@@ -107,77 +107,130 @@ extension LogicAccessibility {
     /// COSTS A SELECTION. The LEFT inspector strip shows the SELECTED track and
     /// nothing else, so reading track N means selecting track N. The original
     /// selection is put back at the end and the result says whether that
-    /// worked. Measured 2026-08-28: ~0.7 s per track.
-    func trackInfo(trackNames: [String]?, all: Bool) throws -> [String: Any] {
+    /// worked.
+    ///
+    /// **Every row is addressed by NUMBER.** It used to be addressed by name,
+    /// and the reference project has two tracks called `Ivan Vocals` (rows 21
+    /// and 22): the loop's "am I already showing this track?" gate compared
+    /// names, found row 22's name equal to the name it was already showing,
+    /// skipped the re-selection, and re-read ROW 21's strip under
+    /// `track_number: 22` — byte-identical payloads, `success: true`, no note
+    /// (measured live 2026-09-03, profiles/logic_track_info.md D1). Numbers
+    /// are unique and the track family carries them everywhere, so the gate,
+    /// the re-selection and the restore all use them now, and a name that
+    /// matches several rows is REFUSED with those rows' numbers rather than
+    /// resolved to the first of them.
+    ///
+    /// Measured 2026-09-03, 19 rendered tracks: 15.27 s before this pass,
+    /// against 1.14-1.19 s for a single track. What that bought was two blind
+    /// waits and two duplicate tree walks per track, all four removed here —
+    /// see `settledStripReading` and `selectTrackReportingRows`'s strip
+    /// hand-back.
+    func trackInfo(trackNames: [String]?, trackNumber: Int?, all: Bool) throws -> [String: Any] {
         let headers = try parsedTrackHeaders()
         guard !headers.isEmpty else {
             throw LogicianError.windowNotFound("track headers")
         }
-        let original = headers.first(where: \.selected)?.name
+        let original = headers.first(where: \.selected)
         var wanted: [TrackHeader]
         if all {
             wanted = headers
         } else if let names = trackNames, !names.isEmpty {
+            // Resolved BEFORE the first selection moves, all of them: a name
+            // that names no row, or several rows, refuses the whole call
+            // rather than reading half of it and then failing. The rule is the
+            // track family's own (`TrackRowAddressing`), so an ambiguous name
+            // comes back with the numbers that would resolve it — which is
+            // exactly what `track_number` is for.
             wanted = try names.map { name in
-                guard let header = headers.first(where: {
-                    $0.name.caseInsensitiveCompare(name) == .orderedSame
-                }) else {
-                    throw LogicianError.trackNotExposed(
-                        requested: name,
-                        exposed: headers.map(\.name).joined(separator: ", ")
-                    )
-                }
-                return header
+                try resolveTrack(
+                    headers,
+                    name: name,
+                    number: names.count == 1 ? trackNumber : nil,
+                    caseInsensitive: true
+                )
             }
-        } else if let selected = headers.first(where: \.selected) {
+        } else if let selected = original {
             wanted = [selected]
         } else {
             wanted = [headers[0]]
         }
 
         var entries: [[String: Any]] = []
-        // Which track the inspector is showing RIGHT NOW. The `selected` flag
-        // on `headers` is a snapshot from before the loop, so after the first
-        // read it is stale for every other row — reading it instead of this
-        // skipped the re-selection and handed back the PREVIOUS track's strip
-        // (or, because the name check catches it, no strip at all).
-        var showing = original
+        // Which track the inspector is showing RIGHT NOW, by NUMBER. The
+        // `selected` flag on `headers` is a snapshot from before the loop, so
+        // after the first read it is stale for every other row. `nil` means
+        // "no longer known" — a move that failed leaves the inspector wherever
+        // it left it, and the next row must not assume.
+        var showing = original?.number
+        // The header rows, re-walked only when a selection actually MOVED.
+        // Selecting a track SCROLLS the Tracks area to show it, and a header
+        // element captured before that scroll can be stale — its checkboxes
+        // would then read as absent, which this type reports as `null` and an
+        // agent would read as "Logic published nothing". Nothing scrolls when
+        // nothing moves, so the walk that used to run on every iteration (37-58
+        // ms × 19 rows, ≈0.8 s) now runs once per real move.
+        var live = headers
         for header in wanted {
-            if header.name != showing {
-                _ = try? selectTrack(
-                    trackName: header.name, trackNumber: header.number, expectedProjectPath: nil
-                )
-                Thread.sleep(forTimeInterval: 0.3)
-                showing = header.name
+            var landing = SelectionVerification.notSelected
+            var moveFailure: String?
+            if inspectorAlreadyShows(row: header.number, showing: showing) {
+                // Already on this row — PROVE it rather than assume it, the
+                // same check `selectTrack` makes on its own `already_selected`
+                // path, and keep the strip that proves it.
+                let row = live.first { $0.number == header.number } ?? header
+                landing = verifySelection(row.item, name: row.name)
+            } else {
+                do {
+                    let moved = try selectTrackReportingRows(
+                        trackName: header.name,
+                        trackNumber: header.number,
+                        expectedProjectPath: nil
+                    )
+                    // `selectTrack` verified the selection by finding this
+                    // track's inspector strip; that element is the one this
+                    // read needs, so it is not walked for a second time.
+                    landing = moved.strip.map { .verified(strip: $0) } ?? .verifiedStaleName
+                    showing = header.number
+                    live = (try? parsedTrackHeaders()) ?? live
+                } catch {
+                    moveFailure = error.localizedDescription
+                    showing = nil
+                }
             }
             var entry: [String: Any] = [
                 "track_name": header.name,
                 "track_number": header.number
             ]
-            // Re-resolve the header AFTER the selection. Selecting a track
-            // SCROLLS the Tracks area to show it (Logic re-banks the control
-            // surface for the same reason), and a header element captured
-            // before that scroll can be stale — its checkboxes would then read
-            // as absent, which this type reports as `null` and an agent would
-            // read as "Logic published nothing".
-            let live = (try? parsedTrackHeaders())?.first { $0.number == header.number } ?? header
-            entry["header"] = trackHeaderControls(live.item)
-            guard let strip = try? inspectorStrip(named: header.name) else {
+            let row = live.first { $0.number == header.number } ?? header
+            entry["header"] = trackHeaderControls(row.item)
+            // A row whose selection could not be proved is NOT read off
+            // whatever strip happens to be standing: with two rows sharing a
+            // name, that strip can carry the other row's numbers and there is
+            // nothing in the payload to tell them apart.
+            let strip = landing.strip
+                ?? (landing.isVerified ? try? inspectorStrip(named: header.name) : nil)
+            guard let strip else {
                 entry["strip"] = NSNull()
-                entry["strip_note"] = "no inspector channel strip named '\(header.name)' was visible"
-                    + " after selecting it — the left inspector may be hidden (View > Show Inspector)"
+                entry["strip_note"] = moveFailure.map {
+                    "track \(header.number) could not be selected, so its strip was not read"
+                        + " and no other strip was read in its place: \($0)"
+                } ?? ("no inspector channel strip for track \(header.number) '\(header.name)' was"
+                    + " visible after selecting it — the left inspector may be hidden"
+                    + " (View > Show Inspector)")
                 entries.append(entry)
                 continue
             }
-            let reading = ChannelStrip.read(children: stripChildren(of: strip))
-            entry["strip"] = stripPayload(reading, strip: strip)
+            let settled = settledStripReading(strip, expecting: header.name)
+            entry["strip"] = stripPayload(settled.reading, strip: strip)
+            if let note = settled.note { entry["strip_settle"] = note }
             entries.append(entry)
         }
 
         var selectionRestored: Bool?
-        if let original, showing != original {
+        if let original, showing != original.number {
             selectionRestored = (try? selectTrack(
-                trackName: original, trackNumber: nil, expectedProjectPath: nil
+                trackName: original.name, trackNumber: original.number, expectedProjectPath: nil
             )) != nil
         }
 
@@ -188,15 +241,73 @@ extension LogicAccessibility {
             "tracks": entries,
             "read_route": "accessibility_inspector_strip"
         ]
-        if let original { payload["selection_before"] = original }
+        if let original {
+            payload["selection_before"] = original.name
+            // Two tracks can share a name, so the row this selection is going
+            // back to is named by the thing that is unique about it as well.
+            payload["selection_before_number"] = original.number
+        }
         if let selectionRestored { payload["selection_restored"] = selectionRestored }
         payload["note"] = "Every value is read off Logic's own control and a field that is absent means"
             + " Logic published nothing for it — never that it is off. 'kind' is inferred from which"
             + " SLOTS the strip publishes (kind_evidence says which), and 'reduced' is a real case:"
             + " a folder-stack main track publishes only name/mute/solo/volume/automation/group and no"
             + " output slot at all. Reading a track requires SELECTING it; the previous selection is"
-            + " restored and selection_restored says whether that worked."
+            + " restored and selection_restored says whether that worked. Rows are addressed by"
+            + " track_number throughout, so two tracks sharing a name are read separately and a"
+            + " strip that could not be proved to be the requested row is reported as null with a"
+            + " strip_note rather than read off whichever strip was standing."
         return payload
+    }
+
+    /// The channel strip, read once it has finished repainting after a
+    /// selection moved to it.
+    ///
+    /// **This replaced a blind `Thread.sleep(0.3)`** that fired after every
+    /// real re-selection — measured 300-310 ms on 18 of 18 moves, 26% of a
+    /// single-track call and ≈5.4 s of a 15.27 s 19-track read (2026-09-03,
+    /// profiles/logic_track_info.md §6). It was not insuring against a race
+    /// `selectTrack` leaves open: `selectTrack` returns only once the header
+    /// says selected AND the left inspector publishes this track's strip. What
+    /// it could still insure against is the strip's CONTENTS lagging its name,
+    /// so that is what is checked, by looking instead of waiting.
+    ///
+    /// Look first. The strip's own name row is a second, independent plane
+    /// from the `AXDescription` `selectTrack` matched on, and when it already
+    /// names the track just selected the repaint has reached the children and
+    /// there is nothing left to wait for — the usual case, at zero wait. When
+    /// it does not (a channel legitimately named differently from its track
+    /// header), the fallback is agreement: read again 50 ms later and take the
+    /// answer when two consecutive reads are identical. A read that never
+    /// settles is returned WITH a note saying so, never silently.
+    private func settledStripReading(
+        _ strip: AXUIElement, expecting name: String
+    ) -> (reading: ChannelStripReading, note: String?) {
+        let budget = 8
+        let gap = 0.05
+        var previous: ChannelStripReading?
+        var reading = ChannelStripReading()
+        for attempt in 0..<budget {
+            if lookFirstShouldSleep(attempt: attempt) { Thread.sleep(forTimeInterval: gap) }
+            reading = ChannelStrip.read(children: stripChildren(of: strip))
+            let decision = settleDecision(
+                attempt: attempt,
+                budget: budget,
+                proven: reading.childCount > 0 && reading.name == name,
+                matchedPrevious: previous == reading
+            )
+            switch decision {
+            case .accept:
+                return (reading, attempt == 0 ? nil : "stable after \(attempt + 1) reads")
+            case .lookAgain:
+                previous = reading
+            case .giveUp:
+                return (reading, "the strip's own name row still reads '\(reading.name)' and two"
+                    + " consecutive reads \(Int(gap * 1000)) ms apart never agreed after"
+                    + " \(budget) reads — these values may be mid-repaint")
+            }
+        }
+        return (reading, nil)
     }
 
     private func stripPayload(_ reading: ChannelStripReading, strip: AXUIElement) -> [String: Any] {
