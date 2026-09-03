@@ -2340,6 +2340,22 @@ with every render coming back as audio the agent can listen to.
   live session, so this rests on the wake probe's existing coverage plus 4 new unit
   tests proving the probe fires once per call, never on a retry.
 
+- **A Homebrew tap and a one-line installer, both compiling on your own machine.**
+  `brew install bannebanning/logician/logician` or
+  `curl -fsSL .../packaging/install.sh | bash` — no Apple Developer certificate exists
+  for this project and none is planned, so neither path ships a signed binary; both
+  build from source with the Swift toolchain already required to run `swift build`
+  from a clone, and both end by naming the same three steps Homebrew genuinely cannot
+  do: `logician setup` to register the MCP client, installing the Mackie Control
+  surface, and granting Accessibility. The formula's own `test do` block is a real,
+  hermetic `initialize` + `tools/list` round trip over the binary's stdio — proof it
+  starts and answers without Logic running — and a new `PackagingSyncTests` pins the
+  formula's declared version to `serverVersion` and checks `install.sh` with `bash -n`
+  so neither file can quietly drift from what a release actually ships. Cold build
+  measured at **~100 s** (`swift build -c release`, this machine, 2026-09-03); a
+  re-run only rebuilds what changed. Needs the repo public and a pushed tag before
+  either path resolves — see `packaging/README.md`.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.
@@ -2351,7 +2367,8 @@ with every render coming back as audio the agent can listen to.
 
 ### Deferred, deliberately
 
-- Homebrew formula ships alongside this release; a simpler installer for musicians
-  without a terminal is planned.
+- The Homebrew formula and the one-line `curl | bash` installer both ship in this
+  release (see above) — still a terminal command either way; a zero-terminal,
+  double-click installer for musicians who have never opened one remains future work.
 - Offline audio analysis (spectrum/LUFS) is a non-goal: Logician's job is verified
   interaction, and real audio to multimodal ears is the analysis story.
