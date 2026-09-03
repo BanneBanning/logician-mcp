@@ -2219,6 +2219,12 @@ with every render coming back as audio the agent can listen to.
   −9.9%), the guide grew 3,771 B, and the retrieval probe still surfaces all 57 of its
   scored queries in the top five, because a shorter description ranks its own keywords
   higher rather than lower.
+- **A headerless-strip automation refusal now names a tool that exists.** It pointed a
+  caller at `logic_set_send_level` for a static send value — a name this server has never
+  had; the send tool has always been `logic_mcu_set_send`. A new source-scan test
+  (`RetiredToolNameSurfaceTests`) now reads the live tool registry and fails the build if
+  any description, refusal or guide text names a tool that isn't in it, so a fold or
+  removal can't leave a stale name like this one behind again.
 
 ### Known limitations (honest by design)
 
