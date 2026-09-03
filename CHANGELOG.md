@@ -2284,6 +2284,29 @@ with every render coming back as audio the agent can listen to.
   unit test keeps the census of files that synthesize pointer input at two, so a fourth
   route cannot appear quietly.
 
+- **`logic_set_plugin_parameter` no longer refuses a plug-in it can see perfectly well.**
+  Naming the plug-in instead of its slot — `{track_name, plugin_name, parameter,
+  target_value}`, the call the tool tells you to start with — could come back
+  *"'Channel EQ' is ambiguous; it occupies slots 2, 8"* on a strip that holds exactly one
+  of them, and then succeed unchanged a minute later. The surface paints the eight insert
+  cells one at a time and the server read the row the instant the header above it said
+  "insert list", so a cell that had not repainted yet still carried the previous view's
+  content. Measured on a 137-track project 2026-09-03: **2 reads in 12 came back with
+  phantom cells** — one row read `Ovrdrv, Cha EQ, --, --, Cha EQ, Multpr, --, Cha EQ`
+  where the LCD, read milliseconds later, held only the first two, and one of those
+  ghosts belongs to a different track entirely. Now the row is read SETTLED — the same
+  eight cells twice with no repaint in between — and a name that still lands in two slots
+  is put to Logic's Accessibility plane before anything is refused: a cell the channel
+  strip does not corroborate is a stale paint, not a second plug-in, and the write goes to
+  the real one with `stale_insert_cells` and a warning saying which cells lied. Only a
+  duplicate BOTH planes agree on is still refused — and that refusal now carries
+  `resolved_slots` as numbers, so the retry with `insert_slot` is one call instead of a
+  `logic_list_inserts` round trip first. **0 phantom rows in 12 reads** after the fix, on
+  the same project and the same alternation; the settle costs one 120 ms quiescence round
+  on a plug-in list read and nothing at all on a parameter write that resolves cleanly.
+  `logic_list_inserts {route: "mcu"}` reads the same settled row, so the list an agent
+  checks and the list the write resolves against can no longer disagree.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

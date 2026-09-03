@@ -164,16 +164,21 @@ extension MCPServer {
             return toolResult(payload: payload, isError: false, includeAudio: includeAudio, era: era)
         } catch {
             logic.restoreInspectorAfterCall()
-            return toolResult(
-                payload: inspectorReported([
-                    "success": false,
-                    "verified": false,
-                    "state": "failed",
-                    "error_code": (error as? LogicianError)?.code ?? "failed",
-                    "error": error.localizedDescription
-                ]),
-                isError: true
-            )
+            var failure: [String: Any] = [
+                "success": false,
+                "verified": false,
+                "state": "failed",
+                "error_code": (error as? LogicianError)?.code ?? "failed",
+                "error": error.localizedDescription
+            ]
+            // The structured half of a refusal that names an alternative —
+            // `resolved_slots` on an ambiguous insert, today. Merged rather
+            // than assigned so a future case cannot overwrite the five fields
+            // above.
+            if let details = (error as? LogicianError)?.details, !details.isEmpty {
+                failure.merge(details) { current, _ in current }
+            }
+            return toolResult(payload: inspectorReported(failure), isError: true)
         }
     }
 

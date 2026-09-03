@@ -160,6 +160,123 @@ final class SurfaceDeferralTests: XCTestCase {
         )
     }
 
+    // MARK: - Telling a stale LCD cell from a real second copy
+
+    /// `Sub Phatty` on the demo project, as Accessibility reads it: two
+    /// inserts, and the surface's row should say the same.
+    private let subPhattyAX = ["Channel EQ", "Overdrive"]
+
+    /// The false refusal, reproduced as a row: the insert list was read
+    /// mid-repaint and a trailing cell still carried a `Cha EQ` the strip does
+    /// not have. Live 2026-09-03 this cost `logic_set_plugin_parameter` a
+    /// 1.3 s "ambiguous; it occupies slots 2, 8" on a call that succeeded
+    /// unchanged minutes later.
+    func testAStaleDuplicateCellResolvesToTheCorroboratedSlot() {
+        let row = ["Cha EQ", "Overdr", "--", "--", "--", "--", "--", "Cha EQ"]
+        XCTAssertEqual(
+            MCUController.insertSlotsMatching(pluginName: "Channel EQ", cells: row),
+            [1, 8], "the raw row really is ambiguous — that is the bug's input"
+        )
+        XCTAssertEqual(
+            MCUController.resolveDuplicateInsertSlots(
+                pluginName: "Channel EQ", cells: row, axNames: subPhattyAX
+            ),
+            .resolved(slot: 1, stale: [8])
+        )
+    }
+
+    /// A leaked cell that matches NOTHING — the strip's own instrument name
+    /// arriving in slot 8, observed on the same read — must not block the
+    /// resolution of a duplicate elsewhere in the row. Only unclaimed
+    /// ACCESSIBILITY names abort the walk; unclaimed cells are exactly what it
+    /// is looking for.
+    func testAnInstrumentNameLeakDoesNotBlockTheResolution() {
+        let row = ["Cha EQ", "Overdr", "--", "--", "--", "--", "Cha EQ", "Phat X"]
+        XCTAssertEqual(
+            MCUController.resolveDuplicateInsertSlots(
+                pluginName: "Channel EQ", cells: row, axNames: subPhattyAX
+            ),
+            .resolved(slot: 1, stale: [7])
+        )
+    }
+
+    /// The case the refusal exists for: `Bas` really does hold two Channel
+    /// EQs, both planes say so, and picking one for the caller would write
+    /// into a plug-in nobody named.
+    func testAGenuineDuplicateStillRefuses() {
+        let row = ["Cha EQ", "*PitchS", "Cha EQ", "Compre", "--", "--", "--", "--"]
+        XCTAssertEqual(
+            MCUController.resolveDuplicateInsertSlots(
+                pluginName: "Channel EQ", cells: row,
+                axNames: ["Channel EQ", "Pitch Shifter", "Channel EQ", "Compressor"]
+            ),
+            .duplicate(slots: [1, 3])
+        )
+    }
+
+    /// No inspector shows the strip (a bus, an aux, or the AX plane inert):
+    /// the cross-check cannot run, and an unanswerable check never resolves a
+    /// duplicate on its own — it says so instead.
+    func testAnUnreadableSecondPlaneRefusesRatherThanGuesses() {
+        let row = ["Cha EQ", "Overdr", "--", "--", "--", "--", "--", "Cha EQ"]
+        guard case .unresolved(let slots, let reason) = MCUController.resolveDuplicateInsertSlots(
+            pluginName: "Channel EQ", cells: row, axNames: []
+        ) else {
+            return XCTFail("an empty AX reading must not resolve anything")
+        }
+        XCTAssertEqual(slots, [1, 8])
+        XCTAssertTrue(reason.contains("could not run"), reason)
+    }
+
+    /// The PL view is pointed at another channel — the hazard
+    /// `verifyPluginListStrip` was written for. An AX insert no cell accounts
+    /// for means the two lists are not describing the same strip, and neither
+    /// one may pick a slot.
+    func testTwoPlanesDescribingDifferentStripsRefuse() {
+        let row = ["Cha EQ", "Cha EQ", "--", "--", "--", "--", "--", "--"]
+        guard case .unresolved(let slots, _) = MCUController.resolveDuplicateInsertSlots(
+            pluginName: "Channel EQ", cells: row, axNames: ["Channel EQ", "Limiter", "Sensor"]
+        ) else {
+            return XCTFail("an unaccounted-for AX insert must not resolve")
+        }
+        XCTAssertEqual(slots, [1, 2])
+    }
+
+    /// Every matching cell is stale: the strip holds no such plug-in at all.
+    /// Refuse — there is no slot to write to, and `insert_slot` would only
+    /// aim the caller at the same lie.
+    func testARowWhoseMatchesAreAllStaleRefuses() {
+        let row = ["Overdr", "Cha EQ", "--", "Cha EQ", "--", "--", "--", "--"]
+        guard case .unresolved(let slots, let reason) = MCUController.resolveDuplicateInsertSlots(
+            pluginName: "Channel EQ", cells: row, axNames: ["Overdrive"]
+        ) else {
+            return XCTFail("no corroborated candidate must not resolve")
+        }
+        XCTAssertEqual(slots, [2, 4])
+        XCTAssertTrue(reason.contains("stale"), reason)
+    }
+
+    /// The refusal an agent has to act on carries the slots as VALUES, not
+    /// only inside the English. Without them the retry costs a whole
+    /// `logic_list_inserts` round trip first.
+    func testAnAmbiguousInsertRefusalCarriesResolvedSlots() {
+        let error = LogicianError.insertAmbiguous(
+            track: "Bas", plugin: "Channel EQ", slots: [1, 3],
+            parameter: "insert_slot", detail: "Accessibility agrees."
+        )
+        XCTAssertEqual(error.details["resolved_slots"] as? [Int], [1, 3])
+        XCTAssertEqual(error.details["resolved_slots_argument"] as? String, "insert_slot")
+        XCTAssertTrue(
+            error.errorDescription?.hasSuffix("Accessibility agrees.") == true,
+            error.errorDescription ?? "nil"
+        )
+    }
+
+    /// Nothing else in the enum grew a payload by accident.
+    func testARefusalWithNoAlternativeCarriesNoDetails() {
+        XCTAssertTrue(LogicianError.logicNotRunning.details.isEmpty)
+    }
+
     // MARK: - The offline page/vpot lookup
 
     /// `Bas`'s Channel EQ, exactly as `param-names-cache.json` holds it — six
@@ -191,6 +308,23 @@ final class SurfaceDeferralTests: XCTestCase {
             MCUController.locateParameter("Master Gain", in: channelEQ)?.name,
             "MasGai"
         )
+    }
+
+    /// BOTH spellings of one parameter reach the same vpot: the name a human
+    /// reads in the plug-in window, and the 6-character abbreviation the LCD
+    /// paints. Pinned because an agent that has just read
+    /// `logic_list_plugin_parameters {route: "mcu"}` has only the
+    /// abbreviation, and copying it straight back into `parameter` is the
+    /// obvious next call — it worked live 2026-09-03 (`Pea1Ga`, 2.3 s) and
+    /// nothing said so.
+    func testTheLcdAbbreviationIsAValidParameterSpelling() {
+        let abbreviated = MCUController.locateParameter("Pea1Ga", in: channelEQ)
+        let spelledOut = MCUController.locateParameter("Peak 1 Gain", in: channelEQ)
+        XCTAssertEqual(
+            abbreviated,
+            MCUController.CachedParameterLocation(page: 1, index: 2, name: "Pea1Ga")
+        )
+        XCTAssertEqual(abbreviated, spelledOut, "the two spellings name one vpot")
     }
 
     /// The end-aligned last page shows six parameters for the second time.

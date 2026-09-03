@@ -682,7 +682,7 @@ extension MCUController {
             }
             throw LogicianError.insertAmbiguous(
                 track: trackName, plugin: pluginName,
-                slots: matches.map { $0.offset + 1 }, parameter: "insert_slot"
+                slots: matches.map { $0.offset + 1 }, parameter: "insert_slot", detail: nil
             )
         }
         return target.offset

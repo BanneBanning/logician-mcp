@@ -1437,7 +1437,15 @@ extension MCUController {
         lastBrowserRefusal = nil
         guard let status = try ensurePluginList(),
               let bottom = status["lcd_bottom"] as? String else { return nil }
-        return lcdFields(bottom)
+        // SETTLED, not raw. `ensurePluginList` answers the moment the top row
+        // says "insert list" and Logic paints the slot contents afterwards, so
+        // the raw row could hand back a cell the previous view had left there:
+        // live 2026-09-03 `logic_list_inserts {route: "mcu"}` reported the
+        // strip's own instrument name in slot 8 of a two-insert chain, and
+        // read `--` there a minute later. One 120 ms quiescence round in the
+        // ordinary case, because the row already read is what the settle is
+        // seeded with.
+        return settledInsertCells(previous: lcdFields(bottom)) ?? lcdFields(bottom)
     }
 
     static func enterPluginEdit(slot: Int) throws -> Bool {
