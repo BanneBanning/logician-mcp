@@ -383,6 +383,56 @@ enum LogicUIStrings {
         static let regionPanelPrefix = "Region"
         /// A region element's `AXRoleDescription`. Read by `regionRows()`.
         static let regionRoleDescription = "Region"
+
+        /// What Logic appends to a REGION's `AXDescription` after its name, and
+        /// the only vocabulary this server takes back off it.
+        ///
+        /// The track ROW publishes `Track 26 “Crash”, solo` and so tells its
+        /// name from its live state with QUOTES — a structural rule with no
+        /// word list to fall off (`TrackRowAddressing.parseRowDescription`).
+        /// The region element publishes the bare string `808 Mutation Bass,
+        /// muted` with no quotes anywhere, so telling the two apart here needs
+        /// a word list, which is a hard English dependency. What it must never
+        /// do is guess: see `RegionNameAnnotation` for the rule that reports
+        /// `muted: "unavailable"` rather than a silent wrong `false` when a
+        /// comma-tail turns up that is not in this table.
+        ///
+        /// **Measured 2026-09-03**, English Logic Pro 12.3.1, sandbox project
+        /// "Testlåt Copy" (19 rendered rows, 54 regions), every state set
+        /// through `logic_set_region_params` and read straight back off the
+        /// region's own `AXDescription`:
+        ///
+        /// | region state | `AXDescription` reads | annotation |
+        /// |---|---|---|
+        /// | plain | `Crash` | — |
+        /// | `mute: true` | `Crash, muted` | `, muted` |
+        /// | ANOTHER track soloed | `808 Mutation Bass, muted` | `, muted` |
+        /// | `loop: true` (MIDI, and audio) | `Crash` | none |
+        /// | `reverse: true` (audio) | `ORBIT_FX_…` | none |
+        ///
+        /// So the element carries exactly ONE state, and it carries it for two
+        /// different causes that it does not distinguish: the region's own mute
+        /// and the silence a solo elsewhere puts it in publish the same bytes.
+        /// The scale of the second one is the whole defect — with ONE track
+        /// soloed, 53 of the project's 54 regions annotated (every region but
+        /// the soloed track's own, across 14 of the 19 rows); with that solo
+        /// off, 0 of 54 did.
+        ///
+        /// Frozen and SMPTE-locked were NOT tested (a freeze renders audio and
+        /// the lock is not on the Region inspector), so they are the two states
+        /// that could still turn up as an unmeasured tail. That is exactly what
+        /// `RegionNameAnnotation`'s `unreadTail` is for: an annotation missing
+        /// from this table makes `muted` read `"unavailable"`, never a
+        /// confident `false`.
+        enum RegionStateSuffix {
+            /// The punctuation between the name and each state word.
+            static let separator = ", "
+            /// The state word Logic writes, mapped to the key the region
+            /// payload reports it under. One entry today; the parse is written
+            /// over the table so a newly measured annotation is a row here and
+            /// no code change.
+            static let words: [String: String] = ["muted": "muted"]
+        }
         /// Automation lanes are told from regions by this appearing in the
         /// row's description.
         static let automation = "automation"

@@ -83,10 +83,33 @@ extension LogicAccessibility {
     /// 5 772-byte payload — 17% of the response spent restating the default.
     /// Every consumer in the tree reads it as `as? Bool == true`, so an absent
     /// key and a false one are already the same answer to them.
+    ///
+    /// `muted` is the ONE field that does not follow that omit-the-default
+    /// rule, and it is deliberate: it has three answers, not two (see
+    /// `RegionNameAnnotation`), and an absent `muted` would read as "not
+    /// muted" to exactly the caller who needs to know it could not be read.
+    /// It costs ~14 bytes per region — ~750 B on the reference project's
+    /// 54-region, 5.8 kB map — which is the price of the field that stopped
+    /// the mute state leaking into the NAME.
     func parseRegion(_ element: AXUIElement) -> [String: Any] {
+        // The region's live state is written INTO its description — `Crash`
+        // becomes `Crash, muted` the moment it is muted or some other track is
+        // soloed — and this used to report that whole string as the name. One
+        // soloed track therefore renamed 53 of the reference project's 54
+        // regions and every region tool refused the names its own reader had
+        // just published (measured 2026-09-03; see `RegionNameAnnotation`).
+        let annotated = RegionNameAnnotation.parse(
+            stringAttribute(element, kAXDescriptionAttribute as String)
+        )
         var entry: [String: Any] = [
-            "name": stringAttribute(element, kAXDescriptionAttribute as String)
+            "name": annotated.name,
+            RegionNameAnnotation.mutedKey: RegionNameAnnotation.mutedVerdict(annotated)
         ]
+        // Any OTHER annotation the table grows is reported the way `selected`
+        // is — present only when true — because those have two answers.
+        for key in annotated.annotations where key != RegionNameAnnotation.mutedKey {
+            entry[key] = true
+        }
         if stringAttribute(element, "AXSelected") == "1" { entry["selected"] = true }
         let help = stringAttribute(element, kAXHelpAttribute as String)
         // "Region starts at 9 bars 2 beats and ends at 11 bars , MIDI region."
@@ -276,7 +299,14 @@ extension LogicAccessibility {
                 + " scrolled Tracks area hide rows without leaving a gap in it — pass"
                 + " check_hidden_rows: true to read the track header column too (+40–50 ms)."
         }
-        note += " Bars/beats are Logic's own help text; start_beat/end_beat are omitted on the"
+        note += " name is the region's OWN name: Logic writes its live state into the same"
+            + " string (a muted region, or ANY region while another track is soloed, publishes"
+            + " '<name>, muted'), and that state is reported beside it as muted rather than left"
+            + " in the name. muted: true covers both causes - the element does not say which -"
+            + " and \"unavailable\" means the name ends in a ', …' this build cannot read as a"
+            + " state word (a localized Logic, or a region genuinely named with a comma), never"
+            + " that it is unmuted. Both spellings of a name are still accepted as region_name."
+            + " Bars/beats are Logic's own help text; start_beat/end_beat are omitted on the"
             + " barline, selected when false. type comes from that same help text and is NOT"
             + " guaranteed (all 54 regions of the reference project on 2026-09-02, 2 of the same"
             + " 54 hours earlier): one typed region types its row (type_from: \"track_row\"), and"
@@ -459,8 +489,12 @@ extension LogicAccessibility {
         let row = try resolveRegionRow(rows, trackName: trackName, trackNumber: trackNumber)
         let annotated = row.regions.map { ($0, parseRegion($0)) }
         let hits = annotated.filter { _, info in
+            // BOTH spellings of the name, the clean one and the `, muted` one
+            // this server used to publish — see `RegionNameAnnotation.matches`.
             if let name = regionName,
-               (info["name"] as? String)?.caseInsensitiveCompare(name) != .orderedSame {
+               !RegionNameAnnotation.matches(
+                   name: (info["name"] as? String) ?? "", request: name
+               ) {
                 return false
             }
             if let bar = startBar, info["start_bar"] as? Int != bar { return false }
@@ -1657,7 +1691,9 @@ extension LogicAccessibility {
         // instead of hoping the ordering implied it (see `TracksAreaFocus`).
         let candidates = before.filter { entry in
             if let regionName,
-               (entry["name"] as? String)?.caseInsensitiveCompare(regionName) != .orderedSame {
+               !RegionNameAnnotation.matches(
+                   name: (entry["name"] as? String) ?? "", request: regionName
+               ) {
                 return false
             }
             if let startBar, entry["start_bar"] as? Int != startBar { return false }

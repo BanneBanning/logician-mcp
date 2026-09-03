@@ -113,8 +113,10 @@ enum TrackRowAddressing {
     ///
     /// So the row carries the two states that silence a track and not the one
     /// that arms it; frozen and hidden were not tested. The suffix is `, mute`
-    /// on the row (the REGION elements on a silenced track say `, muted`
-    /// instead — a separate leak, on `parseRegion`'s name, still open).
+    /// on the row; the REGION elements on a silenced track say `, muted`
+    /// instead, and because they publish no quotes to key on that leak needed
+    /// a word list rather than this structural rule — closed 2026-09-03, see
+    /// `RegionNameAnnotation`.
     ///
     /// **The rule is STRUCTURAL, not a word list**: everything outside the
     /// quoted span is punctuation and state, whatever Logic writes there, so
@@ -147,6 +149,117 @@ enum TrackRowAddressing {
         ].trimmingCharacters(in: .whitespaces)
         guard let number = Int(numberText) else { return nil }
         return (number, String(description[description.index(after: open)..<close]))
+    }
+}
+
+/// A region's NAME, told apart from the live state Logic writes after it.
+///
+/// **The defect this closes, measured 2026-09-03** on the sandbox project with
+/// exactly ONE track soloed: 53 of the project's 54 regions — every region on
+/// the other 14 rendered rows — published their `AXDescription` as
+/// `<name>, muted`, and `parseRegion` reported that whole string as the
+/// region's `name`. So `logic_list_regions` answered `808 Mutation Bass, muted`
+/// and then `logic_select_region {region_name: "808 Mutation Bass"}` refused
+/// its own reported name, project-wide, for as long as anything anywhere was
+/// soloed. One soloed track broke every region tool on every other track.
+///
+/// **Why this is a word list when the track row's is not.** A row publishes
+/// `Track 26 “Crash”, solo` — the quotes fence the name off, so
+/// `TrackRowAddressing.parseRowDescription` drops everything outside them
+/// without knowing a single English state word. A region publishes
+/// `Crash, muted` and nothing else: no quotes, no separate attribute, no
+/// subrole. There is no structure to key on, so the vocabulary lives in
+/// `LogicUIStrings.Element.RegionStateSuffix` with the rest of the English
+/// dependencies and is COUNTABLE there.
+///
+/// **How it degrades honestly.** A comma-tail this table cannot read is not
+/// stripped — the name stays exactly as Logic shows it — and the muted verdict
+/// becomes `"unavailable"` rather than `false`, because on a localized Logic
+/// `Crash, en sourdine` is a muted region whose annotation we cannot see, and
+/// answering `false` there is the silent wrong answer this server exists to
+/// prevent. The same branch catches an English region genuinely named
+/// `Gtr, DI`: we cannot prove that tail is a name rather than a state word we
+/// have not measured, so we say so instead of guessing.
+///
+/// **The corner case, documented rather than solved.** A region literally named
+/// `Kick, muted` is INDISTINGUISHABLE from a muted region called `Kick` — the
+/// two publish the same bytes. This parse reads it as the muted `Kick`, which
+/// is overwhelmingly the likelier of the two, and `matches` accepts both
+/// spellings so the caller who typed the literal name still lands on it.
+enum RegionNameAnnotation {
+
+    /// The key a muted region is reported under, and the one verdict that has
+    /// a third answer.
+    static let mutedKey = "muted"
+    /// What `muted` reads when the annotation could not be read either way.
+    /// A string in a boolean's place, deliberately, and the same shape
+    /// `meter_feed` and `cross_check` already use: "this reader cannot tell
+    /// you" is a different answer from "no".
+    static let unavailable = "unavailable"
+
+    /// One region description, split into what the user named it and what
+    /// Logic said about it.
+    struct Parsed: Equatable {
+        /// The region's own name, with every recognised state suffix off.
+        let name: String
+        /// The state keys found, in the order Logic wrote them.
+        let annotations: [String]
+        /// After the recognised suffixes came off, the name STILL contains a
+        /// `, ` — so an annotation this table does not carry (a localized one,
+        /// or one nobody has measured) cannot be ruled out, and neither can a
+        /// name that simply has a comma in it. The one flag that turns a
+        /// boolean answer into `"unavailable"`.
+        let unreadTail: Bool
+
+        func has(_ key: String) -> Bool { annotations.contains(key) }
+    }
+
+    /// Peels recognised `, <state>` suffixes off the tail, outermost first,
+    /// and stops at the first one it does not recognise. Pure and defaulted,
+    /// so a test can pin the rule over any vocabulary without Logic running.
+    static func parse(
+        _ description: String,
+        separator: String = LogicUIStrings.Element.RegionStateSuffix.separator,
+        words: [String: String] = LogicUIStrings.Element.RegionStateSuffix.words
+    ) -> Parsed {
+        var name = description
+        var found: [String] = []
+        while let comma = name.range(of: separator, options: .backwards) {
+            // The tail is trimmed before the lookup so the one caller that
+            // reads a string Logic PADDED — the Region inspector's name field,
+            // via `canonicalPanelName` — is not left with `, muted` stuck to
+            // the name over a trailing space.
+            let tail = name[comma.upperBound...].trimmingCharacters(in: .whitespaces).lowercased()
+            guard let key = words[tail] else { break }
+            found.append(key)
+            name = String(name[..<comma.lowerBound])
+        }
+        return Parsed(
+            name: name,
+            annotations: found.reversed(),
+            unreadTail: name.range(of: separator) != nil
+        )
+    }
+
+    /// `true`, `false`, or `"unavailable"` — the value a region payload's
+    /// `muted` carries. Typed as `Any` because the third answer is the point:
+    /// see `unavailable`.
+    static func mutedVerdict(_ parsed: Parsed) -> Any {
+        if parsed.has(mutedKey) { return true }
+        return parsed.unreadTail ? unavailable : false
+    }
+
+    /// Does this `region_name` argument name this region? BOTH spellings are
+    /// accepted — the clean name this server now reports, and the annotated one
+    /// it used to — so an agent replaying a name out of an older answer, an
+    /// older transcript or its own notes still lands on the region instead of
+    /// being refused by a server that has since changed its mind about what the
+    /// region is called.
+    ///
+    /// Case-insensitive, exactly as every region matcher already was.
+    static func matches(name: String, request: String) -> Bool {
+        if name.caseInsensitiveCompare(request) == .orderedSame { return true }
+        return parse(request).name.caseInsensitiveCompare(name) == .orderedSame
     }
 }
 

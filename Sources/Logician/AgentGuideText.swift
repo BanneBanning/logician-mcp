@@ -110,7 +110,7 @@ Use the strip name directly — `logic_list_inserts {track_name: "Stereo Out", r
 `logic_record_automation {track_name, parameter: "volume"|"pan"|"send"|"plugin", points: [{bar, beat?, value}], ramp: true}` — for sends add `send: N`, for plugins add `insert_slot` + `plugin_parameter`. Values: dB for volume/send, −64..63 for pan, the parameter's own units for plugins. Verification replays or playhead-chases each point and reports expected vs observed. First point needs bar ≥ 2.
 
 **Edit the arrangement:**
-`logic_list_regions` → `logic_select_region {track_name, start_bar}` → `logic_move_region {by_bars, by_beats}` / `logic_copy_region {to_bar, to_track?, move?}` / `logic_delete_region` / `logic_split_region {at_bar}`. A region's own parameters — quantize, transpose, velocity, loop, mute, and on audio regions gain, fine tune, fades and reverse — live in the Region inspector and are read with `logic_get_region_params` and written with `logic_set_region_params` (see "Tighten a sloppy take" and "Fade a clicking edit" below); `logic_rename_region` writes the same panel's name field. Split is one call, not the old three-step recipe — it parks the playhead EXACTLY (see caution below), checks that the point is inside the region, fires the command and proves the result against the arrangement map.
+`logic_list_regions` → `logic_select_region {track_name, start_bar}` → `logic_move_region {by_bars, by_beats}` / `logic_copy_region {to_bar, to_track?, move?}` / `logic_delete_region` / `logic_split_region {at_bar}`. A region's own parameters — quantize, transpose, velocity, loop, mute, and on audio regions gain, fine tune, fades and reverse — live in the Region inspector and are read with `logic_get_region_params` and written with `logic_set_region_params` (see "Tighten a sloppy take" and "Fade a clicking edit" below); `logic_rename_region` writes the same panel's name field. Split is one call, not the old three-step recipe — it parks the playhead EXACTLY (see caution below), checks that the point is inside the region, fires the command and proves the result against the arrangement map. **A region's name and its mute state are two fields, not one string.** Logic writes the state into the name it publishes — a region reads `808 Mutation Bass, muted` while it is muted *or* while any other track is soloed — and until 2026-09-03 the arrangement map handed you that whole string as the name, so one soloed track renamed 53 of the reference project's 54 regions and every region tool refused the name the map had just printed. You now get the clean name plus `muted` beside it. Read `muted: true` as "silent", not as "this region is muted": the element does not say which of the two causes it is. `muted: "unavailable"` is the honest third answer — the name ends in a `, …` this build cannot read as a state word (a localized Logic, or a region genuinely named with a comma) — and it never means unmuted. Both spellings are accepted wherever a `region_name` is taken, so a name copied out of an older transcript still lands, and the one name that cannot round-trip is a region literally called `Kick, muted`, which is indistinguishable from a muted `Kick`.
 
 **Edit many regions at once:**
 `logic_select_regions {mode, track_name, start_bar}` extends a selection the way Logic does — `track` (the whole track), `following` (everything after the anchor, all tracks), `following_same_track`, `all`, `none` — and reports how many regions ended up selected. Then fire ONE edit across all of them (`logic_trigger_key_command {name: "Delete"}`, a nudge, `Cut`). This is the difference between one call and a thousand round trips on a podcast edit. The count only sees VISIBLE track rows; the selection itself is project-wide, so an edit can reach more than the number you were shown. For a handful of regions that no mode describes — three takes scattered across two tracks — build the selection by hand instead: one `logic_select_region {exclusive: true}` for the first, then `{exclusive: false}` for each of the others, each call reporting `selected_count` so you can see the selection grow.
@@ -360,7 +360,7 @@ Parameters:
   - `include_volume_pan_automation` (boolean)
   - `name` (string): Name for the printed region/file. Logic's default is '<region>_bip'.
   - `normalize` (string): Off, Overload Protection Only, or On.
-  - `region_name` (string)
+  - `region_name` (string): The region's own name. Logic writes its mute state into the name it publishes (`Crash, muted` while the region is muted or another track is soloed); the arrangement map reports the CLEAN name with `muted` beside it, and both spellings are accepted here.
   - `scope` (string): 'region' (default) prints the named region; 'track' prints the whole selected track. One of: `region`, `track`.
   - `source` (string): What happens to the source region: muted (Logic's default), left playing, or deleted. One of: `mute`, `leave`, `delete`.
   - `start_bar` (integer): The region's current start bar.
@@ -581,7 +581,7 @@ Parameters:
 
 #### `logic_list_regions`
 
-The arrangement map: every region on every rendered track row, with name, start/end bar (and beat when off the barline), type (midi/audio) and selection state — parsed from Logic's own accessibility descriptions. Read-only. Optionally filter to one track. THIS MAP CAN BE INCOMPLETE AND NOW SAYS SO IN FIELDS, not in a footnote: `partial` (true when rows are PROVABLY missing), `completeness` ('partial' or 'unknown' - never 'complete', because a row Logic has not rendered publishes nothing at all), `partial_evidence`, `missing_track_numbers` where the numbering names them, and `coverage_checked` saying which signals were read. By default it reads the ROW NUMBERING only, which is free - a map holding rows 1-9 and 20-29 has already proved ten rows exist that it cannot see. Collapsed track stacks and a scrolled Tracks area can hide rows WITHOUT leaving a gap in the numbering: pass check_hidden_rows: true to read the track header column and scroll bar too (measured +40-50 ms on a 95-120 ms call). REGIONS HAVE NO STABLE HANDLE: they are addressed by (track_name, region_name, start_bar), and start_bar is exactly what an edit changes - so re-read this map between two edits of the same region instead of reusing the first read's start_bar. Every row here carries its `track_number`, and that is what to pass to the region tools when several rows share a name (an imported project is full of 'Studio Grand' rows): a name that matches two rendered rows is now REFUSED as ambiguous rather than resolved to the first of them, and track_number + track_name are cross-checked against each other. Duplicate region names make verification count occurrences rather than identify a region, which is why every edit tool selects exclusively first. FIELDS OMITTED AT THEIR DEFAULT: start_beat/end_beat on the barline, and `selected` when false (52 of 54 regions on the reference project, 17% of the payload) - absent means not selected. `type` IS NOT GUARANTEED: it is parsed from the region's help sentence, which Logic published for all 54 regions on 2026-09-02 and for only 2 of the same 54 hours earlier, so where one region on a row carries it the rest are filled in from it (type_from: 'track_row', because a track holds one kind of region) and where none does the field is ABSENT - which means unknown, never 'not audio'. logic_select_region or logic_describe_tracks answers it outright. EMPTY IS PROVEN, NOT ASSUMED: a walk that finds no track rows is cross-checked against the track header column, and an arrangement that is unreadable (or visibly holds tracks the walk cannot see - e.g. a non-English Logic UI) is REFUSED with the reason rather than reported as an empty project.
+The arrangement map: every region on every rendered track row, with name, start/end bar (and beat when off the barline), type (midi/audio), mute state and selection state — parsed from Logic's own accessibility descriptions. Read-only. `name` IS THE REGION'S OWN NAME AND `muted` IS BESIDE IT, which is new: Logic writes a region's live state into the same string it publishes the name in (`808 Mutation Bass, muted`), and this map used to report that whole string as the name — so with ONE track soloed, 53 of the reference project's 54 regions were renamed by this reader and every region tool then refused the name it had just published (measured 2026-09-03). The state now comes back as `muted`, and `muted: true` has TWO causes the element does not distinguish: the region's own mute, and the silence a solo on another track puts it in. `muted: "unavailable"` means the name ends in a ', …' this build cannot read as a state word (a localized Logic, or a region genuinely named with a comma) — never that it is unmuted. Both spellings are still accepted wherever a region_name is taken, so a name copied out of an older answer still lands. Optionally filter to one track. THIS MAP CAN BE INCOMPLETE AND NOW SAYS SO IN FIELDS, not in a footnote: `partial` (true when rows are PROVABLY missing), `completeness` ('partial' or 'unknown' - never 'complete', because a row Logic has not rendered publishes nothing at all), `partial_evidence`, `missing_track_numbers` where the numbering names them, and `coverage_checked` saying which signals were read. By default it reads the ROW NUMBERING only, which is free - a map holding rows 1-9 and 20-29 has already proved ten rows exist that it cannot see. Collapsed track stacks and a scrolled Tracks area can hide rows WITHOUT leaving a gap in the numbering: pass check_hidden_rows: true to read the track header column and scroll bar too (measured +40-50 ms on a 95-120 ms call). REGIONS HAVE NO STABLE HANDLE: they are addressed by (track_name, region_name, start_bar), and start_bar is exactly what an edit changes - so re-read this map between two edits of the same region instead of reusing the first read's start_bar. Every row here carries its `track_number`, and that is what to pass to the region tools when several rows share a name (an imported project is full of 'Studio Grand' rows): a name that matches two rendered rows is now REFUSED as ambiguous rather than resolved to the first of them, and track_number + track_name are cross-checked against each other. Duplicate region names make verification count occurrences rather than identify a region, which is why every edit tool selects exclusively first. FIELDS OMITTED AT THEIR DEFAULT: start_beat/end_beat on the barline, and `selected` when false (52 of 54 regions on the reference project, 17% of the payload) - absent means not selected. `type` IS NOT GUARANTEED: it is parsed from the region's help sentence, which Logic published for all 54 regions on 2026-09-02 and for only 2 of the same 54 hours earlier, so where one region on a row carries it the rest are filled in from it (type_from: 'track_row', because a track holds one kind of region) and where none does the field is ABSENT - which means unknown, never 'not audio'. logic_select_region or logic_describe_tracks answers it outright. EMPTY IS PROVEN, NOT ASSUMED: a walk that finds no track rows is cross-checked against the track header column, and an arrangement that is unreadable (or visibly holds tracks the walk cannot see - e.g. a non-English Logic UI) is REFUSED with the reason rather than reported as an empty project.
 
 Parameters:
 
@@ -595,7 +595,7 @@ Select ONE region (by track + region_name and/or start_bar; ambiguity is refused
 Parameters:
 
   - `exclusive` (boolean): Default true: clear other selections first. false ADDS this region to the current selection and reports selected_before/selected_count.
-  - `region_name` (string)
+  - `region_name` (string): The region's own name. Logic writes its mute state into the name it publishes (`Crash, muted` while the region is muted or another track is soloed); the arrangement map reports the CLEAN name with `muted` beside it, and both spellings are accepted here.
   - `start_bar` (integer)
   - `track_name` (string) **(required)**
   - `track_number` (integer): Which ROW, when several tracks share the name — an import leaves a stack of 'Studio Grand' rows, because Logic names each new track after the default patch it loaded. The arrangement map prints every row's track_number. Pass it WITH track_name: the two are cross-checked, and a pair that disagrees is refused before anything is written.
@@ -606,7 +606,7 @@ DESTRUCTIVE: delete one region. Logic's Delete takes EVERY selected region in th
 
 Parameters:
 
-  - `region_name` (string)
+  - `region_name` (string): The region's own name. Logic writes its mute state into the name it publishes (`Crash, muted` while the region is muted or another track is soloed); the arrangement map reports the CLEAN name with `muted` beside it, and both spellings are accepted here.
   - `start_bar` (integer)
   - `track_name` (string) **(required)**
   - `track_number` (integer): Which ROW, when several tracks share the name — an import leaves a stack of 'Studio Grand' rows, because Logic names each new track after the default patch it loaded. The arrangement map prints every row's track_number. Pass it WITH track_name: the two are cross-checked, and a pair that disagrees is refused before anything is written.
@@ -618,7 +618,7 @@ Cut the silence out of ONE audio region — the first move of every audio-post s
 Parameters:
 
   - `apply` (boolean): false (default) previews and changes nothing; true commits.
-  - `region_name` (string)
+  - `region_name` (string): The region's own name. Logic writes its mute state into the name it publishes (`Crash, muted` while the region is muted or another track is soloed); the arrangement map reports the CLEAN name with `muted` beside it, and both spellings are accepted here.
   - `start_bar` (integer): The region's current start bar.
   - `track_name` (string) **(required)**
   - `track_number` (integer): Which ROW, when several tracks share the name — an import leaves a stack of 'Studio Grand' rows, because Logic names each new track after the default patch it loaded. The arrangement map prints every row's track_number. Pass it WITH track_name: the two are cross-checked, and a pair that disagrees is refused before anything is written.
@@ -630,7 +630,7 @@ Select MANY regions in ONE call — logic_select_region takes one region per cal
 Parameters:
 
   - `mode` (string) **(required)**: Which selection command to fire. One of: `track`, `following`, `following_same_track`, `all`, `none`.
-  - `region_name` (string): Which region is the anchor (with start_bar to disambiguate).
+  - `region_name` (string): Which region is the anchor (with start_bar to disambiguate). The region's own name. Logic writes its mute state into the name it publishes (`Crash, muted` while the region is muted or another track is soloed); the arrangement map reports the CLEAN name with `muted` beside it, and both spellings are accepted here.
   - `start_bar` (integer): The anchor region's current start bar.
   - `track_name` (string): The anchor's track; required for every mode except 'all' and 'none'.
   - `track_number` (integer): Which ROW, when several tracks share the name — an import leaves a stack of 'Studio Grand' rows, because Logic names each new track after the default patch it loaded. The arrangement map prints every row's track_number. Pass it WITH track_name: the two are cross-checked, and a pair that disagrees is refused before anything is written.
@@ -644,7 +644,7 @@ Parameters:
   - `at_bar` (integer) **(required)**: Bar to cut at; must be inside the region.
   - `at_beat` (integer): Beat within that bar, 1-based. Default 1 (the bar line).
   - `notes_crossing` (string): What happens to a MIDI note that straddles the cut, when Logic asks: 'keep' (the note stays whole in the first region), 'shorten' (truncated at the cut), 'split' (cut in two - Logic's own pre-selection and the default here). Audio regions and cuts no note crosses raise no dialog at all, and the result then says notes_crossing: 'not_asked'. One of: `keep`, `shorten`, `split`.
-  - `region_name` (string): Which region; with start_bar, to disambiguate.
+  - `region_name` (string): Which region; with start_bar, to disambiguate. The region's own name. Logic writes its mute state into the name it publishes (`Crash, muted` while the region is muted or another track is soloed); the arrangement map reports the CLEAN name with `muted` beside it, and both spellings are accepted here.
   - `start_bar` (integer): The region's CURRENT start bar.
   - `track_name` (string) **(required)**
   - `track_number` (integer): Which ROW, when several tracks share the name — an import leaves a stack of 'Studio Grand' rows, because Logic names each new track after the default patch it loaded. The arrangement map prints every row's track_number. Pass it WITH track_name: the two are cross-checked, and a pair that disagrees is refused before anything is written.
@@ -657,7 +657,7 @@ Parameters:
 
   - `by_bars` (integer): Positive = right, negative = left.
   - `by_beats` (integer)
-  - `region_name` (string)
+  - `region_name` (string): The region's own name. Logic writes its mute state into the name it publishes (`Crash, muted` while the region is muted or another track is soloed); the arrangement map reports the CLEAN name with `muted` beside it, and both spellings are accepted here.
   - `start_bar` (integer): Which region (its current start bar).
   - `track_name` (string) **(required)**
   - `track_number` (integer): Which ROW, when several tracks share the name — an import leaves a stack of 'Studio Grand' rows, because Logic names each new track after the default patch it loaded. The arrangement map prints every row's track_number. Pass it WITH track_name: the two are cross-checked, and a pair that disagrees is refused before anything is written.
@@ -669,7 +669,7 @@ Copy (or move, with move: true = Cut) one region to a target bar, optionally ont
 Parameters:
 
   - `move` (boolean): true uses Cut instead of Copy (moves across tracks).
-  - `region_name` (string)
+  - `region_name` (string): The region's own name. Logic writes its mute state into the name it publishes (`Crash, muted` while the region is muted or another track is soloed); the arrangement map reports the CLEAN name with `muted` beside it, and both spellings are accepted here.
   - `start_bar` (integer)
   - `to_bar` (integer) **(required)**
   - `to_track` (string): Destination track; default same track.
@@ -684,7 +684,7 @@ Read a region's own parameters out of Logic's Region inspector — the panel at 
 Parameters:
 
   - `include_quantize_values` (boolean): Also return every value Logic's Quantize pop-up offers (note values, triplets, swing A-F, tuplets) — the vocabulary logic_set_region_params accepts for `quantize`. The list belongs to the Logic INSTALL rather than the project, so it is read off the menu once (~0.7 s, and the menu is always dismissed) and served from cache afterwards; `quantize_values_source` says which, and the cache is retired the moment Logic's version or UI language changes.
-  - `region_name` (string): With track_name: which region.
+  - `region_name` (string): With track_name: which region. The region's own name. Logic writes its mute state into the name it publishes (`Crash, muted` while the region is muted or another track is soloed); the arrangement map reports the CLEAN name with `muted` beside it, and both spellings are accepted here.
   - `start_bar` (integer): With track_name: the region's current start bar.
   - `track_name` (string): Select this track's region first. Omit to read whatever is selected.
   - `track_number` (integer): Which ROW, when several tracks share the name — an import leaves a stack of 'Studio Grand' rows, because Logic names each new track after the default patch it loaded. The arrangement map prints every row's track_number. Pass it WITH track_name: the two are cross-checked, and a pair that disagrees is refused before anything is written.
@@ -711,7 +711,7 @@ Parameters:
   - `q_strength` (integer): How far notes are pulled to the grid, 0-100 %. 100 is Logic's default; lower it to quantize and still leave feel. Needs quantize to be on.
   - `q_swing` (integer): Swing percentage; 50 is straight. Needs quantize to be on.
   - `quantize` (string): Logic's own menu spelling, e.g. 'Off', '1/16 Note', '1/8 Swing C'.
-  - `region_name` (string): Which region, with start_bar to disambiguate.
+  - `region_name` (string): Which region, with start_bar to disambiguate. The region's own name. Logic writes its mute state into the name it publishes (`Crash, muted` while the region is muted or another track is soloed); the arrangement map reports the CLEAN name with `muted` beside it, and both spellings are accepted here.
   - `reverse` (boolean): Play the region backwards. Audio regions only, non-destructive, and the file on disk is untouched.
   - `scope` (string): 'region' (default) selects the named region and writes only to it; 'selection' writes to every currently selected region and changes no selection. One of: `region`, `selection`.
   - `start_bar` (integer): The region's CURRENT start bar.
@@ -722,13 +722,13 @@ Parameters:
 
 #### `logic_rename_region`
 
-Rename ONE region, in about 0.18 s (measured 2026-09-02). Logic's Region inspector publishes the region's name as an editable text field, so this is a single write and a confirm — no dialog, no key command, and the inspector's disclosure triangles are not even touched. The region is selected exclusively first (track_name plus region_name and/or start_bar; ambiguity is refused with the candidates listed) and the rename is verified in BOTH channels before it reports success: the inspector reads the new name back AND the arrangement map shows it on the region at that position, compared exactly, case included — the two disagreeing is a verification_failed naming both. Names are the ARRANGEMENT's, not the audio file's — renaming an audio region never touches the file on disk, and Undo restores the old name. Compare-and-set with expected_current_name. Three notes worth knowing: a MUTED region reads as '<name>, muted' in the arrangement map while the inspector shows the bare name, and this tool compares the bare names; if Logic renumbers OTHER regions on the track as a side effect (the way it renumbers default marker names by position), the ones that moved are reported in `also_renamed`; and the two strings Logic prints in that name field for ITSELF — '2 selected', and the '... Defaults' it shows when no region is selected — are refused as names before anything is written, because a region carrying one reads as a selection state to every Region-inspector tool. To rename a TRACK use logic_rename_track; to rename several regions call this once per region.
+Rename ONE region, in about 0.18 s (measured 2026-09-02). Logic's Region inspector publishes the region's name as an editable text field, so this is a single write and a confirm — no dialog, no key command, and the inspector's disclosure triangles are not even touched. The region is selected exclusively first (track_name plus region_name and/or start_bar; ambiguity is refused with the candidates listed) and the rename is verified in BOTH channels before it reports success: the inspector reads the new name back AND the arrangement map shows it on the region at that position, compared exactly, case included — the two disagreeing is a verification_failed naming both. Names are the ARRANGEMENT's, not the audio file's — renaming an audio region never touches the file on disk, and Undo restores the old name. Compare-and-set with expected_current_name. Three notes worth knowing: a MUTED region publishes '<name>, muted' as its accessibility description while the inspector shows the bare name, and both channels are compared on the bare name (since 2026-09-03 the arrangement map strips that state off the name and reports it as `muted` instead, so the two now agree by construction) - the one name this cannot round-trip is a new_name that itself ends in ', muted', which the map is unable to tell from a muted region of the shorter name; if Logic renumbers OTHER regions on the track as a side effect (the way it renumbers default marker names by position), the ones that moved are reported in `also_renamed`; and the two strings Logic prints in that name field for ITSELF — '2 selected', and the '... Defaults' it shows when no region is selected — are refused as names before anything is written, because a region carrying one reads as a selection state to every Region-inspector tool. To rename a TRACK use logic_rename_track; to rename several regions call this once per region.
 
 Parameters:
 
   - `expected_current_name` (string): Compare-and-set: the name you believe the region carries. A mismatch refuses and writes nothing.
   - `new_name` (string) **(required)**: The new name. One line, non-empty.
-  - `region_name` (string): Which region (its current name), with start_bar to disambiguate.
+  - `region_name` (string): Which region (its current name), with start_bar to disambiguate. The region's own name. Logic writes its mute state into the name it publishes (`Crash, muted` while the region is muted or another track is soloed); the arrangement map reports the CLEAN name with `muted` beside it, and both spellings are accepted here.
   - `start_bar` (integer): The region's current start bar.
   - `track_name` (string) **(required)**: Which track the region is on.
   - `track_number` (integer): Which ROW, when several tracks share the name — an import leaves a stack of 'Studio Grand' rows, because Logic names each new track after the default patch it loaded. The arrangement map prints every row's track_number. Pass it WITH track_name: the two are cross-checked, and a pair that disagrees is refused before anything is written.
@@ -1109,7 +1109,7 @@ Read the MIDI events of a region out of Logic's Event List (View > List Editors 
 Parameters:
 
   - `limit` (integer): Maximum events in the result, default 500. The full count is always reported as event_count.
-  - `region_name` (string): With track_name: which region.
+  - `region_name` (string): With track_name: which region. The region's own name. Logic writes its mute state into the name it publishes (`Crash, muted` while the region is muted or another track is soloed); the arrangement map reports the CLEAN name with `muted` beside it, and both spellings are accepted here.
   - `start_bar` (integer): With track_name: the region's current start bar.
   - `track_name` (string): Select this track's region first (exclusive selection). Omit to read whatever is currently selected.
   - `track_number` (integer): Which ROW, when several tracks share the name — an import leaves a stack of 'Studio Grand' rows, because Logic names each new track after the default patch it loaded. The arrangement map prints every row's track_number. Pass it WITH track_name: the two are cross-checked, and a pair that disagrees is refused before anything is written.
@@ -1129,7 +1129,7 @@ Parameters:
   - `length` (string): The new length in Logic's own 'bars beats divisions ticks' spelling — the text logic_list_events prints. '0 1 0 0' is a quarter note.
   - `new_pitch` (string or integer): Transpose the addressed note to this pitch. Same spelling as pitch.
   - `pitch` (string or integer): For 'set'/'delete': WHICH note at that position, which is how a chord is told apart. For 'create': the note to make. A MIDI number 0-127 or Logic's own name, where C3 is middle C (60): 'D#2', 'A♯2', 'C3'.
-  - `region_name` (string): With track_name: which region.
+  - `region_name` (string): With track_name: which region. The region's own name. Logic writes its mute state into the name it publishes (`Crash, muted` while the region is muted or another track is soloed); the arrangement map reports the CLEAN name with `muted` beside it, and both spellings are accepted here.
   - `start_bar` (integer): With track_name: the region's current start bar.
   - `tick` (integer): Fourth position field. Narrows the address; for 'create', default 1.
   - `to_bar` (integer): Move the note to this bar. Omitted position fields keep their current value.
