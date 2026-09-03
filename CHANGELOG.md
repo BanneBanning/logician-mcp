@@ -1941,6 +1941,25 @@ with every render coming back as audio the agent can listen to.
   reads are the cost), 3.6 s for `already_empty`. It needs a track ROW, so a mixer-only aux
   or bus is out of reach and says so, and it leaves the control where the automation last
   put it rather than where it stood before the pass.
+- **A recorded curve lands in the bars you asked for, or the call refuses and writes
+  nothing.** `logic_record_automation` timed its schedule from the first bar it saw the
+  transport reach, and the first thing a sync loop sees 10 ms after pressing play is the
+  display Logic has not repainted yet — the bar the playhead was parked at. That one stale
+  reading satisfied the "a pre-roll bar was seen" guard, so the NEXT reading was accepted as
+  the crossing whatever bar it showed. Measured 2026-09-03 on the sandbox: the playhead
+  parked and verified at bar 1 on both planes, a volume curve asked for at bars 2–4, and
+  `logic_read_automation` then found it at bars 9–11 (−18.4 / −11.6 / −7.9 / −5.1 / −2.1 dB)
+  with bars 2–4 still flat at the track's static −5.1 dB — and the verification replay,
+  anchored the same wrong way, could report `verified: true` over it. The cause is Logic's,
+  not the surface's: playback begins at Logic's own last play-start position, which was
+  bar 9 five times out of five from three different verified parkings, one of them through a
+  `Go to Beginning` locate. The crossing must now be INTO the first point's bar and must come
+  from a display that has MOVED off the park; anything else refuses with nothing written and
+  names the one thing that shifts Logic's play-start position (click the ruler there, or play
+  and stop once from there). `roll_anchor` in the result says which bar the schedule was
+  timed from, and a replay that could not run comes back as `recorded_unverified` instead of
+  claiming the curve was written. `logic_read_automation` was right throughout — it parks the
+  playhead and never rolls — so it is the way to check a lane while a project is in this state.
 
 ### Known limitations (honest by design)
 

@@ -39,10 +39,66 @@ final class AutomationPassTests: XCTestCase {
             MCUController.rollSyncVerdict(observedBar: 2, firstBar: 2, sawPreRoll: true),
             .crossed
         )
+    }
+
+    /// THE 2026-09-03 REGRESSION, and it is the whole dispute between
+    /// `logic_record_automation` and `logic_read_automation`.
+    ///
+    /// A pre-roll sighting used to make ANY later bar the crossing, and the
+    /// first sighting of a roll is the display Logic has not repainted yet.
+    /// Live on the sandbox: playhead parked and verified at bar 1 on both
+    /// planes, a volume curve asked for at bars 2→4 — and the stale bar-1
+    /// reading armed the guard, the next reading was bar 9, that was accepted
+    /// as "the crossing", and `logic_read_automation` then found the curve at
+    /// bars 9→11 (-18.4 / -11.6 / -7.9 / -5.1 / -2.1 dB) with bars 2-4 flat at
+    /// the track's static -5.1. The reader was right the whole time.
+    ///
+    /// A bar PAST the range is a jump, never a crossing: bars are seconds
+    /// long and the sync polls every 10 ms.
+    func testABarPastTheRangeIsNeverTheCrossingEvenAfterAPreRollSighting() {
+        XCTAssertEqual(
+            MCUController.rollSyncVerdict(observedBar: 9, firstBar: 2, sawPreRoll: true),
+            .startedPastRange
+        )
         XCTAssertEqual(
             MCUController.rollSyncVerdict(observedBar: 3, firstBar: 2, sawPreRoll: true),
-            .crossed
+            .startedPastRange
         )
+        XCTAssertEqual(
+            MCUController.rollSyncVerdict(observedBar: 41, firstBar: 40, sawPreRoll: true),
+            .startedPastRange
+        )
+    }
+
+    /// The other half of the same fix: a pre-roll reading only counts when
+    /// the display has MOVED off the park. The parked reading itself is not
+    /// evidence of a roll, and neither is a display that cannot be parsed.
+    func testOnlyAMovedDisplayIsEvidenceOfARoll() {
+        let parked = MCUTimecodeReading.beats(bar: 1, beat: 1, division: 1, ticks: 1)
+        XCTAssertFalse(
+            MCUController.rollHasLeftThePark(parked: parked, observed: parked),
+            "the parked reading repeated is a repaint that has not happened, not a roll"
+        )
+        XCTAssertTrue(
+            MCUController.rollHasLeftThePark(
+                parked: parked,
+                observed: .beats(bar: 1, beat: 1, division: 2, ticks: 30)
+            ),
+            "a sub-beat advance inside the pre-roll bar IS the transport moving"
+        )
+        XCTAssertTrue(
+            MCUController.rollHasLeftThePark(
+                parked: parked, observed: .beats(bar: 9, beat: 1, division: 1, ticks: 139)
+            )
+        )
+        for unreadable: MCUTimecodeReading in [
+            .notReported, .alert, .implausible(reason: "SMPTE")
+        ] {
+            XCTAssertFalse(
+                MCUController.rollHasLeftThePark(parked: parked, observed: unreadable),
+                "\(unreadable) says nothing about whether the transport moved"
+            )
+        }
     }
 
     /// A pre-roll bar several bars before the range still only ever reports
@@ -57,6 +113,12 @@ final class AutomationPassTests: XCTestCase {
         }
     }
 
+    /// The refusal names both bars, says nothing was written, and — since
+    /// 2026-09-03 — names the cause and the ONE thing that actually moves
+    /// Logic's play-start position. `logic_set_playhead` is named as the tool
+    /// that CANNOT do it, because that is the call an agent would otherwise
+    /// retry forever: the playhead was verifiably parked all five times and
+    /// playback still began at bar 9.
     func testStartedPastRangeErrorNamesBothBarsAndSaysNothingWasWritten() {
         let message = MCUController.rollStartedPastRangeError(
             observedBar: 51, firstBar: 40, restored: true
@@ -66,6 +128,9 @@ final class AutomationPassTests: XCTestCase {
         XCTAssertTrue(message.contains("bar 51"), message)
         XCTAssertTrue(message.contains("nothing was written"), message)
         XCTAssertTrue(message.contains("logic_set_playhead"), message)
+        XCTAssertTrue(message.lowercased().contains("last play-start position"), message)
+        XCTAssertTrue(message.contains("ruler"), message)
+        XCTAssertTrue(message.contains("logic_read_automation"), message)
     }
 
     // MARK: - How far the crossing still is (the arming lead)

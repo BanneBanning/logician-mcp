@@ -186,12 +186,35 @@ extension MCUController {
     /// So a crossing is only accepted once a bar BELOW the range has been
     /// seen. Pure, and unit-tested: this decides where every breakpoint of the
     /// curve lands.
+    ///
+    /// THE PRE-ROLL SIGHTING WAS NOT ENOUGH (measured 2026-09-03, sandbox).
+    /// `sawPreRoll` was set by the first reading of the loop, and the first
+    /// reading of the loop is the PARKED display — the surface has not yet
+    /// repainted Logic's jump when the poll runs 10 ms after the play press.
+    /// So one stale reading of the pre-roll bar armed the guard, the next
+    /// reading was bar 9, and `bar >= firstBar` called that "the crossing".
+    /// Live: playhead parked and verified at bar 1 on both planes, a curve
+    /// asked for at bars 2→4, and `logic_read_automation` then found it at
+    /// bars 9→11 (-18.4 / -11.6 / -7.9 / -5.1 / -2.1 dB), with bars 2-4 flat
+    /// at the track's static -5.1. Playback started at bar 9 five times out of
+    /// five, from three different parked bars and from a `Go to Beginning`
+    /// locate: Logic plays from ITS OWN last play-start position.
+    ///
+    /// Two rules now, and both matter:
+    ///
+    /// - the crossing must be INTO `firstBar` itself. A bar PAST the range is
+    ///   the display having jumped, never a crossing — a bar is seconds long
+    ///   and the poll is 10 ms, so a real crossing cannot be missed.
+    /// - the pre-roll sighting must come from a display that has MOVED off the
+    ///   park (`rollHasLeftThePark`), which is what makes it evidence of a
+    ///   roll rather than of a repaint that has not happened yet.
     enum RollSyncVerdict: Equatable {
         /// Still before the range — the pre-roll this pass asked for.
         case preRoll
         /// The crossing INTO the first bar, with a pre-roll bar behind it.
         case crossed
-        /// Playback started past the range: nothing may be anchored on this.
+        /// Playback started, or jumped, at or past the range: nothing may be
+        /// anchored on this.
         case startedPastRange
     }
 
@@ -199,7 +222,23 @@ extension MCUController {
         observedBar: Int, firstBar: Int, sawPreRoll: Bool
     ) -> RollSyncVerdict {
         if observedBar < firstBar { return .preRoll }
-        return sawPreRoll ? .crossed : .startedPastRange
+        guard observedBar == firstBar, sawPreRoll else { return .startedPastRange }
+        return .crossed
+    }
+
+    /// Whether a position reading is evidence that the transport has ROLLED,
+    /// or just the parked display not yet repainted.
+    ///
+    /// The recorder for vpot parameters has always asked this question (it
+    /// anchors on the first reading that differs from the parked one); the
+    /// volume recorder did not, and that is how a stale pre-roll reading came
+    /// to arm the anchor guard. Pure, so the distinction can be tested without
+    /// a surface.
+    static func rollHasLeftThePark(
+        parked: MCUTimecodeReading, observed: MCUTimecodeReading
+    ) -> Bool {
+        guard case .beats = observed else { return false }
+        return observed != parked
     }
 
     /// Ticks in one quarter-note beat on the MCU position display: four
@@ -236,7 +275,15 @@ extension MCUController {
     ) -> LogicianError {
         LogicianError.verificationFailed(
             requested: "playback to start in bar \(firstBar - 1) and cross into bar \(firstBar)",
-            actual: "the first position the transport reported was bar \(observedBar), already at or past the range — Logic plays from its own last play-start position, so nothing was written; park the playhead with logic_set_playhead and call again",
+            actual: "the transport rolled from bar \(observedBar), already at or past the range,"
+                + " so nothing was written. LOGIC PLAYS FROM ITS OWN LAST PLAY-START POSITION,"
+                + " not from the playhead: measured 2026-09-03, the playhead was parked at bar 1,"
+                + " bar 20 and bar 1 again — verified on the control bar AND on the surface's"
+                + " position display each time, once through a 'Go to Beginning' locate — and"
+                + " playback began at bar 9 all five times. logic_set_playhead cannot move that"
+                + " position; clicking Logic's ruler at bar \(firstBar - 1) can, and so can"
+                + " playing and stopping once from there. Do that and call again. Until then"
+                + " logic_read_automation still works — it parks the playhead and never rolls",
             restored: restored
         )
     }
@@ -508,6 +555,10 @@ extension MCUController {
         // a quarter beat at 120 BPM and still ten times the MIDI round trip.
         let armLeadMs = min(120.0, abs(offsetMs(preRollBar, 1)) * 0.25)
         var armedAt: Date?
+        // The bar the schedule was actually timed from. Reported, because it
+        // is the one fact that decides where every breakpoint landed and the
+        // caller had no way to audit it.
+        var anchoredAtBar: Int?
         do {
             _ = try logic.setPlayhead(barNumber: preRollBar, beat: 1)
             // Decisive mode check, and the pacing too: the playhead was just
@@ -519,6 +570,11 @@ extension MCUController {
             try awaitParkedBar(
                 preRollBar, operation: "volume automation from bar \(first.bar)"
             )
+            // What the PARKED display reads, kept so the sync loop below can
+            // tell a repaint that has not happened yet from a transport that
+            // has moved. Read after `awaitParkedBar`, so it is the settled
+            // park and not a value in flight.
+            let parkedReading = timecodeReading()
             guard (try? setPlaying(true)) != nil else {
                 throw LogicianError.writeFailed("play failed")
             }
@@ -527,8 +583,9 @@ extension MCUController {
             // length of any other bar, and `offsetMs` measures from the first
             // point, so the pre-roll is its negative offset.
             let preRollMs = abs(offsetMs(preRollBar, 1))
-            // Sync: the timecode crossing into the first bar, accepted only
-            // after a bar BELOW it has been seen (see `rollSyncVerdict`).
+            // Sync: the timecode crossing INTO the first bar, accepted only
+            // after a MOVING bar below it has been seen (see
+            // `rollSyncVerdict` and `rollHasLeftThePark`).
             let syncDeadline = Date().addingTimeInterval(20)
             var anchor: Date?
             var sawPreRoll = false
@@ -540,7 +597,8 @@ extension MCUController {
                 try checkCancelled()
                 let reading = timecodeReading()
                 var msToCrossing: Double?
-                if case .beats(let bar, _, _, _) = reading {
+                if case .beats(let bar, _, _, _) = reading,
+                   rollHasLeftThePark(parked: parkedReading, observed: reading) {
                     switch rollSyncVerdict(
                         observedBar: bar, firstBar: first.bar, sawPreRoll: sawPreRoll
                     ) {
@@ -551,7 +609,9 @@ extension MCUController {
                                 reading: reading, beatSlots: preRollSlots, barMs: preRollMs
                             )
                         }
-                    case .crossed: anchor = Date()
+                    case .crossed:
+                        anchor = Date()
+                        anchoredAtBar = bar
                     case .startedPastRange:
                         throw rollStartedPastRangeError(
                             observedBar: bar, firstBar: first.bar, restored: true
@@ -584,8 +644,13 @@ extension MCUController {
             }
             guard let start = anchor else {
                 throw LogicianError.verificationFailed(
-                    requested: "playback reaching bar \(first.bar)",
-                    actual: "the timecode never got there", restored: false
+                    requested: "playback rolling from bar \(preRollBar) into bar \(first.bar)",
+                    actual: sawPreRoll
+                        ? "the transport rolled but never reached bar \(first.bar) within 20 s;"
+                            + " nothing was written"
+                        : "the position display never moved off the parked bar \(preRollBar)"
+                            + " within 20 s, so no roll could be proved and nothing was written",
+                    restored: false
                 )
             }
             for (position, entry) in schedule.enumerated() {
@@ -633,6 +698,16 @@ extension MCUController {
             "armed": armedAt != nil,
             "note": "Latch records from the touch, so the first value is sent this far before bar \(first.bar) beat 1 — that instant then holds the requested value, at the cost of overwriting the same fraction of a beat in front of the range."
         ]
+        // WHERE THE SCHEDULE WAS TIMED FROM. Every breakpoint's position is
+        // this bar plus an offset, so a caller auditing "did the curve land
+        // where I asked" needs the anchor, not just the points. It can only
+        // be `first.bar` now — the sync refuses anything else — and saying so
+        // is what makes that guarantee visible instead of implied.
+        report["roll_anchor"] = [
+            "pre_roll_bar": preRollBar,
+            "crossed_into_bar": anchoredAtBar ?? first.bar,
+            "note": "The schedule was timed from the OBSERVED crossing into bar \(first.bar), taken only after the position display had moved off the parked bar \(preRollBar). Logic plays from its own last play-start position rather than the parked playhead (measured 2026-09-03), and a roll that begins at or past the range is refused rather than anchored — that is how a curve asked for at bars 2-4 was once written at bars 9-11 and verified there."
+        ]
 
         if verify {
             // Replay in Read and sample Logic's own fader echo at each point.
@@ -652,13 +727,21 @@ extension MCUController {
                 parkFailure = error.localizedDescription
             }
             if parkFailure == nil {
+                // The parked reading again, for the same reason as the pass:
+                // the first poll after the play press reads the display
+                // Logic has not repainted yet, and a stale pre-roll sighting
+                // is what let the replay confirm a curve written seven bars
+                // away.
+                let parkedReading = timecodeReading()
                 _ = try? setPlaying(true)
                 let syncDeadline = Date().addingTimeInterval(20)
                 var sawPreRoll = false
                 reportProgress("replaying in Read to verify", percent: 75)
                 while Date() < syncDeadline {
                     try checkCancelled()
-                    if let bar = timecodeBar() {
+                    let reading = timecodeReading()
+                    if case .beats(let bar, _, _, _) = reading,
+                       rollHasLeftThePark(parked: parkedReading, observed: reading) {
                         switch rollSyncVerdict(
                             observedBar: bar, firstBar: first.bar, sawPreRoll: sawPreRoll
                         ) {
@@ -668,11 +751,16 @@ extension MCUController {
                             // The same one-sided anchor bug would have made
                             // the replay confirm a curve written in the wrong
                             // bar. It reports instead.
-                            parkFailure = "the replay started at bar \(bar), already at or past the range, so no sample could be trusted"
+                            parkFailure = "the replay rolled from bar \(bar), already at or past the range, so no sample could be trusted — Logic plays from its own last play-start position, not the parked playhead"
                         }
                         if anchor != nil || parkFailure != nil { break }
                     }
                     Thread.sleep(forTimeInterval: 0.01)
+                }
+                if anchor == nil, parkFailure == nil {
+                    parkFailure = sawPreRoll
+                        ? "the replay rolled but never reached bar \(first.bar) within 20 s"
+                        : "the position display never moved off the parked bar \(preRollBar) within 20 s, so no replay could be proved"
                 }
             }
             if let start = anchor {
@@ -710,7 +798,19 @@ extension MCUController {
             ]
             if let parkFailure {
                 verification["unavailable"] = parkFailure
-                report["verification_note"] = "The pass completed and the curve was written; the verification replay could not run (\(parkFailure)), so verified is false without a point having failed. Read the lane back with logic_read_automation."
+                report["state"] = "recorded_unverified"
+                // NOT "the curve was written", which is what this used to
+                // say. The schedule was sent against a crossing the pass DID
+                // verify (bar \(first.bar)); what no longer stands is the
+                // independent second look, and a sentence that promises the
+                // write is exactly the sentence that let a misplaced curve
+                // read as a good one.
+                report["verification_note"] = "The pass ran and the schedule was sent from the"
+                    + " observed crossing into bar \(first.bar); the verification replay could"
+                    + " NOT run (\(parkFailure)), so nothing looked at the lane afterwards and"
+                    + " verified is false without a point having failed. Read the lane back with"
+                    + " logic_read_automation — it parks the playhead instead of rolling, so it"
+                    + " does not depend on where Logic starts playback."
             }
             report["verification"] = verification
         } else {
