@@ -145,6 +145,17 @@ extension LogicAccessibility {
     ///
     /// Every path re-reads the whole map and compares it against the map read
     /// before the write, which is the verification story for all three actions.
+    ///
+    /// ONE PANE, NOT FOUR. Every phase of this call reads or writes the same
+    /// Tempo tab — the before-read, the action itself, the BPM stepper, the
+    /// after-read — and each of them used to open the List Editors pane, do its
+    /// work and close it again. Profiled live 2026-09-03: the phase sums matched
+    /// wall time to within 10 ms, so those cycles WERE the cost — a `set` that
+    /// wrote zero BPM (121 → 121, nothing to converge) still took 3 332 ms.
+    /// Holding the pane for the whole edit (`withListEditorsPaneHeld`, the same
+    /// scope `ProjectSnapshot` has used for its contiguous run of lists since
+    /// 2026-09-02) leaves one open/settle/close instead of three or four; the
+    /// verification is untouched, every read still happens.
     func editTempoEvent(
         action: String,
         bar: Int,
@@ -162,7 +173,24 @@ extension LogicAccessibility {
                 throw LogicianError.invalidArguments("bpm must be 5-990 for action '\(action)'")
             }
         }
+        return try withListEditorsPaneHeld {
+            try editTempoEventUnderHold(
+                action: action, bar: bar, beat: beat,
+                bpm: bpm, expectedCurrentBPM: expectedCurrentBPM
+            )
+        }
+    }
 
+    /// The edit itself, with the List Editors pane already held open by
+    /// `editTempoEvent`. Split out only so the hold is one scope around the
+    /// whole call rather than a `defer` threaded through every early throw.
+    private func editTempoEventUnderHold(
+        action: String,
+        bar: Int,
+        beat: Int,
+        bpm: Double?,
+        expectedCurrentBPM: Double?
+    ) throws -> [String: Any] {
         let before = readTempoMap()
         guard let mapBefore = before.map else {
             throw LogicianError.preconditionUnmet(
@@ -220,25 +248,39 @@ extension LogicAccessibility {
             "events_before": mapBefore.events.count
         ]
 
-        if action != "delete" {
-            // Park on the event's own bar/beat: `Create` places at the playhead,
-            // and for `set` the control bar's Tempo slider edits the event in
-            // force at the playhead.
+        if action == "create" {
+            // Park on the event's own bar/beat: `Create` places the event
+            // exactly where the playhead IS.
             //
-            // ZERO THE SUB-BEAT RESIDUE FIRST. The control bar publishes only a
-            // BAR and a BEAT stepper, so `setPlayhead` cannot touch the
-            // division and tick the playhead already carries — and `Create new
-            // Tempo Event` places the event exactly where the playhead IS.
-            // Measured 2026-08-28: parked at "bar 17 beat 1", the created event
-            // landed at `17 1 2 29`. `Go to Beginning` puts the playhead at
-            // 1 1 1 1, after which whole-bar and whole-beat steps keep division
-            // and tick at 1. It costs the travel back out (~0.13 s per bar),
-            // which is the honest price of an event that is really on the beat.
-            if action == "create" {
-                try pressControlBarButton("Go to Beginning")
-                Thread.sleep(forTimeInterval: 0.3)
-                steps.append("playhead zeroed with 'Go to Beginning'")
-            }
+            // THE SUB-BEAT RESIDUE HAS TO GO FIRST. The control bar publishes
+            // only a BAR and a BEAT stepper, so `setPlayhead` cannot touch the
+            // division and tick the playhead already carries. Measured
+            // 2026-08-28: parked at "bar 17 beat 1", the created event landed
+            // at `17 1 2 29`. `Go to Beginning` puts the playhead at 1 1 1 1,
+            // after which whole-bar and whole-beat steps keep division and tick
+            // at 1.
+            //
+            // ASK BEFORE PRESSING. This used to fire `Go to Beginning`
+            // unconditionally and with no retry, and live-profiling on
+            // 2026-09-03 caught it refusing a whole create with "'Go to
+            // Beginning' button in the control bar" not found — one of two
+            // attempts, the immediate retry succeeding. `parkPlayheadOnGrid` is
+            // this server's answer to exactly that: it reads the MCU
+            // timecode's division/tick first and presses only when the residue
+            // is non-zero OR unreadable (never on a rolling transport), then
+            // steps and reports where it landed. A playhead already on the grid
+            // now costs no rewind and no travel back out at all.
+            let parked = try parkPlayheadOnGrid(bar: bar, beat: beat)
+            let rewound = parked["rewound_first"] as? Bool ?? false
+            steps.append(rewound
+                ? "playhead zeroed with 'Go to Beginning', then parked at bar \(bar) beat \(beat)"
+                : "playhead was already on the grid; parked at bar \(bar) beat \(beat) without rewinding")
+            payload["playhead_on_grid"] = parked["on_grid"] ?? NSNull()
+        } else if action == "set" {
+            // For `set` the row's own tempo cell is the write route, but the
+            // playhead is still parked on the event: it is what makes the
+            // control bar's reading (and any human watching) agree with the row
+            // that is about to change.
             _ = try setPlayhead(barNumber: bar, beat: beat)
             steps.append("playhead parked at bar \(bar) beat \(beat)")
         }

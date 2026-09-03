@@ -303,9 +303,10 @@ extension MCPServer {
         //
         // The Tempo List answers it OUTRIGHT when it can be read (item 3): the
         // whole map, exactly, with no playhead travel at all — where the sample
-        // costs ~0.13 s per bar between the playhead and bar 1. So the map is
-        // tried first, and the sample is only the fallback.
-        let resolvedMap = resolveTempoMap()
+        // parks the playhead twice and puts it back. So the map is tried first,
+        // and the sample is only the fallback.
+        let projectPath = try? logic.projectDocumentPath()
+        let resolvedMap = resolveTempoMap(projectPath: projectPath)
         if let map = resolvedMap.map, map.source == .tempoList {
             if !map.isConstant {
                 throw LogicianError.tempoMapUnsafe(
@@ -327,9 +328,15 @@ extension MCPServer {
                 )
             }
             let landed = try logic.setTempo(targetBpm)
-            // The write moved a tempo node; whatever the cache holds describes
-            // the map as it was BEFORE it.
-            invalidateTempoMapCache()
+            // The write moved a tempo node, so whatever the cache holds
+            // describes the map as it was BEFORE it. On the single-event map
+            // this branch just proved it was writing into, the map AFTER the
+            // write is known exactly (same event, `landed` BPM read back off
+            // the slider), so the cache is corrected rather than thrown away —
+            // which is what spares the next reader a ~780 ms Tempo List read.
+            let cacheRoute = rememberTempoMap(
+                after: map, landedBPM: landed, projectPath: projectPath
+            )
             return [
                 "success": true,
                 "verified": true,
@@ -340,7 +347,8 @@ extension MCPServer {
                     "source": "tempo_list",
                     "events": map.events.count,
                     "tempos": map.tempos,
-                    "constant": true
+                    "constant": true,
+                    "cache": cacheRoute
                 ],
                 "note": "Whole-BPM resolution (the slider steps 1 BPM). Logic's Tempo List was read and holds a single tempo, so this write set the project tempo rather than one node of a map. No playhead was moved."
             ]

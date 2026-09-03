@@ -692,16 +692,41 @@ extension LogicAccessibility {
 
     /// Presses one of the control bar's transport buttons by its
     /// `AXDescription` ("Go to Beginning", "Forward", "Rewind").
-    func pressControlBarButton(_ description: String) throws {
-        guard let button = controlBarChild(try controlBarGroup(), description) else {
-            throw LogicianError.windowNotFound("'\(description)' button in the control bar")
+    ///
+    /// LOOKS AGAIN BEFORE IT REFUSES. The lookup is one walk of the control
+    /// bar's DIRECT children, and that walk can come back empty on a tree that
+    /// is merely mid-repaint: live 2026-09-03 a `logic_tempo_events {create}`
+    /// was refused outright with "'Go to Beginning' button in the control bar"
+    /// while the identical call one moment later found it and worked. So the
+    /// group is re-resolved and re-walked up to three times, ~120 ms apart —
+    /// the same look-first-then-retry shape every other AX lookup in this file
+    /// already has — and the direct-children scan falls back to a bounded
+    /// descendant search for a BUTTON of that description before giving up,
+    /// because the control bar nests one group deep (`playheadGroup`).
+    /// A press that Logic REJECTS is still reported at once: only "not there
+    /// yet" is retried, never a refusal Logic actually gave.
+    func pressControlBarButton(_ description: String, attempts: Int = 3) throws {
+        for attempt in 0..<max(1, attempts) {
+            if attempt > 0 { Thread.sleep(forTimeInterval: 0.12) }
+            guard let group = try? controlBarGroup() else { continue }
+            let button = controlBarChild(group, description)
+                ?? firstDescendant(of: group, maximumDepth: AXDepth.controlBar) { element in
+                    stringAttribute(element, kAXDescriptionAttribute as String) == description
+                        && stringAttribute(element, kAXRoleAttribute as String)
+                            == kAXButtonRole as String
+                }
+            guard let button else { continue }
+            let status = AXUIElementPerformAction(button, kAXPressAction as CFString)
+            guard status == .success else {
+                throw LogicianError.writeFailed(
+                    "AXPress on '\(description)' returned AXError \(status.rawValue)"
+                )
+            }
+            return
         }
-        let status = AXUIElementPerformAction(button, kAXPressAction as CFString)
-        guard status == .success else {
-            throw LogicianError.writeFailed(
-                "AXPress on '\(description)' returned AXError \(status.rawValue)"
-            )
-        }
+        throw LogicianError.windowNotFound(
+            "'\(description)' button in the control bar (looked \(max(1, attempts)) times)"
+        )
     }
 
     /// Parks the playhead EXACTLY on a bar/beat — division and tick included —
