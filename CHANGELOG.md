@@ -2284,6 +2284,25 @@ with every render coming back as audio the agent can listen to.
   unit test keeps the census of files that synthesize pointer input at two, so a fourth
   route cannot appear quietly.
 
+- **`logic_mcu_command` now says out loud that it never verifies a write, on the result
+  and not just in the description.** A live session (Antigravity, Gemini 3.8 Flash,
+  2026-09-03) was asked to nudge a Channel EQ band 2 dB, found the right plugin and band,
+  and then never called `logic_set_plugin_parameter` — the one-call, verified tool for
+  exactly that — or `logic_find_tool`. It read the raw tool's schema, wrote its own AX
+  probes, and drove the EQ by hand through `vpot`/`press` polled against `status`: 394 s
+  and 33 calls for a change the named tool makes, verified, in 660 ms. Every field it read
+  already said `verified: false`; nothing said what that MEANT. Every `sent` or
+  `unconfirmed` result now also carries a `note` spelling it out in words and pointing at
+  the named tool that verifies itself — keycmd keeps its own numeric `note` (the MIDI note
+  it fired) untouched. The tool's own description, `logic_find_tool`'s (now opening with
+  "ask this first — 0.4-1.0 ms, no contact with Logic") and the server instructions carry
+  the same reminder, so it survives being read at any of the three levels a session might
+  stop at. Also noted, as a client fact rather than a limitation of this server: in
+  Antigravity's non-interactive `agy --print`, no audio block reaches the model at all —
+  the same bounce is heard fine in an interactive `agy`/IDE session on the same machine.
+  No tool's behaviour changed; `swift test` gained 5 cases and the BM25 retrieval probe
+  still 57/57.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

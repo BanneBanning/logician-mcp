@@ -110,6 +110,17 @@ final class McuCommandContractTests: XCTestCase {
         XCTAssertTrue(try tool.description.contains("hold_ms"))
     }
 
+    /// The description-level half of the same fix as the result-level `note`
+    /// tests below: a session that reads this tool's OWN description (rather
+    /// than discovering the contract live) should already be told it is a
+    /// diagnostic, not a write path, and where to look instead.
+    func testTheDescriptionNamesItselfADiagnosticNotAWritePath() throws {
+        let description = try tool.description
+        XCTAssertTrue(description.contains("DIAGNOSTIC ESCAPE HATCH"))
+        XCTAssertTrue(description.contains("logic_set_plugin_parameter"))
+        XCTAssertTrue(description.contains("logic_find_tool"))
+    }
+
     /// keycmd shares the `hold_ms` field but NOT its default — 0 is the
     /// press family's measured default, 40 ms is the key-command plane's
     /// unswept historical one. A caller who only reads "hold_ms defaults to
@@ -145,6 +156,57 @@ final class McuCommandContractTests: XCTestCase {
         XCTAssertEqual(answer["pressed_note"] as? Int, 127)
     }
 
+    /// The fix for the live measurement (Antigravity / Gemini 3.8 Flash,
+    /// 2026-09-03): a `verified: false` result now also spells the fact out
+    /// in words, on the exact command family that was driven by hand instead
+    /// of the named tool — press, vpot and raw.
+    func testASendClassResultNamesTheGapInWords() {
+        for cmd in ["press", "vpot", "vpot_press", "select", "mute", "solo", "raw"] {
+            let answer = result(cmd: cmd, reply: ["ok": true])
+            let note = answer["note"] as? String
+            XCTAssertNotNil(note, cmd)
+            XCTAssertTrue(note?.contains("nothing was read back") ?? false, cmd)
+            XCTAssertTrue(
+                note?.contains("logic_set_plugin_parameter") ?? false,
+                "\(cmd): points at a named tool instead of leaving the caller to guess"
+            )
+        }
+    }
+
+    /// `unconfirmed` already carries a readback that disagreed — a different,
+    /// but equally explicit, note from the pure `sent` case.
+    func testAnUnconfirmedResultNamesTheDisagreementInWords() {
+        let answer = result(
+            cmd: "converge", arguments: ["target": -6.0],
+            reply: ["ok": true, "final_value": -3.0]
+        )
+        let note = answer["note"] as? String
+        XCTAssertNotNil(note)
+        XCTAssertTrue(note?.contains("did NOT confirm") ?? false)
+        XCTAssertTrue(note?.contains("logic_set_plugin_parameter") ?? false)
+    }
+
+    /// A result that IS verified needs no honesty note — it would just be
+    /// noise on a result that already proved itself.
+    func testAVerifiedResultCarriesNoNote() {
+        let answer = result(
+            cmd: "fader", arguments: ["verify": true],
+            reply: ["ok": true, "followed": true, "final_value": 5628.0]
+        )
+        XCTAssertNil(answer["note"])
+    }
+
+    /// `keycmd`'s reply already carries a NUMERIC `note` — the MIDI note it
+    /// fired, built in `MCUController.triggerKeyCommand` before this contract
+    /// ever runs — and the new honesty text must never clobber it.
+    func testKeycmdsNumericNoteSurvivesUntouched() {
+        let answer = result(
+            cmd: "keycmd",
+            reply: ["success": true, "command": "Save", "note": 105, "route": "midi_key_command"]
+        )
+        XCTAssertEqual(answer["note"] as? Int, 105, "the MIDI note, not a string, and not overwritten")
+    }
+
     func testARefusalIsNotASuccessAndClaimsNoVerification() {
         let answer = result(cmd: "select", reply: ["ok": false, "error": "channel 0-7 required"])
 
@@ -155,12 +217,14 @@ final class McuCommandContractTests: XCTestCase {
     }
 
     /// A read changes nothing, so there is no outcome to verify. Absent beats
-    /// a `verified: true` that would mean "the read read".
+    /// a `verified: true` that would mean "the read read", and a note would
+    /// be a comment on an outcome that never happened.
     func testAReadIsMarkedReadAndCarriesNoVerifiedField() {
         for cmd in ["status", "ping", "await"] {
             let answer = result(cmd: cmd, reply: ["ok": true])
             XCTAssertEqual(answer["state"] as? String, "read", cmd)
             XCTAssertNil(answer["verified"], cmd)
+            XCTAssertNil(answer["note"], cmd)
         }
     }
 

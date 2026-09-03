@@ -549,6 +549,17 @@ extension MCPServer {
     /// - `verified` / `unconfirmed` — the daemon DID read Logic back: `fader`
     ///   with `verify: true` (Logic's fader echo) or `converge` (the LCD value
     ///   it steered by), and the two states say whether the readback agrees.
+    ///
+    /// Every `sent`/`unconfirmed` reply also gets a plain-English `note` now —
+    /// see `sentNote`/`unconfirmedNote` below. Forced by a live measurement,
+    /// 2026-09-03: Gemini 3.8 Flash in Antigravity, told to nudge a Channel EQ
+    /// band 2 dB, read `success: true, state: "sent", verified: false` off a
+    /// `vpot` press, judged that a success, and drove the whole EQ move
+    /// through 33 such calls polled against `status` — 394 s and 676k input
+    /// tokens for a change `logic_set_plugin_parameter` makes, verified, in
+    /// 660 ms. The fields already said `verified: false`; the model read past
+    /// it. The note is the same fact spelled out so it survives being read
+    /// without the surrounding description.
     static func mcuCommandResult(
         cmd: String?, arguments: [String: Any], reply: [String: Any]
     ) -> [String: Any] {
@@ -572,6 +583,7 @@ extension MCPServer {
         func settle(_ agreed: Bool) {
             result["verified"] = agreed
             result["state"] = agreed ? "verified" : "unconfirmed"
+            if !agreed { addUnverifiedNote(&result, text: unconfirmedNote) }
         }
         if let followed = reply["followed"] as? Bool {
             settle(followed) // fader + verify: Logic's own echo
@@ -584,9 +596,36 @@ extension MCPServer {
         } else {
             result["verified"] = false
             result["state"] = "sent"
+            addUnverifiedNote(&result, text: sentNote)
         }
         return result
     }
+
+    /// Set only when nothing already claims the `note` key — `keycmd`'s own
+    /// reply (`MCUController.triggerKeyCommand`) carries a NUMERIC `note`
+    /// (the MIDI note it fired), built before this ever runs, and that must
+    /// survive intact rather than being overwritten by this string.
+    private static func addUnverifiedNote(_ result: inout [String: Any], text: String) {
+        guard result["note"] == nil else { return }
+        result["note"] = text
+    }
+
+    /// `state: "sent"`: bytes left this process and nothing read them back.
+    static let sentNote =
+        "This message was SENT; nothing was read back to confirm it landed. "
+        + "logic_mcu_command is a diagnostic escape hatch, never a write path — for a "
+        + "verified write use the named tool for this parameter instead "
+        + "(logic_set_plugin_parameter, logic_set_track_mix, logic_mcu_set_send, ...), "
+        + "or logic_find_tool first if you do not know which one."
+
+    /// `state: "unconfirmed"`: something WAS read back (`fader` + `verify`,
+    /// or `converge`) and it disagreed with the target — a stronger signal
+    /// than `sent`, but still not a landed write.
+    static let unconfirmedNote =
+        "Logic's own readback did NOT confirm this reached its target (see final_value / "
+        + "followed above) — retry deliberately, or use the named tool for this parameter "
+        + "instead (logic_set_plugin_parameter, logic_set_track_mix, logic_mcu_set_send, "
+        + "...), which verifies by readback for you."
 
     /// A JSON number as a Double whichever way the client typed it — `6` and
     /// `-6.0` both reach the handler, as Int and Double respectively.
