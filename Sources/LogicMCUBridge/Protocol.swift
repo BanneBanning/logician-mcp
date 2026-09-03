@@ -218,6 +218,13 @@ public struct BridgeCommand: Codable, Sendable, Equatable {
     /// (`press`, `select`, `mute`, `solo`, `vpot_press`). Absent means ZERO —
     /// see `pressHoldMs` for the measurement that made that the default.
     ///
+    /// `keycmd` reads this SAME wire field through its own accessor,
+    /// `keycmdHoldMs(default:)`, because the two holds are not the same
+    /// measurement: the MCU press hold was swept live 2026-09-02 (`bf511e5`)
+    /// and its default dropped to 0; the key-command plane's hold is that
+    /// sweep's UNSWEPT sibling (KEY-COMMANDS-REVIEW.md, 2026-09-03) and an
+    /// absent `hold_ms` there does NOT mean zero — see `keycmdHoldMs(default:)`.
+    ///
     /// ADDITIVE (2026-09-02): a daemon older than this ignores the key and
     /// holds its historical 50 ms, which is a slower press and nothing else.
     /// No protocol bump, same precedent as `bridge_protocol` on `status`.
@@ -322,6 +329,26 @@ public struct BridgeCommand: Codable, Sendable, Equatable {
     /// and which the 2026-09-02 sweep therefore did not clear. Passing it
     /// preserves exactly the timing those presses have always had.
     public static let unsweptPressHoldMs = 50
+
+    /// How long a `keycmd` note stays on before its note-off, in
+    /// milliseconds, resolved against `defaultMs` and clamped to the same
+    /// ceiling every held press shares.
+    ///
+    /// UNLIKE `pressHoldMs`, an ABSENT `hold_ms` here does NOT mean zero:
+    /// the key-command plane's hold (Bridge.swift, historically a bare
+    /// `usleep(40000)`) is the `pressHoldMs` sweep's UNSWEPT sibling — ~96%
+    /// of `logic_trigger_key_command`'s 50-52 ms wall clock
+    /// (KEY-COMMANDS-REVIEW.md, 2026-09-03) — and nothing has yet measured
+    /// live whether Logic's key-command intercept tolerates a shorter hold
+    /// the way the MCU button's did (`bf511e5`). So a caller who says
+    /// nothing about the hold gets whatever the DAEMON was told to default
+    /// to (`defaultMs` — see `keycmdDefaultHoldMs` in Bridge.swift, compiled
+    /// to 40 ms and overridable by `LOGICIAN_KEYCMD_HOLD_MS` for the live
+    /// sweep), not zero. A caller that DOES ask — including for 0 — gets
+    /// exactly that, which is how `keycmd_hold_sweep.py` drives the sweep.
+    public func keycmdHoldMs(default defaultMs: Int) -> Int {
+        min(max(holdMs ?? defaultMs, 0), BridgeCommand.maxPressHoldMs)
+    }
 }
 
 public extension BridgeCommand {
@@ -413,10 +440,17 @@ public extension BridgeCommand {
         return command
     }
 
-    static func keycmd(note: Int, channel: Int) -> BridgeCommand {
+    /// `holdMs` mirrors the MCU press sweep's field (`hold_ms` on the wire)
+    /// but keeps its OWN default — see `keycmdHoldMs(default:)`. `nil`
+    /// (the default here) leaves the key off the wire entirely and lets the
+    /// daemon fall back to whatever it was told to default to; passing a
+    /// value — including 0 — asks for exactly that hold, which is how
+    /// `keycmd_hold_sweep.py` drives the live sweep.
+    static func keycmd(note: Int, channel: Int, holdMs: Int? = nil) -> BridgeCommand {
         var command = BridgeCommand(cmd: BridgeCommandName.keycmd.rawValue)
         command.note = note
         command.channel = channel
+        if let holdMs { command.holdMs = holdMs }
         return command
     }
 }

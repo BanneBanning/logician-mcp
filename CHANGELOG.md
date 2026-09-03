@@ -2040,6 +2040,19 @@ with every render coming back as audio the agent can listen to.
   naming View > Inspector, never by polling for half a minute. Showing the Inspector
   brings Logic to the front for the press: measured the same day, `View > Inspector`
   answers success and does nothing at all while Logic is in the background.
+- **The key-command plane's hold is a parameter now, not a bare `usleep`.** Every
+  `keycmd` fire — `logic_trigger_key_command` and 17 tools that ride the same plane —
+  held its note on for a fixed 40 ms between note-on and note-off, unnamed and
+  unconfigurable, ~96% of `logic_trigger_key_command`'s 50–52 ms wall clock. It is the
+  UNSWEPT sibling of the MCU button press hold above, which dropped to a measured 0 ms
+  after its own live sweep (`bf511e5`) — this one has had no equivalent sweep yet, so
+  the default stays exactly where it was: **40 ms, unchanged.** What changed is that the
+  hold can now be asked for: `logic_mcu_command`'s `keycmd` route takes the same
+  `hold_ms` the press family does, an environment override lets the next live sweep
+  change the daemon's default without touching every message, and a scratch harness
+  (`keycmd_hold_sweep.py`) is ready to fire `Create Marker` across a range of holds and
+  count markers the way the press sweep counted transitions. No speed claim ships with
+  this change — it is the plumbing the measurement needs, not the measurement.
 
 ### Known limitations (honest by design)
 
