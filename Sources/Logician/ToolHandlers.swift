@@ -301,6 +301,62 @@ extension MCPServer {
         try? FileManager.default.removeItem(at: MCPServer.tempoMapCacheURL)
     }
 
+    /// The map a SINGLE-EVENT project has after `logic_set_tempo` moved its one
+    /// tempo — or nil when the write's aftermath is not knowable without a
+    /// re-read, which is the caller's cue to forget the cache instead.
+    ///
+    /// Why this is safe for one event and nothing else: the tool refuses on any
+    /// map it did not read out of the Tempo List, and refuses again on a map
+    /// that is not constant, so the only write that gets through with a map in
+    /// hand is one slider move against one event. Its bar, beat and sub-beat
+    /// disclosure are unchanged by a BPM write, and `landedBPM` is not the
+    /// requested value but the one `setTempo` READ BACK off the slider after
+    /// converging. Everything the map has is therefore known, exactly.
+    ///
+    /// An `isConstant` map with SEVERAL equal-BPM events is deliberately not
+    /// patched: which of them Logic's position-dependent slider actually edited
+    /// is not knowable from here, and a cache that guesses is worse than none.
+    static func tempoMapAfterConstantWrite(
+        _ before: TempoMap, landedBPM: Double
+    ) -> TempoMap? {
+        guard before.source == .tempoList, before.events.count == 1,
+              landedBPM > 0, let event = before.events.first else { return nil }
+        return TempoMap(
+            events: [TempoEvent(
+                bar: event.bar, beatInBar: event.beatInBar,
+                bpm: landedBPM, rampToNext: event.rampToNext
+            )],
+            source: .tempoList,
+            subBeatPositions: before.subBeatPositions
+        )
+    }
+
+    /// Puts the tempo cache back in step with a write this server just made,
+    /// without paying the Tempo List for the privilege.
+    ///
+    /// The old shape dropped the cache after every successful `logic_set_tempo`,
+    /// which is correct but costs the NEXT reader (a render, a MIDI record, an
+    /// automation pass, a `logic_tempo_events {list}`) a full fresh Tempo List
+    /// read — measured 765–790 ms against a ~7 ms cache hit. When the post-write
+    /// map is fully known (see `tempoMapAfterConstantWrite`) it is written
+    /// straight into the cache instead; when it is not, the blind invalidate
+    /// stands, unchanged.
+    func rememberTempoMap(
+        after write: TempoMap, landedBPM: Double, projectPath: String?
+    ) -> String {
+        // No project path is no scope, and `saveScopedCache` would silently
+        // write nothing — leaving the PRE-write file in place, which is the one
+        // outcome worse than no cache at all.
+        guard let projectPath,
+              let patched = MCPServer.tempoMapAfterConstantWrite(write, landedBPM: landedBPM)
+        else {
+            invalidateTempoMapCache()
+            return "invalidated"
+        }
+        saveScopedCache(patched, to: MCPServer.tempoMapCacheURL, projectPath: projectPath)
+        return "patched_in_place"
+    }
+
     /// What serving a cached tempo map is allowed to claim about itself.
     enum CachedTempoMapVerdict: Equatable {
         /// The control bar's live tempo is one the cached map could produce —

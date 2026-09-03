@@ -68,15 +68,20 @@ extension MCPServer {
         guard let bar = arguments["bar"] as? Int else {
             throw LogicianError.invalidArguments("missing integer: bar")
         }
-        // The caches go even when the write THROWS. A create that failed
+        // The TEMPO cache goes even when the write THROWS. A create that failed
         // halfway still made a row (measured 2026-08-28: two of them), and the
         // cached map then served the pre-write world to every later caller —
         // including the `list` action right after the failure, which reported
         // two events while the Tempo List held four.
-        defer {
-            invalidateTempoMapCache()
-            invalidateMeterMapCache()
-        }
+        //
+        // The METER cache does NOT go, and used to. This tool writes tempo
+        // events; it never touches Logic's Signature List, and a half-failed
+        // create cannot leave a signature behind. Dropping it was a copy of the
+        // tempo safety net rather than a needed one, and it was expensive:
+        // measured live 2026-09-03, a `logic_list_signatures` cache hit of
+        // 10.3 ms became a 1 120.4 ms fresh Signature List read purely because
+        // a no-op tempo `set` (0 stepper writes) had run in between.
+        defer { invalidateTempoMapCache() }
         let result = try logic.editTempoEvent(
             action: action,
             bar: bar,

@@ -602,4 +602,70 @@ final class TempoMapTests: XCTestCase {
             original.seconds(atBeatOffset: 200, beatsPerBar: 4)
         )
     }
+
+    // MARK: - What the cache may hold after a tempo write
+
+    /// The whole point of the patch: a one-event map plus the BPM the slider
+    /// landed on IS the map afterwards, so the next reader must not be sent
+    /// back to the Tempo List for something already known.
+    func testASingleEventMapIsKnownExactlyAfterASliderWrite() throws {
+        let before = map([TempoEvent(bar: 1, beatInBar: 1, bpm: 121)], subBeat: false)
+        let after = try XCTUnwrap(
+            MCPServer.tempoMapAfterConstantWrite(before, landedBPM: 122)
+        )
+        XCTAssertEqual(after.events.count, 1)
+        XCTAssertEqual(after.events[0].bpm, 122)
+        // Position and provenance are the write's business only in so far as it
+        // did not touch them: a BPM step moves no event and downgrades no read.
+        XCTAssertEqual(after.events[0].bar, 1)
+        XCTAssertEqual(after.events[0].beatInBar, 1)
+        XCTAssertEqual(after.source, .tempoList)
+        XCTAssertTrue(after.isConstant)
+        // And it must cross-check clean against the control bar's new reading,
+        // or the very next `resolveTempoMap` would throw it away again.
+        XCTAssertTrue(after.couldProduceTempo(122))
+        XCTAssertFalse(after.couldProduceTempo(121))
+    }
+
+    /// An off-beat single event keeps its sub-beat position AND the disclosure
+    /// that says the position came from the division/tick assumption.
+    func testThePatchKeepsTheSubBeatPositionAndItsDisclosure() throws {
+        let before = map(
+            [TempoEvent(bar: 9, beatInBar: 1.7177, bpm: 121)], subBeat: true
+        )
+        let after = try XCTUnwrap(
+            MCPServer.tempoMapAfterConstantWrite(before, landedBPM: 100)
+        )
+        XCTAssertEqual(after.events[0].bar, 9)
+        XCTAssertEqual(after.events[0].beatInBar, 1.7177)
+        XCTAssertTrue(after.subBeatPositions)
+    }
+
+    /// Everything else falls back to forgetting the cache. Several events with
+    /// the SAME tempo read as constant, and `logic_set_tempo` would be allowed
+    /// to write into that map — but which node the position-dependent slider
+    /// moved is not knowable from here, so no patch may be guessed.
+    func testAMapWhoseAftermathIsNotKnownIsNotPatched() {
+        let twoEqual = map([
+            TempoEvent(bar: 1, bpm: 121), TempoEvent(bar: 33, bpm: 121)
+        ])
+        XCTAssertTrue(twoEqual.isConstant, "the guard would let this write through")
+        XCTAssertNil(MCPServer.tempoMapAfterConstantWrite(twoEqual, landedBPM: 122))
+
+        let varying = map([
+            TempoEvent(bar: 1, bpm: 120), TempoEvent(bar: 9, bpm: 140)
+        ])
+        XCTAssertNil(MCPServer.tempoMapAfterConstantWrite(varying, landedBPM: 122))
+
+        // A single control-bar READING is not a read map, and patching it would
+        // promote a guess to `.tempoList` — the provenance other callers gate on.
+        let reading = map([TempoEvent(bar: 1, bpm: 121)], source: .singleReading)
+        XCTAssertNil(MCPServer.tempoMapAfterConstantWrite(reading, landedBPM: 122))
+
+        // A slider that could not be read back at all (`setTempo` returns -1 on
+        // that path) must never be cached as a tempo.
+        let single = map([TempoEvent(bar: 1, bpm: 121)])
+        XCTAssertNil(MCPServer.tempoMapAfterConstantWrite(single, landedBPM: -1))
+        XCTAssertNil(MCPServer.tempoMapAfterConstantWrite(single, landedBPM: 0))
+    }
 }

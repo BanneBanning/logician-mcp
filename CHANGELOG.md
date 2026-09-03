@@ -1877,6 +1877,28 @@ with every render coming back as audio the agent can listen to.
   still the strip it wants. Each insert now says in `open_state` whether its window really
   opened, so a window Logic never put up can no longer read as a plugin with no controls.
 
+- **Tempo edits take about half the time, and changing the tempo no longer costs the next
+  tool a second of re-reading.** Every `logic_tempo_events` write opened and closed Logic's
+  List Editors pane three or four separate times — one cycle for the before-read, one for the
+  action, one for the BPM stepper, one for the verifying re-read — and those cycles WERE the
+  cost: a `set` that wrote no BPM at all (121 → 121, nothing to converge) still took **3.5 s**.
+  The whole edit now runs inside ONE held pane, with every read and every verification still
+  there. Measured live on the same project within one session: that no-op `set`
+  **3 504 ms → 1 757 ms**, a delete **~4.2 s → 2 485 ms**, a create at bar 60 **5.8 s →
+  3 185 ms**. A create also stopped rewinding a playhead that was already exactly on the grid,
+  and stopped refusing outright when it did need to rewind: the control bar's "Go to Beginning"
+  was pressed after a single scan of the bar's direct children with no second look, which
+  refused **two of two** live creates that day with "'Go to Beginning' button in the control
+  bar" — the same press, conditional and looked up again before it gives up, went through and
+  landed the event at `60 1 1 1`. Two caches got more honest as well. A tempo write no longer
+  drops the METER map it never touched (one no-op tempo `set` turned a `logic_list_signatures`
+  cache hit of **10 ms** into a **1 186 ms** re-read of the Signature List, for nothing), and a
+  successful `logic_set_tempo` on a single-tempo project now CORRECTS the cached tempo map
+  instead of emptying it: the map afterwards is known exactly — same event, the BPM read back
+  off the slider — so the next tool that needs bars→seconds gets it in **6 ms** instead of
+  **1 243 ms**. That patch was checked against a forced fresh read of Logic's Tempo List, which
+  agreed with it exactly; a map with more than one event is still forgotten rather than guessed.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.
