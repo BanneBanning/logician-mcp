@@ -257,6 +257,61 @@ enum ChannelStrip {
         }
     }
 
+    /// Logic's placeholder description on an EMPTY instrument slot. Its
+    /// presence is the strip saying "the slot is here and nothing is in it",
+    /// which is the one case the geometry rules must not answer with a name.
+    static let emptyInstrumentLabel = "Instrument"
+
+    /// The instrument on an AUX-SHAPED strip — one that publishes an Output
+    /// slot but no Input slot, no channel mode and no MIDI Effect slot. Only
+    /// the main channel of a summing track stack is both of those things at
+    /// once; every other strip of that shape (an output, a bus aux) has no
+    /// instrument slot at all and must come back `nil`.
+    ///
+    /// The rule is the insert COLUMN's top edge, and it is chosen because the
+    /// column marks itself: an empty `Audio Effect slot.` placeholder or an
+    /// `insert bar` divider is unambiguously part of the insert run and can
+    /// never be an instrument. A plug-in-bearing group ABOVE that edge is
+    /// therefore outside the eight insert slots — which is exactly where
+    /// `Drum Machine Designer` sits on `Drum Synth Kit` (328, against the
+    /// column's 353) and exactly where nothing sits on `Stereo Out` (its
+    /// topmost row above the column, at 328, is the channel-mode BUTTON, with
+    /// the column's own `insert bar` at 353 above the first insert at 354).
+    /// Both measured live 2026-09-02, along with the audio strip `Ivan Effect`
+    /// (Input slot + channel mode at 379, column from 404) which this rule
+    /// never sees.
+    ///
+    /// The lowest such group wins — the instrument slot adjoins the column —
+    /// and an empty-slot placeholder anywhere on the strip vetoes the whole
+    /// answer: on `Lofi Pad` (a MIDI-Effect strip, so not this path anyway)
+    /// the occupied inserts sit ABOVE the placeholders, and that is the shape
+    /// that made the first version of the sibling rule name `Channel EQ` an
+    /// instrument. A wrong answer here costs a refusal, never a wrong write:
+    /// the count check the caller runs would simply disagree the other way.
+    private static func auxInstrument(
+        children: [StripChild], reading: ChannelStripReading
+    ) -> String? {
+        guard reading.inputDisplay == nil, reading.channelMode == nil else { return nil }
+        guard !children.contains(where: {
+            $0.role == "AXButton" && $0.description == emptyInstrumentLabel
+        }) else { return nil }
+        let columnTop = children.filter { child in
+            child.slotKind == .audioEffect
+                || (child.role == "AXButton"
+                    && child.description == LogicUIStrings.Element.insertBar)
+        }.map(\.y).min()
+        guard let columnTop else { return nil }
+        let sendDestinations = Set(reading.sends.map(\.destination))
+        let above = children.filter { child in
+            child.role == "AXGroup" && child.slotKind == nil
+                && child.y < columnTop
+                && !child.description.isEmpty
+                && !child.description.contains("automation")
+                && !sendDestinations.contains(child.description)
+        }
+        return above.max(by: { $0.y < $1.y })?.description
+    }
+
     /// The whole reading, from the strip's children in AXChildren order.
     static func read(children: [StripChild]) -> ChannelStripReading {
         var reading = ChannelStripReading()
@@ -308,7 +363,7 @@ enum ChannelStrip {
             if child.role == "AXButton", child.description == "EQ" {
                 reading.eqOn = switchState(child.value)
             }
-            if child.role == "AXButton", child.description == "Instrument" {
+            if child.role == "AXButton", child.description == emptyInstrumentLabel {
                 // The EMPTY instrument slot names itself.
                 reading.hasInstrumentSlot = true
             }
@@ -356,7 +411,7 @@ enum ChannelStrip {
             let sendDestinations = Set(reading.sends.map(\.destination))
             let candidates = children.filter { child in
                 guard child.y > midiY else { return false }
-                if child.role == "AXButton", child.description == "Instrument" { return true }
+                if child.role == "AXButton", child.description == emptyInstrumentLabel { return true }
                 return child.role == "AXGroup" && child.slotKind == nil
                     && !child.description.isEmpty
                     && !child.description.contains("automation")
@@ -368,6 +423,30 @@ enum ChannelStrip {
             }
             // An `Instrument` BUTTON there means the slot exists and is empty,
             // which is exactly `instrument: null` with `has_instrument_slot`.
+        } else if let instrument = auxInstrument(children: children, reading: reading) {
+            // A SUMMING TRACK STACK's main channel hosts an instrument on an
+            // AUX-shaped strip: Output slot, no Input slot, no channel mode —
+            // and NO MIDI Effect slot, so the rule above never fires and the
+            // instrument was counted as a ninth insert.
+            //
+            // MEASURED LIVE 2026-09-02 on `Drum Synth Kit` (Drum Machine
+            // Designer's own stack, 38 strip children, `kind: unknown`):
+            // setting 252 -> EQ display 284 -> **AXGroup "Drum Machine
+            // Designer" 328** -> empty `Audio Effect slot.` 353 -> the seven
+            // occupied inserts 370…473 (17 px apart, `insert bar` dividers
+            // between them) -> 489 -> sends 525. The surface's own list on the
+            // same strip read `-- | *Ovrdr | *Bitcr | Pedlba | *Envlp |
+            // *St-De | *PtVer | Cha EQ` — seven inserts and one empty slot, no
+            // Drum Machine Designer anywhere — so Accessibility published EIGHT
+            // names to the eight MCU slots' seven, `pluginListAgreesWithAX`
+            // read the count difference as "the PL view is pointed at another
+            // channel", and `logic_add_plugin` / `logic_remove_plugin` /
+            // `logic_set_insert_bypass` refused EVERY write on that strip
+            // (a stray `Gain` could only be got off it by closing the project
+            // without saving).
+            reading.hasInstrumentSlot = true
+            reading.instrument = instrument
+            reading.plugins.removeAll { $0 == instrument }
         }
 
         // The kind, and the evidence for it — never a bare label.

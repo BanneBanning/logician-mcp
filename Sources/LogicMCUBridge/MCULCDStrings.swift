@@ -238,6 +238,11 @@ public enum MCULCDStrings {
         public static let send = "SE"
         public static let channelStrip = "CS"
         public static let equalizer = "EQ"
+        /// The eight-slot plug-in LIST view — and, measured live 2026-09-02,
+        /// also what a standing BROWSE on one of those slots reports, which is
+        /// why `MCUController.pluginListView` reads the top row as well as
+        /// this code.
+        public static let pluginList = "PL"
 
         /// The per-insert parameter bank for insert `slot` (1-8): `P1`…`P8`.
         public static func insertSlot(_ slot: Int) -> String { "P\(slot)" }

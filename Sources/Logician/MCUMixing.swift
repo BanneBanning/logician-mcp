@@ -483,19 +483,109 @@ extension MCUController {
 }
 
 extension MCUController {
-    /// Presses assign_plugin until the selected track's insert list ("Ins1Pl…")
-    /// is showing. The button cycles PL <-> per-insert bank views, so content
-    /// must be verified, never press-counted.
+
+    /// What the surface is showing when a plug-in tool looks at it. The four
+    /// states are measured, not guessed (live, 2026-09-02):
+    ///
+    /// - `.insertList` — the eight slot labels across the top row
+    ///   (`Ins1Pl Ins2Pl …`) and the slot CONTENTS underneath. The only state
+    ///   `pluginInsertNames` may read.
+    /// - `.browseStanding` — assignment still `PL`, but the top row reads
+    ///   `Insert N Plug-in` spanning three cells and the bottom row shows a
+    ///   CATALOG ENTRY rather than the slot's content. An abandoned browse
+    ///   leaves exactly this, and reading the row here would report a catalog
+    ///   entry as an installed plug-in.
+    /// - `.perInsertBank` — `P1`…`P8`, the per-insert parameter bank. **Its
+    ///   top row is the PAN NAMES row**, byte-identical to the neutral view's,
+    ///   so the assignment code is the only thing that tells them apart —
+    ///   which is why this classifier reads both.
+    /// - `.elsewhere` — anything else, `PN` included.
+    ///
+    /// Pure so all four can be pinned by a test rather than by a surface.
+    enum PluginListView: Equatable {
+        case insertList
+        case browseStanding
+        case perInsertBank
+        case elsewhere
+    }
+
+    static func pluginListView(assignment: String?, lcdTop: String?) -> PluginListView {
+        if lcdTop?.hasPrefix(MCULCDStrings.insertListFirstSlotLabel) == true { return .insertList }
+        guard let assignment, isPluginEditAssignment(assignment) else { return .elsewhere }
+        return assignment == MCULCDStrings.Assignment.pluginList ? .browseStanding : .perInsertBank
+    }
+
+    static func pluginListView(status: [String: Any]) -> PluginListView {
+        pluginListView(
+            assignment: status["assignment"] as? String,
+            lcdTop: status["lcd_top"] as? String
+        )
+    }
+
+    /// Why the last `ensurePluginList` could not put the insert list on screen.
+    /// Read by the tools whose refusal used to blame the bridge for it.
+    nonisolated(unsafe) static var lastPluginListRefusal: String? // single-threaded server loop
+
+    /// Presses assign_plugin until the selected track's insert list is
+    /// showing, PACED ON THE PRESS LANDING rather than on a fixed settle.
+    ///
+    /// MEASURED 2026-09-02, and it is why this loop used to give up with the
+    /// view one press away: **`assign_plugin` ALTERNATES `P1` ↔ `PL`**, and the
+    /// `P1` half paints the pan-names top row, so the row test alone cannot
+    /// see which half it is in. The old shape waited for ONE event
+    /// (`awaitEvents(since:, 350)` returns on the first byte of a repaint) and
+    /// then discarded a `quiescentStatus`, so a press could be read before its
+    /// repaint had landed, the next press went into that unfinished repaint —
+    /// which Logic swallows — and five presses later the loop returned nil with
+    /// the surface parked on `P1`. Live: `logic_add_plugin` on `Sweeps` then
+    /// refused three times out of three in under a second with *"the MCU bridge
+    /// is unavailable"* while the bridge was up, the strip resolved and the
+    /// insert list arriving on screen a moment after the refusal was written.
+    ///
+    /// So each press is now proved by Logic's own answer — the assignment code
+    /// CHANGING (~100 ms) or the insert row appearing — before the loop looks
+    /// again, and a loop that still cannot get there says what it saw and hands
+    /// the surface back to the neutral view instead of leaving a `P…` bank
+    /// standing (a plug-in view left standing makes the next track selection
+    /// auto-open that plug-in's window — see `settleSurfaceDebt`).
     static func ensurePluginList() throws -> [String: Any]? {
+        lastPluginListRefusal = nil
+        var lastSeen: PluginListView?
         for _ in 0..<5 {
-            guard let status = freshStatus(), let top = status["lcd_top"] as? String else { return nil }
-            if top.hasPrefix(MCULCDStrings.insertListFirstSlotLabel) { return status }
-            let before = status["received_events"] as? Int ?? -1
+            guard let status = freshStatus() else {
+                lastPluginListRefusal = "the control surface's status could not be read at all"
+                return nil
+            }
+            let view = pluginListView(status: status)
+            lastSeen = view
+            if view == .insertList { return status }
+            let before = (status["assignment"] as? String) ?? ""
             try press("assign_plugin")
-            _ = awaitEvents(since: before, timeoutMs: 350)
-            _ = quiescentStatus() // let the redraw finish before re-checking
+            if let landed = waitFor(seconds: 1.0, { later in
+                pluginListView(status: later) == .insertList
+                    || (later["assignment"] as? String) ?? "" != before
+            }), pluginListView(status: landed) == .insertList {
+                return landed
+            }
         }
+        lastPluginListRefusal = "five presses of the surface's PLUG-IN button did not bring the"
+            + " insert list up; the last thing it showed was "
+            + (lastSeen.map(pluginListViewDescription) ?? "nothing readable")
+            + ". The surface has been returned to the Pan view, so this is safe to retry"
+        exitToPan()
         return nil
+    }
+
+    static func pluginListViewDescription(_ view: PluginListView) -> String {
+        switch view {
+        case .insertList: return "the insert list"
+        case .browseStanding:
+            return "a plug-in BROWSE standing on one slot (an abandoned browse from an"
+                + " earlier call, or another session's; it writes nothing and is cancelled"
+                + " by leaving the view)"
+        case .perInsertBank: return "a plug-in edit view (the per-insert bank P1-P8, or IN)"
+        case .elsewhere: return "another view altogether"
+        }
     }
 
     /// Returns the surface to the neutral Pan-names view and forgets every

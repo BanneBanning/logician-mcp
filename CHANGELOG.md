@@ -1441,6 +1441,48 @@ with every render coming back as audio the agent can listen to.
   which proves motion and not position; the pre-roll bar must be observed first now, and a
   transport already past it refuses instead of streaming the whole take somewhere else.
 
+- **Plug-ins work on a Drum Machine Designer track, and a plug-in the surface cannot find
+  says why.** Every plug-in write on the main track of a summing track stack was refused —
+  `logic_add_plugin`, `logic_remove_plugin` and `logic_set_insert_bypass` all answered "the
+  PL view is pointed at another channel" for a strip that was correctly selected, and a
+  stray insert on such a track could only be got off it by closing the project without
+  saving. Two independent reasons, both measured live on 2026-09-02 and both now fixed.
+  Logic hosts the stack's instrument on an AUX-shaped strip — no Input slot and, unlike
+  every other instrument track, no MIDI Effect slot — so `Drum Machine Designer` was
+  counted as an eighth insert against a surface showing seven; the instrument is now found
+  by the insert column's own top edge, which the column marks with its empty slots and
+  dividers, and an output strip or a bus aux still gets no instrument invented for it.
+  And a BYPASSED insert spends one of its six LCD characters on the bypass marker, so
+  `Overdrive` arrives as `*Ovrdr` and the six-character plausibility floor threw out all
+  five bypassed inserts of that strip; the floor now knows what the marker cost.
+  **A search that comes back empty-handed also stopped being a dead end**: the same
+  `logic_add_plugin {plugin_name: "Parametric EQ"}` finds it at catalog entry 1 on a stereo
+  strip and walked 226 entries in 15 s on a mono one, because the strip's channel format
+  chooses which catalog Logic offers — the refusal now names that catalog, quotes the
+  entries the browse opened on and the ones it stopped at, and says the plug-in may be a
+  strip of the other format away. And when the mouse-free route bows out, the refusal says
+  what actually happened instead of "the MCU bridge is unavailable" — which live was false
+  three times out of three, the real cause being the insert list needing one more press.
+  **The browse also stopped counting Logic's own answer to it as a plug-in**: selecting the
+  strip paints the channel's NAME across the cells the browse field spans, it stays there
+  until the browse repaints the row, and a walk that counted it as catalog entry 1 shifted
+  every ordinal after it — which is how `Gain`, `LoPass ParEQ` and
+  `Cha EQ Cha EQ Cha EQ Cha EQ` came to sit at position 1 of the learned catalog. It is
+  recognised for what it is now, on both the insertion and the removal side.
+
+- **The insert list comes up when it is asked for.** `logic_list_inserts {route: "mcu"}`,
+  `logic_add_plugin` and `logic_remove_plugin` all open by putting the surface's eight-slot
+  plug-in view on screen, and roughly one call in fifteen used to give up one press short —
+  writing nothing, reporting the bridge unavailable, and leaving the surface parked in a
+  per-insert parameter bank (which is the state that makes Logic auto-open a plug-in window
+  on the next track selection). Measured: the surface's PLUG-IN button ALTERNATES between
+  that bank and the list, and the bank paints the same top row as the neutral view, so the
+  loop could not see which half it was in and each press went into the previous press's
+  unfinished repaint, which Logic swallows. Each press now waits for Logic's own answer
+  before the next one, a browse someone left standing on a slot is recognised for what it
+  is rather than read as slot contents, and a loop that still cannot get there says what it
+  saw and hands the surface back to the neutral Pan view.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

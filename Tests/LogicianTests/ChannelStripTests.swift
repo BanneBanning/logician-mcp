@@ -132,6 +132,132 @@ final class ChannelStripTests: XCTestCase {
         ]
     }
 
+    /// `Drum Synth Kit`, verbatim (measured live 2026-09-02, all 38 children
+    /// trimmed to the rows that carry meaning, y as Logic published it): the
+    /// MAIN CHANNEL of Drum Machine Designer's summing track stack. It is
+    /// aux-shaped — an Output slot, no Input slot, no channel mode and **no
+    /// MIDI Effect slot** — and it hosts an instrument all the same, with the
+    /// insert column drawn BOTTOM-UP (slot 1 empty at the top, `Channel EQ`,
+    /// the first insert of the chain, at the bottom).
+    private func stackMainStrip() -> [StripChild] {
+        [
+            StripChild(role: "AXButton", description: "Drum Synth Kit",
+                       help: "Setting button. ", y: 252),
+            StripChild(role: "AXButton", description: "library indicator, Drum Synth Kit",
+                       value: "off", help: "Library Focus triangle. ", y: 252),
+            StripChild(role: "AXButton", subrole: "AXSwitch", description: "gain reduction meter",
+                       value: "off", help: "Gain reduction meter. ", y: 273),
+            StripChild(role: "AXButton", description: "EQ", value: "on",
+                       help: "EQ display. ", y: 284),
+            StripChild(role: "AXGroup", description: "Drum Machine Designer", y: 328),
+            StripChild(role: "AXButton", description: "audio plug-in",
+                       help: "Audio Effect slot. ", y: 353),
+            StripChild(role: "AXGroup", description: "Overdrive", y: 370),
+            StripChild(role: "AXButton", description: "insert bar", y: 387),
+            StripChild(role: "AXGroup", description: "Bitcrusher", y: 388),
+            StripChild(role: "AXButton", description: "insert bar", y: 404),
+            StripChild(role: "AXGroup", description: "Pedalboard", y: 405),
+            StripChild(role: "AXButton", description: "insert bar", y: 421),
+            StripChild(role: "AXGroup", description: "Enveloper", y: 422),
+            StripChild(role: "AXButton", description: "insert bar", y: 438),
+            StripChild(role: "AXGroup", description: "St-Delay", y: 439),
+            StripChild(role: "AXButton", description: "insert bar", y: 455),
+            StripChild(role: "AXGroup", description: "PtVerb", y: 456),
+            StripChild(role: "AXButton", description: "insert bar", y: 472),
+            StripChild(role: "AXGroup", description: "Channel EQ", y: 473),
+            StripChild(role: "AXButton", description: "audio plug-in",
+                       help: "Audio Effect slot. ", y: 489),
+            StripChild(role: "AXButton", description: "send button", help: "Send slot. ", y: 525),
+            StripChild(role: "AXButton", description: "Stereo Output",
+                       help: "Output slot. ", y: 551),
+            StripChild(role: "AXPopUpButton", description: "group", title: "group, Group",
+                       help: "Group slot. ", y: 574),
+            StripChild(role: "AXGroup", description: "Read, automation enabled", y: 597),
+            StripChild(role: "AXSlider", description: "pan", value: "0", valueDescription: "0",
+                       help: "Pan/Balance knob. ", y: 622),
+            StripChild(role: "AXSlider", description: "volume fader", value: "122",
+                       valueDescription: "-5,1 dB", help: "Volume fader. ", y: 682),
+            StripChild(role: "AXTextField", description: "name", value: "Drum Synth Kit",
+                       help: "Name field. ", y: 892)
+        ]
+    }
+
+    /// `Stereo Out`, verbatim (same session): the aux-shaped strip that has NO
+    /// instrument, and the one the rule above must not invent one for. The row
+    /// above its insert column is the channel-mode BUTTON at 328, and the
+    /// column announces itself with an `insert bar` at 353, one pixel above the
+    /// first insert.
+    private func outputStrip() -> [StripChild] {
+        [
+            StripChild(role: "AXButton", description: "setting", help: "Setting button. ", y: 252),
+            StripChild(role: "AXButton", description: "library indicator, (null)", value: "off",
+                       help: "Library Focus triangle. ", y: 252),
+            StripChild(role: "AXButton", subrole: "AXSwitch", description: "gain reduction meter",
+                       value: "on, 0 dB", help: "Gain reduction meter. ", y: 273),
+            StripChild(role: "AXButton", description: "EQ", value: "on", help: "EQ display. ", y: 284),
+            StripChild(role: "AXButton", subrole: "AXSwitch", description: "channel mode",
+                       value: "Stereo", help: "Output Channel Mode button. ", y: 328),
+            StripChild(role: "AXButton", description: "insert bar", y: 353),
+            StripChild(role: "AXGroup", description: "Channel EQ", y: 354),
+            StripChild(role: "AXButton", description: "insert bar", y: 370),
+            StripChild(role: "AXGroup", description: "Limiter", y: 371),
+            StripChild(role: "AXButton", description: "insert bar", y: 387),
+            StripChild(role: "AXGroup", description: "Sensor", y: 388),
+            StripChild(role: "AXButton", description: "audio plug-in",
+                       help: "Audio Effect slot. ", y: 404),
+            StripChild(role: "AXButton", description: "audio plug-in",
+                       help: "Audio Effect slot. ", y: 421),
+            StripChild(role: "AXButton", description: "mastering assistant", y: 498),
+            StripChild(role: "AXPopUpButton", description: "group", title: "group, Group",
+                       help: "Group slot. ", y: 574),
+            StripChild(role: "AXGroup", description: "Read, automation enabled", y: 597),
+            StripChild(role: "AXSlider", description: "pan", value: "0", valueDescription: "0",
+                       help: "Pan/Balance knob. ", y: 622),
+            StripChild(role: "AXSlider", description: "volume fader", value: "173",
+                       valueDescription: "0,0 dB", help: "Volume fader. ", y: 682),
+            StripChild(role: "AXTextField", description: "name", value: "Stereo Out",
+                       help: "Name field. ", y: 892)
+        ]
+    }
+
+    /// `Ivan Effect`, verbatim (same session): a MONO audio track with five
+    /// occupied inserts. Its insert column also opens with an `insert bar`
+    /// (404) one pixel above the first insert (405), and the rows above that
+    /// are the Input slot and the channel mode — so the aux rule never gets
+    /// near it, and the audio rule must keep all five names.
+    private func monoAudioStrip() -> [StripChild] {
+        [
+            StripChild(role: "AXSlider", description: "input gain", value: "-5",
+                       valueDescription: "-5", help: "Input Gain field and knob. ", y: 276),
+            StripChild(role: "AXButton", description: "setting", help: "Setting button. ", y: 303),
+            StripChild(role: "AXButton", subrole: "AXSwitch", description: "gain reduction meter",
+                       value: "on, 0 dB", help: "Gain reduction meter. ", y: 324),
+            StripChild(role: "AXButton", description: "EQ", value: "on", help: "EQ display. ", y: 335),
+            StripChild(role: "AXButton", subrole: "AXSwitch", description: "channel mode",
+                       value: "Mono", help: "Channel Mode button. ", y: 379),
+            StripChild(role: "AXButton", description: "Input 1", help: "Input slot. ", y: 379),
+            StripChild(role: "AXButton", description: "insert bar", y: 404),
+            StripChild(role: "AXGroup", description: "Channel EQ", y: 405),
+            StripChild(role: "AXButton", description: "insert bar", y: 421),
+            StripChild(role: "AXGroup", description: "Space D", y: 422),
+            StripChild(role: "AXButton", description: "insert bar", y: 438),
+            StripChild(role: "AXGroup", description: "ClipDist", y: 439),
+            StripChild(role: "AXButton", description: "insert bar", y: 455),
+            StripChild(role: "AXGroup", description: "Compressor", y: 456),
+            StripChild(role: "AXButton", description: "insert bar", y: 472),
+            StripChild(role: "AXGroup", description: "Expander", y: 473),
+            StripChild(role: "AXButton", description: "audio plug-in",
+                       help: "Audio Effect slot. ", y: 489),
+            StripChild(role: "AXButton", description: "send button", help: "Send slot. ", y: 525),
+            StripChild(role: "AXButton", description: "Stereo Output",
+                       help: "Output slot. ", y: 551),
+            StripChild(role: "AXSlider", description: "volume fader", value: "152",
+                       valueDescription: "-2,1 dB", help: "Volume fader. ", y: 682),
+            StripChild(role: "AXTextField", description: "name", value: "Ivan Effect",
+                       help: "Name field. ", y: 892)
+        ]
+    }
+
     // MARK: - What kind of strip is this
 
     func testAnInputSlotMakesItAnAudioStrip() {
@@ -209,6 +335,107 @@ final class ChannelStripTests: XCTestCase {
         XCTAssertNil(reading.instrument)
         XCTAssertFalse(reading.hasInstrumentSlot)
         XCTAssertEqual(reading.plugins, ["Expander", "Compressor", "Channel EQ"])
+    }
+
+    // MARK: - The instrument on a strip with no MIDI Effect slot
+
+    /// The defect this rule was added for: a summing track stack's main
+    /// channel publishes no MIDI Effect slot, so the geometry rule above never
+    /// ran and `Drum Machine Designer` was counted as an eighth insert.
+    func testTheStackMainChannelsInstrumentIsNotOneOfItsInserts() {
+        let reading = ChannelStrip.read(children: stackMainStrip())
+        XCTAssertFalse(reading.hasMIDIEffectSlot)
+        XCTAssertNil(reading.input, "an aux-shaped strip publishes no Input slot")
+        XCTAssertEqual(reading.instrument, "Drum Machine Designer")
+        XCTAssertTrue(reading.hasInstrumentSlot)
+        XCTAssertEqual(
+            reading.plugins,
+            ["Overdrive", "Bitcrusher", "Pedalboard", "Enveloper", "St-Delay", "PtVerb", "Channel EQ"]
+        )
+    }
+
+    /// The consequence, and the reason the fix belongs in the classifier: the
+    /// count check every plug-in WRITE is gated on now passes on this strip,
+    /// against the row the surface really showed (7 inserts and one empty
+    /// slot, no Drum Machine Designer, measured 2026-09-02).
+    func testTheStackMainChannelNowAgreesWithTheSurfacesOwnRow() {
+        let reading = ChannelStrip.read(children: stackMainStrip())
+        let mcuRow = ["--", "*Ovrdr", "*Bitcr", "Pedlba", "*Envlp", "*St-De", "*PtVer", "Cha EQ"]
+        XCTAssertEqual(
+            MCUController.pluginListAgreesWithAX(mcuCells: mcuRow, axNames: reading.plugins), true
+        )
+        // And it is a real check, not a vacuous one: the list Accessibility
+        // used to hand over — the same names plus the instrument — is exactly
+        // what made it refuse.
+        XCTAssertEqual(
+            MCUController.pluginListAgreesWithAX(
+                mcuCells: mcuRow, axNames: reading.plugins + ["Drum Machine Designer"]
+            ),
+            false
+        )
+    }
+
+    /// The second half of the same live refusal, and it is independent of the
+    /// instrument: a BYPASSED insert spends one of its six LCD characters on
+    /// the bypass marker, so `Overdrive` arrives as `*Ovrdr` — five characters
+    /// of name — and the six-character plausibility floor threw it out. Five
+    /// of `Drum Synth Kit`'s seven inserts are bypassed.
+    func testABypassedCellIsJudgedOnTheFiveCharactersItHasLeft() {
+        XCTAssertTrue(
+            MCUController.lcdAbbreviationPlausible(track: "Overdrive", lcd: "Ovrdr", cellWidth: 5)
+        )
+        XCTAssertFalse(
+            MCUController.lcdAbbreviationPlausible(track: "Overdrive", lcd: "Ovrdr"),
+            "with all six characters available, five of them is not an abbreviation Logic makes"
+        )
+        // And the floor still does its job on the marker-free width: a short
+        // cell cannot stand for a long name.
+        XCTAssertFalse(
+            MCUController.lcdAbbreviationPlausible(track: "Stereo Out", lcd: "St", cellWidth: 5)
+        )
+    }
+
+    /// An output strip is aux-shaped too — no Input slot, no MIDI Effect slot —
+    /// and has no instrument. Naming its topmost insert one would break every
+    /// plug-in write on `Stereo Out` the way the missing rule broke them on the
+    /// stack's main channel.
+    func testAnOutputStripIsNotGivenAnInstrument() {
+        let reading = ChannelStrip.read(children: outputStrip())
+        XCTAssertNil(reading.instrument)
+        XCTAssertFalse(reading.hasInstrumentSlot)
+        XCTAssertEqual(reading.plugins, ["Channel EQ", "Limiter", "Sensor"])
+    }
+
+    func testAMonoAudioStripKeepsAllFiveOfItsInserts() {
+        let reading = ChannelStrip.read(children: monoAudioStrip())
+        XCTAssertEqual(reading.kind, .audio)
+        XCTAssertEqual(reading.channelMode, "Mono")
+        XCTAssertNil(reading.instrument)
+        XCTAssertEqual(
+            reading.plugins, ["Channel EQ", "Space D", "ClipDist", "Compressor", "Expander"]
+        )
+    }
+
+    /// An `Instrument` placeholder is Logic saying the slot is there and empty.
+    /// It vetoes the geometry answer outright — on this shape the row above the
+    /// insert column would otherwise be read as a loaded instrument.
+    func testAnEmptyInstrumentPlaceholderVetoesTheAuxRule() {
+        var children = stackMainStrip()
+        children.append(StripChild(role: "AXButton", description: "Instrument", y: 328))
+        let reading = ChannelStrip.read(children: children)
+        XCTAssertNil(reading.instrument)
+        XCTAssertTrue(reading.hasInstrumentSlot)
+        XCTAssertTrue(reading.plugins.contains("Drum Machine Designer"))
+    }
+
+    /// The rule reads the insert COLUMN's top edge, so a strip whose column is
+    /// marked only by empty placeholders (nothing loaded at all) has nothing
+    /// above it to mistake for an instrument.
+    func testAnAuxWithNoPluginsAtAllGetsNoInstrument() {
+        let children = stackMainStrip().filter { $0.role != "AXGroup" || $0.slotKind != nil }
+        let reading = ChannelStrip.read(children: children)
+        XCTAssertNil(reading.instrument)
+        XCTAssertTrue(reading.plugins.isEmpty)
     }
 
     // MARK: - Sends
