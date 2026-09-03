@@ -188,6 +188,21 @@ enum AXDepth {
     /// (freeze confirm, "Create New Track", recovery prompt, save changes).
     /// Alert content is shallow; 7 covers the sheet wrappers around it.
     static let alertDialog = 7
+    /// The "Create New Track" sheet -> its track-type radio buttons (the
+    /// chooser `initial_track` reads and, when asked, presses).
+    ///
+    /// DEEPER than `alertDialog` on purpose. The sheet's static text and
+    /// buttons are what `visibleDialogs()` reads at 7, and the dump that
+    /// caught this sheet standing over a new project
+    /// (`Logician-archive/profiles/logic_new_project.md`, D-NP1) showed those
+    /// and no type control at all — the chooser sits inside the sheet's own
+    /// layout groups. Reading it costs one walk of an already-open sheet, so
+    /// the cap is set for headroom rather than trimmed to a measurement.
+    static let createTrackTypeChooser = 12
+    /// One category group of that chooser -> its own variant radio buttons.
+    /// MEASURED live 2026-09-03: group -> AXRadioGroup -> AXRadioButton, so 2
+    /// is the walk and 4 is headroom that cannot reach a neighbouring group.
+    static let createTrackTypeVariant = 4
     /// Bounce dialog / save panel -> a named button (Cancel, Bounce, Replace).
     /// The save panel is the deepest of these, hence more headroom than
     /// `alertDialog`.

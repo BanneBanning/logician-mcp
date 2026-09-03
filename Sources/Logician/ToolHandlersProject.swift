@@ -16,7 +16,13 @@ extension MCPServer {
         return try openAndForgetTheOldProject(
             path: requiredString("path", in: arguments),
             createFromTemplate: true,
-            ifCurrentModified: (arguments["if_current_modified"] as? String) ?? "fail"
+            ifCurrentModified: (arguments["if_current_modified"] as? String) ?? "fail",
+            // The one track Logic insists on before it will show the project.
+            // Optional, and absent means "whatever the sheet already had
+            // selected" — which is the kind last used on that Mac, reported
+            // back either way in `initial_track`.
+            initialTrackType: (arguments["initial_track"] as? String)
+                .flatMap { $0.isEmpty ? nil : $0 }
         )
     }
 
@@ -58,13 +64,15 @@ extension MCPServer {
     /// Cost: 0.5–2.5 ms, measured. `caches_cleared` names what was actually
     /// there to forget.
     private func openAndForgetTheOldProject(
-        path: String, createFromTemplate: Bool, ifCurrentModified: String
+        path: String, createFromTemplate: Bool, ifCurrentModified: String,
+        initialTrackType: String? = nil
     ) throws -> [String: Any] {
         do {
             var result = try logic.openProject(
                 path: path,
                 createFromTemplate: createFromTemplate,
-                ifCurrentModified: ifCurrentModified
+                ifCurrentModified: ifCurrentModified,
+                initialTrackType: initialTrackType
             )
             result["caches_cleared"] = invalidateAllProjectCaches()
             return result
