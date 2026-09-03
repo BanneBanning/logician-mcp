@@ -342,6 +342,84 @@ private final class CloseCompletionFlag: @unchecked Sendable {
     }
 }
 
+/// The Create New Track sheet's track-type chooser, with the Accessibility
+/// elements still attached: four category groups, each holding its own radio
+/// group of variants (`ProjectOpen.TrackTypeOffer` carries the measured table).
+///
+/// The elements live here and the pure half of the question —
+/// which offer answers a request — lives in `ProjectOpen`, so the matching
+/// rules are unit-tested without a running Logic.
+struct CreateTrackTypeChooser {
+    struct Variant {
+        let element: AXUIElement
+        /// The word the SHEET prints, not one from any table in this server:
+        /// the chooser's contents differ between Logic versions and are
+        /// localized, so the labels travel with the sheet they were read from.
+        let name: String
+        /// Selected WITHIN ITS OWN GROUP — true in every category at once, and
+        /// therefore never on its own an answer to "what will be created".
+        let selected: Bool
+    }
+
+    struct Group {
+        let category: String
+        /// Is this the category the sheet will actually create from? The one
+        /// fact that separates the four groups, and the sheet publishes it in
+        /// exactly one place (see `ProjectOpen.parseTrackTypeGroup`).
+        let selected: Bool
+        let variants: [Variant]
+    }
+
+    let groups: [Group]
+
+    /// Every category/variant pair on the sheet, in the sheet's own order.
+    var offers: [ProjectOpen.TrackTypeOffer] {
+        groups.flatMap { group in
+            group.variants.map {
+                ProjectOpen.TrackTypeOffer(
+                    category: group.category, variant: $0.name,
+                    variantSelectedInCategory: $0.selected
+                )
+            }
+        }
+    }
+
+    /// What this sheet will create if Create is pressed now — the selected
+    /// category's selected variant — or nil when no group is marked selected.
+    var selectedOffer: ProjectOpen.TrackTypeOffer? {
+        guard let group = groups.first(where: \.selected) else { return nil }
+        let variant = group.variants.first(where: \.selected) ?? group.variants.first
+        guard let variant else { return nil }
+        return ProjectOpen.TrackTypeOffer(
+            category: group.category, variant: variant.name,
+            variantSelectedInCategory: variant.selected
+        )
+    }
+
+    /// The radio button to press for this offer.
+    func element(of offer: ProjectOpen.TrackTypeOffer) -> AXUIElement? {
+        groups.first { $0.category == offer.category }?
+            .variants.first { $0.name == offer.variant }?.element
+    }
+}
+
+/// What answering the Create New Track sheet produced: the log entry, whether
+/// the sheet is provably gone, and which kind of track the answer created.
+///
+/// A struct rather than the bare dictionary it used to be because the caller
+/// now needs the type back — `initial_track` reports it, and only the code
+/// that had the sheet on screen can read it.
+struct CreateTrackSheetAnswer {
+    let entry: [String: Any]
+    let dismissed: Bool
+    /// What the sheet was set to create when Create was pressed, read back off
+    /// the sheet — nil when this Logic marks no category as selected.
+    let selectedType: ProjectOpen.TrackTypeOffer?
+    /// Every type the sheet offered, in its own words — the vocabulary a
+    /// caller whose `initial_track` was not honoured needs in order to retry.
+    let offered: [ProjectOpen.TrackTypeOffer]
+}
+
 // MARK: - The Accessibility half
 
 extension LogicAccessibility {
@@ -429,14 +507,25 @@ extension LogicAccessibility {
     /// just opened (measured 3/3, `ProjectReset.createNewTrack`), and an open
     /// that answers its own sheet by throwing the project away would be a worse
     /// lie than the sheet it was left standing. The one track that costs is
-    /// named in the entry's `effect`.
-    func answerCreateTrackSheet(waitingUpTo budget: TimeInterval) -> [String: Any]? {
+    /// named in the entry's `effect`, and in the caller's `initial_track`.
+    ///
+    /// `wanting` is the caller's `initial_track` — the KIND of track the one
+    /// unavoidable track should be. It is selected on the sheet before Create
+    /// is pressed, and whatever the sheet ends up showing as selected is read
+    /// back rather than assumed, so `initial_track.type` reports Logic's state
+    /// and not this server's intention.
+    func answerCreateTrackSheet(
+        waitingUpTo budget: TimeInterval, wanting requestedType: String? = nil
+    ) -> CreateTrackSheetAnswer? {
         let deadline = Date().addingTimeInterval(budget)
         while true {
             for dialog in visibleDialogs() {
                 guard let answer = ProjectReset.createTrackOpenAnswer(
                     forTexts: dialog.texts, buttons: dialog.buttons
                 ) else { continue }
+                // The type FIRST, while the sheet is still up — pressing Create
+                // is the last thing that happens to it.
+                let chooser = chooseCreateTrackType(requestedType, in: dialog.element)
                 let pressed = pressDialogButton(answer.button, in: dialog.element)
                 // The press is not the proof. An AXPress that reports success
                 // on a sheet still standing is exactly the failure this whole
@@ -452,18 +541,102 @@ extension LogicAccessibility {
                     "buttons": dialog.buttons,
                     "answered_with": answer.button,
                     "press_succeeded": pressed,
-                    "verified_gone": gone
+                    "verified_gone": gone,
+                    "track_types_offered": chooser.offered.map(\.label),
+                    "track_type_selected": chooser.selected?.label ?? NSNull()
                 ]
                 entry["effect"] = gone
                     ? answer.effect
                     : "the Create New Track sheet was found and '\(answer.button)' was pressed,"
                         + " but it is STILL on screen — answer it in Logic before the next call"
-                return entry
+                return CreateTrackSheetAnswer(
+                    entry: entry, dismissed: gone,
+                    selectedType: chooser.selected, offered: chooser.offered
+                )
             }
             guard Date() < deadline else { return nil }
             Thread.sleep(forTimeInterval: ProjectOpen.pollIntervalSeconds)
         }
     }
+
+    /// Selects `requested` among the sheet's track types when the sheet offers
+    /// it, and reports what is selected either way.
+    ///
+    /// The read is unconditional and the press is not: an open that asked for
+    /// nothing still comes away able to SAY which kind of track it was handed,
+    /// which is the whole point of `initial_track` — Logic remembers the kind
+    /// last used, so "one track, of the kind the sheet offered" was a fact
+    /// about the user's last session that the caller had no way to learn.
+    ///
+    /// Nothing is pressed unless the request MATCHES something the sheet
+    /// itself publishes (`ProjectOpen.matchedTrackTypeOffer`), and what the
+    /// press achieved is READ BACK rather than assumed. Both halves were
+    /// bought live: on 2026-09-03 a first attempt that treated the chooser as
+    /// a flat list of radio buttons reported `Software Instrument` for a
+    /// create that made `Audio 1`, because EVERY one of the sheet's four
+    /// category groups holds a radio reading 1 and only the group's own
+    /// description says which category is the live one.
+    private func chooseCreateTrackType(
+        _ requested: String?, in sheet: AXUIElement
+    ) -> (selected: ProjectOpen.TrackTypeOffer?, offered: [ProjectOpen.TrackTypeOffer]) {
+        var chooser = createTrackTypeCategories(in: sheet)
+        if let requested,
+           let wanted = ProjectOpen.matchedTrackTypeOffer(
+               requested: requested, offers: chooser.offers
+           ),
+           chooser.selectedOffer != wanted,
+           let element = chooser.element(of: wanted),
+           AXUIElementPerformAction(element, kAXPressAction as CFString) == .success {
+            // Read the chooser again rather than believing the press: an
+            // AXPress that reports success and selects nothing is the same
+            // failure `verified_gone` exists for, one control down.
+            chooser = createTrackTypeCategories(in: sheet)
+        }
+        return (chooser.selectedOffer, chooser.offers)
+    }
+
+
+    /// The Create New Track sheet's track-type chooser, as the sheet publishes
+    /// it: four category groups, each an `AXGroup` described
+    /// `"<category>, <variant>"` — with `", selected"` on the live one — over
+    /// an `AXRadioGroup` of that category's own variants. Measured live
+    /// 2026-09-03; the table is in `ProjectOpen.TrackTypeOffer`.
+    ///
+    /// Only groups whose description PARSES are taken, and only the radio
+    /// buttons inside them. The sheet is full of other controls — the Details
+    /// disclosure, "Open Library", "Record Enable", two device pop-ups — and a
+    /// wider net would put those in `initial_track.offered` and make them
+    /// pressable. An empty result is therefore a real answer about this Logic,
+    /// and `ProjectOpen.trackTypeUnreadable` says so instead of guessing.
+    func createTrackTypeCategories(in sheet: AXUIElement) -> CreateTrackTypeChooser {
+        var groups: [CreateTrackTypeChooser.Group] = []
+        collect(from: sheet, maximumDepth: AXDepth.createTrackTypeChooser) { element in
+            guard stringAttribute(element, kAXRoleAttribute as String) == "AXGroup",
+                  let parsed = ProjectOpen.parseTrackTypeGroup(
+                      stringAttribute(element, kAXDescriptionAttribute as String)
+                  ) else { return }
+            var variants: [CreateTrackTypeChooser.Variant] = []
+            collect(from: element, maximumDepth: AXDepth.createTrackTypeVariant) { candidate in
+                guard stringAttribute(candidate, kAXRoleAttribute as String) == "AXRadioButton"
+                else { return }
+                // These radios are labelled by AXDescription, not AXTitle —
+                // they are icon buttons — and a nameless one can be neither
+                // reported nor asked for, so it is left out of both.
+                let name = stringAttribute(candidate, kAXDescriptionAttribute as String)
+                guard !name.isEmpty else { return }
+                variants.append(CreateTrackTypeChooser.Variant(
+                    element: candidate, name: name,
+                    selected: stringAttribute(candidate, kAXValueAttribute as String) == "1"
+                ))
+            }
+            guard !variants.isEmpty else { return }
+            groups.append(CreateTrackTypeChooser.Group(
+                category: parsed.category, selected: parsed.selected, variants: variants
+            ))
+        }
+        return CreateTrackTypeChooser(groups: groups)
+    }
+
 
     /// Is the Create New Track sheet on screen? Looks first, then paces, up to
     /// `budget` — used to confirm a dismissal, where the answer we want is
@@ -861,7 +1034,7 @@ extension MCPServer {
         // failure would be a sheet nobody had been asked about. A single 5–10 ms
         // Accessibility walk when there is nothing there.
         if let sheet = logic.answerCreateTrackSheet(waitingUpTo: 0) {
-            var entry = sheet
+            var entry = sheet.entry
             entry["phase"] = "verify"
             dialogLog.append(entry)
         }

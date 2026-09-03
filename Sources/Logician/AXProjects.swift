@@ -304,7 +304,8 @@ extension LogicAccessibility {
     /// answered on the Accessibility plane, after the open is proved: the sheet
     /// does not block Apple Events (measured), so it never stalls the poll.
     func openProject(
-        path: String, createFromTemplate: Bool, ifCurrentModified: String
+        path: String, createFromTemplate: Bool, ifCurrentModified: String,
+        initialTrackType: String? = nil
     ) throws -> [String: Any] {
         let target = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
         // Every check that can be made without writing anything, first. The
@@ -441,11 +442,38 @@ extension LogicAccessibility {
                     // raises it, so that one waits briefly for it to appear;
                     // any other open pays a single 5–10 ms look and finds
                     // nothing.
+                    var initialTrack: [String: Any]?
+                    var typeWarning: String?
                     if let sheet = answerCreateTrackSheet(
                         waitingUpTo: createFromTemplate
-                            ? ProjectOpen.createTrackSheetBudgetSeconds : 0
+                            ? ProjectOpen.createTrackSheetBudgetSeconds : 0,
+                        wanting: initialTrackType
                     ) {
-                        dialogsAnswered.append(sheet)
+                        dialogsAnswered.append(sheet.entry)
+                        // WHICH track the caller now owns. The sheet cannot be
+                        // answered without making one, so the tool that made it
+                        // names it rather than leaving the caller to diff a
+                        // track list it never asked for.
+                        let named = sheet.dismissed
+                            ? firstTrackRow(waitingUpTo: ProjectOpen.initialTrackNameBudgetSeconds)
+                            : nil
+                        initialTrack = ProjectOpen.initialTrackPayload(
+                            requested: initialTrackType,
+                            selected: sheet.selectedType,
+                            offered: sheet.offered,
+                            track: named,
+                            trackUnavailable: sheet.dismissed
+                                ? "the track list did not answer within"
+                                    + " \(ProjectOpen.initialTrackNameBudgetSeconds) s"
+                                : "the sheet is still on screen, so the track does not exist yet"
+                        )
+                        if let requested = initialTrackType,
+                           initialTrack?["requested_honoured"] as? Bool != true {
+                            typeWarning = ProjectOpen.trackTypeNotOfferedWarning(
+                                requested: requested, offered: sheet.offered,
+                                created: sheet.selectedType?.label
+                            )
+                        }
                     }
                     var payload: [String: Any] = [
                         "success": true, "verified": true,
@@ -468,6 +496,8 @@ extension LogicAccessibility {
                     // the way" is a fact worth stating on a tool whose whole
                     // defect was a sheet nobody mentioned.
                     payload["dialogs_answered"] = dialogsAnswered
+                    if let initialTrack { payload["initial_track"] = initialTrack }
+                    appendWarning(typeWarning, to: &payload)
                     if dialogsAnswered.contains(where: { $0["verified_gone"] as? Bool == false }) {
                         appendWarning(
                             "'\(opened.name)' is open and verified, but Logic's Create New Track"
@@ -501,6 +531,32 @@ extension LogicAccessibility {
                         + dialogsAnswered.compactMap { $0["dialog"] as? String }.joined(separator: ", ")),
             restored: false
         )
+    }
+
+    /// The first row of the track list, for naming the one track the Create
+    /// New Track sheet just made — or nil when the list will not say.
+    ///
+    /// LOOKS BEFORE IT WAITS, and stops on the first row it sees: Logic builds
+    /// the track while the sheet is closing, so the first read can land in the
+    /// gap, and a fixed sleep would pay for the gap on every create that does
+    /// not have one. A brand-new project has exactly one track, so "the first
+    /// row" is not a heuristic here — it is the track, and this is the only
+    /// place that is true.
+    ///
+    /// Failure is nil, never a guess: `initial_track.track_name` then carries
+    /// the reason instead of a name nobody read.
+    func firstTrackRow(waitingUpTo budget: TimeInterval) -> (number: Int, name: String)? {
+        let deadline = Date().addingTimeInterval(budget)
+        while true {
+            if let rows = (try? listTracks())?["tracks"] as? [[String: Any]],
+               let first = rows.first,
+               let number = first["track_number"] as? Int,
+               let name = first["track_name"] as? String {
+                return (number, name)
+            }
+            guard Date() < deadline else { return nil }
+            Thread.sleep(forTimeInterval: ProjectOpen.pollIntervalSeconds)
+        }
     }
 
     /// Duplicates the OPEN project on disk (Autosave data stripped from the

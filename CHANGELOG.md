@@ -1610,6 +1610,24 @@ with every render coming back as audio the agent can listen to.
   of failing — with the poll budget it does keep honoured to the millisecond (a stated 2.25 s
   used to run to 2.48-2.56 s because the deadline was only checked between rounds).
 
+- **A new project now says which track it came with — and lets you choose it.** Logic will
+  not show a project with no tracks, so its Create New Track sheet stands over every
+  `logic_new_project` and every create therefore makes one track. The tool answered that sheet
+  but described the result only in prose, in a dialog log, never naming the track or its kind.
+  The result now carries `initial_track`: the kind as the sheet itself spells it
+  (`MIDI/Software Instrument`, `Audio/Mic or Line`), `category` and `variant` separately, and
+  the `track_number` and `track_name` read back from Logic's own track list — one call instead
+  of two. Pass `initial_track: "audio"` (or `"software_instrument"`, or any label the result's
+  `offered` lists) and that is the kind you get instead of whichever was last used on that Mac:
+  live 2026-09-03, `"audio"` produced `Audio 1` and `"software_instrument"` produced `Inst 1`,
+  in 2.35 s and 3.67 s against 2.10 s for opening a project that already has a track. The
+  chooser is read the way the sheet is really built — four category groups, each over its own
+  radio group, only one of them marked selected — because the obvious flat reading of it
+  reported `Software Instrument` for a create that made `Audio 1`, and what the press achieved
+  is read back off the sheet rather than assumed. A kind this Logic does not offer is not a
+  refusal: by then the project exists and cancelling that sheet would close it, so it opens
+  with the sheet's own selection and a warning lists the real vocabulary.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

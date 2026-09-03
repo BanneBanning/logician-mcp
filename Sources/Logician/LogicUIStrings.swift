@@ -280,6 +280,20 @@ enum LogicUIStrings {
         /// (`AXValue` is the word, not `"1"`). Read by the solo census.
         static let soloDescription = "Solo"
 
+        /// The last comma-separated word Logic appends to the `AXDescription`
+        /// of the CHOSEN category group on the Create New Track sheet:
+        /// `"Audio, Mic or Line, selected"` against `"MIDI, Software
+        /// Instrument"` (measured live 2026-09-03).
+        ///
+        /// It is the only signal on that sheet that says which kind of track
+        /// Create will make — every category's own radio group has a member
+        /// reading `1`, so the radios cannot answer it — and it is an English
+        /// word with no structural alternative. Recognising nothing is the
+        /// safe failure here: `initial_track.type` then reports itself
+        /// unreadable (`ProjectOpen.trackTypeUnreadable`) rather than naming a
+        /// kind nobody read, and the create is unaffected either way.
+        static let axSelectedSuffix = "selected"
+
         /// The track header's own checkboxes, by `AXDescription`, mapped to
         /// the keys `logic_track_info` reports them under. Read by
         /// `trackHeaderControls(_:)`; a description that drifts drops that
