@@ -195,6 +195,13 @@ extension MCUController {
         guard response.ok else {
             throw LogicianError.writeFailed("MCU \(control) failed: \(response.error ?? "?")")
         }
+        // Logic answers a per-strip press by painting the control's own name
+        // over that strip's LCD NAME cell (`Fill` → `Mute`) for about two
+        // seconds. Recording it here is what lets the NEXT resolution of this
+        // same track know the odd-looking cell is its own echo rather than a
+        // stale bank map, and skip a 1.6-1.7 s re-navigation of the bank the
+        // surface is already standing on (`bankedAtMatch`, FS-1).
+        noteControlPressBanner(track: trackName, channel: channel)
         // Let the LED repaint ARRIVE before the readback window opens. A window
         // that straddles the press catches the old blink's edges and the new
         // state together, counts two edges, and spends a second whole window

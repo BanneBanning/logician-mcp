@@ -1,3 +1,5 @@
+import Foundation
+import LogicMCUBridge
 import XCTest
 @testable import Logician
 
@@ -145,10 +147,196 @@ final class SurfaceDecodingTests: XCTestCase {
         XCTAssertTrue(MCUController.bankedAtMatch(live: bannerBank, cached: mappedBank, channel: 2))
     }
 
-    /// The banner sits on the very cell about to be written: the live display
-    /// cannot confirm the target strip, so this falls through to the walk.
-    func testABannerOnTheTargetCellIsNotAccepted() {
+    /// The banner sits on the very cell about to be written, and nothing says
+    /// where it came from: the live display cannot confirm the target strip, so
+    /// this falls through to the walk. (Which is right — and cost 1.6-1.7 s on
+    /// every same-channel repeat until the caller started saying "that banner
+    /// is mine"; see the tests below.)
+    func testABannerOnTheTargetCellIsNotAcceptedWithoutEvidence() {
         XCTAssertFalse(MCUController.bankedAtMatch(live: bannerBank, cached: mappedBank, channel: 1))
+    }
+
+    /// FS-1, measured live 2026-09-03: mute a track (833 ms) and the very next
+    /// call about the SAME track paid 2 407 ms, because Logic had painted
+    /// `Mute` over that strip's own name cell and the cache could not tell its
+    /// own echo from a stale map. With the caller's evidence that the banner is
+    /// this server's own press, the bank the surface never left is accepted.
+    func testOurOwnPressBannerOnTheTargetCellKeepsTheFastPath() {
+        XCTAssertTrue(
+            MCUController.bankedAtMatch(
+                live: bannerBank, cached: mappedBank, channel: 1, ownPressBanner: true
+            )
+        )
+        // Both spellings, both planes' controls: `Mute` reads exactly like
+        // `Solo` here, which is the point of one shared banner list.
+        let muteBanner = "LofPad Mute   808    Inst 2 Drums  Fill   AckSlg IvnSlg "
+        XCTAssertTrue(
+            MCUController.bankedAtMatch(
+                live: muteBanner, cached: mappedBank, channel: 1, ownPressBanner: true
+            )
+        )
+    }
+
+    /// The wildcard is for a BANNER, not for any surprise. A track renamed
+    /// under a stale map changes exactly one cell too (the rename profile's
+    /// finding), and that one must still be discovered and rescanned — even
+    /// while the caller believes it just pressed something there.
+    func testARenamedCellIsNotABannerEvenWithTheEvidence() {
+        let renamed = "LofPad Bass 2 808    Inst 2 Drums  Fill   AckSlg IvnSlg "
+        XCTAssertFalse(
+            MCUController.bankedAtMatch(
+                live: renamed, cached: mappedBank, channel: 1, ownPressBanner: true
+            )
+        )
+    }
+
+    /// The one-cell budget is not widened by the wildcard: the banner IS the
+    /// one cell allowed to differ.
+    func testABannerPlusAnotherChangedCellStillTakesTheWalk() {
+        let bannerAndDrift = "LofPad Solo   808    Inst 2 Drums  Fill   AckSlg Sweeps "
+        XCTAssertFalse(
+            MCUController.bankedAtMatch(
+                live: bannerAndDrift, cached: mappedBank, channel: 1, ownPressBanner: true
+            )
+        )
+    }
+
+    /// The safety property the whole fix hangs on: a banner cannot make one
+    /// bank pass as another, so the wildcard can never resolve to the wrong
+    /// channel. Every neighbouring bank is a SHIFTED window and differs in
+    /// seven or eight cells; painting a banner into any cell of it changes
+    /// nothing about that.
+    func testTheWildcardCannotMakeADifferentBankPass() {
+        for (index, bank) in referenceBanks.enumerated() where index > 0 {
+            for channel in 0..<8 {
+                let cells = MCUController.lcdFields(bank)
+                let withBanner = cells.enumerated()
+                    .map { ($0.offset == channel ? "Mute" : $0.element).padding(
+                        toLength: MCULCDRow.cellWidth, withPad: " ", startingAt: 0
+                    ) }
+                    .joined()
+                XCTAssertFalse(
+                    MCUController.bankedAtMatch(
+                        live: withBanner, cached: referenceBanks[0],
+                        channel: channel, ownPressBanner: true
+                    ),
+                    "bank \(index) with a banner on strip \(channel + 1) passed as bank 0"
+                )
+            }
+        }
+    }
+
+    // MARK: - Whose banner is it
+
+    func testABannerCellIsRecognisedPaddedOrTrimmed() {
+        for banner in MCULCDStrings.controlNameBanners {
+            XCTAssertTrue(MCUController.isControlBannerCell(banner))
+            XCTAssertTrue(MCUController.isControlBannerCell(banner + "  "))
+        }
+        XCTAssertFalse(MCUController.isControlBannerCell("Bas   "))
+        XCTAssertFalse(MCUController.isControlBannerCell(""))
+    }
+
+    /// Three things must agree before a cell is excused, and each of them is
+    /// the one that stops a different wrong answer.
+    func testOnlyOurOwnFreshPressOnThisStripEarnsTheWildcard() {
+        let now = Date()
+        let record = MCUController.ControlPressBanner(track: "Bas", channel: 1, at: now)
+        XCTAssertTrue(
+            MCUController.ownPressBannerStanding(record, track: "Bas", channel: 1, now: now)
+        )
+        // Another track's resolution never gets it, even on the same strip.
+        XCTAssertFalse(
+            MCUController.ownPressBannerStanding(record, track: "808", channel: 1, now: now)
+        )
+        // Nor another strip's, even for the same track.
+        XCTAssertFalse(
+            MCUController.ownPressBannerStanding(record, track: "Bas", channel: 2, now: now)
+        )
+        // Nothing pressed, nothing excused.
+        XCTAssertFalse(
+            MCUController.ownPressBannerStanding(nil, track: "Bas", channel: 1, now: now)
+        )
+    }
+
+    /// The banner is a timed transient — measured at 1.94 and 1.99 s — and the
+    /// wildcard expires with it. Past the budget the cell has repainted itself,
+    /// so the exact match works again and a stale record must not be able to
+    /// excuse anything.
+    func testTheWildcardExpiresWithTheBanner() {
+        let pressed = Date()
+        let record = MCUController.ControlPressBanner(track: "Bas", channel: 1, at: pressed)
+        // The evidence has to outlive the longest stand anyone has seen (~6 s
+        // on the solo profile), not the wait budget's 1.94-1.99 s measurement.
+        XCTAssertGreaterThan(
+            MCUController.ownPressBannerTrustSeconds, MCUController.controlBannerFadeBudget
+        )
+        XCTAssertTrue(
+            MCUController.ownPressBannerStanding(
+                record, track: "Bas", channel: 1,
+                now: pressed.addingTimeInterval(MCUController.ownPressBannerTrustSeconds - 0.1)
+            )
+        )
+        XCTAssertFalse(
+            MCUController.ownPressBannerStanding(
+                record, track: "Bas", channel: 1,
+                now: pressed.addingTimeInterval(MCUController.ownPressBannerTrustSeconds + 0.1)
+            )
+        )
+        // A record from the future is a clock that moved, not a fresh press.
+        XCTAssertFalse(
+            MCUController.ownPressBannerStanding(
+                record, track: "Bas", channel: 1, now: pressed.addingTimeInterval(-1)
+            )
+        )
+    }
+
+    // MARK: - The poisoned cache (FS-4)
+
+    /// The exact row pair the solo profile caught in the debug log: a full scan
+    /// captured `Solo` as `808`'s name and wrote it to disk, so the CACHED row
+    /// is the wrong one and the live surface is right.
+    private let poisonedBank = "LofPad Bas    Solo   Inst 2 Drums  Fill   AckSlg IvnSlg "
+    private let cleanBank = "LofPad Bas    808    Inst 2 Drums  Fill   AckSlg IvnSlg "
+
+    /// A map with a banner in it must never reach `bank-cache.json`: on disk it
+    /// outlives the banner, and every later resolution that lands on that bank
+    /// pays a wait that cannot succeed.
+    func testABankMapCarryingABannerIsNotCacheable() {
+        XCTAssertTrue(MCUController.bankMapCacheable(referenceBanks))
+        XCTAssertFalse(
+            MCUController.bankMapCacheable(referenceBanks + [poisonedBank])
+        )
+        for banner in MCULCDStrings.controlNameBanners {
+            let row = "LofPad " + banner.padding(
+                toLength: MCULCDRow.cellWidth, withPad: " ", startingAt: 0
+            ) + "808    Inst 2 Drums  Fill   AckSlg IvnSlg "
+            XCTAssertFalse(MCUController.bankMapCacheable([row]), banner)
+        }
+    }
+
+    /// Arrival at a bank is now judged by the same one-cell rule as "am I
+    /// already here", so a cache poisoned in some OTHER cell no longer costs a
+    /// guaranteed-fail 1.5 s wait (4 332 ms for one solo restore, measured).
+    func testAPoisonedCellElsewhereDoesNotHideTheRightBank() {
+        XCTAssertTrue(
+            MCUController.bankedAtMatch(live: cleanBank, cached: poisonedBank, channel: 3)
+        )
+    }
+
+    /// …but a cache poisoned on the TARGET's own cell still cannot confirm the
+    /// strip about to be written, with or without a press record — the live
+    /// cell says `808` where the map says `Solo`, and that disagreement is the
+    /// map's, not a banner's.
+    func testAPoisonedTargetCellStillFallsThroughToTheRescan() {
+        XCTAssertFalse(
+            MCUController.bankedAtMatch(live: cleanBank, cached: poisonedBank, channel: 2)
+        )
+        XCTAssertFalse(
+            MCUController.bankedAtMatch(
+                live: cleanBank, cached: poisonedBank, channel: 2, ownPressBanner: true
+            )
+        )
     }
 
     func testADifferentBankIsNeverMistakenForABanner() {

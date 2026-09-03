@@ -1718,6 +1718,35 @@ with every render coming back as audio the agent can listen to.
   against the ruler's own Start marker until the range is in view, and only refuses if the
   ruler will not move — naming the pixels it managed and the pixels it needed.
 
+- **Touching the same track twice in a row is three times faster, and an idle Logic is no
+  longer mistaken for a dead one.** Two shared control-surface defects, both hit live. First:
+  Logic answers a mute or solo press by painting the word `Mute`/`Solo` over that strip's own
+  name on the surface display for about two seconds, and the bank cache read its own echo as a
+  sign that it was standing on the wrong bank — so mute-then-unmute, the compare-and-set idiom
+  the tools themselves recommend, walked the whole surface back to the left edge and rescanned
+  it for a bank it had never left. The cache now recognises a banner it caused itself, on the
+  strip it touched, inside the banner's measured life, and accepts the bank; anything else —
+  a renamed strip, a second changed cell, another bank — still pays the full rescan. Measured
+  A/B live: five same-strip repeats **2 382-2 457 ms → 784-813 ms**. Moving to a DIFFERENT
+  bank got faster too, for a related reason: the surface used to have to reproduce the cached
+  row byte for byte before the arrival counted, so a banner standing anywhere in it — even one
+  the cache itself had captured as a name — meant waiting out a match that could never happen.
+  Arrival is now judged by the same rule, and a cross-bank write fell **2 405 → 1 170 ms**, a
+  cross-bank verified no-op **2 037 → 805 ms**. And the map the surface writes down no longer
+  records those banners as names: a scan that meets one lets it fade first, and a map that
+  still carries one is not saved at all. Live, muting a track and then forcing a fresh scan
+  wrote `Mute` into **all four** banks of the sandbox project's saved map before, and none
+  after — where a poisoned map cost a measured 4.3 s on the next write to that bank. Second:
+  after ten
+  idle minutes the surface is woken with a probe press before anything refuses, and that probe
+  was always `bank_left` — which moves nothing when the surface is already at the leftmost
+  bank, where it most often rests. Logic sends nothing back for a press that changes nothing,
+  so a completely healthy session was refused as unreachable (measured: 15 idle minutes, zero
+  events across 3 s, every control-surface tool down). The probe now steps whichever way it
+  can, and puts the bank back: at the leftmost bank `bank_right` answers in 25 ms where
+  `bank_left` answered not at all, at the rightmost bank the fallback direction answers, and
+  the surface is handed back on the row it was standing on.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

@@ -699,19 +699,86 @@ extension MCUController {
     /// the strip list, so a neighbouring one is SHIFTED and differs in seven or
     /// eight cells (see `clampOverlap`), and passing would need seven
     /// duplicate names in seven aligned positions.
-    static func bankedAtMatch(live: String, cached: String, channel: Int) -> Bool {
+    ///
+    /// THE BANNER ON THE TARGET'S OWN CELL. The tolerance above excuses a
+    /// banner over any cell but the one being written, and that is the cell
+    /// this server's own mute/solo press is GUARANTEED to have just painted:
+    /// mute a track and the next call about the SAME track — unmute, the
+    /// compare-and-set idiom the tool's own description recommends — reads
+    /// `Mute` where the map says `Fill` and pays a full `resetToLeftmostBank`
+    /// + rescan for a bank the surface never left. Measured live 2026-09-03
+    /// (profiles/logic_set_track_mute.md FS-1): 833 ms for the write, 2 407 ms
+    /// for the same-channel write straight after it, twice, on two different
+    /// strips.
+    ///
+    /// `ownPressBanner` is the caller's evidence that the banner is THIS
+    /// server's, from a press on THIS track and THIS strip index inside the
+    /// window a banner has ever been seen to stand in
+    /// (`ownPressBannerStanding`). With it, a cell
+    /// spelling one of Logic's control names (`isControlBannerCell`) is a
+    /// wildcard — and only then; an untouched channel never gets one, so a
+    /// track genuinely renamed to `Mute` still falls through to the rescan.
+    /// Waiting the banner out instead would cost the ~2 s
+    /// (`controlBannerFadeBudget`) that the navigation it saves costs 1.7 s of.
+    /// The one-cell budget is unchanged: the wildcard IS the one cell allowed
+    /// to differ, so a bank that is shifted by even one strip still fails.
+    ///
+    /// Measured A/B on the live sandbox 2026-09-03, same session, same warm
+    /// cache, five consecutive same-strip repeats on the bank the surface was
+    /// standing on: **2 382-2 457 ms before, 784-813 ms after**.
+    ///
+    /// One case this does NOT reach, measured the same session and filed
+    /// rather than fixed here: the banner rides along a bank change (the LCD
+    /// overlay lives at a cell INDEX, not on a strip), so touching strip A,
+    /// then strip B on another bank, then B again meets TWO banner cells on
+    /// the destination row — B's own, plus A's riding at A's old column —
+    /// which is one more than the budget allows, and that repeat still pays
+    /// the navigation (2 358 → 2 380-2 442 ms, unchanged). The evidence for
+    /// excusing the second one exists (this process pressed that column too),
+    /// but excusing a cell for a strip nobody touched is a wider rule than
+    /// this one, and it is not made here on one measurement.
+    static func bankedAtMatch(
+        live: String, cached: String, channel: Int, ownPressBanner: Bool = false
+    ) -> Bool {
         if live == cached { return true }
         let liveCells = lcdFields(live)
         let cachedCells = lcdFields(cached)
         guard liveCells.count == cachedCells.count,
-              liveCells.indices.contains(channel),
-              liveCells[channel] == cachedCells[channel] else { return false }
+              liveCells.indices.contains(channel) else { return false }
+        if liveCells[channel] != cachedCells[channel] {
+            guard ownPressBanner, isControlBannerCell(liveCells[channel]) else { return false }
+        }
         return zip(liveCells, cachedCells).filter(!=).count == 1
     }
 
     /// Navigates to a bank by index (from leftmost) and verifies the expected
     /// LCD content. Returns false on mismatch (stale cache).
-    static func navigateToBank(_ index: Int, expecting expectedTop: String) throws -> Bool {
+    ///
+    /// The arrival check is `bankedAtMatch`, not a byte-exact row comparison,
+    /// and that is FS-4 (profiles/logic_set_track_solo.md, 2026-09-03). An
+    /// exact match here has zero tolerance for a cache that is one cell out —
+    /// including a cache poisoned by a press banner a full scan captured as a
+    /// name — so the 1.5 s wait below could be doomed before it started:
+    ///
+    ///     navigateToBank(0): expected 'LofPad Bas    Solo   Inst 2 …'
+    ///                        actual   'LofPad Bas    808    Inst 2 …'
+    ///
+    /// That call cost 4 332 ms, 3 627 of them in `findChannel` (84%), for a
+    /// bank the surface reached correctly on the first try. The same one-cell
+    /// rule `bankedAtMatch` already uses to prove "I am standing on this bank"
+    /// proves arrival here too — banks are shifted windows, so a neighbour
+    /// differs in seven or eight cells — and a row that is genuinely wrong
+    /// still fails and still falls through to the rescan, just without paying a
+    /// wait that could never have succeeded.
+    ///
+    /// It is also the cheapest 1.2 s in this file. Measured A/B 2026-09-03:
+    /// every genuine cross-bank navigation got faster, because the exact match
+    /// was waiting out a row it could not match while a banner stood in it —
+    /// a far-bank write 2 405 → 1 170 ms, and a far-bank verified no-op
+    /// 2 037 → 805 ms.
+    static func navigateToBank(
+        _ index: Int, expecting expectedTop: String, channel: Int, ownPressBanner: Bool = false
+    ) throws -> Bool {
         // Counting right from an UNPROVEN left edge lands on bank
         // `index + (however far the walk fell short)`, and the row check below
         // would then have to catch it — which it does, but only after paying
@@ -725,7 +792,13 @@ extension MCUController {
             try press("bank_right")
             _ = awaitEvents(since: before, timeoutMs: 250)
         }
-        if waitFor(seconds: 1.5, { ($0["lcd_top"] as? String) == expectedTop }) != nil { return true }
+        if waitFor(seconds: 1.5, { status in
+            guard let live = status["lcd_top"] as? String else { return false }
+            return bankedAtMatch(
+                live: live, cached: expectedTop, channel: channel,
+                ownPressBanner: ownPressBanner
+            )
+        }) != nil { return true }
         debugLog("navigateToBank(\(index)): expected '\(expectedTop)' actual '\(freshStatus()?["lcd_top"] as? String ?? "?")'")
         return false
     }
@@ -766,12 +839,26 @@ extension MCUController {
             if matches.count == 1, let match = matches.first {
                 // Fastest path: the surface is already banked at the match —
                 // including when Logic is still showing the press banner over
-                // some OTHER strip's name cell (see `bankedAtMatch`).
+                // some OTHER strip's name cell, or over THIS one because this
+                // server pressed its mute/solo a moment ago (see
+                // `bankedAtMatch` and `ownPressBannerStanding`).
                 if let top = freshStatus()?["lcd_top"] as? String,
-                   bankedAtMatch(live: top, cached: cachedTops[match.bank], channel: match.channel) {
+                   bankedAtMatch(
+                       live: top, cached: cachedTops[match.bank], channel: match.channel,
+                       ownPressBanner: ownPressBannerStanding(
+                           lastControlPressBanner, track: trackName,
+                           channel: match.channel, now: Date()
+                       )
+                   ) {
                     return .resolved(match.channel)
                 }
-                if try navigateToBank(match.bank, expecting: cachedTops[match.bank]) {
+                if try navigateToBank(
+                    match.bank, expecting: cachedTops[match.bank], channel: match.channel,
+                    ownPressBanner: ownPressBannerStanding(
+                        lastControlPressBanner, track: trackName,
+                        channel: match.channel, now: Date()
+                    )
+                ) {
                     return .resolved(match.channel)
                 }
             }
@@ -802,6 +889,20 @@ extension MCUController {
         var bankTops: [String] = []
         var reachedRightmost = false
         scan: while bankTops.count < bankScanCap {
+            // A row is accepted by `settledTopOutcome` the moment it stops
+            // CHANGING, and a press banner holds perfectly still while it
+            // stands — so stability is not the same proof as correctness, and
+            // this scan used to write the literal `"Solo"` into the persisted
+            // map (FS-4). Let a banner fade first; the check is one string
+            // comparison per bank when there is none, which is the usual case.
+            switch try rowWithoutControlBanner(top) {
+            case .clear(let clean):
+                top = clean
+            case .standing(let row, let cell):
+                debugLog("resolveChannel: '\(cell)' still standing on a name cell after "
+                    + "\(Int(controlBannerFadeBudget)) s; this map will not be cached")
+                top = row
+            }
             bankTops.append(top)
             let beforeEvents = freshStatus()?["received_events"] as? Int ?? -1
             try press("bank_right")
@@ -824,7 +925,15 @@ extension MCUController {
                     + "(\(bankScanCap * 8) strips), so the bank map would be truncated; nothing was cached"
             )
         }
-        saveScopedCache(bankTops, to: bankCacheURL, projectPath: projectPath)
+        // The last guard before the map goes to DISK, where it outlives the
+        // call, the process and the banner: a row that still spells a control
+        // name is not a name row. The same rule `scanBanks` already applies to
+        // the census's own cache write.
+        if bankMapCacheable(bankTops) {
+            saveScopedCache(bankTops, to: bankCacheURL, projectPath: projectPath)
+        } else {
+            debugLog("resolveChannel: a control-press banner is standing in the scan; not caching")
+        }
         let matches = channelMatches(name: trackName, bankTops: bankTops)
         // Right after a project switch Logic rebuilds the control surface for
         // a few seconds and a full scan can come up empty — settle and rescan
@@ -846,7 +955,9 @@ extension MCUController {
         // count is not a multiple of 8 the rightmost bank CLAMPS (shows the
         // last 8 tracks), so stepping left from there walks a SHIFTED grid
         // and the expected bank content never reappears.
-        if try navigateToBank(match.bank, expecting: bankTops[match.bank]) {
+        if try navigateToBank(
+            match.bank, expecting: bankTops[match.bank], channel: match.channel
+        ) {
             return .resolved(match.channel)
         }
         debugLog("navigate-back verify failed")
