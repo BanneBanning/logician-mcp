@@ -1,8 +1,12 @@
 name: CI
 
+# Triggers: pull requests and manual runs only. A per-push trigger on macOS
+# runners (10x minute multiplier) burned 90% of the month's minutes in two
+# days (2026-09-02); the local gate (scratchpad/merge_branch.sh: release build
+# with -warnings-as-errors + full test suite before every push) covers main.
 on:
-  push:
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
