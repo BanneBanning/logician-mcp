@@ -137,6 +137,92 @@ extension LogicAccessibility {
         )
     }
 
+    // MARK: - Waiting for the panel to catch up with a selection
+
+    /// How a Region-inspector call that has just written an exclusive
+    /// selection waits for the panel to say so. Pure, so the schedule can be
+    /// asserted without an Accessibility tree.
+    ///
+    /// MEASURED 2026-09-02 (Logic Pro 12.3.1, "Testlåt Copy"): with three
+    /// regions selected on another row, the panel read taken ~15 ms after an
+    /// exclusive `selectRegion` came back "MIDI Defaults" — Logic had
+    /// processed the DESELECTION of the three and not yet the selection of the
+    /// target. `renameRegion` refused a perfectly addressed rename on 2 of 4
+    /// calls that way once the 72 ms `selectedRegionCount()` walk that had been
+    /// hiding the race by accident was removed.
+    ///
+    /// The budget is 0.3 s and it is a BUDGET: the look comes first, so a
+    /// panel that has already caught up costs one 7 ms read and nothing else.
+    enum PanelSettlePoll {
+        static let budget: TimeInterval = 0.3
+        static let interval: TimeInterval = 0.01
+    }
+
+    /// The settle poll's stop condition. Pure, so what the poll is waiting for
+    /// can be asserted without an Accessibility tree.
+    ///
+    /// A caller that knows the arrangement map's name for the region it just
+    /// selected waits for THAT NAME, not merely for "some region": measured
+    /// 2026-09-02, the stale panel a read inherited was not the defaults but
+    /// the PREVIOUS region — a perfectly well-formed `.region` subject, and
+    /// the wrong one. Waiting on `isRegion` alone would have let it straight
+    /// through. Comparing the name also stops the poll instantly for a region
+    /// NAMED like one of Logic's own strings, whose subject will never satisfy
+    /// `isRegion` and is settled by `SelectionEvidence` instead.
+    static func panelHasCaughtUp(
+        subject: RegionInspector.PanelSubject, panelName: String, wanted: String?
+    ) -> Bool {
+        guard let wanted else { return subject.isRegion }
+        return RegionInspector.canonicalPanelName(panelName) == wanted
+    }
+
+    /// The Region inspector panel, waited for and then cross-examined — the
+    /// one route every tool that addresses ONE region takes to the question
+    /// "whose parameters are on screen?".
+    ///
+    /// Two things happen here, and they used to happen only inside
+    /// `renameRegion` while `logic_get_region_params` and
+    /// `logic_set_region_params` did neither:
+    ///
+    /// 1. **The settle poll.** The panel can still be showing the selection
+    ///    this call REPLACED (see `PanelSettlePoll` for the measurement), so
+    ///    the cheap 7 ms read is looked at first and then repeated only while
+    ///    it disagrees. A selection that genuinely did not take spends the
+    ///    budget and is refused; the honest call pays one read.
+    /// 2. **The evidence.** The name field is USER-WRITABLE, so classifying
+    ///    the panel by sniffing it alone reads Logic's grammar out of a string
+    ///    a user chose: a region called "2 selected" or "MIDI Defaults" would
+    ///    report itself as a selection state to every Region-inspector tool
+    ///    for ever. Only when the string looks reserved is the 72 ms
+    ///    `selectedRegionCount()` walk worth taking, and only it plus the
+    ///    arrangement map's name for the region just selected can overrule the
+    ///    panel — see `RegionInspector.SelectionEvidence`.
+    ///
+    /// - Parameter addressedRegionName: the arrangement map's own name for the
+    ///   region the caller selected, from `selectRegion`'s result. Without it
+    ///   the panel string stands on its own, which is right for a call that
+    ///   addressed no region.
+    func settledRegionInspectorPanel(addressedRegionName: String?) throws -> RegionInspectorPanel {
+        let wanted = addressedRegionName.map(RegionInspector.canonicalPanelName)
+        var panel = try regionInspectorPanel()
+        let deadline = Date().addingTimeInterval(PanelSettlePoll.budget)
+        while !Self.panelHasCaughtUp(
+            subject: panel.subject, panelName: panel.panelName, wanted: wanted
+        ), Date() < deadline {
+            Thread.sleep(forTimeInterval: PanelSettlePoll.interval)
+            panel = try regionInspectorPanel()
+        }
+        guard !panel.subject.isRegion else { return panel }
+        panel.subject = RegionInspector.panelSubject(
+            nameField: panel.panelName,
+            evidence: .init(
+                selectedCount: try? selectedRegionCount(),
+                addressedRegionName: addressedRegionName
+            )
+        )
+        return panel
+    }
+
     // MARK: - Disclosure triangles
 
     /// How a disclosure poll is spent. Pure, so the schedule can be asserted
@@ -320,11 +406,20 @@ extension LogicAccessibility {
     /// `InspectorDebt` for the measurement and the argument. Either way the
     /// panel's state is REPORTED rather than assumed: `panelState` says what
     /// was found, what was opened and whether the close was deferred.
+    ///
+    /// `startingFrom` hands in a panel the caller has ALREADY walked — the one
+    /// `settledRegionInspectorPanel` waited for and cross-examined. It saves
+    /// the second walk of the same tree (4–27 ms, measured 2026-09-02) and,
+    /// more importantly, it carries that verdict into the body: a subject
+    /// recomputed here would be back to sniffing the name field with no
+    /// evidence, which is the defect this parameter exists to close.
     func withRegionInspector<Result>(
         needMore: Bool,
+        startingFrom settled: RegionInspectorPanel? = nil,
         _ body: (RegionInspectorPanel, [RegionInspectorRow]) throws -> Result
     ) throws -> (result: Result, panelState: [String: Any]) {
-        var panel = try regionInspectorPanel()
+        var panel = try settled ?? regionInspectorPanel()
+        let settledSubject = settled?.subject
         var state: [String: Any] = [:]
 
         // These two drive the exit and are re-pointed at the plan once it is
@@ -355,6 +450,10 @@ extension LogicAccessibility {
             // the right one, and re-walking it was 7–12 ms of nothing
             // (measured 2026-09-02).
             panel = try regionInspectorPanel()
+            // That re-read classifies the name field again, with no evidence
+            // and no settle behind it. A caller that already did that work
+            // keeps its verdict.
+            if let settledSubject { panel.subject = settledSubject }
         }
         guard let outline = regionInspectorOutline(panel) else {
             throw LogicianError.trackNotExposed(
@@ -718,18 +817,50 @@ extension LogicAccessibility {
 
     // MARK: - Read
 
+    /// Reads the Region inspector's rows, for one addressed region or for
+    /// whatever is selected.
+    ///
+    /// WHOSE ROWS THESE ARE is decided before they are read, and only on the
+    /// addressed path. `track_name` selects the region EXCLUSIVELY first, and
+    /// the panel can still be showing the selection that replaced — measured
+    /// 2026-09-02, ~15 ms after the write it read "MIDI Defaults" — so the
+    /// panel is polled until it names a region (`settledRegionInspectorPanel`)
+    /// and the rows are refused if it never does. This tool used to report
+    /// that stale subject and hand back the TRACK's region defaults under a
+    /// `region` key naming the region it had asked for: an honest-looking
+    /// wrong answer, and the reason the refusal is worth a read tool throwing.
+    ///
+    /// With NO track_name nothing is selected and nothing is polled: the panel
+    /// is whatever the user left on screen, "3 selected" and "MIDI Defaults"
+    /// are then true answers, and they are reported as `subject`.
     func readRegionParameters(
         trackName: String?, regionName: String?, startBar: Int?, includeQuantizeValues: Bool,
         trackNumber: Int? = nil
     ) throws -> [String: Any] {
         var addressed: [String: Any]?
+        var settled: RegionInspectorPanel?
         if let trackName {
             addressed = try selectRegion(
                 trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true,
                 trackNumber: trackNumber
             )
+            let panel = try settledRegionInspectorPanel(
+                addressedRegionName: addressed?["name"] as? String
+            )
+            if let refusal = RegionInspector.addressedPanelRefusal(
+                panel.subject, addressedRegionName: addressed?["name"] as? String,
+                outcome: "nothing was read"
+            ) {
+                throw LogicianError.preconditionUnmet(
+                    refusal + " Call this tool with no track_name to read whatever the panel IS "
+                        + "showing, or select the region with logic_select_region first."
+                )
+            }
+            settled = panel
         }
-        let (payload, panelState) = try withRegionInspector(needMore: true) { panel, rows in
+        let (payload, panelState) = try withRegionInspector(
+            needMore: true, startingFrom: settled
+        ) { panel, rows in
             var result: [String: Any] = [
                 "project_document": (try? projectDocumentPath()) ?? NSNull(),
                 "panel_name": panel.panelName,
@@ -938,13 +1069,32 @@ extension LogicAccessibility {
             }
         }
 
-        // 3. Address the region. `selection` deliberately leaves the selection
-        //    alone: writing through a multi-selection is how one call reaches
-        //    a whole track (measured: both selected regions took the write).
+        // 3. Address the region, and settle the question of WHOSE parameters
+        //    are on screen before a single control is touched — a write into
+        //    "MIDI Defaults" would change what every future region on the
+        //    track inherits, silently. `selection` deliberately leaves the
+        //    selection alone: writing through a multi-selection is how one
+        //    call reaches a whole track (measured: both selected regions took
+        //    the write).
         var addressed: [String: Any]?
         var selectedCount: Int?
+        let panel: RegionInspectorPanel
         if scope == "selection" {
             selectedCount = try? selectedRegionCount()
+            // This call selected nothing, so there is nothing to wait for and
+            // no addressed region to check a reserved-looking panel string
+            // against: "3 selected" here is the state the caller set up on
+            // purpose, and it is the whole point of the scope.
+            panel = try regionInspectorPanel()
+            if case .defaults(let kind) = panel.subject {
+                throw LogicianError.preconditionUnmet(
+                    "No region is selected: the Region inspector is showing the track's \(kind) "
+                        + "region DEFAULTS, which decide what every future region on that track "
+                        + "inherits. Nothing was written. Select the regions first with "
+                        + "logic_select_regions, or address one region with track_name and "
+                        + "scope 'region'."
+                )
+            }
         } else {
             guard let trackName else {
                 throw LogicianError.invalidArguments("scope 'region' needs track_name")
@@ -953,16 +1103,34 @@ extension LogicAccessibility {
                 trackName: trackName, regionName: regionName, startBar: startBar, exclusive: true,
                 trackNumber: trackNumber
             )
-            guard try selectedRegionCount() == 1 else {
-                throw LogicianError.verificationFailed(
-                    requested: "exactly one selected region before writing",
-                    actual: "the selection drifted; refusing", restored: true
+            // The `selectedRegionCount() == 1` walk that used to stand here
+            // cost 72 ms to answer a question the panel answers 7 ms later for
+            // free and project-wide (the count sees RENDERED rows only, so on
+            // a project with a collapsed folder stack it was blind to the very
+            // regions it claimed to cover). What it was ALSO doing, unmeasured,
+            // was giving Logic 72 ms to repaint the inspector after the
+            // selection write — so the wait is now an explicit look-first poll
+            // of that 7 ms read instead. A walk used as a delay is a delay
+            // nobody can find; see `PanelSettlePoll` for the race it hid.
+            panel = try settledRegionInspectorPanel(
+                addressedRegionName: addressed?["name"] as? String
+            )
+            if let refusal = RegionInspector.addressedPanelRefusal(
+                panel.subject, addressedRegionName: addressed?["name"] as? String,
+                outcome: "nothing was written"
+            ) {
+                throw LogicianError.preconditionUnmet(
+                    refusal + " Pass scope: 'selection' to write to everything selected on "
+                        + "purpose, or re-address the region — a region's start_bar changes with "
+                        + "every edit, so re-read logic_list_regions."
                 )
             }
         }
 
         let needMore = planned.contains { $0.parameter.underMore }
-        let (payload, panelState) = try withRegionInspector(needMore: needMore) { panel, rows in
+        let (payload, panelState) = try withRegionInspector(
+            needMore: needMore, startingFrom: panel
+        ) { panel, rows in
             try self.applyRegionWrites(
                 panel: panel, rows: rows, planned: planned, scope: scope,
                 addressed: addressed, selectedCount: selectedCount
@@ -1000,29 +1168,10 @@ extension LogicAccessibility {
         addressed: [String: Any]?,
         selectedCount: Int?
     ) throws -> [String: Any] {
-        // Whose parameters are on screen? A write into "MIDI Defaults" would
-        // change what every FUTURE region on the track inherits, silently.
-        switch panel.subject {
-        case .defaults(let kind):
-            throw LogicianError.preconditionUnmet(
-                "No region is selected: the Region inspector is showing the track's \(kind) "
-                    + "region DEFAULTS, which decide what every future region on that track "
-                    + "inherits. Nothing was written. Select a region first — pass track_name "
-                    + "with region_name/start_bar, or use logic_select_regions for a scope "
-                    + "'selection' write."
-            )
-        case .multiple(let count):
-            guard scope == "selection" else {
-                throw LogicianError.preconditionUnmet(
-                    "\(count) regions are selected and the Region inspector is showing them "
-                        + "together. Nothing was written. Pass scope: 'selection' to write to all "
-                        + "of them on purpose, or address one region with track_name + start_bar."
-                )
-            }
-        case .region:
-            break
-        }
-
+        // Whose parameters are on screen was settled by the caller, before the
+        // panel was even unfolded — `setRegionParameters` polls for it and
+        // refuses there, because a refusal that arrives after the disclosures
+        // have been opened is a refusal that moved the UI to say no.
         let regionType = inferredRegionType(rows)
 
         // EVERY argument is checked against the region type BEFORE the first
@@ -1321,8 +1470,9 @@ extension LogicAccessibility {
     /// project it was blind to the collapsed folder stack it claimed to cover.
     /// What that walk was ALSO doing, unmeasured, was giving Logic's inspector
     /// 72 ms to repaint after the selection write; that is now an explicit
-    /// look-first poll of the 7 ms panel read (see the settle loop below),
-    /// because a walk used as a delay is a delay nobody can find.
+    /// look-first poll of the 7 ms panel read (`settledRegionInspectorPanel`,
+    /// shared with the two `region_params` tools), because a walk used as a
+    /// delay is a delay nobody can find.
     ///
     /// No blind sleep after the confirm either: measured 2026-09-02, BOTH the
     /// panel and the arrangement map already carried the new name on the first
@@ -1371,58 +1521,19 @@ extension LogicAccessibility {
             trackNumber: trackNumber, alreadyWalkedRows: rows
         )
 
-        // The panel can still be showing the selection this call REPLACED.
-        // MEASURED 2026-09-02: with three regions selected on another row, the
-        // read taken ~15 ms after `selectRegion`'s write came back
-        // "MIDI Defaults" — Logic had processed the DESELECTION of the three
-        // and not yet the selection of the target, and the tool refused a
-        // rename that was perfectly addressed. The 72 ms `selectedRegionCount`
-        // walk this fix removed was hiding that race by accident, which is
-        // what a walk used as a delay does. So the wait is a look at the CHEAP
-        // read (7 ms) instead: look first, poll only while the panel disagrees,
-        // and let a selection that genuinely did not take spend the budget and
-        // refuse. Zero cost on the honest call.
-        var panel = try regionInspectorPanel()
-        let settle = Date().addingTimeInterval(0.3)
-        while !panel.subject.isRegion, Date() < settle {
-            Thread.sleep(forTimeInterval: 0.01)
-            panel = try regionInspectorPanel()
-        }
-        switch panel.subject {
-        case .region:
-            // The ordinary case, and the cheap one: the panel names a region,
-            // which is a project-wide statement that exactly one is selected.
-            break
-        case .multiple, .defaults:
-            // The panel is showing one of Logic's own strings — OR a region
-            // whose NAME is one of them, made in Logic's UI or by an older
-            // build of this server. Only here is a count worth its 72 ms, and
-            // only the count plus the arrangement map's name for the region
-            // just selected can overrule the panel (see `SelectionEvidence`).
-            panel.subject = RegionInspector.panelSubject(
-                nameField: panel.panelName,
-                evidence: .init(
-                    selectedCount: try? selectedRegionCount(),
-                    addressedRegionName: addressed["name"] as? String
-                )
-            )
-        }
-        switch panel.subject {
-        case .defaults(let kind):
-            throw LogicianError.preconditionUnmet(
-                "the Region inspector is showing the track's \(kind) region DEFAULTS rather than a "
-                    + "region — nothing was renamed. The selection did not take."
-            )
-        case .multiple(let count):
-            throw LogicianError.preconditionUnmet(
-                "\(count) regions are selected, and the Region inspector's name field then reads "
-                    + "'\(count) selected' rather than a region name — nothing was renamed. "
-                    + "(A region genuinely NAMED '\(count) selected' is renamed back normally: "
-                    + "the arrangement map's name for the selected region is what tells the two "
-                    + "apart, and here it did not match.)"
-            )
-        case .region:
-            break
+        // The panel can still be showing the selection this call REPLACED, and
+        // the name field it is about to write is also the field it classifies
+        // the panel by. Both are `settledRegionInspectorPanel`'s job now — the
+        // same poll and the same cross-examination `logic_get_region_params`
+        // and `logic_set_region_params` take, in one place rather than three.
+        let panel = try settledRegionInspectorPanel(
+            addressedRegionName: addressed["name"] as? String
+        )
+        if let refusal = RegionInspector.addressedPanelRefusal(
+            panel.subject, addressedRegionName: addressed["name"] as? String,
+            outcome: "nothing was renamed"
+        ) {
+            throw LogicianError.preconditionUnmet(refusal)
         }
         guard let field = panel.nameField else {
             throw LogicianError.valueNotWritable(
@@ -1589,7 +1700,7 @@ extension LogicAccessibility {
     /// left alone — it is part of a name, and this comparison is the whole of
     /// what "verified" means here.
     static func comparableName(_ raw: String) -> String {
-        PrintedRegion.canonicalName(raw).trimmingCharacters(in: .whitespaces)
+        RegionInspector.canonicalPanelName(raw)
     }
 
     /// What the arrangement map calls the region at one bar+beat, or nil when

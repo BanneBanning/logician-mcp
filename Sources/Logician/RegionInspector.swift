@@ -111,6 +111,67 @@ enum RegionInspector {
         return .region(name: text)
     }
 
+    /// The name field, compared the way every check in this family compares a
+    /// region name: trimmed, and with the arrangement map's " (muted)" suffix
+    /// off, because the map prints it and the panel does not.
+    static func canonicalPanelName(_ raw: String) -> String {
+        PrintedRegion.canonicalName(raw).trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Why a call that ADDRESSED one region must not go on with the panel in
+    /// front of it — or nil when the panel is showing that region.
+    ///
+    /// Every Region-inspector tool that names a region selects it EXCLUSIVELY
+    /// first, so a panel that afterwards reports several regions, the track's
+    /// defaults, or a DIFFERENT region is a panel that has not caught up — and
+    /// the rows underneath it belong to something other than the region that
+    /// was asked about. Reading those out as that region's parameters, or
+    /// writing into them, is the silent wrong answer this refusal replaces.
+    ///
+    /// MEASURED 2026-09-02 on the old build: a `logic_get_region_params` for
+    /// `Latin` at bar 13 on "Acke Slagverk", taken immediately after the
+    /// exclusive selection, came back `panel_name: "Crash"` — Logic was still
+    /// painting the region the PREVIOUS call had selected — and the tool
+    /// reported Crash's twenty-two rows under a `region` key naming Latin.
+    /// Nothing in the payload said so.
+    ///
+    /// It is reached only after the settle poll and after `SelectionEvidence`
+    /// has had its say, so a region genuinely NAMED like one of Logic's own
+    /// strings never gets here — which is why the multi-selection message can
+    /// afford to say so.
+    ///
+    /// What it cannot catch, stated plainly: two regions on ONE track sharing
+    /// a name (Logic makes those constantly) are the same string in the panel,
+    /// which publishes no position. The name check narrows the window to
+    /// same-track namesakes; it does not close it.
+    ///
+    /// `outcome` is what the caller did or did not do, in its own words
+    /// ("nothing was written", "nothing was read").
+    static func addressedPanelRefusal(
+        _ subject: PanelSubject, addressedRegionName: String?, outcome: String
+    ) -> String? {
+        switch subject {
+        case .region(let shown):
+            guard let addressedRegionName else { return nil }
+            let wanted = canonicalPanelName(addressedRegionName)
+            let showing = canonicalPanelName(shown)
+            guard showing != wanted else { return nil }
+            return "the Region inspector is still showing the region '\(showing)' rather than "
+                + "'\(wanted)', the region that was addressed: \(outcome). Logic never repainted "
+                + "the panel onto the new selection, so every row under it is '\(showing)'s."
+        case .defaults(let kind):
+            return "the Region inspector is showing the track's \(kind) region DEFAULTS — what "
+                + "every FUTURE region on that track inherits — rather than the region that was "
+                + "addressed: \(outcome). The selection did not take."
+        case .multiple(let count):
+            return "\(count) regions are selected, and the Region inspector's name field then "
+                + "reads '\(count) selected' rather than naming the addressed region: \(outcome). "
+                + "The selection did not take. (A region genuinely NAMED '\(count) selected' is "
+                + "addressed normally: the arrangement map's name for the selected region is what "
+                + "tells the two apart, and here it did not match.)"
+        }
+    }
+
     /// Why a region must not be GIVEN this name — or nil when it is safe.
     ///
     /// Logic reserves two shapes of the Region inspector's name field for
