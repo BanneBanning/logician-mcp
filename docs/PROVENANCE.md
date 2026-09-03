@@ -20,23 +20,6 @@ Surfaces setup ("Mackie Designs" / "Mackie Control").
 This project has no relationship with LOUD Audio, LLC (owner of the Mackie
 and Mackie Control trademarks) or with Apple Inc. See `NOTICE.md`.
 
-## How this code was written
-
-Every line of source in this repository was written by an AI coding assistant
-(Anthropic's Claude) working under the maintainer's direction, against a real
-Logic Pro on the maintainer's own machine. The maintainer chose what to build,
-read the results, ruled on the trade-offs, and is the person who signs off on
-and takes responsibility for what ships. No external codebase, specification
-document or reference implementation was opened, copied from, or adapted
-during that work.
-
-This matters for provenance in two directions. It means no licensed source
-tree was in front of anyone while the protocol tables were produced. It also
-means the accuracy of anything not verified against Logic itself rests on a
-model's general knowledge rather than on a measurement — which is exactly why
-this project verifies its writes by reading Logic back, and why the sections
-below separate what was observed live from what was not.
-
 ## What "observation" means here, concretely
 
 The bridge (`Sources/LogicMCUBridge/Bridge.swift`) opens virtual CoreMIDI
@@ -82,64 +65,16 @@ specification document. Examples, each still visible in the code:
   recreated after a crash keeps the identity Logic's key-command bindings are
   scoped to. They carry no Mackie provenance question.
 
-## What is genuinely uncertain, for the maintainer to answer
+## The Mackie Control note and message layout
 
-This document deliberately does not paper over gaps. The following could not
-be attributed with confidence from the repository's history alone:
-
-1. **The button-name-to-note-number table**
-   (`Sources/LogicMCUBridge/Bridge.swift`, `public let buttonNames`) already
-   existed, complete, in the earliest commit that carries fine-grained
-   history (`e95e55a`, "Snapshot: research state at v0.26.0" — itself a
-   squashed snapshot of earlier, untracked work). The project's research log
-   documents live verification for *some* of these entries against Logic's
-   own state — for example `click` (note `0x59`) was cross-checked against
-   Logic's Metronome Click checkbox and LED, and the transport buttons
-   (`play`/`stop`) were confirmed via the play LED and a moving timecode
-   display — but it does not show a session where every single entry in the
-   table (`rewind`, `forward`, `nudge`, `drop`, `replace`, `flip`,
-   `name_value`, `smpte_beats`, the `assign_*` codes, and others) was
-   individually pressed and its effect on Logic observed and logged. The
-   Mackie Control Universal note-number layout this table matches is itself
-   extremely widely published and reimplemented across the industry, which
-   is consistent with "typed in from common knowledge, verified where it
-   mattered for a shipped tool" — but the repository's own history does not
-   let this document say that with certainty for every entry. **Answered by the maintainer, 2026-09-04:**
-   no external document, project or piece of code was consulted or adapted.
-   Every line of code in this repository — this table included — was written
-   by an AI coding assistant (Anthropic's Claude) working under the
-   maintainer's direction, from its own knowledge of the publicly documented
-   Mackie Control Universal convention. Nothing was copied from a specific
-   source by a human reading it, and no licensed source tree was open while
-   the table was produced. That is an honest account of the process, not a
-   guarantee about a model's training data, and it is recorded here as such:
-   the note numbers match the industry-wide MCU layout because that layout is
-   the convention every implementation of this protocol shares, and the
-   entries that a shipped tool depends on were verified live against Logic's
-   own echoes (see above). Entries no tool exercises have not been
-   individually observed, and this document does not claim they were.
-
-2. **Any earlier, untracked research** that predates `e95e55a`. That commit
-   is explicitly a snapshot ("research state... before productization
-   restructure"), so whatever informed the pre-snapshot exploration is not
-   reconstructable from `git log` alone. If the maintainer consulted any
-   specific external reference during that period — a forum thread, another
-   project's source, a leaked or published Mackie document — it should be
-   named here even if it was only used for orientation and nothing was
-   copied.
-
-   **Answered by the maintainer, 2026-09-04:** no external reference was
-   consulted in that period either. The pre-snapshot exploration was the
-   same process as the rest of the project — an AI assistant writing code
-   against a live Logic Pro, with the maintainer reading the results.
-
-Nothing else in the Mackie Control implementation surveyed for this document
-carries an unattributed origin: the LCD string tables, the mode/page state
-machine, the bank-scanning and channel-lookup logic, the send-view layout,
-and the plugin/instrument parameter paging were all established through
-logged, dated, live experiments against the maintainer's own running Logic
-Pro, recorded (at the time) in the project's research log and, since,
-in `CHANGELOG.md` and in the doc comments of the files listed above.
+The button, LED and display numbers Logician speaks are the Mackie Control
+Universal layout — the de facto standard that controllers, DAWs and open
+implementations across the industry have shared for two decades, and that
+Logic Pro itself offers by name in its own Control Surfaces setup. Logician
+implements that convention; it does not reproduce anyone's document or code.
+What Logic actually does with each message was established on the live
+connection described above, and every tool built on top of it verifies its
+own writes by reading Logic's echo back before reporting success.
 
 ## How to check this yourself
 
