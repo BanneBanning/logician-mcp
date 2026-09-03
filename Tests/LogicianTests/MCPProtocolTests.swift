@@ -249,7 +249,7 @@ final class MCPProtocolTests: XCTestCase {
         XCTAssertNil(try server.handle(["method": "notifications/initialized"]))
     }
 
-    /// This server returns all 84 tools in one page and never issues a
+    /// This server returns all 85 tools in one page and never issues a
     /// `nextCursor`, so no cursor value can be one it handed out. Silently
     /// returning page one again to a client that believes it is paging forward
     /// is the failure -32602 exists to prevent.
@@ -318,7 +318,7 @@ final class MCPProtocolTests: XCTestCase {
         XCTAssertEqual(result["ttlMs"] as? Int, toolListCacheTTLMs)
         XCTAssertEqual(result["cacheScope"] as? String, "public")
         XCTAssertNotNil((result["_meta"] as? [String: Any])?["io.modelcontextprotocol/serverInfo"])
-        XCTAssertEqual((result["tools"] as? [[String: Any]])?.count, 84)
+        XCTAssertEqual((result["tools"] as? [[String: Any]])?.count, 85)
     }
 
     /// A legacy client has no schema for `resultType` or the caching hints, so
@@ -595,7 +595,7 @@ final class MCPProtocolTests: XCTestCase {
     func testToolsListIsWellFormedAndComplete() throws {
         let response = try XCTUnwrap(server.handle(request("tools/list", id: 1)))
         let tools = try XCTUnwrap((response["result"] as? [String: Any])?["tools"] as? [[String: Any]])
-        XCTAssertEqual(tools.count, 84)
+        XCTAssertEqual(tools.count, 85)
         let names = tools.compactMap { $0["name"] as? String }
         XCTAssertEqual(Set(names).count, tools.count, "duplicate tool name")
         XCTAssertTrue(names.allSatisfy { $0.hasPrefix("logic_") })
@@ -648,7 +648,7 @@ final class MCPProtocolTests: XCTestCase {
         }
     }
 
-    /// The census the result-key inventory produced: 31 tools can put a
+    /// The census the result-key inventory produced: 32 tools can put a
     /// top-level `warning` in their result. A new emitter that forgets the flag
     /// (or a flag on a tool that cannot warn) fails here rather than shipping a
     /// key no description mentions.
@@ -661,7 +661,8 @@ final class MCPProtocolTests: XCTestCase {
             "logic_list_events",
             "logic_load_instrument", "logic_markers", "logic_mixer_snapshot", "logic_plugin_preset",
             "logic_project_snapshot", "logic_read_automation", "logic_record_automation",
-            "logic_record_midi", "logic_remove_plugin", "logic_remove_silence", "logic_render_track",
+            "logic_record_midi", "logic_remove_automation", "logic_remove_plugin",
+            "logic_remove_silence", "logic_render_track",
             "logic_reset_to", "logic_select_region", "logic_set_metronome", "logic_set_mixer",
             "logic_set_tempo",
             "logic_set_track_record_arm", "logic_split_region", "logic_tempo_events"

@@ -4,7 +4,7 @@
 
 The first public release, staged and waiting on the go-public decision.
 
-Logician gives any MCP client verified control of Logic Pro: 84 typed tools across
+Logician gives any MCP client verified control of Logic Pro: 85 typed tools across
 mixing, plugins (third-party parameters included), regions, MIDI composition and
 editing, tempo and meter maps, automation, markers, and dialog-free audio export —
 with every render coming back as audio the agent can listen to.
@@ -1918,6 +1918,29 @@ with every render coming back as audio the agent can listen to.
   the solo off, 0 of 54 regions report muted. The one name that cannot round-trip is a
   region literally called `Kick, muted`, which publishes the same bytes as a muted `Kick`;
   the guide says so.
+
+- **Automation can be taken back off a track.** `logic_remove_automation` closes the last
+  coverage gap the profiling campaign found: `logic_record_automation` could write a curve
+  and `logic_read_automation` could see it, but nothing could remove one except a blind
+  `Undo`. It drives Logic's own `Mix > Delete Automation > Delete All Automation on
+  Selected Tracks`, which is TRACK-WIDE — every lane on the addressed row — and it proves
+  the result rather than claiming it: the nominated lane is read before the press and read
+  again after, and the result carries `points_before`, `points_after` and `verified`. A
+  lane that already reads flat answers `already_empty` with nothing pressed, because a flat
+  reading is what an unautomated lane and a perfectly flat curve both look like from here.
+  A single lane and a bar range are refused with the alternative named: Logic's per-lane
+  command deletes whichever lane the automation view is SHOWING, and with that view closed
+  no track header publishes which one, so the press could not be aimed. Two guards stand in
+  front of it — the selection is narrowed to ONE row (the menu item says *Selected Tracks*
+  and means it), and Logic is brought to the front, because a menu press from the background
+  answers `.success` and does nothing (measured 2026-09-03, three of six toggles). Verified
+  live the same day on the sandbox: `Audio 9`'s leftover volume ramp (0 / −8.7 / −18.6 dB
+  across bars 2–4) read back flat at −20 dB after one call, a fresh two-bar pass recorded
+  and removed round trip, and a second call on the cleared lane answered `already_empty`.
+  9.1 s for a verified removal at three sampled positions (the press itself is 0 ms; the two
+  reads are the cost), 3.6 s for `already_empty`. It needs a track ROW, so a mixer-only aux
+  or bus is out of reach and says so, and it leaves the control where the automation last
+  put it rather than where it stood before the pass.
 
 ### Known limitations (honest by design)
 

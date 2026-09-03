@@ -452,7 +452,7 @@ final class MCPServer: @unchecked Sendable {
 
         case "tools/list":
             let params = request["params"] as? [String: Any] ?? [:]
-            // This server does not paginate: `tools/list` returns all 84 tools
+            // This server does not paginate: `tools/list` returns all 85 tools
             // and no `nextCursor`, so there is no cursor it could have issued
             // and every cursor is by definition unrecognized. The spec's answer
             // for an unrecognized cursor is -32602, and saying so is far better

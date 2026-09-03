@@ -93,6 +93,8 @@ final class ToolSearchTests: XCTestCase {
         ("volume automation ride", ["logic_record_automation"], "ride a fader"),
         ("record an automation pass over bars", ["logic_record_automation"], "ride a fader"),
         ("read back the automation curve", ["logic_read_automation"], "ride a fader"),
+        ("delete the automation on a track", ["logic_remove_automation"], "remove automation"),
+        ("remove an automation curve i recorded", ["logic_remove_automation"], "remove automation"),
         ("export stems", ["logic_export_stems"], "stems"),
         ("bounce every track separately aligned", ["logic_export_stems"], "stems"),
         ("project overview tracks", ["logic_list_tracks", "logic_project_snapshot"], "survey a project"),
@@ -133,7 +135,7 @@ final class ToolSearchTests: XCTestCase {
     func testTheProbesScoredQuerySetIsTheOneTheProbeScores() {
         // A guard on the table above, not on the search: a query deleted here
         // to make the score look better would otherwise pass silently.
-        XCTAssertEqual(ToolSearchTests.probeQueries.count, 53)
+        XCTAssertEqual(ToolSearchTests.probeQueries.count, 55)
     }
 
     func testTheProbesScoredQueriesAllHitTopFive() throws {
@@ -516,7 +518,7 @@ final class ToolSearchTests: XCTestCase {
     /// make it wrong is describing a different registry from the one the
     /// handler subscripts with its document indices. Same count, and every
     /// tool's own name scores its own document — which no shifted alignment
-    /// could satisfy for all 84.
+    /// could satisfy for all 85.
     func testTheSharedIndexStaysAlignedWithTheRegistry() {
         let registry = server.toolRegistry()
         XCTAssertEqual(ToolSearch.advertisedSurface.documentCount, registry.count)
@@ -530,7 +532,7 @@ final class ToolSearchTests: XCTestCase {
     /// once per process however many searches run and however many matches
     /// each one returns. It used to be built 3 times per call PLUS once per
     /// match, because `toolsetExclusionNote` asked it "is this a real tool"
-    /// for every hit — 13 constructions of all 84 tools for one `limit: 10`
+    /// for every hit — 13 constructions of all 85 tools for one `limit: 10`
     /// answer.
     func testTheRegistryIsBuiltOncePerProcessNotOncePerMatch() throws {
         MCPServer.activeToolsets = [.core]

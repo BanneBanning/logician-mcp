@@ -688,6 +688,20 @@ enum LogicUIStrings {
         /// `Window > Open Mixer`
         static let window = "Window"
         static let openMixer = "Open Mixer"
+        /// `Mix > Delete Automation > …`. Read off Logic Pro 12.3.1's own
+        /// menu bar 2026-09-03 with nothing pressed: the submenu is BUILT
+        /// (five items, each publishing its shortcut), so this route pays no
+        /// press-the-parent-to-populate step.
+        ///
+        /// The plural in `Selected Tracks` is Logic's, and it is load-bearing:
+        /// the command acts on every selected row, which is why
+        /// `narrowSelectionToOneTrack` stands in front of the press.
+        static let mix = "Mix"
+        static let deleteAutomation = "Delete Automation"
+        static let deleteAllAutomationOnSelectedTracks = "Delete All Automation on Selected Tracks"
+        /// Named only so the refusals can point at them; neither is pressed.
+        static let deleteVisibleAutomationOnSelectedTracks = "Delete Visible Automation on Selected Tracks"
+        static let deleteAllTrackAutomation = "Delete All Track Automation"
     }
 
     // MARK: - Control values and option names

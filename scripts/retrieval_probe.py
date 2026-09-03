@@ -92,6 +92,8 @@ QUERIES = [
     ("volume automation ride", {"logic_record_automation"}, "ride a fader"),
     ("record an automation pass over bars", {"logic_record_automation"}, "ride a fader"),
     ("read back the automation curve", {"logic_read_automation"}, "ride a fader"),
+    ("delete the automation on a track", {"logic_remove_automation"}, "remove automation"),
+    ("remove an automation curve i recorded", {"logic_remove_automation"}, "remove automation"),
     # 7. "Give me stems of the chorus."
     ("export stems", {"logic_export_stems"}, "stems"),
     ("bounce every track separately aligned", {"logic_export_stems"}, "stems"),
