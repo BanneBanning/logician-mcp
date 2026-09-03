@@ -179,7 +179,7 @@ extension LogicAccessibility {
                 // same check `selectTrack` makes on its own `already_selected`
                 // path, and keep the strip that proves it.
                 let row = live.first { $0.number == header.number } ?? header
-                landing = verifySelection(row.item, name: row.name)
+                landing = verifySelection(row.item, name: row.name).verification
             } else {
                 do {
                     let moved = try selectTrackReportingRows(
@@ -189,8 +189,13 @@ extension LogicAccessibility {
                     )
                     // `selectTrack` verified the selection by finding this
                     // track's inspector strip; that element is the one this
-                    // read needs, so it is not walked for a second time.
-                    landing = moved.strip.map { .verified(strip: $0) } ?? .verifiedStaleName
+                    // read needs, so it is not walked for a second time. With
+                    // no strip handed back, WHY there is none decides what was
+                    // proved: a hidden Inspector publishes no strip for anyone
+                    // (`verifiedHeaderOnly`), a stale description publishes one
+                    // under the old name (`verifiedStaleName`).
+                    landing = moved.strip.map { SelectionVerification.verified(strip: $0) }
+                        ?? (moved.inspector == .hidden ? .verifiedHeaderOnly : .verifiedStaleName)
                     showing = header.number
                     live = (try? parsedTrackHeaders()) ?? live
                 } catch {
@@ -212,12 +217,20 @@ extension LogicAccessibility {
                 ?? (landing.isVerified ? try? inspectorStrip(named: header.name) : nil)
             guard let strip else {
                 entry["strip"] = NSNull()
-                entry["strip_note"] = moveFailure.map {
-                    "track \(header.number) could not be selected, so its strip was not read"
-                        + " and no other strip was read in its place: \($0)"
-                } ?? ("no inspector channel strip for track \(header.number) '\(header.name)' was"
-                    + " visible after selecting it — the left inspector may be hidden"
-                    + " (View > Show Inspector)")
+                let hiddenTail: String = inspectorHold?.attempted == true
+                    ? " — Logic's Inspector is hidden and this call's press of View > Inspector"
+                        + " did not bring a strip up. Show it in Logic (View > Inspector, or the"
+                        + " I key) and read this track again."
+                    : ". The header switches above are still Logic's own."
+                let unread = "no inspector channel strip for track \(header.number)"
+                    + " '\(header.name)' was visible after selecting it" + hiddenTail
+                if let moveFailure {
+                    entry["strip_note"] = "track \(header.number) could not be selected, so its"
+                        + " strip was not read and no other strip was read in its place:"
+                        + " \(moveFailure)"
+                } else {
+                    entry["strip_note"] = unread
+                }
                 entries.append(entry)
                 continue
             }

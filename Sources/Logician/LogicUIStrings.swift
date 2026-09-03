@@ -679,6 +679,19 @@ enum LogicUIStrings {
         /// `View > Show/Hide List Editors`
         static let view = "View"
         static let listEditors = "List Editors"
+        /// `View > Inspector` — the toggle a hidden Inspector is shown with,
+        /// pressed once to show and once to put back (`InspectorHold`).
+        ///
+        /// READ OFF Logic Pro 12.3.1's own View menu 2026-09-03: the item is
+        /// titled exactly `Inspector`, with no verb and NO `AXMenuItemMarkChar`
+        /// on it in either state — so the menu says nothing about whether the
+        /// pane is up, and the only honest answer to that question is whether
+        /// the project window publishes a channel strip (`InspectorPresence`).
+        /// Its neighbours in that menu are `Library`, `Mixer`, `Smart Controls`,
+        /// `Editor`, `List Editors`, `Note Pads`, `Loop Browser`, `Browsers`,
+        /// `Control Bar`, `Toolbar` — none of them contains this word, so the
+        /// fragment match cannot land on the wrong pane.
+        static let inspector = "Inspector"
         /// `File > Project Settings > Smart Tempo…`
         static let projectSettings = "Project Settings"
         static let smartTempo = "Smart Tempo"

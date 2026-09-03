@@ -205,12 +205,19 @@ extension LogicAccessibility {
     /// It also hands back the inspector channel strip its own verification
     /// walked to — see `SelectionVerification`. `nil` when the verification
     /// landed on the rename-staleness branch, where no strip of that name
-    /// exists to hand back.
+    /// exists to hand back, or on the header-only branch, where no strip
+    /// exists at all — `inspector` tells the caller which, so a caller that
+    /// wanted the strip knows whether to go looking for one.
     func selectTrackReportingRows(
         trackName: String,
         trackNumber: Int?,
         expectedProjectPath: String?
-    ) throws -> (result: [String: Any], rows: [TrackChange.Row], strip: AXUIElement?) {
+    ) throws -> (
+        result: [String: Any],
+        rows: [TrackChange.Row],
+        strip: AXUIElement?,
+        inspector: InspectorPresence?
+    ) {
         try verifyProjectPath(expectedProjectPath)
 
         let group = try trackHeaderGroup()
@@ -228,14 +235,15 @@ extension LogicAccessibility {
 
         let standing = target.selected
             ? verifySelection(target.item, name: target.name)
-            : .notSelected
+            : .headerNotSelected
         if standing.isVerified {
             return (selectionResult(
                 state: "already_selected",
                 target: target,
                 previous: previousDescription,
-                writeRoute: "none"
-            ), rows, standing.strip)
+                writeRoute: "none",
+                readbackRoute: standing.verification.readbackRoute
+            ), rows, standing.strip, standing.inspector)
         }
 
         // The selection is about to MOVE. That is the one moment a deferred
@@ -258,7 +266,7 @@ extension LogicAccessibility {
         MCUController.forgetChannelFocus()
 
         var writeRoute = "ax_selected_children"
-        var landed = SelectionVerification.notSelected
+        var landed = SelectionEvidence.headerNotSelected
         let setStatus = AXUIElementSetAttributeValue(
             group,
             "AXSelectedChildren" as CFString,
@@ -302,8 +310,9 @@ extension LogicAccessibility {
             state: "selected",
             target: target,
             previous: previousDescription,
-            writeRoute: writeRoute
-        ), rows, landed.strip)
+            writeRoute: writeRoute,
+            readbackRoute: landed.verification.readbackRoute
+        ), rows, landed.strip, landed.inspector)
     }
 
     /// Waits for the selection write to be readable on both planes.
@@ -325,15 +334,17 @@ extension LogicAccessibility {
     /// verification already held (`trackInfo` paid that twice per track:
     /// 143 ms of a 1 149 ms single-track call, ≈2.8 s of a 19-track read;
     /// profiles/logic_track_info.md §6).
-    func pollSelectionVerified(_ item: AXUIElement, name: String) -> SelectionVerification {
+    func pollSelectionVerified(_ item: AXUIElement, name: String) -> SelectionEvidence {
+        var lastKnown: InspectorPresence?
         for _ in 0..<20 {
             Thread.sleep(forTimeInterval: 0.1)
-            let verification = verifySelection(item, name: name)
-            if verification.isVerified {
-                return verification
+            let evidence = verifySelection(item, name: name)
+            if let presence = evidence.inspector { lastKnown = presence }
+            if evidence.isVerified {
+                return evidence
             }
         }
-        return .notSelected
+        return SelectionEvidence(verification: .notSelected, inspector: lastKnown)
     }
 
     /// What `trackSelectionVerified` decided, and — when the inspector itself
@@ -347,6 +358,12 @@ extension LogicAccessibility {
         /// track was renamed in place — a verified selection with no strip of
         /// that name to hand back (see `InspectorReadback`).
         case verifiedStaleName
+        /// The header says selected and there is no inspector plane to ask:
+        /// Logic's Inspector is hidden, so it publishes no channel strip for
+        /// any track (see `InspectorPresence`). Verified on the one plane that
+        /// exists — the same header row `InspectorReadback` already trusts
+        /// when the two planes disagree — and with no strip to hand back.
+        case verifiedHeaderOnly
 
         var isVerified: Bool {
             if case .notSelected = self { return false }
@@ -359,6 +376,35 @@ extension LogicAccessibility {
         var strip: AXUIElement? {
             if case .verified(let strip) = self { return strip }
             return nil
+        }
+
+        /// What the result publishes as `readback_route`. A header-only
+        /// verification must not claim the inspector confirmed anything.
+        var readbackRoute: String {
+            if case .verifiedHeaderOnly = self { return "ax_selected_header_row" }
+            return "ax_selected_and_inspector_strip"
+        }
+    }
+
+    /// One look at the selection: what it decided, and what the inspector
+    /// plane was able to say while deciding it.
+    ///
+    /// The presence rides along because it is FREE here — the look walks the
+    /// inspector strips anyway — and because it is the fact the caller's
+    /// result has to publish. `nil` means this look never had to ask: the
+    /// header row said "not selected" and there was nothing to cross-check,
+    /// which is not the same as an inspector that was asked and said nothing.
+    struct SelectionEvidence {
+        let verification: SelectionVerification
+        let inspector: InspectorPresence?
+
+        var isVerified: Bool { verification.isVerified }
+        var strip: AXUIElement? { verification.strip }
+
+        /// The cheap early out: the header row itself is not selected, so no
+        /// inspector walk was taken.
+        static var headerNotSelected: SelectionEvidence {
+            SelectionEvidence(verification: .notSelected, inspector: nil)
         }
     }
 
@@ -376,6 +422,12 @@ extension LogicAccessibility {
     /// carries the measurement (a rename used to make its own follow-up call
     /// refuse after 8.9 s). Everything the old comparison rejected, it still
     /// rejects.
+    ///
+    /// And the inspector plane can be ABSENT rather than disagreeing: with
+    /// Logic's Inspector hidden there is no channel strip for any track, which
+    /// is not evidence against a selection and must not be read as any. See
+    /// `InspectorPresence` for what that cost before 2026-09-03 (a 15.7 s
+    /// refusal naming the row it had just selected).
     func trackSelectionVerified(_ item: AXUIElement, name: String) -> Bool {
         verifySelection(item, name: name).isVerified
     }
@@ -384,11 +436,32 @@ extension LogicAccessibility {
     /// — `trackSelectionVerified`'s answer plus the element it found on the
     /// way to it. Nothing about the decision changed when this grew a return
     /// value: every state the boolean rejected, this rejects.
-    func verifySelection(_ item: AXUIElement, name: String) -> SelectionVerification {
+    ///
+    /// ONE inspector walk, whatever it decides. It used to take up to three —
+    /// `inspectorStrip(named:)`, then `leftInspectorStripName()`, then the
+    /// header column — and the disagreement path took all three on every one
+    /// of `pollSelectionVerified`'s twenty looks, which is where the 15.7 s
+    /// hidden-Inspector refusal actually went. The strips list is walked here
+    /// and every question is asked of THAT list.
+    func verifySelection(_ item: AXUIElement, name: String) -> SelectionEvidence {
         guard stringAttribute(item, kAXSelectedAttribute as String) == "1" else {
-            return .notSelected
+            return .headerNotSelected
         }
-        if let strip = try? inspectorStrip(named: name) { return .verified(strip: strip) }
+        guard let strips = try? inspectorStrips() else {
+            // No project window: the cross-check was not refused, it was
+            // impossible, and an impossible cross-check verifies nothing.
+            return SelectionEvidence(verification: .notSelected, inspector: .unavailable)
+        }
+        guard !strips.isEmpty else {
+            // Logic's Inspector is hidden. There is no second plane, so the
+            // header row is the whole of the evidence — and it is the same
+            // evidence `InspectorReadback` already trusts to overrule a strip
+            // that disagrees.
+            return SelectionEvidence(verification: .verifiedHeaderOnly, inspector: .hidden)
+        }
+        if let strip = matchInspectorStrip(strips, named: name) {
+            return SelectionEvidence(verification: .verified(strip: strip), inspector: .shown)
+        }
         // Only reached when the header says selected and the inspector does
         // not agree — which is either the rename staleness or the wrong-strip
         // state, and the extra reads are priced against the 8.9 s the first
@@ -398,12 +471,14 @@ extension LogicAccessibility {
             selectedHeaderName: parseTrackDescription(
                 stringAttribute(item, kAXDescriptionAttribute as String)
             )?.name,
-            inspectorName: leftInspectorStripName(),
+            inspectorName: leftInspectorStrip(of: strips)?.name,
             renderedNames: ((try? parsedTrackHeaders()) ?? []).map(\.name),
             renamedInPlace: LogicAccessibility.renamedInPlace
         )
-        if case .staleAfterRename = verdict { return .verifiedStaleName }
-        return .notSelected
+        if case .staleAfterRename = verdict {
+            return SelectionEvidence(verification: .verifiedStaleName, inspector: .shown)
+        }
+        return SelectionEvidence(verification: .notSelected, inspector: .shown)
     }
 
     func restoreSelection(_ previousItem: AXUIElement?, in group: AXUIElement) -> Bool {
@@ -431,11 +506,16 @@ extension LogicAccessibility {
             .joined(separator: ", ")
     }
 
+    /// `readbackRoute` is passed in rather than hardcoded: a selection proved
+    /// off the header row alone, because Logic's Inspector is hidden, must not
+    /// publish `ax_selected_and_inspector_strip` — the whole point of the
+    /// field is that an agent can see which planes agreed.
     func selectionResult(
         state: String,
         target: TrackHeader,
         previous: String,
-        writeRoute: String
+        writeRoute: String,
+        readbackRoute: String
     ) -> [String: Any] {
         [
             "success": true,
@@ -445,7 +525,7 @@ extension LogicAccessibility {
             "track_name": target.name,
             "previous_selection": previous,
             "write_route": writeRoute,
-            "readback_route": "ax_selected_and_inspector_strip"
+            "readback_route": readbackRoute
         ]
     }
 
