@@ -1483,6 +1483,28 @@ with every render coming back as audio the agent can listen to.
   is rather than read as slot contents, and a loop that still cannot get there says what it
   saw and hands the surface back to the neutral Pan view.
 
+- **Selecting many regions is twice as fast, says which way the selection moved, and no
+  longer fires blind.** `logic_select_regions` slept 0.25 s before it ever looked at the
+  count it was waiting for, and the count had already moved on the first look in 8 of 8
+  measured calls; it looks first now, keeping a 0.4 s budget for the genuinely slow case,
+  and the anchored modes walk the arrangement once instead of twice. Warm, measured on
+  the same project minutes apart: `none` 442–470 → **202–204 ms**, `all` 443–453 →
+  **199–207 ms**, `track` 632–650 → **278–291 ms**; cold 573 / 558 / 731 → **337 / 337 /
+  406 ms**. The two calls with nothing to do were the worst of all — a `none` on an empty
+  selection and an `all` on an already fully selected project each burned the full eight
+  sleeps, 2 766 ms and 2 788 ms, and now cost **211 ms** and **197 ms**. A clear also says
+  it cleared: `mode: "none"` used to report `state: "selected"` on every successful
+  deselection (6 of 6 live, each with `selected_count: 0`), so a caller reading `state`
+  rather than the count read a clear as a selection; it reports `cleared` now, or
+  `already_clear` when nothing was selected to begin with. And `all` and `none` were the
+  only two paths in the region family with no Tracks-area keyboard focus probe — the
+  precondition that makes one of these commands do nothing at all, silently, when it is
+  missing. They now take the same probe as every sibling, repaired against whatever track
+  is already selected so nothing else moves, and carry `key_focus` in the result: live,
+  with a plug-in window standing open, `mode: "none"` cleared its three regions and said
+  `key_focus: unverified (AXWindow 'dialog')` where it used to say nothing at all, and a
+  failure in that state now names the focus as its first suspect.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.
