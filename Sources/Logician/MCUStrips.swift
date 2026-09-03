@@ -1086,7 +1086,7 @@ extension MCUController {
             "any_soloed": soloStanding.map { $0 as Any } ?? NSNull() as Any,
             "led_evidence": window >= recBlinkWindow ? "blink_window" : "settled_window",
             "meter_feed": meterFeedAvailable ? "available" : "unavailable",
-            "note": "One read of the whole mixer off Logic's own control-surface feedback. volume_db is the dB string Logic prints in its channel-strip Volume view (the readout logic_set_track_volume converges against) — not a conversion of the fader position, which is reported separately and raw as fader_14bit. muted/soloed/selected/record_armed come from the LED mirror, each sampled across a WINDOW rather than one instant, because Logic uses a blinking LED as a state of its own: an armed strip's record LED flashes (~640 ms on / 640 ms off), so seen-lit-once means armed, while the mute LED flashes on every channel a standing solo silences, so only a STEADY mute LED is a mute — a blinking one is marked mute_led_blinking and reported muted: false. any_soloed is note 0x73, Logic's whole-project solo indicator, which sees soloed channels this surface has no strip for. assignment_after is the view the surface is HANDED OVER in: the return to the pan view is deferred (surface_restore) and paid by the next control-surface tool or at session end."
+            "note": "One read of the whole mixer off Logic's own control-surface feedback. volume_db is the dB string Logic prints in its channel-strip Volume view (the readout logic_set_track_mix converges against) — not a conversion of the fader position, which is reported separately and raw as fader_14bit. muted/soloed/selected/record_armed come from the LED mirror, each sampled across a WINDOW rather than one instant, because Logic uses a blinking LED as a state of its own: an armed strip's record LED flashes (~640 ms on / 640 ms off), so seen-lit-once means armed, while the mute LED flashes on every channel a standing solo silences, so only a STEADY mute LED is a mute — a blinking one is marked mute_led_blinking and reported muted: false. any_soloed is note 0x73, Logic's whole-project solo indicator, which sees soloed channels this surface has no strip for. assignment_after is the view the surface is HANDED OVER in: the return to the pan view is deferred (surface_restore) and paid by the next control-surface tool or at session end."
         ]
         if meterFeedAvailable {
             result["meter_note"] = "meter_level is Logic's OWN control-surface meter for that strip:"
@@ -1108,7 +1108,7 @@ extension MCUController {
             appendWarning(
                 "\(unreadableDb) strip(s) had no parsable dB cell in the channel-strip Volume view;"
                     + " their volume_db is null and volume_text carries whatever the LCD showed."
-                    + " Re-read, or ask for the single strip with logic_set_track_volume's readback.",
+                    + " Re-read, or ask for the single strip with logic_set_track_mix's readback.",
                 to: &result
             )
         }

@@ -105,7 +105,7 @@ extension LogicAccessibility {
     /// shows the events of the SELECTED REGION (or of the selected track's
     /// region under the playhead) — never the project's MIDI as a whole. This
     /// function reads what the list is showing; deciding what it should show is
-    /// the caller's job, done with `logic_select_region` before the call.
+    /// the caller's job, done with `logic_select_regions` before the call.
     func readEventList() -> (
         events: [[String: Any]]?, census: ListEditorCensus?, columns: [String],
         region: String?, failure: ListEditorFailure?

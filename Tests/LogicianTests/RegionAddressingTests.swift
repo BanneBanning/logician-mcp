@@ -190,7 +190,7 @@ final class RegionTrackNumberSchemaTests: XCTestCase {
     func testEveryRegionToolAdvertisesTrackNumber() {
         let server = MCPServer()
         let regionTools = [
-            "logic_select_region", "logic_select_regions", "logic_delete_region",
+            "logic_select_regions", "logic_delete_region",
             "logic_move_region", "logic_split_region", "logic_copy_region",
             "logic_rename_region", "logic_get_region_params", "logic_set_region_params",
             "logic_remove_silence", "logic_list_events", "logic_edit_event",

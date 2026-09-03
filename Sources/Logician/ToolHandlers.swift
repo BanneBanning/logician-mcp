@@ -226,6 +226,13 @@ extension MCPServer {
     /// accepts both, so a handler that only reads `as? Double` silently ignores
     /// the integer form.
     func doubleArgument(_ key: String, in arguments: [String: Any]) -> Double? {
+        MCPServer.doubleArgument(key, in: arguments)
+    }
+
+    /// The same rule, reachable from the pure argument PARSERS that have no
+    /// server to hang off (`TrackMixPlan`). One implementation, so a handler
+    /// and a parser cannot read the same JSON number two different ways.
+    static func doubleArgument(_ key: String, in arguments: [String: Any]) -> Double? {
         (arguments[key] as? Double) ?? (arguments[key] as? Int).map(Double.init)
     }
 

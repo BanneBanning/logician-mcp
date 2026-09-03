@@ -310,7 +310,7 @@ extension LogicAccessibility {
             + " barline, selected when false. type comes from that same help text and is NOT"
             + " guaranteed (all 54 regions of the reference project on 2026-09-02, 2 of the same"
             + " 54 hours earlier): one typed region types its row (type_from: \"track_row\"), and"
-            + " an absent type means UNKNOWN, never 'not audio' — logic_select_region or"
+            + " an absent type means UNKNOWN, never 'not audio' — logic_select_regions or"
             + " logic_describe_tracks answers it."
         return note
     }
@@ -2039,7 +2039,7 @@ extension LogicAccessibility {
             )
             // One region on the track needs no further identification; more
             // than one and the caller has to say which, exactly as
-            // logic_select_region requires.
+            // mode 'region' requires.
             if regionName == nil && startBar == nil && regions.count == 1 {
                 anchor = try selectRegion(
                     trackName: trackName, regionName: regions[0]["name"] as? String,

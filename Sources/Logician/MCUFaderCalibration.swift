@@ -27,7 +27,7 @@ import LogicMCUBridge
 /// retired on the spot, the house rule for a cache caught out.
 struct FaderCalibrationTable: Codable, Equatable {
     /// dB keyed at ONE decimal: the resolution Logic prints dB in, and finer
-    /// than `logic_set_track_volume`'s default 0.15 dB tolerance can resolve.
+    /// than `logic_set_track_mix`'s default 0.15 dB tolerance can resolve.
     private(set) var positions: [String: Int]
 
     static let empty = FaderCalibrationTable(positions: [:])

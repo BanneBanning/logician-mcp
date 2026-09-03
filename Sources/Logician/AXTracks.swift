@@ -925,7 +925,7 @@ extension LogicAccessibility {
             )
         }
         // The verified no-op, named the way its siblings name theirs
-        // (`logic_set_track_mute`/`_solo` report `already_on`/`already_off`):
+        // (the mute/solo sections report `already_on`/`already_off`):
         // the knob is where the caller asked for it and nothing was written.
         if before == position {
             return [

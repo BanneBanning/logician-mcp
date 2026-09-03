@@ -4,7 +4,7 @@
 
 The first public release, staged and waiting on the go-public decision.
 
-Logician gives any MCP client verified control of Logic Pro: 85 typed tools across
+Logician gives any MCP client verified control of Logic Pro: 81 typed tools across
 mixing, plugins (third-party parameters included), regions, MIDI composition and
 editing, tempo and meter maps, automation, markers, and dialog-free audio export —
 with every render coming back as audio the agent can listen to.
@@ -2148,6 +2148,28 @@ with every render coming back as audio the agent can listen to.
   `inspector_restored: true` six times out of six, where the first call alone used to
   fail. When Logic does refuse the press, the result carries `inspector_note` saying
   which window is holding the Inspector open and how to let go of it.
+
+- **A strip's level, pan, mute and solo are ONE call, and one tool.** `logic_set_track_mix`
+  takes any subset of the four — `{volume_db: -3, pan: 12, mute: false}` is a single round
+  trip where it used to be three — and writes them in a fixed order (volume, pan, mute,
+  then solo: mute before solo, because Logic flashes the mute LED of every channel a
+  standing solo silences and a mute written after this call's own solo would have to be
+  read through that 1.4 s blink window). Every write is verified exactly as its own tool
+  verified it and keeps its own section of the result, with its own state and readback;
+  the top-level `success`/`verified` are the AND of them, and `written`/`unchanged`/`refused`
+  say which parameter went which way. Compare-and-set stays PER PARAMETER
+  (`expected_current_volume_db`, `expected_current_pan`, `expected_current_mute`,
+  `expected_current_solo`), so a stale belief about the fader refuses the fader and lets
+  the pan land — never one overloaded `expected_current` standing for a dB, a knob
+  position and two booleans. Region selection folded the same way: `logic_select_regions`
+  now selects ONE region (`mode: "region"`, the default, with the arguments the old tool
+  took) as well as a track's worth, everything after a point, all, or none. Five tool
+  names became two, and what the fold buys every session is 2,448 bytes / 499 tokens of
+  `tools/list` that four descriptions used to spend repeating one set of addressing,
+  verification and compare-and-set rules four times. The removed names —
+  `logic_set_track_volume`, `logic_set_track_pan`, `logic_set_track_mute`,
+  `logic_set_track_solo`, `logic_select_region` — are listed with their replacements
+  under "Renamed and removed" in the agent guide.
 
 ### Known limitations (honest by design)
 

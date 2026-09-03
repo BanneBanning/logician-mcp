@@ -89,10 +89,7 @@ enum Toolset: String, CaseIterable {
         "logic_set_track_stack": [.regions],
 
         // The strips
-        "logic_set_track_volume": [.core],
-        "logic_set_track_pan": [.core],
-        "logic_set_track_mute": [.core],
-        "logic_set_track_solo": [.core],
+        "logic_set_track_mix": [.core],
         "logic_set_track_record_arm": [.core, .composition],
         "logic_set_mixer": [.core],
         "logic_add_send": [.core],
@@ -126,7 +123,6 @@ enum Toolset: String, CaseIterable {
 
         // Regions and markers
         "logic_list_regions": [.regions],
-        "logic_select_region": [.regions],
         "logic_select_regions": [.regions],
         "logic_split_region": [.regions],
         "logic_move_region": [.regions],
