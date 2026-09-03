@@ -6,8 +6,30 @@ import Foundation
 
 extension LogicAccessibility {
 
-    /// Opens or closes Logic's Mixer WINDOW via `Window > Open Mixer`, and
+    /// Opens or closes Logic's Mixer WINDOW — open by Logic's own
+    /// `Open Mixer…` key command, close by the window's close button — and
     /// verifies against the window list.
+    ///
+    /// THE OPEN USED TO WALK THE MENU BAR (`Window > Open Mixer`), and that
+    /// press was the call: measured 2026-09-03 on the reference project,
+    /// 1,035 ms open against 231/244 ms for the `already_open` no-op that does
+    /// everything except press. The key command is the same operation with no
+    /// menu walk, no `AXPress`-that-answers-success-and-does-nothing fallback
+    /// to `MenuShortcut`, and — the durable half — no `Window` or `Open Mixer`
+    /// English menu literal on the path of a `.core` tool. Logic's row is
+    /// `Open Mixer…` under `Global Commands`, so it fires regardless of
+    /// keyboard focus and needs no Tracks-area probe.
+    ///
+    /// The CLOSE is unchanged, because it was never a menu press: Logic's
+    /// neighbouring `Show/Hide Mixer` row toggles the Mixer PANE, not this
+    /// window, so the window's own close button stays the route.
+    ///
+    /// Both directions still call `ensureLogicFrontmost`, and that is not
+    /// laziness about the plane's background advantage — it is the READBACK's
+    /// requirement. A backgrounded Logic publishes only its main/focused
+    /// window, so the window list this verifies against is unreadable from
+    /// there in both directions (see below). It costs 1 ms when Logic is
+    /// already front.
     ///
     /// WHAT THE LIVE RUN SAID (2026-08-28, COVERAGE G57). The tool was built on
     /// the hope that an open Mixer would put `Master` and the auxes within
@@ -46,8 +68,9 @@ extension LogicAccessibility {
         let before = mixerWindow()
         var payload: [String: Any] = [
             "requested": open ? "open" : "closed",
-            "write_route": open ? "menu_window_open_mixer" : "window_close_button"
+            "write_route": open ? "key_command" : "window_close_button"
         ]
+        if open { payload["key_command"] = KeyCommandRegistry.Name.openMixer }
         if (before != nil) == open {
             payload["success"] = true
             payload["verified"] = true
@@ -57,21 +80,21 @@ extension LogicAccessibility {
             return payload
         }
         if open {
-            // `settled:` matters here: a menu AXPress that answers `.success`
-            // and does nothing is a measured Logic 12.3.1 behaviour, and the
-            // item's own advertised shortcut is the fallback.
-            try pressMenuItem(
-                containing: LogicUIStrings.Menu.openMixer, underMenu: LogicUIStrings.Menu.window,
-                settled: { [weak self] in self?.mixerWindow() != nil }
-            )
+            try fireKeyCommand(KeyCommandRegistry.Name.openMixer)
         } else if let window = before {
             guard closeWindowElement(window) else {
                 throw LogicianError.writeFailed("the Mixer window has no reachable close button")
             }
         }
         var nowOpen = before != nil
-        for _ in 0..<25 {
-            Thread.sleep(forTimeInterval: 0.12)
+        // Look-first (`lookFirstShouldSleep`), which the menu route's 120 ms
+        // pre-check sleep never was: the window list is 1.7 ms warm, so a
+        // window that is already there costs one read instead of a tick. The
+        // 25 × 120 ms budget behind it is unchanged — Logic's own draw and the
+        // measured 409-411 ms Accessibility teardown after a close are the
+        // real cost of this call and no write route touches them.
+        for attempt in 0..<25 {
+            if lookFirstShouldSleep(attempt: attempt) { Thread.sleep(forTimeInterval: 0.12) }
             nowOpen = mixerWindow() != nil
             if nowOpen == open { break }
         }
@@ -81,9 +104,17 @@ extension LogicAccessibility {
         payload["state"] = nowOpen == open ? (open ? "open" : "closed") : "failed"
         addStripCensus(to: &payload, mixerOpen: nowOpen)
         guard nowOpen == open else {
+            // A key command replies success the moment its note is valid, so
+            // on the open direction the window list is the whole of the
+            // evidence and the refusal says which route was blind.
+            let route = open
+                ? "'\(KeyCommandRegistry.Name.openMixer)' was fired and a key command carries no"
+                    + " acknowledgement of its own, so the window list is the only witness: it"
+                    + " still says"
+                : "the window list still says"
             throw LogicianError.verificationFailed(
                 requested: "the Mixer \(open ? "open" : "closed")",
-                actual: "the window list still says \(nowOpen ? "open" : "closed")",
+                actual: "\(route) \(nowOpen ? "open" : "closed")",
                 restored: true
             )
         }
