@@ -784,6 +784,22 @@ struct InsertSlot {
     }
 }
 
+/// A look-first retry loop sleeps before every attempt EXCEPT the first, so a
+/// result that is already sitting there (an `AXUIElementPerformAction`'s
+/// effect, or a key command's) costs nothing instead of one guaranteed tick.
+/// `attempt` is 0-based. Pure and shared so the shape is unit-tested without
+/// a live AX walk — see `LogicAccessibility.setCycle`'s key-command fallback
+/// and `setTransportCheckbox`'s AX-press verification, both of which used to
+/// sleep unconditionally before their first look (borrowed estimate, pattern
+/// #9, profiles/logic_set_cycle.md C1, 2026-09-02).
+///
+/// `MCUMetronome.setMetronome`'s verification loop is the same shape (fixed
+/// 2026-09-03: measured 150-167 ms and 94.6% of a warm toggle sleeping before
+/// a result `awaitEvents` already had) but is driven by its own `while` loop
+/// rather than this helper, because its first look is free-standing rather
+/// than attempt 0 of a `for` range.
+func lookFirstShouldSleep(attempt: Int) -> Bool { attempt > 0 }
+
 struct WindowKey: Hashable {
     let element: AXUIElement
 

@@ -19,9 +19,34 @@ extension MCUController {
     /// bar's metronome button.
     static let clickLED = 0x59
 
-    /// Turns the metronome click on or off. Compare-and-set against the control
-    /// bar's own checkbox; verified by reading that checkbox back, with the
-    /// surface LED as a second source.
+    /// Resolves the metronome's current state, preferring the free in-memory
+    /// LED read and calling `ax()` only when the LED itself is unreadable.
+    ///
+    /// `axState()` is a full AX control-bar walk (`getTransport()`, measured
+    /// 5.7-161.5 ms live) that this session's control-bar layout never
+    /// resolved at all (`metronome: null` 3/3 reads) — yet it used to run
+    /// FIRST, unconditionally, on every branch including `already_*`: 65% of
+    /// that fast path's cost, 3.2% of a warm toggle, spent on a value the
+    /// call then discarded (profiles/logic_set_metronome.md N1, 2026-09-03).
+    /// `ledState` is already-populated by the time this runs (`freshStatus`
+    /// is an in-memory read, no socket call unless the mirror needs a pull),
+    /// so it is asked first; `ax` stays the tie-breaker of record for when
+    /// the LED cannot be read, never the first question.
+    ///
+    /// Pure and closure-driven so the ORDER — not just the outcome — is
+    /// unit-tested: `ax` must not run at all when `ledState` already answers.
+    static func resolveMetronomeState(
+        ledState: Bool?, ax: () -> Bool?
+    ) -> (current: Bool, route: String)? {
+        if let ledState { return (ledState, "mcu_click_led") }
+        if let value = ax() { return (value, "ax_control_bar_metronome") }
+        return nil
+    }
+
+    /// Turns the metronome click on or off. Compare-and-set against the
+    /// surface's own click LED (the free, always-populated source); verified
+    /// by reading that LED back, with the control bar's checkbox as the
+    /// tie-breaker when the LED cannot be read.
     static func setMetronome(logic: LogicAccessibility, enabled: Bool) throws -> [String: Any] {
         try requireSurface(
             "the metronome button on the control surface", consequence: "Nothing was pressed"
@@ -29,11 +54,12 @@ extension MCUController {
         func axState() -> Bool? { (try? logic.getTransport())?["metronome"] as? Bool }
         func ledState() -> Bool? { freshStatus().map { ledLit(clickLED, in: $0) } }
 
-        let before = axState()
-        guard let current = before ?? ledState() else {
+        guard let (current, readbackRoute) = MCUController.resolveMetronomeState(
+            ledState: ledState(), ax: axState
+        ) else {
             throw LogicianError.trackNotExposed(
                 requested: "the metronome's current state",
-                exposed: "neither the control bar's Metronome Click checkbox nor the surface's click LED"
+                exposed: "neither the surface's click LED nor the control bar's Metronome Click checkbox"
                     + " could be read, so a toggle could not be verified. Nothing was pressed."
             )
         }
@@ -43,19 +69,28 @@ extension MCUController {
                 "state": "already_" + (enabled ? "on" : "off"),
                 "metronome": enabled,
                 "route": "mcu",
-                "readback_route": before != nil ? "ax_control_bar_metronome" : "mcu_click_led"
+                "readback_route": readbackRoute
             ]
         }
 
         let events = freshStatus()?["received_events"] as? Int ?? -1
         try press("click")
-        _ = awaitEvents(since: events, timeoutMs: 1200)
+        let afterPress = awaitEvents(since: events, timeoutMs: 1200)
 
-        var landed: Bool?
-        for _ in 0..<12 {
+        // Look first, sleep only on a miss — the same shape as
+        // `MCUController.waitFor`/`pollStatus`. `awaitEvents` above already
+        // blocks until the LED echo lands (measured 0.3-7.4 ms on both
+        // real-toggle calls, 2026-09-03 profile, landing on loop iteration 1
+        // every time) — yet this loop used to sleep 150 ms BEFORE every look
+        // regardless, 94.6% of a warm toggle (167.9 of 177.3 ms) spent
+        // waiting for a result that was already sitting in `afterPress`.
+        func currentState() -> Bool? { ledState() ?? axState() }
+        var landed = afterPress.map { ledLit(clickLED, in: $0) } ?? currentState()
+        var attempts = 1 // the look above already spent the first, free look
+        while landed != enabled, attempts < 12 {
             Thread.sleep(forTimeInterval: 0.15)
-            landed = axState() ?? ledState()
-            if landed == enabled { break }
+            landed = currentState()
+            attempts += 1
         }
         let ledAfter = ledState()
         guard landed == enabled else {
@@ -75,14 +110,13 @@ extension MCUController {
             "before": current,
             "route": "mcu",
             "write_route": "mcu_click_button",
-            "readback_route": before != nil ? "ax_control_bar_metronome" : "mcu_click_led",
+            "readback_route": readbackRoute,
             "click_led": ledAfter.map { $0 as Any } ?? NSNull() as Any
         ]
-        if before == nil {
+        if readbackRoute != "mcu_click_led" {
             appendWarning(
-                "The control bar's Metronome Click checkbox could not be read, so this write is"
-                    + " confirmed only by the surface's own click LED. logic_get_transport reports"
-                    + " the checkbox when Accessibility can see it.",
+                "The surface's click LED could not be read, so this write is confirmed only by"
+                    + " the control bar's Metronome Click checkbox.",
                 to: &result
             )
         }

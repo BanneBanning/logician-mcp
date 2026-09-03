@@ -6,8 +6,20 @@ import LogicMCUBridge
 extension MCUController {
     // MARK: Transport
 
+    /// Gates on `requireSurface`, not bare `freshStatus()` — a mirror that has
+    /// merely gone idle (`SurfaceUnavailability.logicSilent`, past
+    /// `staleMirrorSeconds`) is answerable with `requireSurface`'s one
+    /// `wakeSurface()` probe, and used to downshift straight to the AX
+    /// fallback instead (profiles/logic_set_cycle.md N1, 2026-09-02). `try?`
+    /// turns a GENUINE unavailability (no daemon, Logic not running, Logic
+    /// never talked to the surface) back into the `nil` this function already
+    /// used to hand the write to `logic.setPlaying`'s AX route — only the
+    /// merely-idle case now stays on MCU. Same shape as `MCUMixing.setToggle`
+    /// and `MCUMetronome.setMetronome`.
     static func setPlaying(_ playing: Bool) throws -> [String: Any]? {
-        guard let status = freshStatus() else { return nil }
+        guard let status = try? requireSurface(
+            "the play/stop transport buttons on the control surface", consequence: "Nothing was pressed"
+        ) else { return nil }
         let playLED = 0x5E
         if ledLit(playLED, in: status) == playing {
             return [
@@ -33,8 +45,13 @@ extension MCUController {
         ]
     }
 
+    /// See `setPlaying` above: `requireSurface` wakes a merely-idle mirror
+    /// instead of silently taking the AX fallback (profiles/
+    /// logic_set_cycle.md N1). `nil` still means genuinely unavailable.
     static func setCycle(_ enabled: Bool) throws -> [String: Any]? {
-        guard let status = freshStatus() else { return nil }
+        guard let status = try? requireSurface(
+            "the cycle button on the control surface", consequence: "Nothing was pressed"
+        ) else { return nil }
         let cycleLED = 0x56
         if ledLit(cycleLED, in: status) == enabled {
             return [
