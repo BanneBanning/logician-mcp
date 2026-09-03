@@ -97,6 +97,8 @@ func headerlessStripError(
         return trackMiss
     case .ambiguous(let cells):
         return .stripAmbiguous(name: name, cells: cells)
+    case .ambiguousNumbered(_, let numbers):
+        return .trackAmbiguous(name, numbers: numbers)
     case .notFound(let cells):
         return .stripNotFound(name: name, tracks: visibleTracks, cells: cells)
     case .unavailable(let reason):

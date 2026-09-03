@@ -1005,8 +1005,22 @@ extension MCUController {
     /// left banked at it — or nil when it could not be resolved SAFELY, which
     /// callers answer by trying the other control plane, never by guessing.
     /// `lastChannelResolution` carries the reason.
-    static func findChannel(trackName: String, retryOnEmpty: Bool = true) throws -> Int? {
-        let resolution = try resolveChannel(trackName: trackName, retryOnEmpty: retryOnEmpty)
+    ///
+    /// - Parameters:
+    ///   - trackNumber: breaks a tie between several strips that abbreviate
+    ///     alike (duplicate names, or two names Logic abbreviates the same
+    ///     way) — see `tieBreakChannelMatches`. `nil` when the caller has no
+    ///     number, which is the ordinary case for a headerless strip.
+    ///   - headers: the AX track list `trackNumber` is checked against.
+    ///     Empty is safe (every caller that omits it gets exactly the old
+    ///     behaviour); it only ever narrows an otherwise-ambiguous result.
+    static func findChannel(
+        trackName: String, trackNumber: Int? = nil,
+        headers: [TrackRowAddressing.Row] = [], retryOnEmpty: Bool = true
+    ) throws -> Int? {
+        let resolution = try resolveChannel(
+            trackName: trackName, trackNumber: trackNumber, headers: headers, retryOnEmpty: retryOnEmpty
+        )
         lastChannelResolution = resolution
         guard case .resolved(let channel) = resolution else {
             debugLog("findChannel('\(trackName)'): \(resolution)")
@@ -1018,7 +1032,10 @@ extension MCUController {
     /// Banks to the leftmost position, scans right for a strip whose LCD name
     /// matches, and leaves the surface banked at the match. Nothing that
     /// matters is written on any failure path.
-    static func resolveChannel(trackName: String, retryOnEmpty: Bool = true) throws -> ChannelResolution {
+    static func resolveChannel(
+        trackName: String, trackNumber: Int? = nil,
+        headers: [TrackRowAddressing.Row] = [], retryOnEmpty: Bool = true
+    ) throws -> ChannelResolution {
         guard try ensurePanNames() else {
             debugLog("pan multi-channel view failed")
             return .unavailable(reason: "the control surface's pan-names view could not be reached")
@@ -1140,14 +1157,62 @@ extension MCUController {
             debugLog("empty bank scan; settling and rescanning once")
             Thread.sleep(forTimeInterval: 2.5)
             try? FileManager.default.removeItem(at: bankCacheURL)
-            return try resolveChannel(trackName: trackName, retryOnEmpty: false)
+            return try resolveChannel(
+                trackName: trackName, trackNumber: trackNumber, headers: headers, retryOnEmpty: false
+            )
         }
-        guard matches.count == 1, let match = matches.first else {
-            debugLog("match count \(matches.count)")
-            let cells = matches.map { lcdFields(bankTops[$0.bank])[$0.channel] }
-            return matches.isEmpty
-                ? .notFound(cells: bankMapCells(bankTops))
-                : .ambiguous(cells: cells)
+        let match: BankMatch
+        switch matches.count {
+        case 0:
+            debugLog("match count 0")
+            return .notFound(cells: bankMapCells(bankTops))
+        case 1:
+            match = matches[0]
+        default:
+            // Several cells abbreviate alike — a track_number, when it names
+            // one of the AX headers sharing this name, breaks the tie
+            // (`tieBreakChannelMatches`); a control-press banner standing in
+            // one of the cells is dropped first, never counted as a second
+            // strip.
+            let candidates = matches.map {
+                ChannelCandidate(match: $0, cell: lcdFields(bankTops[$0.bank])[$0.channel])
+            }
+            switch tieBreakChannelMatches(
+                candidates, trackName: trackName, headers: headers, trackNumber: trackNumber
+            ) {
+            case .resolved(let picked):
+                match = picked
+            case .ambiguousNumbered(let numbers):
+                debugLog("match count \(matches.count), AX headers name it ambiguous: \(numbers)")
+                return .ambiguousNumbered(cells: candidates.map(\.cell), numbers: numbers)
+            case .unresolved:
+                let cells = candidates.map(\.cell)
+                let sameNameHeaderCount = headers.filter {
+                    $0.name.caseInsensitiveCompare(trackName) == .orderedSame
+                }.count
+                if retryOnEmpty,
+                   isStaleDuplicateCellSuspect(cells: cells, sameNameHeaderCount: sameNameHeaderCount) {
+                    // The signature of the SAME strip's row read twice (a
+                    // repaint racing the scan, or a second bridge reader
+                    // sharing the mirror) rather than of two real strips: one
+                    // AX header owns this name and every candidate cell is
+                    // byte-identical. One settled re-read is the cure — the
+                    // same pattern the empty-scan retry above already uses —
+                    // rather than condemning it as ambiguous on a single pass.
+                    debugLog(
+                        "suspected stale duplicate cell for '\(trackName)' (\(cells));"
+                            + " settling and rescanning once"
+                    )
+                    Thread.sleep(forTimeInterval: 2.5)
+                    try? FileManager.default.removeItem(at: bankCacheURL)
+                    return try resolveChannel(
+                        trackName: trackName, trackNumber: trackNumber, headers: headers,
+                        retryOnEmpty: false
+                    )
+                }
+                debugLog("match count \(matches.count)")
+                return .ambiguous(cells: cells)
+            }
         }
         // Navigate back from the left edge, never relatively: when the track
         // count is not a multiple of 8 the rightmost bank CLAMPS (shows the

@@ -24,8 +24,17 @@ extension MCUController {
         /// No strip's LCD cell is a plausible abbreviation of the name.
         case notFound(cells: [String])
         /// Several DIFFERENT strips match (duplicate track names, or two names
-        /// that abbreviate to the same six characters).
+        /// that abbreviate to the same six characters), and the AX track list
+        /// could not settle which one — no numbers to offer at all, or the
+        /// candidate count does not line up with the header count (a
+        /// headerless strip in the collision, or a stale duplicate cell that
+        /// did not resolve on retry; see `isStaleDuplicateCellSuspect`).
         case ambiguous(cells: [String])
+        /// Several DIFFERENT strips match and the AX track list carries the
+        /// collision itself (that many headers share the name) — the numbers
+        /// are the way out, the same shape `track_info` refuses a duplicate
+        /// header name with.
+        case ambiguousNumbered(cells: [String], numbers: [Int])
         /// The surface could not be read or banked at all (bridge down, the
         /// pan-names view unreachable, a bank that never settled).
         case unavailable(reason: String)
@@ -125,6 +134,127 @@ extension MCUController {
             }
         }
         return dedupedMatches(matches, bankTops: bankTops)
+    }
+
+    // MARK: - Tie-breaking a multi-way LCD-name match by AX track number
+
+    /// One LCD-name match, carrying the live cell text a tie-break needs to
+    /// tell a control-press banner apart from a real second strip.
+    struct ChannelCandidate: Equatable {
+        let match: BankMatch
+        let cell: String
+    }
+
+    /// How a multi-way LCD-name collision was settled once the AX track
+    /// list's own numbering is brought in.
+    enum ChannelTieBreak: Equatable {
+        /// Positionally correlated with a header — the requested
+        /// `track_number`, or the collision's only header when none was
+        /// given.
+        case resolved(BankMatch)
+        /// The AX track list itself carries the collision (that many headers
+        /// share the name): the numbers are the way out, same as
+        /// `track_info`'s own duplicate-name refusal.
+        case ambiguousNumbered(numbers: [Int])
+        /// Could not be correlated at all — no headers share this name, or
+        /// the header count disagrees with the candidate count (a headerless
+        /// strip in the mix, or a stale duplicate cell). The caller's plain
+        /// `cells`-only ambiguity stands.
+        case unresolved
+    }
+
+    /// Settles a multi-way LCD-name collision by the AX track list's own
+    /// numbering (FIX_SPEC 2026-09-03: `resolveChannel`'s LCD-name scan had no
+    /// row numbers to compare against, so no `track_number` argument could
+    /// break a tie between two strips that legitimately abbreviate alike —
+    /// the sandbox's two `Ivan Vocals` rows, 21 and 22, both read `IvnVoc`).
+    ///
+    /// A banner is dropped BEFORE anything is counted: it is the echo of a
+    /// press this process (or another one sharing the mirror) made a moment
+    /// ago, painted over a strip's name cell, never a second strip that
+    /// happens to be called the same thing — the same reading
+    /// `bankedAtMatch` already gives a banner cell.
+    ///
+    /// What is left is correlated ORDINALLY, never by content: the Nth header
+    /// carrying this name (by track number, ascending) is the Nth candidate
+    /// (by project position — bank then channel, ascending), which is the
+    /// same order a bank scan always visits strips in and `logic_list_strips`
+    /// reports them in. That correlation is only trusted when the two counts
+    /// AGREE. When they do not — a headerless strip sharing the name, or the
+    /// same physical strip's row read twice — this refuses to guess and hands
+    /// back `.unresolved`, which is a DIFFERENT shape from a genuine
+    /// duplicate-header collision and the one `isStaleDuplicateCellSuspect`
+    /// exists to recognise.
+    static func tieBreakChannelMatches(
+        _ candidates: [ChannelCandidate],
+        trackName: String,
+        headers: [TrackRowAddressing.Row],
+        trackNumber: Int?
+    ) -> ChannelTieBreak {
+        let real = candidates.filter { !isControlBannerCell($0.cell) }
+        guard real.count > 1 else {
+            return real.first.map { .resolved($0.match) } ?? .unresolved
+        }
+        let sameName = headers
+            .filter { $0.name.caseInsensitiveCompare(trackName) == .orderedSame }
+            .sorted { $0.number < $1.number }
+        guard sameName.count == real.count else { return .unresolved }
+        let ordered = real.map(\.match).sorted { ($0.bank, $0.channel) < ($1.bank, $1.channel) }
+        guard let trackNumber, let index = sameName.firstIndex(where: { $0.number == trackNumber }) else {
+            return .ambiguousNumbered(numbers: sameName.map(\.number))
+        }
+        return .resolved(ordered[index])
+    }
+
+    /// Is a multi-way match the signature of the SAME physical strip's row
+    /// being read twice — a repaint racing the scan, or a second bridge
+    /// reader sharing the mirror — rather than of two real strips?
+    ///
+    /// Observed live 2026-09-03: `logic_read_automation {track_name: "Audio
+    /// 9"}` died once with *"'Audio 9' matches 2 control-surface strips
+    /// (Audio9, Audio9)"* and succeeded on the immediate retry. Exactly one AX
+    /// header is named `Audio 9`, so this shape — a single header, several
+    /// BYTE-IDENTICAL live cells — cannot be a real second strip: two
+    /// distinct strips print two distinct cells (their bank position differs,
+    /// but so does everything else about them; two GENUINELY duplicate names
+    /// still occupy different neighbouring cells and only coincide in the
+    /// text). A coincidental collision between two DIFFERENT names that
+    /// abbreviate alike (`St Out` / `StOutr`) is not this shape either — the
+    /// cells differ — and is not retried.
+    static func isStaleDuplicateCellSuspect(cells: [String], sameNameHeaderCount: Int) -> Bool {
+        guard sameNameHeaderCount == 1, cells.count > 1 else { return false }
+        return Set(cells).count == 1
+    }
+
+    /// The refusal a `findChannel` miss deserves for a caller that has no AX
+    /// two-plane story of its own — the automation record path, which is
+    /// MCU-only by nature (Latch and the vpot chase have no header-plane
+    /// equivalent) and used to collapse every miss into one generic "not
+    /// found in the bank view", hiding an ambiguous match behind the same
+    /// words as a genuinely absent one. `ambiguousNumbered` is what makes
+    /// `track_number` an honest way out here rather than a silently ignored
+    /// argument.
+    static func automationChannelError(trackName: String, resolution: ChannelResolution) -> LogicianError {
+        switch resolution {
+        case .resolved:
+            // `findChannel` returned nil, so this cannot be the resolution it
+            // recorded — answer honestly rather than by guessing.
+            return .trackNotExposed(
+                requested: "MCU channel for '\(trackName)'",
+                exposed: "the control surface would not name the strip it had just resolved"
+            )
+        case .ambiguousNumbered(_, let numbers):
+            return .trackAmbiguous(trackName, numbers: numbers)
+        case .ambiguous(let cells):
+            return .stripAmbiguous(name: trackName, cells: cells)
+        case .notFound(let cells):
+            return .stripNotFound(name: trackName, tracks: [], cells: cells)
+        case .unavailable(let reason):
+            return .trackNotExposed(
+                requested: "MCU channel for '\(trackName)'",
+                exposed: "not found in the bank view (\(reason))"
+            )
+        }
     }
 
     /// Whether the plugin-list view the surface is showing can belong to the

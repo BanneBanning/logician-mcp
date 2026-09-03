@@ -306,6 +306,7 @@ extension MCUController {
     static func readAutomation(
         logic: LogicAccessibility,
         trackName: String,
+        trackNumber: Int? = nil,
         kindLabel: String,
         startBar: Int,
         endBar: Int,
@@ -345,11 +346,18 @@ extension MCUController {
         guard !grid.positions.isEmpty else {
             throw LogicianError.invalidArguments("the requested bar range yields no sample positions")
         }
-        guard let channel = try findChannel(trackName: trackName) else {
+        // Read once, shared by the channel resolution's tie-break (a
+        // track_number only breaks a tie against ROWS THIS CALL CAN SEE) and
+        // the error path's `visibleTracks`.
+        let headers = (try? logic.parsedTrackHeaders()) ?? []
+        guard let channel = try findChannel(
+            trackName: trackName, trackNumber: trackNumber,
+            headers: headers.map { TrackRowAddressing.Row(number: $0.number, name: $0.name) }
+        ) else {
             throw headerlessStripError(
                 name: trackName,
                 resolution: lastChannelResolution,
-                visibleTracks: ((try? logic.parsedTrackHeaders()) ?? []).map(\.name),
+                visibleTracks: headers.map(\.name),
                 trackMiss: .trackNotFound(trackName, available: [])
             )
         }

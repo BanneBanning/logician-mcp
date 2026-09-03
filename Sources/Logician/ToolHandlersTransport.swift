@@ -671,6 +671,10 @@ extension MCPServer {
             return (bar, beat, value)
         }
         let automationTrack = try requiredString("track_name", in: arguments)
+        // Breaks a tie between several strips that abbreviate alike on the
+        // control surface (duplicate track names) — see MCUBankMap.swift's
+        // `tieBreakChannelMatches`.
+        let automationTrackNumber = arguments["track_number"] as? Int
         // The pre-roll rule FIRST: it is a pure argument check, and it used to
         // be made after the tempo and meter maps had been read — 144 ms warm
         // and ~1.8 s with cold caches to reject an argument nothing could fix.
@@ -695,6 +699,7 @@ extension MCPServer {
             automationResult = try MCUController.recordVolumeAutomation(
                 logic: logic,
                 trackName: automationTrack,
+                trackNumber: automationTrackNumber,
                 points: automationPoints.map { ($0.bar, $0.beat, $0.value) },
                 ramp: ramp,
                 verify: verifyCurve,
@@ -704,7 +709,7 @@ extension MCPServer {
             )
         case "pan":
             automationResult = try MCUController.recordVpotAutomation(
-                logic: logic, trackName: automationTrack, kindLabel: "pan",
+                logic: logic, trackName: automationTrack, trackNumber: automationTrackNumber, kindLabel: "pan",
                 points: automationPoints, ramp: ramp, verify: verifyCurve,
                 tolerance: toleranceArg ?? 2.0,
                 enterView: { _ in
@@ -729,7 +734,8 @@ extension MCPServer {
                 throw LogicianError.invalidArguments("parameter 'send' requires send: 1-8")
             }
             automationResult = try MCUController.recordVpotAutomation(
-                logic: logic, trackName: automationTrack, kindLabel: "send \(sendSlot) level",
+                logic: logic, trackName: automationTrack, trackNumber: automationTrackNumber,
+                kindLabel: "send \(sendSlot) level",
                 points: automationPoints, ramp: ramp, verify: verifyCurve,
                 tolerance: toleranceArg ?? 1.0,
                 enterView: { _ in
@@ -771,7 +777,7 @@ extension MCPServer {
             let paramName = try requiredString("plugin_parameter", in: arguments)
             let maxAbs = automationPoints.map { abs($0.value) }.max() ?? 1
             automationResult = try MCUController.recordVpotAutomation(
-                logic: logic, trackName: automationTrack,
+                logic: logic, trackName: automationTrack, trackNumber: automationTrackNumber,
                 kindLabel: "plugin slot \(slot): \(paramName)",
                 points: automationPoints, ramp: ramp, verify: verifyCurve,
                 tolerance: toleranceArg ?? max(0.5, maxAbs * 0.05),

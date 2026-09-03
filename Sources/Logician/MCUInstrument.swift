@@ -43,6 +43,8 @@ extension MCUController {
             switch resolution {
             case .ambiguous(let cells):
                 return .stripAmbiguous(name: trackName, cells: cells)
+            case .ambiguousNumbered(_, let numbers):
+                return .trackAmbiguous(trackName, numbers: numbers)
             case .notFound(let cells):
                 return .stripNotFound(name: trackName, tracks: [], cells: cells)
             case .unavailable(let reason):
