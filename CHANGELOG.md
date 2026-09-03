@@ -1795,6 +1795,29 @@ with every render coming back as audio the agent can listen to.
   the same select-copy-delete chain runs clean with each of the three flags set. The rule is
   structural rather than a list of English words, so a frozen or hidden row — and a translated
   Logic — drop their annotations the same way.
+- **Checking before you press stops being the slow way to do it.** The three mixing writes
+  all paid for evidence they then threw away. `logic_set_track_record_arm` watched the
+  strip's record LED across a full blink cycle on EVERY call and discarded the answer
+  whenever the track header's own Record Enable checkbox had already spoken — which is
+  every call on a track you can see: a defensive "is it already disarmed?" cost
+  **2 303 → 225 ms** and arming a track **1 952 → 203 ms**, both verified against the same
+  checkbox as before, with the LED window still there for the tracks Accessibility cannot
+  see. `logic_set_track_pan` moved the knob one raw step per 30 ms sleep, so the price was
+  the DISTANCE: a hard-left-to-hard-right move cost **2 812 → 442 ms** and a small nudge
+  **522 → 384 ms**, by looking at the knob first instead of sleeping at it. And
+  `logic_set_track_volume` now answers `already_set` without turning anything when the fader
+  is already where you asked (**2 965 → 713 ms**) and hands the mixer view to the next call
+  the way the send and plug-in tools already do, which took the worst of nine consecutive
+  writes from **4 483 to 2 481 ms**.
+- **A strip that only exists in the last bank can be written to.** With a strip count that
+  is not a multiple of eight, the control surface's final bank overlaps the one before it,
+  and the walk out to it counted the presses it SENT rather than the bank steps that
+  actually happened — Logic drops a press sent into an unfinished repaint, so `Master` on a
+  25-strip project could report `not_exposed` for a strip sitting right there. The walk now
+  counts what the surface shows: a swallowed press costs one retry instead of the whole
+  navigation, and a genuinely stale map still gives up after the distance it was told,
+  rather than walking the project. `Master` and `Stereo Out` volume reads, writes and
+  restores verified live.
 
 ### Known limitations (honest by design)
 

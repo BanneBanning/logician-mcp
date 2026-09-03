@@ -25,18 +25,104 @@ extension MCUController {
         return false
     }
 
+    /// Which witness answered "is this track armed?", and what it said.
+    enum ArmReading: Equatable {
+        /// The track header's Record Enable checkbox, which names the TRACK.
+        case accessibility(Bool)
+        /// The strip's record-ready LED, watched across a blink cycle. It can
+        /// only say "some strip at this position", so it is the fallback.
+        case ledWindow(Bool)
+
+        var armed: Bool {
+            switch self {
+            case .accessibility(let value), .ledWindow(let value): return value
+            }
+        }
+
+        var readbackRoute: String {
+            switch self {
+            case .accessibility: return "ax_record_enable_checkbox"
+            case .ledWindow: return "mcu_rec_led_window"
+            }
+        }
+    }
+
+    /// The pre-press read, and the whole reason a defensive compare-and-set on
+    /// this tool used to cost 2.2–3.6 s.
+    ///
+    /// `ledWindow` is an `@autoclosure` ON PURPOSE. The two witnesses used to
+    /// be bound by separate `let`s and combined with `??`, so the LED window
+    /// ran in full on every single call and its answer was thrown away
+    /// whenever the checkbox had already spoken — which was 4 out of 4 live
+    /// calls, at 229–1 651 ms each (measured 2026-09-03; on one pure no-op it
+    /// was 46% of a 3 604 ms response). Making the fallback a closure moves
+    /// "skipped, not merely unread" into the signature, where re-splitting a
+    /// `??` cannot quietly undo it.
+    ///
+    /// The union rule the LED path needs is unchanged and lives in
+    /// `recArmObserved`: one sighting proves armed, only a whole quiet window
+    /// proves disarmed.
+    static func armReading(
+        accessibility: Bool?, ledWindow: @autoclosure () -> Bool
+    ) -> ArmReading {
+        if let accessibility { return .accessibility(accessibility) }
+        return .ledWindow(ledWindow())
+    }
+
+    /// What proved a record-arm press landed. Same rule, same laziness, on the
+    /// other side of the button: the guard is an OR, so once the checkbox
+    /// agrees BY NAME there is nothing a 1.6 s window proving "this strip's
+    /// LED is dark" could add.
+    enum ArmProof: Equatable {
+        case accessibility
+        case ledWindow
+        /// Neither witness reached the requested state: the press is undone.
+        case neither
+    }
+
+    static func armProof(
+        accessibilityAgrees: Bool, ledWindow: @autoclosure () -> Bool
+    ) -> ArmProof {
+        if accessibilityAgrees { return .accessibility }
+        return ledWindow() ? .ledWindow : .neither
+    }
+
     /// The track header's own Record Enable checkbox — an independent source
     /// that NAMES the track, so a press that landed on the wrong strip cannot
     /// pass. nil when Accessibility cannot see that header (scrolled out, a
     /// headerless strip, or the AX layer degraded), which is never a reason to
     /// fail a write the surface proved.
-    static func axRecordEnabled(logic: LogicAccessibility, trackName: String) -> Bool? {
-        guard let header = ((try? logic.parsedTrackHeaders()) ?? [])
-            .first(where: { $0.name == trackName }) else { return nil }
-        guard let box = logic.children(of: header.item).first(where: {
-            logic.stringAttribute($0, kAXDescriptionAttribute as String) == "Record Enable"
-        }) else { return nil }
-        return logic.stringAttribute(box, kAXValueAttribute as String) == "1"
+    ///
+    /// `alreadyWalkedRows` is the caller's own `parsedTrackHeaders()` result,
+    /// handed down rather than re-asked for. `setRecordArm` walks that tree for
+    /// its headerless-strip guard and used to make this function walk it AGAIN
+    /// for the before-read and a THIRD time for the after-read — 40–103 ms
+    /// each, measured 2026-09-03. A row list that no longer answers (a stale
+    /// element after a repaint) still falls back to a fresh walk, so reuse can
+    /// only save time, never cost an answer.
+    ///
+    /// A checkbox that will not report its value at all is `nil`, not `false`:
+    /// "unreadable" and "disarmed" are different facts, and the caller's LED
+    /// window is there for exactly the first one.
+    static func axRecordEnabled(
+        logic: LogicAccessibility,
+        trackName: String,
+        alreadyWalkedRows: [LogicAccessibility.TrackHeader] = []
+    ) -> Bool? {
+        func read(_ rows: [LogicAccessibility.TrackHeader]) -> Bool? {
+            guard let header = rows.first(where: { $0.name == trackName }),
+                  let box = logic.children(of: header.item).first(where: {
+                      logic.stringAttribute($0, kAXDescriptionAttribute as String) == "Record Enable"
+                  })
+            else { return nil }
+            // `stringAttribute` answers "" for an attribute it could not read,
+            // and "unreadable" is not "disarmed": the caller's LED window
+            // exists for exactly that case, so nil goes back rather than false.
+            let value = logic.stringAttribute(box, kAXValueAttribute as String)
+            return value.isEmpty ? nil : value == "1"
+        }
+        if !alreadyWalkedRows.isEmpty, let answer = read(alreadyWalkedRows) { return answer }
+        return read((try? logic.parsedTrackHeaders()) ?? [])
     }
 
     /// Arms or disarms a track for recording. Compare-and-set: an already
@@ -96,12 +182,23 @@ extension MCUController {
             )
         }
 
-        let axBefore = axRecordEnabled(logic: logic, trackName: trackName)
-        let ledBefore = recArmObserved(channel: channel)
-        // Accessibility names the track, so it wins when the two disagree; the
-        // LED can only say "some strip at this position".
-        let current = axBefore ?? ledBefore
-        if current == enabled {
+        // Accessibility names the track, so it wins; the LED can only say
+        // "some strip at this position". It is therefore the FALLBACK, and
+        // this line is the whole difference between a 2.2–3.6 s call and a
+        // fast one: the two used to be bound by separate `let`s, so the LED
+        // window ran in full on every call and `??` threw its answer away
+        // whenever the checkbox had already spoken — which was 4 out of 4 live
+        // calls, at 229–1 651 ms each (measured 2026-09-03). Written inline it
+        // short-circuits, and the window runs only when nothing else can
+        // answer: a scrolled-out or headerless-rendered track, where the LED
+        // is the only evidence there is.
+        let reading = armReading(
+            accessibility: axRecordEnabled(
+                logic: logic, trackName: trackName, alreadyWalkedRows: headers
+            ),
+            ledWindow: recArmObserved(channel: channel)
+        )
+        if reading.armed == enabled {
             return [
                 "success": true, "verified": true,
                 "state": "already_" + (enabled ? "armed" : "disarmed"),
@@ -109,7 +206,7 @@ extension MCUController {
                 "record_armed": enabled,
                 "mcu_strip": channel + 1,
                 "route": "mcu",
-                "readback_route": axBefore != nil ? "ax_record_enable_checkbox" : "mcu_rec_led_window"
+                "readback_route": reading.readbackRoute
             ]
         }
 
@@ -120,18 +217,29 @@ extension MCUController {
         }
         _ = awaitEvents(since: events, timeoutMs: 800)
 
-        // Positive evidence for armed; a whole quiet window for disarmed.
-        let ledAfter = enabled
-            ? recArmObserved(channel: channel, window: 2.5)
-            : !recArmObserved(channel: channel, window: recBlinkWindow)
+        // The same order as the pre-press read, for the same reason: the
+        // checkbox names the TRACK, the guard below is an OR, and a 1.6 s
+        // quiet window proving "this strip's LED is dark" adds nothing once
+        // Accessibility has said the named track is disarmed. So ask
+        // Accessibility first and spend the window only when it cannot answer.
         var axAfter: Bool?
         for _ in 0..<8 {
-            axAfter = axRecordEnabled(logic: logic, trackName: trackName)
+            axAfter = axRecordEnabled(
+                logic: logic, trackName: trackName, alreadyWalkedRows: headers
+            )
             if axAfter == enabled { break }
             Thread.sleep(forTimeInterval: 0.2)
         }
         let axAgrees = axAfter == enabled
-        guard ledAfter || axAgrees else {
+        // Positive evidence for armed; a whole quiet window for disarmed —
+        // and neither is watched at all when the checkbox already agrees.
+        let proof = armProof(
+            accessibilityAgrees: axAgrees,
+            ledWindow: enabled
+                ? recArmObserved(channel: channel, window: 2.5)
+                : !recArmObserved(channel: channel, window: recBlinkWindow)
+        )
+        guard proof != .neither else {
             // Put it back: a press that changed nothing observable is still a
             // press, and leaving an unproven arm behind is the one state a
             // vocal session must not start from.
@@ -152,9 +260,8 @@ extension MCUController {
             "mcu_strip": channel + 1,
             "route": "mcu",
             "write_route": "mcu_rec_ready_button",
-            "readback_route": axAgrees
-                ? (ledAfter ? "mcu_rec_led_window_and_ax_checkbox" : "ax_record_enable_checkbox")
-                : "mcu_rec_led_window",
+            "readback_route": proof == .accessibility
+                ? "ax_record_enable_checkbox" : "mcu_rec_led_window",
             "cross_check": axAfter == nil ? "unavailable" : (axAgrees ? "ax_record_enable_checkbox" : "disagreed")
         ]
         if axAfter == nil {

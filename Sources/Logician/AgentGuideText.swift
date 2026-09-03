@@ -1044,7 +1044,7 @@ Parameters:
   - `db` (number): ABSOLUTE target level in dB (e.g. -14.2, 0.0). Mutually exclusive with relative_db; one of the two is required.
   - `expected_current_db` (number): Compare-and-set: the dB you believe the fader is at. A difference of more than 0.5 dB refuses with precondition_failed and moves nothing.
   - `relative_db` (number): Offset in dB from the value read immediately before the write: 2 is '2 dB louder', -3 is '3 dB quieter'. Mutually exclusive with db. Saves the read-then-guess round trip, and the result still reports before_db and after_db.
-  - `tolerance_db` (number): Accepted deviation from the target, default 0.15 dB. Note that `verified` on the control-surface fast path uses max(tolerance_db, 0.6) - see the description.
+  - `tolerance_db` (number): Accepted deviation from the target, default 0.15 dB. `verified` means this number and nothing wider, on both routes (it used to accept max(tolerance_db, 0.6) dB on the control-surface fast path and call that verified; that floor is gone).
   - `track_name` (string) **(required)**
   - `track_number` (integer)
 

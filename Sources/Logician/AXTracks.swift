@@ -769,7 +769,8 @@ extension LogicAccessibility {
               position >= minRaw, position <= maxRaw else {
             throw LogicianError.invalidArguments("pan position must be within the knob's range")
         }
-        let before = Int(stringAttribute(knob, kAXValueAttribute as String)) ?? 0
+        func readKnob() -> Int? { Int(stringAttribute(knob, kAXValueAttribute as String)) }
+        let before = readKnob() ?? 0
         // Compare-and-set: the knob's position was read anyway to report
         // `before`, so refusing on a stale idea of it costs nothing.
         if let expectedCurrentPosition, before != expectedCurrentPosition {
@@ -777,16 +778,25 @@ extension LogicAccessibility {
                 expected: "pan \(expectedCurrentPosition)", actual: "pan \(before)"
             )
         }
+        // The verified no-op, named the way its siblings name theirs
+        // (`logic_set_track_mute`/`_solo` report `already_on`/`already_off`):
+        // the knob is where the caller asked for it and nothing was written.
+        if before == position {
+            return [
+                "success": true, "verified": true, "state": "already_set",
+                "track": trackName, "track_name": trackName, "before": before, "after": before,
+                "readback_route": "ax_value"
+            ]
+        }
         var last = before
         for _ in 0..<(maxRaw - minRaw + 8) {
-            guard let current = Int(stringAttribute(knob, kAXValueAttribute as String)) else { break }
+            guard let current = readKnob() else { break }
             if current == position { break }
             let status = AXUIElementSetAttributeValue(knob, kAXValueAttribute as CFString, position as CFNumber)
             guard status == .success else {
                 throw LogicianError.writeFailed("AXValue write on the pan knob returned AXError \(status.rawValue)")
             }
-            Thread.sleep(forTimeInterval: 0.03)
-            let after = Int(stringAttribute(knob, kAXValueAttribute as String)) ?? current
+            let after = settledStep(after: current, reading: readKnob) ?? current
             if after == last && after != position {
                 throw LogicianError.verificationFailed(
                     requested: "pan \(position)", actual: "stuck at \(after)", restored: false
@@ -794,7 +804,7 @@ extension LogicAccessibility {
             }
             last = after
         }
-        guard Int(stringAttribute(knob, kAXValueAttribute as String)) == position else {
+        guard readKnob() == position else {
             throw LogicianError.verificationFailed(
                 requested: "pan \(position)",
                 actual: stringAttribute(knob, kAXValueAttribute as String),
@@ -806,6 +816,46 @@ extension LogicAccessibility {
             "track": trackName, "track_name": trackName, "before": before, "after": position,
             "write_route": "ax_value_stepwise"
         ]
+    }
+
+    /// The knob's value after ONE write, read by LOOKING FIRST.
+    ///
+    /// PATTERN #9, and pattern #8 answered NEGATIVE first. The knob's own
+    /// attribute list was read live (2026-09-03, `Crash`): nineteen
+    /// attributes, `AXValue` settable, range -64…63, `AXValueDescription`
+    /// "0" — and **no text path at all** (no `AXSelectedTextRange`, no
+    /// `AXNumberOfCharacters`), with exactly two actions, `AXIncrement` and
+    /// `AXDecrement`. So it is a genuine stepper, not a text field in
+    /// disguise and not a jump-capable control being mis-driven: there is no
+    /// typed-absolute cure to reach for, and the per-step COST is the only
+    /// thing there was to fix.
+    ///
+    /// This loop used to `Thread.sleep(0.03)` after every write,
+    /// unconditionally — writing the absolute target to `AXValue` advances the
+    /// knob exactly ONE raw unit — so that blind wait was paid once per raw
+    /// unit of distance: 40–42 ms per step,
+    /// flat, measured 2026-09-03 across seven step counts from 6 to 63
+    /// (a 63-step move: 2 654 ms of write loop; a full -64→63 sweep
+    /// extrapolated to ~5.4 s). `AXUIElementSetAttributeValue` is synchronous
+    /// and the effect has been readable 0–6 ms later everywhere this plane has
+    /// been measured, so the read is taken IMMEDIATELY and only a knob that
+    /// has not moved yet is waited for — by re-reading, which is its own
+    /// pacing (an AX read costs 1–4 ms). Measured live the same day: the
+    /// 63-step move fell from 2 812 ms to 442 ms and the 5-step move from
+    /// 522 ms to 384 ms, which puts the loop at roughly 2 ms a step against
+    /// the 41 ms it used to be.
+    ///
+    /// `axStepperSettleBudget` is therefore not a per-step cost: it is the
+    /// ceiling paid ONCE, by a knob that has genuinely stopped moving, on the
+    /// way to the `stuck` verdict the caller raises.
+    private func settledStep(after previous: Int, reading read: () -> Int?) -> Int? {
+        let deadline = Date().addingTimeInterval(LogicAccessibility.axStepperSettleBudget)
+        var seen = read()
+        while seen == previous, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.002)
+            seen = read()
+        }
+        return seen
     }
 
 }

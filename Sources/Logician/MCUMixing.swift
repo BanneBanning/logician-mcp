@@ -319,13 +319,19 @@ extension MCUController {
     /// `success: true` — the fader DID move, and `after_db` is Logic's own
     /// readout of where it is, not an estimate. Pure and static so the rule
     /// can be tested without a fader (`ChannelStripTests`).
+    ///
+    /// `writeRoute` is nil for the verified no-op: nothing was turned, so
+    /// there is no route to name, and an absent key says that better than a
+    /// route called "none" would (the same shape `setToggle`'s already-set
+    /// payload uses).
     static func volumeVerdict(
         trackName: String,
         startDb: Double,
         targetDb: Double,
         landedDb: Double,
         toleranceDb: Double,
-        writeRoute: String
+        writeRoute: String?,
+        state: String = "volume_set"
     ) -> [String: Any] {
         let deviation = abs(landedDb - targetDb)
         // 1e-9, and it is not a floor sneaking back in: Logic prints dB to one
@@ -336,7 +342,7 @@ extension MCUController {
         var payload: [String: Any] = [
             "success": true,
             "verified": inside,
-            "state": "volume_set",
+            "state": state,
             // The fast path used to omit the track entirely, so a result could
             // not say WHICH track it moved - the slow path always named it.
             // Both report it the same way now.
@@ -347,9 +353,9 @@ extension MCUController {
             "deviation_db": round(deviation * 100) / 100,
             "tolerance_db": toleranceDb,
             "route": "mcu",
-            "write_route": writeRoute,
             "readback_route": "mcu_lcd_db"
         ]
+        if let writeRoute { payload["write_route"] = writeRoute }
         if !inside {
             payload["verification_note"] = String(
                 format: "The fader landed at %.1f dB, %.2f dB from the %.1f dB requested —"
@@ -375,26 +381,47 @@ extension MCUController {
         // Enter the multi-channel volume view. The assignment 7-segment code
         // is NOT a reliable indicator (submodes show other codes while the
         // view is functionally right, and the button TOGGLES submodes on
-        // repeated presses) - the LCD label is the functional truth.
-        func volumeViewShowing() -> Bool {
-            guard let status = freshStatus(), let top = status["lcd_top"] as? String else { return false }
-            return top.contains(MCULCDStrings.channelStripVolumeBanner)
-        }
-        var csReady = volumeViewShowing()
-        for _ in 0..<3 where !csReady {
-            try press("assign_track")
-            csReady = waitFor(seconds: 1.2, { status in
-                (status["lcd_top"] as? String)?
-                    .contains(MCULCDStrings.channelStripVolumeBanner) == true
-            }) != nil
-        }
-        guard csReady else {
+        // repeated presses) - the LCD label is the functional truth. Shared
+        // with `logic_mixer_snapshot`, which reads the same view.
+        guard try ensureVolumeView() else {
             debugLog("setVolume: volume view not reached (top: \(freshStatus()?["lcd_top"] as? String ?? "?"))")
-            _ = try? ensurePanNames()
+            exitToPan()
             return nil
         }
         debugLog("setVolume: channel \(channel), volume view ok")
-        defer { _ = try? ensurePanNames() }
+        // PATTERN #1, the debt. This call used to press back to the Pan-names
+        // view in its own `defer`, on every path. It is the same walk home the
+        // sends, the plug-in views and `logic_mixer_snapshot` already stopped
+        // paying: the view is HANDED OVER instead, `ensurePanNames` settles the
+        // debt inside whichever later call needs the names row, and
+        // `MCPServer.shutdown()` pays it if nothing else does — so the surface
+        // is never LEFT in the Volume view, only handed over in it.
+        //
+        // WHAT IT IS AND IS NOT WORTH, measured live 2026-09-03, nine
+        // consecutive writes on one strip, old binary then new. The restore is
+        // one press of assign_pan and then ~2 s of Logic's own mode banner
+        // before `ensurePanNames` can confirm the names row, and deferring does
+        // not delete that — it MOVES it, because the next volume write's own
+        // `findChannel` needs the names row to read them. So a chain of writes
+        // is a wash (2 293 ms mean before, 2 412 ms after) with the VARIANCE
+        // gone: the worst call fell from 4 483 to 2 481 ms and the mode-banner
+        // outliers the profile saw on 4 of 9 calls did not recur. What the
+        // deferral genuinely buys is the call that is NOT followed by another
+        // surface write — the verified no-op below went 2 965 → 713 ms, and
+        // the last write of any chain hands its restore to whoever comes next
+        // instead of charging the caller for it.
+        //
+        // Every refusal and every throw still restores explicitly: a refusal
+        // has no result for the debt to travel with.
+        var handedOver = false
+        defer { if !handedOver { exitToPan() } }
+        func handOver(_ payload: [String: Any]) -> [String: Any] {
+            handedOver = true
+            deferSurfaceRestore(SurfaceDebt(strip: nil, view: "channel_strip", slot: nil))
+            var carried = payload
+            carried["surface_view"] = "channel_strip"
+            return carried
+        }
 
         func currentDb() -> Double? {
             guard let status = freshStatus(), let bottom = status["lcd_bottom"] as? String else {
@@ -408,6 +435,29 @@ extension MCUController {
         // Throwing here is deliberate: a precondition mismatch must NOT fall
         // through to the Accessibility route and be written there instead.
         let targetDb = try request.target(currentDb: startDb)
+
+        func verdict(
+            landedAt db: Double, writeRoute: String?, state: String = "volume_set"
+        ) -> [String: Any] {
+            volumeVerdict(
+                trackName: trackName, startDb: startDb, targetDb: targetDb,
+                landedDb: db, toleranceDb: toleranceDb, writeRoute: writeRoute, state: state
+            )
+        }
+
+        // The verified no-op, which this tool did not have: `relative_db: 0`,
+        // or a `db` the fader is already sitting at, used to turn the vpot
+        // anyway and cost the same as a real move (339 ms against 368 ms,
+        // measured 2026-09-03). It cannot skip as much as mute/solo's
+        // `already_set` does — the dB readout only exists inside the Volume
+        // view, so the view still has to be entered to learn the answer — but
+        // it skips `fastConverge` (90–125 ms) and, more to the point, it turns
+        // NOTHING on a call that means nothing. Same epsilon as `volumeVerdict`
+        // so a landing the verdict would call verified is never converged at.
+        if abs(startDb - targetDb) <= toleranceDb + 1e-9 {
+            debugLog("setVolume: already at target (\(startDb) dB), nothing turned")
+            return handOver(verdict(landedAt: startDb, writeRoute: nil, state: "already_set"))
+        }
 
         /// The vpot correction loop, shared by both write paths.
         ///
@@ -453,26 +503,19 @@ extension MCUController {
             return db
         }
 
-        func verdict(landedAt db: Double, writeRoute: String) -> [String: Any] {
-            volumeVerdict(
-                trackName: trackName, startDb: startDb, targetDb: targetDb,
-                landedDb: db, toleranceDb: toleranceDb, writeRoute: writeRoute
-            )
-        }
-
         if let fast = fastConverge(index: channel, target: targetDb,
                                    tolerance: toleranceDb, maxMs: 3000, seedRatio: 2.5) {
             let landed = currentDb() ?? fast.value
             // The same epsilon `volumeVerdict` uses, so a landing it would
             // call verified never triggers a pointless refinement pass.
             guard abs(landed - targetDb) > toleranceDb + 1e-9 else {
-                return verdict(landedAt: landed, writeRoute: "bridge_converge")
+                return handOver(verdict(landedAt: landed, writeRoute: "bridge_converge"))
             }
             // Outside what the caller asked for: try again with the vpot loop
             // before reporting. Re-converging is the answer the caller wanted;
             // an honest `verified: false` is the answer they get if it cannot.
             let refined = try correct(from: landed, stopWhenStuck: false)
-            return verdict(landedAt: refined, writeRoute: "bridge_converge+vpot_refine")
+            return handOver(verdict(landedAt: refined, writeRoute: "bridge_converge+vpot_refine"))
         }
 
         let db = try correct(from: startDb, stopWhenStuck: true)
@@ -485,7 +528,7 @@ extension MCUController {
                 restored: false
             )
         }
-        return verdict(landedAt: db, writeRoute: "mcu_vpot_converge")
+        return handOver(verdict(landedAt: db, writeRoute: "mcu_vpot_converge"))
     }
 }
 
@@ -603,7 +646,14 @@ extension MCUController {
     /// itself clears the record on success.
     static func exitToPan() {
         forgetSurfaceViews()
-        _ = try? ensurePanNames()
+        // `ensurePanNames` VERIFIES the half of the pan toggle it landed on
+        // (`panRowState`), so its answer is a fact about the surface, not a
+        // hope — and a restore that could not land is worth saying out loud
+        // rather than dropping on the floor: the next tool will meet a surface
+        // that is not where this one left it.
+        if (try? ensurePanNames()) != true {
+            debugLog("exitToPan: the pan-names view could not be confirmed; the surface is NOT in PN")
+        }
     }
 
     /// Drops every view this server was keeping a note of. Separate from
