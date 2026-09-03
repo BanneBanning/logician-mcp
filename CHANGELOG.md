@@ -1717,6 +1717,27 @@ with every render coming back as audio the agent can listen to.
   which nothing in this server could do. It now scrolls the ruler itself, measures the shift
   against the ruler's own Start marker until the range is in view, and only refuses if the
   ruler will not move — naming the pixels it managed and the pixels it needed.
+- **The cycle range lands on the bar you asked for, on a project that changes meter — and a
+  write that misses puts the locators back.** A bar's width on Logic's timeline follows its
+  meter, and this tool used to place both locators by multiplying out the ruler's single
+  average slope: on a project that goes 4/4 to 5/4 at bar 41, that was **0.30 to 1.01 bars
+  wrong** at every target measured this session, which is most of the way to the wrong bar.
+  It now MEASURES the two bar lines it is about to write to, by parking the playhead on them
+  and reading the ruler — the same evidence its anchor has always used, and cheap since the
+  playhead stepper got its look-first poll — and holds them as offsets from the ruler's own
+  Start marker so they survive Logic scrolling underneath. The result reports the route and
+  how far the old straight-line ruler would have missed. Same session, old binary then new:
+  bars 20-24 went from a refusal (`start is 0.97 bars off`) to a verified write, and bars
+  43-47, 39-43 and a 6-bar drag all landed verified where the old binary could not even find
+  the region. **The search that identifies the region's own bar was measuring in average
+  bars too**, so a region parked past the meter change read as a bar away from itself and
+  the tool refused every call for the rest of the session — the sandbox reached a state
+  neither binary could leave. It now measures the bar's real width from the neighbouring bar
+  line, converges from any distance instead of only from one bar out, and recovered that
+  stuck project on the first call. And a write that fails verification is returned to the
+  range the call read first, verified, and says `Restored: true` — proven by a fault-injected
+  build that deliberately wrote two bars late: `start is 2.04 bars off ... Restored: true`,
+  with the next call reading the original range back unchanged.
 
 - **Touching the same track twice in a row is three times faster, and an idle Logic is no
   longer mistaken for a dead one.** Two shared control-surface defects, both hit live. First:
