@@ -782,6 +782,23 @@ struct InsertSlot {
             "can_open": openButton != nil
         ]
     }
+
+    /// Whether a slot's own name is the strip's separately-reported
+    /// INSTRUMENT — pure so both readers of `insertSlots` can flag it the
+    /// same way instead of one of them silently disagreeing.
+    ///
+    /// `insertSlots` enumerates every `AXGroup` with a bypass checkbox and an
+    /// Open button, and an occupied instrument slot is exactly that shape
+    /// (`AXChannelStrip.insertPluginNames`'s doc comment: `Trilian` arrived as
+    /// insert_index 5 beside four real effects on `Bas`, 2026-08-31). Which
+    /// name IS the instrument is decided once, by geometry, in
+    /// `ChannelStrip.read` — this is just the name comparison against that
+    /// answer, so a track with no instrument slot (`instrument == nil`) never
+    /// flags a row.
+    static func isInstrumentSlot(name: String, instrument: String?) -> Bool {
+        guard let instrument, !instrument.isEmpty else { return false }
+        return name == instrument
+    }
 }
 
 struct WindowKey: Hashable {

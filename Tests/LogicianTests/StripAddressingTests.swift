@@ -410,6 +410,43 @@ final class StripAddressingTests: XCTestCase {
         XCTAssertTrue(MCUController.axNamesPlugin("Comprs", requested: "Compressor"))
         XCTAssertTrue(MCUController.axNamesPlugin("Gain", requested: "Gain"))
         XCTAssertTrue(MCUController.axNamesPlugin("Channel EQ", requested: "Channel EQ"))
+        XCTAssertTrue(MCUController.axNamesPlugin("Cha EQ", requested: "Channel EQ"))
+    }
+
+    /// `LoPass`/`Low Pass Filter` and `Ovrdr`/`Overdrive` — measured live on
+    /// `Crash`, twice: the insertion LANDED and `logic_add_plugin` refused it
+    /// as `verification_failed`, `restored: false`, leaving the plugin in
+    /// place while reporting the write as failed. Same shape of false failure
+    /// as `ParEQ`/`Parametric EQ`, except the dropped characters are the
+    /// abbreviation's OWN third character (`Low`'s trailing consonant `w`,
+    /// `Overdrive`'s interior vowel `e`), which is exactly what the old
+    /// "first three characters match verbatim" guard could not tolerate.
+    func testAWordInitialOrVowelDroppedAbbreviationStillNamesThePlugin() {
+        XCTAssertTrue(MCUController.axNamesPlugin("LoPass", requested: "Low Pass Filter"))
+        XCTAssertTrue(MCUController.axNamesPlugin("Ovrdr", requested: "Overdrive"))
+    }
+
+    /// `ARPV3`/`ARP 2600 V3`: the load that worked and was reported a failure
+    /// on a `safety: .destructive` tool (`instrumentSlotNames`'s doc comment).
+    /// `instrumentSlotNames` also falls back to `lcdAbbreviationPlausible`,
+    /// but that test's 6-character floor rejects a 5-character cell outright,
+    /// so this case reaches `axNamesPlugin` alone and must still pass here —
+    /// which needs the bare model number `2600` skipped as a whole word
+    /// rather than contributing a digit.
+    func testANumericWordIsSkippedWhole() {
+        XCTAssertTrue(MCUController.axNamesPlugin("ARPV3", requested: "ARP 2600 V3"))
+    }
+
+    /// The FIX_SPEC's anti-collision requirement: two real Logic plugins
+    /// (`Bass Amp Designer`, `Guitar Amp Designer`) that share every word but
+    /// their first could plausibly BOTH abbreviate their shared tail to
+    /// `AmpDes`. Confirming a request by name alone must not let one answer
+    /// for the other — a collision has to come back `false` on both sides so
+    /// the caller falls back to the slot-index proof instead of a wrong
+    /// `verified: true`.
+    func testAxNamesPluginCollisionDegradesSafely() {
+        XCTAssertFalse(MCUController.axNamesPlugin("AmpDes", requested: "Bass Amp Designer"))
+        XCTAssertFalse(MCUController.axNamesPlugin("AmpDes", requested: "Guitar Amp Designer"))
     }
 
     func testTheChannelFormatSuffixIsNotPartOfTheName() {

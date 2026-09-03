@@ -182,11 +182,29 @@ final class LogicAccessibility {
     func listInserts(trackName: String) throws -> [String: Any] {
         let strip = try inspectorStrip(named: trackName)
         let slots = insertSlots(of: strip)
+        // `insertSlots` cannot tell an occupied INSTRUMENT slot from a real
+        // insert — both are an `AXGroup` with a bypass checkbox and an Open
+        // button (`insertPluginNames`'s doc comment) — so this route used to
+        // list the instrument as one more insert row with nothing marking it,
+        // while `logic_track_info` (which already runs `ChannelStrip.read`
+        // for its own payload) reported the same slot `is_instrument_slot:
+        // true`. Measured live on `Drum Synth Kit`: 8 AX rows here against the
+        // MCU route's 7 inserts, with no way to tell from this result alone
+        // which row was the extra one. Reading the strip a second way just to
+        // name the instrument is the same one-inspector-walk `ChannelStrip
+        // .read` already does for `logic_track_info`, so it costs nothing new
+        // here — no extra selection, no extra AX round trip beyond the reads
+        // `stripChildren` was going to do anyway.
+        let instrument = ChannelStrip.read(children: stripChildren(of: strip)).instrument
         return [
             "project_document": (try? projectDocumentPath()) ?? NSNull(),
             "track": trackName, "track_name": trackName,
             "strip_source": "left_inspector_channel_strip",
-            "inserts": slots.map(\.dictionary)
+            "inserts": slots.map { slot in
+                var dict = slot.dictionary
+                dict["is_instrument_slot"] = InsertSlot.isInstrumentSlot(name: slot.name, instrument: instrument)
+                return dict
+            }
         ]
     }
 

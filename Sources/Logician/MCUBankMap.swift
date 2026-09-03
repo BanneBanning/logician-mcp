@@ -196,12 +196,44 @@ extension MCUController {
     /// had landed correctly and the tool reported "it may have landed on
     /// another channel" and left it in place (observed 2026-08-31 on `Sweeps`).
     ///
-    /// Deliberately not a bare subsequence test, which would let `Gain` match
-    /// half the catalog: an abbreviation has to keep the first three
-    /// characters and at least four in total. Loosening this cannot make a
-    /// wrong-CHANNEL write pass — the strip is named by the caller and proven
-    /// by the SELECT LED; at worst a right-channel write is confirmed by a
-    /// sibling plugin with a confusingly similar name.
+    /// A SECOND case forced the rewrite below: adding `Low Pass Filter`
+    /// succeeded and the cross-check failed it too, because Accessibility
+    /// calls the result `LoPass` — and the fix shipped for `ParEQ`, a bare
+    /// "first three characters match verbatim" guard, rejects it. `Low`
+    /// abbreviates to `Lo` by dropping the trailing CONSONANT `w`, so `LoPass`
+    /// and `Low Pass Filter` disagree in their third character (`p` vs `w`)
+    /// even though the abbreviation is exactly as legitimate as `ParEQ`'s.
+    /// The same shape breaks `Overdrive` → `Ovrdr` (drops the interior VOWEL
+    /// `e`, third characters `r` vs `e`).
+    ///
+    /// So the guard is not "do the first three characters match" but "is `ax`
+    /// obtainable from `want`, word by word, the way Logic actually
+    /// truncates a name onto a 6-character cell": walk `want`'s words in
+    /// order; a word, once entered, MUST contribute its own first letter
+    /// verbatim (Logic never drops that — `Overdrive` keeps its leading `O`
+    /// even though it is a vowel); after that anchor, each further letter of
+    /// the word is either kept, or — if it is a VOWEL — dropped, or the word
+    /// is closed early and the walk moves to the next one (`Comprs` closes
+    /// `Compressor` after its second `s`, dropping the trailing `or`
+    /// entirely; `LoPass` closes `Low` after two letters and moves straight
+    /// into `Pass`). A trailing word that is never entered (`Filter`, in `Low
+    /// Pass Filter`) is simply never reached once `ax` runs out.
+    ///
+    /// Consonants can never be skipped within a word that has been entered,
+    /// and a word can never be entered without its own first letter — both
+    /// are what keep this from doing what a bare subsequence test would:
+    /// `Gain` cannot be produced from `Guitar Amp Pro` this way (entering
+    /// `Guitar` forces its `t` to survive if any letter past it is kept, and
+    /// `Gain` has no `t`; entering `Amp` or `Pro` instead needs their own
+    /// first letter, `a` or `p`, to be `ax`'s FIRST character, and it isn't).
+    /// The same rule is the anti-collision guard the FIX_SPEC asked for: two
+    /// real plugins that share every word but their first
+    /// (`Bass Amp Designer` / `Guitar Amp Designer`, both plausibly `AmpDes`)
+    /// can never BOTH satisfy this test against the same `ax`, because
+    /// neither name's first word can be skipped to reach the shared tail —
+    /// a collision degrades to `false` on both sides, which is what sends the
+    /// caller back to the slot-index proof instead of a wrong `verified:
+    /// true` (`testAxNamesPluginCollisionDegradesSafely`).
     static func axNamesPlugin(_ axName: String, requested: String) -> Bool {
         func normalize(_ raw: String) -> String {
             raw.replacingOccurrences(
@@ -214,8 +246,66 @@ extension MCUController {
         guard !ax.isEmpty, !want.isEmpty else { return false }
         if ax == want || ax.hasPrefix(want) || want.hasPrefix(ax) { return true }
         guard ax.count >= 4, want.count > ax.count else { return false }
-        guard ax.prefix(3) == want.prefix(3) else { return false }
-        return lcdNameMatches(track: want, lcd: ax)
+        return axNameDecomposes(ax, from: want)
+    }
+
+    /// The word-by-word walk `axNamesPlugin` runs, isolated so it can be
+    /// unit-tested against every abbreviation shape on its own. See
+    /// `axNamesPlugin`'s doc comment for the rule this implements and why it
+    /// resists collisions between two real, similarly-abbreviated plugins.
+    ///
+    /// Memoized on (word, position-in-word, characters of `ax` consumed):
+    /// each of the three axes is bounded by a plugin name's own length, so
+    /// this stays a `O(names × ax.count)` table walk rather than the
+    /// exponential blow-up a naive backtrack would risk on a long name.
+    static func axNameDecomposes(_ ax: String, from want: String) -> Bool {
+        let words = want.split(separator: " ").map(Array.init)
+        let axChars = Array(ax.replacingOccurrences(of: " ", with: ""))
+        guard !words.isEmpty, !axChars.isEmpty else { return false }
+        let axCount = axChars.count
+
+        func isVowel(_ c: Character) -> Bool { "aeiou".contains(c) }
+
+        var memo: [Int: Bool] = [:]
+        func key(_ word: Int, _ pos: Int, _ ai: Int) -> Int {
+            (word * 64 + pos) * (axCount + 1) + ai
+        }
+
+        func walk(_ word: Int, _ pos: Int, _ ai: Int) -> Bool {
+            if ai == axCount { return true }
+            guard word < words.count else { return false }
+            let w = words[word]
+            if pos == w.count { return walk(word + 1, 0, ai) }
+            let k = key(word, pos, ai)
+            if let cached = memo[k] { return cached }
+            let c = w[pos]
+            var result = false
+            if pos == 0 {
+                // A word's own first letter is never dropped — the anchor
+                // that both recovers Logic's abbreviations and refuses two
+                // plugins whose SHARED tail collides.
+                if c == axChars[ai], walk(word, 1, ai + 1) { result = true }
+                // The one exception: a word with no LETTERS in it at all
+                // (a bare model number — `ARP 2600 V3`'s `2600`) carries no
+                // identity for Logic to abbreviate and is dropped whole,
+                // never contributing a digit to the cell (`ARPV3`, not
+                // `ARP2V3` or similar) — measured live 2026-09-02, the load
+                // that worked and was reported `verification_failed` on a
+                // `safety: .destructive` tool. This cannot reopen the
+                // collision this anchor exists to close: two plugins whose
+                // names differ only by which WORD they use still need that
+                // word's own first LETTER to survive, and a digit-only word
+                // never supplies one.
+                if !result, !w.contains(where: { $0.isLetter }), walk(word + 1, 0, ai) { result = true }
+            } else {
+                if c == axChars[ai], walk(word, pos + 1, ai + 1) { result = true }
+                if !result, isVowel(c), walk(word, pos + 1, ai) { result = true }
+                if !result, walk(word + 1, 0, ai) { result = true }
+            }
+            memo[k] = result
+            return result
+        }
+        return walk(0, 0, 0)
     }
 
     /// Every non-empty cell in a bank map, for "not found" messages that name
