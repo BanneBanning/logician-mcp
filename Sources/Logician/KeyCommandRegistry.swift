@@ -173,10 +173,13 @@ enum KeyCommandRegistry {
     static let learnableNoteRange = 60...99
 
     /// Every note this machine has already spoken for: what the registry
-    /// holds, plus every note the standard set PREFERS (whether or not it has
-    /// been learned yet — reserving them is the whole point).
+    /// holds, plus every note the named set PREFERS (whether or not it has
+    /// been learned yet — reserving them is the whole point). `onDemand`
+    /// commands are reserved here too: they are not installed, but a note
+    /// handed to an arbitrary command today would collide with them the day
+    /// something asks for one.
     static func takenNotes() -> Set<Int> {
-        var taken = Set(standardCommands.map(\.preferredNote))
+        var taken = Set(allNamedCommands.map(\.preferredNote))
         for entry in commands() {
             if let note = entry["note"] as? Int { taken.insert(note) }
         }
@@ -404,14 +407,32 @@ enum KeyCommandRegistry {
     /// The commands the product's tools rely on, with search terms for the
     /// Key Commands window and preferred (not guaranteed) note numbers —
     /// collisions on a user's machine get an alternate note automatically.
+    ///
+    /// **This is the INSTALL SET**, and every row in it is a row written into
+    /// the user's own persisted Logic key command set — state outside the
+    /// project file, outside Undo and outside the sandbox protocol. So the
+    /// bar for membership is "a tool handler fires it", not "an agent might
+    /// want it": at the measured 10.1 s per command of the 2026-09-02 live
+    /// round (223 s for 22), three commands nothing fires were 30 s of a
+    /// one-time, irreversible write. Those three moved to `onDemandCommands`
+    /// below.
+    ///
+    /// `Create Marker` (104) is the one member here whose *tool* route is not
+    /// the key command — `logic_markers {action:"create"}` presses the Marker
+    /// tab's own `Create new Marker` button, measured 3/3, and only falls
+    /// back to this command when that button is absent. It stays in the
+    /// install set anyway, for two reasons that are both about diagnosis: it
+    /// is that fallback, and it is the server's only GLOBAL key command with
+    /// a cheap count readback, which makes it the standing probe for "are key
+    /// commands firing at all?" (`logic_trigger_key_command {name: "Create
+    /// Marker"}` then `logic_markers list`, count +1 — `Deselect All` is not
+    /// a valid probe, it is Tracks-area-scoped and reads `unchanged` when
+    /// keyboard focus is elsewhere).
     static let standardCommands: [(search: String, name: String, preferredNote: Int)] = [
         ("save", Name.save, 105),
         ("new software instrument", Name.newSoftwareInstrumentTrack, 106),
         ("new audio track", Name.newAudioTrack, 107),
         ("toggle track freeze", Name.toggleTrackFreeze, 117),
-        ("undo", Name.undo, 100),
-        ("redo", Name.redo, 101),
-        ("flashback", Name.flashbackCaptureAsRecording, 102),
         ("split regions/events", Name.splitRegionsAtPlayhead, 103),
         ("cut", Name.cut, 108),
         ("copy", Name.copy, 109),
@@ -428,6 +449,51 @@ enum KeyCommandRegistry {
         ("previous plug-in", Name.previousPluginSetting, 121),
         ("create marker", Name.createMarker, 104)
     ]
+
+    /// Registered, reserved, spelled — and NOT written into the user's Logic
+    /// by the install round. Learned on the spot the first time something
+    /// actually asks for one (`MCUController.resolveKeyCommand` reads this
+    /// list as well as `standardCommands`), which costs that one call the
+    /// Key Commands window and nothing to the 99 % of users who never fire it.
+    ///
+    /// Why each one is here rather than above (audited 2026-09-03 across
+    /// every handler in `Sources/`):
+    ///
+    /// * **Undo (100) and Redo (101)** — **no tool fires either, deliberately.**
+    ///   The house rule is that a tool restores by inverse operation with a
+    ///   verified readback (`logic_remove_send`, `logic_delete_region`, …),
+    ///   never by Undo: Logic's Undo menu shows no operation name, so a blind
+    ///   Undo cannot be proven to have reverted the caller's edit rather than
+    ///   somebody else's — in one live session an Undo fired after a tool had
+    ///   *failed* removed an empty track another agent had just made. They
+    ///   stay learnable because the AGENT-facing escape hatch
+    ///   (`logic_trigger_key_command {name: "Undo"}`, right after a known
+    ///   edit) is documented and worth keeping; the first such call pays a
+    ///   one-time learn and says so in `first_run_learning`.
+    /// * **Flashback Capture as Recording (102)** — no handler, no guide
+    ///   passage, named only inside `logic_setup_key_commands`' own
+    ///   description. It is the one command in this file with a genuine claim
+    ///   on the MIDI plane (no menu path, no default shortcut, so nothing
+    ///   else can reach it) and it is also the one nothing calls. When a
+    ///   capture tool exists it moves back up.
+    ///
+    /// Their preferred notes stay reserved (`takenNotes` counts them), so an
+    /// arbitrary `logic_learn_key_command` can never take 100-102 and make
+    /// the two harder to tell apart in the user's own window later.
+    static let onDemandCommands: [(search: String, name: String, preferredNote: Int)] = [
+        ("undo", Name.undo, 100),
+        ("redo", Name.redo, 101),
+        ("flashback", Name.flashbackCaptureAsRecording, 102)
+    ]
+
+    /// Every command this product spells a search term and a reserved note
+    /// for, installed or not. What `resolveKeyCommand` looks a name up in,
+    /// and what `logic_setup_key_commands {commands: [...]}` accepts — asking
+    /// for `Undo` by name is an explicit choice and is honoured; the install
+    /// round's default just does not make it for you.
+    static var allNamedCommands: [(search: String, name: String, preferredNote: Int)] {
+        standardCommands + onDemandCommands
+    }
 
     /// The channel every learn uses unless something forces another one. Named
     /// so the listing can leave it OUT of a row and say it once instead.

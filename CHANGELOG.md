@@ -2021,6 +2021,39 @@ with every render coming back as audio the agent can listen to.
   now shared Swift constants too, so a future edit can no longer land on some copies
   and miss the rest.
 
+- **First-run setup asks for far less of your time, and writes three fewer rows into
+  your Logic.** `logic_setup_key_commands` teaches Logic a MIDI note for each command
+  the tools fire, once per machine — and it was slow: 223 s for 22 commands, measured
+  live, of which only 3.3-4.1 s per command was accounted for by the waits in the code.
+  The rest was Logic's Key Commands panel being re-read up to six times per command,
+  plus a walk over every one of Logic's windows — the project window included — after
+  every MIDI note, to prove that no "already assigned" alert had appeared. The panel is
+  now read ONCE per command and that one reading carries through the select, the arm
+  and the verification; the alert is looked for only where an alert can be (a window
+  that was not there a moment ago, a sheet, a dialog), and always looked for once more
+  before moving on, so a modal can never be left standing; and every remaining wait —
+  the search re-filter, the row select, the Learn arm, the second after the note, the
+  0.6 s per deleted assignment on the repair path — became a poll that ends the moment
+  Logic answers instead of a fixed sleep that ends when the clock says so. Estimated
+  60-110 s for the round, not measured: these two tools rewrite your persisted key
+  command set, which no Undo reaches, so they are re-clocked on a scratch account
+  rather than on anyone's real one. The set itself shrank from 22 commands to 19:
+  Undo, Redo and Flashback Capture as Recording are in nobody's code path (a tool that
+  has to put something back does it with the inverse operation and a readback that
+  proves it, never a blind Undo), so they are no longer written into your Logic up
+  front — each is still spelled, still holds its reserved note, and is learned on the
+  spot the first time anything genuinely asks for it.
+- **A Logic drawing in another language now gets a straight answer instead of nineteen
+  dead ends.** Firing an already-learned key command never cared what language Logic is
+  in — it is a MIDI note, and that was proven on a French Logic. LEARNING one did care:
+  it types an English command name into Logic's own Key Commands search field. That now
+  fails once, before anything is opened or written, naming the language, naming the
+  commands it cannot spell, and naming what still works and what to do instead (bind by
+  the name your Logic shows — a name this server does not itself spell is passed
+  straight through and never refused). The row names moved into the same table the rest
+  of Logic's UI words live in, so capturing a language fills them in one place; nothing
+  was translated by guesswork.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

@@ -704,6 +704,101 @@ enum LogicUIStrings {
         static let deleteAllTrackAutomation = "Delete All Track Automation"
     }
 
+    // MARK: - Key Commands window ROW NAMES
+
+    /// The rows `logic_setup_key_commands` and `logic_learn_key_command` type
+    /// into the Key Commands window's filter field and then match by name.
+    ///
+    /// WHY THIS TABLE EXISTS. Of the three write planes this server owns, the
+    /// key-command plane is the only LOCALE-FREE one at runtime — the binding
+    /// is a MIDI note, and Logic does not care what language the window that
+    /// made it was drawn in. That was proven, not argued: with Logic's UI in
+    /// French (R4, 2026-08-30) `logic_trigger_key_command {name: "Rename
+    /// Track"}` sent note 119 and Logic opened the inline rename editor, and
+    /// all the standard commands still reported `registered: true`.
+    ///
+    /// **Acquiring** a binding is the half that dies. `setupKeyCommands`
+    /// matches Logic's own row text against `KeyCommandRegistry.Name`, which
+    /// is English, so on a translated Logic every command comes back
+    /// `not_found` — one at a time, several seconds each, with a `candidates`
+    /// list of rows in a language the caller did not ask about. With Logic
+    /// 12.2+ refusing plist Key Commands import as well, a non-English
+    /// install has had NO route to the bindings at all.
+    ///
+    /// This table is where that route goes when someone captures a language.
+    /// Until then it does the next most useful thing: it makes the gap
+    /// COUNTABLE and the failure HONEST — one refusal that names the language
+    /// and says what still works, instead of nineteen silent mismatches.
+    ///
+    /// HOW TO FILL ONE IN (the `locale-capture` skill's job, one language per
+    /// pass): switch Logic's UI language, relaunch it, open Key Commands
+    /// (`Logic Pro > Key Commands > Edit Assignments…`), and read each row's
+    /// own text — do NOT translate the menu item, and do not translate by
+    /// dictionary. Several of these names have no menu twin at all (`New
+    /// Track with Duplicate Settings and Content`), and two of the selection
+    /// commands are not what anyone would guess from the menus. A PARTIAL
+    /// table is refused on purpose (see `missingNames`): half a table learns
+    /// some commands and reports `not_found` for the rest, which is exactly
+    /// the silent mismatch this exists to prevent.
+    enum KeyCommandRow {
+
+        /// English name → that language's row text, per language code. The
+        /// key is always the ENGLISH name (`KeyCommandRegistry.Name`), because
+        /// that is what every call site in this server spells.
+        ///
+        /// `en` is absent on purpose: English needs no mapping, and an
+        /// identity table would be 28 lines that can drift out of step with
+        /// `Name`. Anything not listed here is a language nobody has
+        /// captured.
+        ///
+        /// Nothing is guessed. The French spellings were NOT captured in R4
+        /// (two `AXPress` attempts on `Modifier les assignations…` failed to
+        /// open the window), so French is not here either.
+        static let translations: [String: [String: String]] = [:]
+
+        /// The row text to type and match for `englishName` on a Logic drawing
+        /// in `language`, or nil when that language has no table.
+        ///
+        /// `language` nil, or any `en…` dialect, is the identity: this
+        /// server's own spellings ARE Logic's English row names.
+        ///
+        /// `in:` exists so the tests can exercise the CAPTURED-language path
+        /// with a table of their own. Inventing a translation to ship would be
+        /// the one thing worse than having none, but the mechanism that will
+        /// carry the first real capture has to be proven before it arrives.
+        static func spelling(
+            of englishName: String, language: String?,
+            in tables: [String: [String: String]] = translations
+        ) -> String? {
+            guard let language, !isEnglish(language) else { return englishName }
+            return tables[language]?[englishName]
+                ?? tables[String(language.prefix(2))]?[englishName]
+        }
+
+        /// Which of `names` this language cannot spell — the refusal's whole
+        /// evidence. Empty means the round can run.
+        static func missingNames(
+            _ names: [String], language: String?,
+            in tables: [String: [String: String]] = translations
+        ) -> [String] {
+            names.filter { spelling(of: $0, language: language, in: tables) == nil }
+        }
+
+        /// `en`, `en-GB`, `en_US`… all read `Save`.
+        static func isEnglish(_ language: String) -> Bool {
+            let lowered = language.lowercased()
+            return lowered == "en" || lowered.hasPrefix("en-") || lowered.hasPrefix("en_")
+        }
+
+        /// The languages this server can drive the Key Commands window in,
+        /// for a refusal that says what WOULD work. Always includes English.
+        static func supportedLanguages(
+            in tables: [String: [String: String]] = translations
+        ) -> [String] {
+            (["en"] + tables.keys).sorted()
+        }
+    }
+
     // MARK: - Control values and option names
 
     /// Values Logic publishes IN a control, and option names the tools pass

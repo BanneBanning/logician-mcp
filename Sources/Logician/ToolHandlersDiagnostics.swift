@@ -197,11 +197,16 @@ extension MCPServer {
         let relearn = (arguments["relearn"] as? Bool) ?? false
         var targets = KeyCommandRegistry.standardCommands
         if let onlyNames = arguments["commands"] as? [String], !onlyNames.isEmpty {
-            targets = targets.filter { onlyNames.contains($0.name) }
+            // Filtered over `allNamedCommands`, so the three commands the
+            // install round no longer writes (Undo, Redo, Flashback Capture —
+            // nothing in this server fires them) can still be asked for BY
+            // NAME. Naming one is a deliberate choice; the default round not
+            // making it for every user is the point.
+            targets = KeyCommandRegistry.allNamedCommands.filter { onlyNames.contains($0.name) }
             guard !targets.isEmpty else {
                 throw LogicianError.invalidArguments(
                     "no standard command matches; valid names: "
-                        + KeyCommandRegistry.standardCommands.map(\.name).joined(separator: ", ")
+                        + KeyCommandRegistry.allNamedCommands.map(\.name).joined(separator: ", ")
                 )
             }
         }
