@@ -346,8 +346,29 @@ enum MCUController {
         try? MCUBridge.sendForDictionary(.awaitEvents(since: since, timeoutMs: timeoutMs))
     }
 
+    /// How long one `awaitEvents` round may block while waiting for Logic.
+    static let awaitRoundMs = 350
+
+    /// How long the NEXT round may block: the round length, or whatever is
+    /// left of the budget — whichever is shorter. nil when the budget is gone.
+    ///
+    /// The cap is the whole point. `waitFor` used to check its deadline only
+    /// BETWEEN rounds and then block a full 350 ms regardless, so a stated
+    /// 2.25 s budget overshot to 2.48-2.56 s every time it ran out (measured
+    /// on `logic_set_playing`'s timeout path 2026-09-03: 2555.7/2483.6/2479.4
+    /// ms, and on `render_track`'s 2 487/2 487/2 474 ms) — the ledger's
+    /// standing "2.48 s poll". Pure, so the arithmetic is tested without a
+    /// bridge.
+    static func waitRoundTimeoutMs(remaining: Double, round: Int = awaitRoundMs) -> Int? {
+        let remainingMs = Int((remaining * 1000).rounded(.down))
+        guard remainingMs > 0 else { return nil }
+        return min(round, remainingMs)
+    }
+
     /// Waits until `check` passes, driven by actual MIDI events rather than
-    /// fixed sleeps. Returns the passing status, or nil on deadline.
+    /// fixed sleeps. Returns the passing status, or nil on deadline — which it
+    /// now honours to the millisecond instead of overshooting by up to one
+    /// round (see `waitRoundTimeoutMs`).
     static func waitFor(
         seconds: Double = 2.5,
         _ check: ([String: Any]) -> Bool
@@ -356,9 +377,11 @@ enum MCUController {
         guard var status = freshStatus() else { return nil }
         while true {
             if check(status) { return status }
-            if Date() >= deadline { return nil }
+            guard let timeoutMs = waitRoundTimeoutMs(
+                remaining: deadline.timeIntervalSinceNow
+            ) else { return nil }
             let since = status["received_events"] as? Int ?? -1
-            guard let next = awaitEvents(since: since, timeoutMs: 350) else { return nil }
+            guard let next = awaitEvents(since: since, timeoutMs: timeoutMs) else { return nil }
             status = next
         }
     }

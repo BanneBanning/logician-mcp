@@ -6,6 +6,105 @@ import LogicMCUBridge
 extension MCUController {
     // MARK: Transport
 
+    /// The MCU's transport lamps, read as a PAIR (see `TransportWitness.swift`
+    /// for why one of them was never enough).
+    static let playLED = 0x5E
+    static let stopLED = 0x5D
+
+    /// How long to watch the MCU position display before calling it still.
+    ///
+    /// A rolling transport answers on its first position tick, so this is only
+    /// ever paid in full when the transport really is stopped — and only on
+    /// the calls where the cheap witnesses already disagree with each other.
+    ///
+    /// MEASURED 2026-09-03 on the reference project (121 BPM, 5/4), polling
+    /// the daemon's own snapshot flat out: while PLAYING, 125 repaints in
+    /// 2.0 s across 4 335 samples — gaps of 0.2 ms min, 1.6 ms median, 53.1 ms
+    /// max; while STOPPED, not one repaint in 1.0 s across 2 297 samples. So
+    /// 250 ms is ~4.7x the worst gap seen and the two states are not close to
+    /// each other.
+    static let positionMotionWindowSeconds: Double = 0.25
+
+    /// How long to wait for the play LED's own echo after a press.
+    ///
+    /// Measured 2026-09-03 (profiles/logic_set_playing.md): a healthy start
+    /// echoes in 31-49 ms and a healthy stop in 13-33 ms, the stop needing a
+    /// second `awaitEvents` round in 2 of 3 clean measurements (N2) — so the
+    /// budget has to span two full rounds, and 0.75 s spans them with 15x the
+    /// worst measured echo to spare. It used to be `pollStatus`'s 2.25 s
+    /// (overshooting to 2.5 s), which was not a budget for a slow echo but a
+    /// budget for an echo that was never coming: the desync case burned all of
+    /// it, 3/3, and then threw. Missing this deadline is no longer a failure —
+    /// it hands the question to the other two witnesses.
+    static let ledEchoBudgetSeconds: Double = 0.75
+
+    /// Whether the MCU position display advanced inside the window.
+    ///
+    /// Event-paced, not slept: `awaitEvents` returns the moment Logic sends
+    /// anything, so a rolling transport is confirmed by its first position
+    /// repaint (single-digit ms) and only a genuinely still one waits out the
+    /// window. Traffic that is not the position (meters, a blinking record
+    /// lamp on an armed track) does not fool it — the comparison is on the
+    /// display's own digits, not on the event counter.
+    ///
+    /// nil, never false, when the bridge stops answering mid-sample: "the
+    /// socket failed" must not be reported as "the playhead is not moving".
+    static func positionMoving(window: Double = positionMotionWindowSeconds) -> Bool? {
+        guard var status = freshStatus(), let parked = status["timecode"] as? String else {
+            return nil
+        }
+        let deadline = Date().addingTimeInterval(window)
+        while let timeoutMs = waitRoundTimeoutMs(remaining: deadline.timeIntervalSinceNow) {
+            let since = status["received_events"] as? Int ?? -1
+            guard let next = awaitEvents(since: since, timeoutMs: timeoutMs) else { return nil }
+            if let now = next["timecode"] as? String, now != parked { return true }
+            status = next
+        }
+        return false
+    }
+
+    /// Reads the transport with as few witnesses as the answer needs.
+    ///
+    /// The LED pair is free (it is already in `status`) and the control bar is
+    /// one shallow walk, so both are always read. The position sample — the
+    /// only witness that can cost real time — is taken ONLY when those two
+    /// cannot settle it between them: when the control bar could not be read,
+    /// when the LED pair contradicts itself, or when the two disagree. On the
+    /// healthy path they agree and it is never sampled.
+    ///
+    /// Closure-driven so the ORDER and the COUNT, not just the outcome, are
+    /// unit-tested (`TransportWitnessTests`) — the same shape as
+    /// `resolveMetronomeState`.
+    static func observeTransport(
+        status: [String: Any], ax: () -> Bool?, positionMoving: () -> Bool?
+    ) -> TransportVerdict {
+        var evidence = TransportEvidence(
+            playLED: ledLit(playLED, in: status),
+            stopLED: ledLit(stopLED, in: status),
+            ax: nil,
+            positionMoving: nil
+        )
+        evidence.ax = ax()
+        if evidence.ax == nil || evidence.ledPlaying == nil || evidence.ax != evidence.ledPlaying {
+            evidence.positionMoving = positionMoving()
+        }
+        return transportVerdict(evidence)
+    }
+
+    /// The live binding of the three witnesses.
+    private static func observeTransport(
+        status: [String: Any], logic: LogicAccessibility
+    ) -> TransportVerdict {
+        observeTransport(
+            status: status,
+            ax: { logic.playingCheckbox() },
+            positionMoving: { positionMoving() }
+        )
+    }
+
+    /// Starts or stops playback, and settles what "playing" currently means
+    /// from three independent witnesses rather than from one LED bit.
+    ///
     /// Gates on `requireSurface`, not bare `freshStatus()` — a mirror that has
     /// merely gone idle (`SurfaceUnavailability.logicSilent`, past
     /// `staleMirrorSeconds`) is answerable with `requireSurface`'s one
@@ -16,33 +115,109 @@ extension MCUController {
     /// used to hand the write to `logic.setPlaying`'s AX route — only the
     /// merely-idle case now stays on MCU. Same shape as `MCUMixing.setToggle`
     /// and `MCUMetronome.setMetronome`.
+    ///
+    /// Three rules come out of the 2026-09-03 defect (`TransportWitness.swift`
+    /// tells the whole story):
+    ///
+    /// 1. no `already_*` and no skipped press on the play LED's word alone;
+    /// 2. a stop press only when the witnesses say the transport is really
+    ///    rolling — pressing stop at an already-stopped Logic rewinds the
+    ///    playhead to bar 1, and that is the one side effect this tool must
+    ///    never produce by accident;
+    /// 3. a press is verified by its LED echo when the echo comes, and by the
+    ///    other two witnesses when it does not. The press is NEVER repeated,
+    ///    for the same reason as (2).
+    ///
+    /// MEASURED 2026-09-03, same session, old binary then new, on the
+    /// reference project. Healthy: start 40/88/53 → 41/92/57 ms, stop
+    /// 22/40/38 → 21/34/35 ms, `already_stopped` 1.3 → 4.5 ms (the second
+    /// witness is one shallow control-bar walk, ~3 ms). Desynced — both lamps
+    /// lit at once, reproduced live by racing play/stop presses, with the
+    /// control bar reading stopped: `set_playing false` went from **2581 ms,
+    /// a `verification_failed` throw and the playhead rewound from bar 40 to
+    /// bar 1** to **314/268 ms, `already_stopped` with `led_desync`, no press
+    /// and the playhead untouched**; `set_playing true` went from a 3.8 ms
+    /// `already_playing` that was simply false (`logic_get_transport` read
+    /// `playing: false` in the next call) to a 320 ms real press that started
+    /// playback — and resynced the lamps, which is the only thing that does.
     static func setPlaying(_ playing: Bool) throws -> [String: Any]? {
         guard let status = try? requireSurface(
             "the play/stop transport buttons on the control surface", consequence: "Nothing was pressed"
         ) else { return nil }
-        let playLED = 0x5E
-        if ledLit(playLED, in: status) == playing {
-            return [
+        let logic = LogicAccessibility()
+        let before = observeTransport(status: status, logic: logic)
+        switch transportAction(desired: playing, verdict: before) {
+        case .alreadyThere:
+            var result: [String: Any] = [
                 "success": true, "verified": true,
                 "state": playing ? "already_playing" : "already_stopped",
-                "playing": playing, "route": "mcu"
+                "playing": playing, "route": "mcu",
+                "readback_route": before.route ?? TransportWitnessName.leds,
+                "transport_witnesses": before.payload()
             ]
+            if before.ledDesync { result["led_desync"] = true }
+            appendWarning(before.warning(desired: playing, pressed: false), to: &result)
+            return result
+        case .unresolved:
+            throw LogicianError.trackNotExposed(
+                requested: "Logic's own transport state, before pressing stop",
+                exposed: "not one of the three witnesses could say whether Logic is playing"
+                    + " (\(before.note)). Stop was NOT pressed: at an already-stopped transport"
+                    + " that press is Logic's rewind-to-bar-1 and would move the playhead. Read"
+                    + " logic_get_transport, or press stop deliberately with logic_mcu_command"
+                    + " {cmd: \"press\", button: \"stop\"}"
+            )
+        case .press:
+            break
         }
         try press(playing ? "play" : "stop")
-        guard pollStatus(until: { ledLit(playLED, in: $0) == playing }) != nil else {
-            throw LogicianError.verificationFailed(
-                requested: "playing=\(playing)",
-                actual: "MCU play LED did not change",
-                restored: false
-            )
-        }
-        return [
+        var result: [String: Any] = [
             "success": true, "verified": true,
             "state": playing ? "playing" : "stopped",
             "playing": playing,
             "route": "mcu",
-            "readback_route": "mcu_transport_led"
+            "write_route": playing ? "mcu_play_button" : "mcu_stop_button"
         ]
+        if let echoed = waitFor(seconds: ledEchoBudgetSeconds, { ledLit(playLED, in: $0) == playing }) {
+            result["readback_route"] = "mcu_transport_led"
+            result["transport_witnesses"] = transportVerdict(TransportEvidence(
+                playLED: ledLit(playLED, in: echoed),
+                stopLED: ledLit(stopLED, in: echoed),
+                ax: nil, positionMoving: nil
+            )).payload()
+            if before.ledDesync {
+                result["led_desync"] = true
+                appendWarning(before.warning(desired: playing, pressed: true), to: &result)
+            }
+            return result
+        }
+        // The LED never echoed. That used to be the end of it — a throw, after
+        // 2.5 s, at a caller whose transport had in fact done what was asked.
+        // Ask the witnesses that do not depend on Logic remembering to send a
+        // note-off before calling this a failure.
+        let after = observeTransport(status: freshStatus() ?? status, logic: logic)
+        guard after.playing == playing else {
+            throw LogicianError.verificationFailed(
+                requested: "playing=\(playing)",
+                actual: "the play LED never echoed the press and \(after.note)."
+                    + (playing
+                        ? " Play does nothing when the playhead sits at or past the project end."
+                        : "")
+                    + " The button was pressed once and NOT pressed again"
+                    + (playing ? "" : " (a second stop press would rewind the playhead)"),
+                restored: false
+            )
+        }
+        result["readback_route"] = after.route ?? TransportWitnessName.ax
+        result["led_desync"] = true
+        result["transport_witnesses"] = after.payload()
+        appendWarning(
+            "The control surface's play/stop LEDs never echoed the press (\(after.note)), so this"
+                + " write is confirmed by \(after.route ?? "the other witnesses") instead. The LED"
+                + " pair resyncs by itself on the next real play.",
+            to: &result
+        )
+        return result
     }
 
     /// See `setPlaying` above: `requireSurface` wakes a merely-idle mirror
