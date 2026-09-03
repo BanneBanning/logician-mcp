@@ -68,7 +68,12 @@ def render(tools, count_note):
 def main():
     dump_path, guide_path = sys.argv[1], sys.argv[2]
     with open(dump_path) as handle:
-        tools = json.load(handle)["tools"]
+        dump = json.load(handle)
+    tools = dump["tools"]
+    # The version the note quotes comes from the same handshake the schemas
+    # did, so a release bump cannot leave a stale `(vX.Y.Z)` behind: the guide
+    # said v0.61.0 for the 1.0.0-beta.1 release until this line existed.
+    version = (dump.get("initialize") or {}).get("serverInfo", {}).get("version")
 
     with open(guide_path) as handle:
         guide = handle.read()
@@ -81,6 +86,8 @@ def main():
     count_note = re.sub(r"^All \d+ tools", "All %d tools" % len(tools), old_note)
     if count_note == old_note and not old_note.startswith("All "):
         sys.exit("the note under '%s' no longer starts with 'All N tools'" % HEADING)
+    if version:
+        count_note = re.sub(r"\(v[^)]*\)", "(v%s)" % version, count_note, count=1)
 
     with open(guide_path, "w") as handle:
         handle.write(head + "\n" + render(tools, count_note))

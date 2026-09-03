@@ -1,19 +1,25 @@
 # Cutting a release
 
-Two distribution paths read the same tag: the Homebrew formula
-(`packaging/homebrew/logician.rb`) and `packaging/install.sh`. `install.sh`
-always builds `main` fresh, so it needs nothing done to it per release. The
-formula pins an exact tagged tarball, so every release means updating its
-`url` and `sha256`. There is no code signing anywhere in this pipeline - no
-Apple Developer certificate exists for this project, so every install
-compiles from source on the user's own machine.
+Two distribution paths read the same tag, and BOTH are pinned to it: the
+Homebrew formula (`packaging/homebrew/logician.rb`) fetches an exact tagged
+tarball, and `packaging/install.sh` checks out an exact tag (`DEFAULT_REF`)
+rather than whatever `main` holds. So every release updates three things: the
+version string, the formula's `url`/`sha256`, and the script's `DEFAULT_REF`.
+`PackagingSyncTests` fails the suite if the formula's version or the script's
+`DEFAULT_REF` drifts from `serverVersion`, so a half-done bump cannot ship
+quietly. There is no code signing anywhere in this pipeline - no Apple
+Developer certificate exists for this project, so every install compiles from
+source on the user's own machine, which is why the advertised floor is macOS
+14.5 (Swift 6 needs Xcode 16, and Xcode 16 needs 14.5) even though a built
+binary would run on macOS 13.
 
 ## Steps
 
 Replace `X.Y.Z` throughout with the new version (no `v` prefix except where
-shown).
+shown). A pre-release suffix is allowed and is carried verbatim into the tag:
+`1.0.0-beta.1` is tagged `v1.0.0-beta.1`.
 
-### 1. Bump the version string
+### 1. Bump the version string, in all three places
 
 Edit `Sources/Logician/Support.swift`:
 
@@ -24,6 +30,20 @@ let serverVersion = "X.Y.Z"
 This also moves `cacheSchemaVersion` (it's defined from `serverVersion`),
 which invalidates cached LCD/bank-map measurements on the next run - that is
 intentional whenever a release could change what they mean.
+
+Then the two files the version is *copied* into, both of which
+`PackagingSyncTests` cross-checks against `serverVersion`:
+
+```bash
+# packaging/install.sh
+DEFAULT_REF="vX.Y.Z"
+# gemini-extension.json
+"version": "X.Y.Z",
+```
+
+`install.sh` is served from `main`, so its `DEFAULT_REF` names a tag that must
+already exist by the time anyone runs it - which is why the bump is committed
+in the same commit the tag is cut from (step 3).
 
 ### 2. Build and test clean
 
@@ -38,7 +58,7 @@ fixing a red tag means a second tag, not a force-push.
 ### 3. Commit, tag, push
 
 ```bash
-git add Sources/Logician/Support.swift CHANGELOG.md
+git add Sources/Logician/Support.swift CHANGELOG.md packaging/install.sh gemini-extension.json
 git commit -m "Release X.Y.Z"
 git tag -a vX.Y.Z -m "vX.Y.Z"
 git push origin main
@@ -58,6 +78,11 @@ shasum -a 256 /tmp/logician-X.Y.Z.tar.gz
 ```
 
 ### 5. Update the formula
+
+Until this step runs, the formula carries a 64-zero placeholder `sha256`.
+That placeholder cannot ship by accident - Homebrew verifies the download
+against it and aborts on the mismatch - and `PackagingSyncTests` skips with a
+message pointing back here for as long as it stands.
 
 In `packaging/homebrew/logician.rb`, set:
 

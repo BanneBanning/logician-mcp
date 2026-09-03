@@ -4,6 +4,21 @@ import PackageDescription
 
 let package = Package(
     name: "Logician",
+    // The DEPLOYMENT floor: a built `logician` runs on macOS 13 (Ventura).
+    // The BUILD floor is higher and is set by the line above: Swift tools
+    // version 6.0 needs a Swift 6 toolchain, which ships in Xcode 16, which
+    // Apple will only install on macOS 14.5 or later. A Ventura Mac stops
+    // before it compiles a line — `swift build` answers "package 'Logician'
+    // is using Swift tools version 6.0.0 but the installed version is 5.9.2"
+    // (the shape verified locally 2026-09-04 against a deliberately
+    // too-new manifest). Since nothing here is distributed as a binary —
+    // Homebrew and packaging/install.sh both compile from source on the
+    // user's own machine — macOS 14.5 is the honest floor to ADVERTISE, and
+    // it is what packaging/install.sh checks and the formula depends on.
+    // Lowering the tools version is not a one-line change: `.swiftLanguageMode`
+    // is unavailable before PackageDescription 6.0 (verified 2026-09-04), and
+    // the sources use `nonisolated(unsafe)` in 18 places, which is Swift 5.10
+    // (SE-0412) and so out of reach of the 5.9 toolchain Ventura tops out at.
     platforms: [
         .macOS(.v13)
     ],
