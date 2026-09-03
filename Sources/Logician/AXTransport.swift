@@ -957,9 +957,28 @@ extension LogicAccessibility {
 
     /// Sets the cycle (locator) range to a whole-bar span.
     ///
-    /// TWO KINDS OF HONESTY THIS OWES THE CALLER, both added 2026-09-03 after
-    /// the profile caught them (profiles/logic_set_cycle_range.md §4 defects
-    /// 3 and 4):
+    /// FOUR KINDS OF HONESTY THIS OWES THE CALLER, all added 2026-09-03 after
+    /// the profile and its follow-up caught them
+    /// (profiles/logic_set_cycle_range.md §4 defects 3 and 4, then the ledger
+    /// row's two open items):
+    ///
+    /// - **Every bar line it writes to is MEASURED, not extrapolated.** The
+    ///   ruler publishes one average slope and this used to place both
+    ///   locators by multiplying it out from the anchor. A bar's width on
+    ///   Logic's timeline follows its meter, so on a project that changes
+    ///   meter (the sandbox goes 4/4 → 5/4 at bar 41) a ~38-bar extrapolation
+    ///   landed the start a whole bar out and the tool refused a range it
+    ///   could perfectly well reach. It now parks the playhead on the two bars
+    ///   the call is about and reads the thumb — the same evidence the anchor
+    ///   is built from — and holds both as offsets from the ruler's Start
+    ///   marker, which is what makes them survive a scroll. See
+    ///   `RulerBarMapping`.
+    /// - **A failed write puts the locators back.** A verification that failed
+    ///   used to leave the cycle region wherever the wrong write had put it,
+    ///   `Restored: false`, with nothing saying where that was. It is now
+    ///   returned to the range this call READ first, by the same route that
+    ///   moved it, verified, and the error carries `Restored: true` — or names
+    ///   the bars it is left at when it could not.
     ///
     /// - **Cycle mode is left as it was found.** A real drag in the ruler's
     ///   cycle strip engages Cycle the way it would for a human, so a call
@@ -977,8 +996,9 @@ extension LogicAccessibility {
     ///   ruler's own Start marker, and only refuses when the ruler will not
     ///   move — with the pixels it tried in the message.
     ///
-    /// The playhead this tool borrows for its anchor/verify geometry is
-    /// restored EAGERLY in a `defer`, not deferred as a debt. Measured
+    /// The playhead this tool borrows for its anchor and its bar-line
+    /// measurements is restored EAGERLY in a `defer`, not deferred as a debt.
+    /// Measured
     /// 2026-09-03 after the `convergeSlider` fix: the restore leg is ~12 ms
     /// per bar (~0.4 s for the sandbox's habitual 36-bar distance) against a
     /// call that no longer costs ten seconds — a debt would have to be
@@ -1013,49 +1033,194 @@ extension LogicAccessibility {
         }
 
         // Snapshot helper: Logic auto-scrolls the view when the playhead moves,
-        // so the thumb and the region must always be read in the same instant
-        // and never compared across playhead moves.
-        func snapshot() throws -> (regionX: CGFloat, regionY: CGFloat, thumbX: CGFloat, slope: CGFloat, rulerFrame: CGRect) {
+        // so every x below is read in ONE instant, the ruler's Start marker
+        // among them. A marker-relative offset is what survives that scroll:
+        // a horizontal scroll moves the marker and every bar line by the same
+        // pixels, so `someX - markerX` is the same number before and after.
+        struct Snap {
+            let regionX: CGFloat
+            let regionY: CGFloat
+            let thumbX: CGFloat
+            let markerX: CGFloat
+            let slope: CGFloat
+            let rulerFrame: CGRect
+        }
+        func snapshot() throws -> Snap {
             let freshRuler = try rulerArea()
             guard let freshRegion = rulerChild(freshRuler, LogicUIStrings.Element.cycleRegion),
-                  let thumb = rulerChild(freshRuler, LogicUIStrings.Element.playheadThumb) else {
-                throw LogicianError.windowNotFound("cycle region or playhead thumb in the ruler")
+                  let thumb = rulerChild(freshRuler, LogicUIStrings.Element.playheadThumb),
+                  let marker = rulerChild(freshRuler, LogicUIStrings.Element.startMarker) else {
+                throw LogicianError.windowNotFound(
+                    "cycle region, playhead thumb or Start marker in the ruler"
+                )
             }
             let regionFrame = try frame(of: freshRegion)
-            return (
+            return Snap(
                 regionX: regionFrame.origin.x,
                 regionY: regionFrame.origin.y,
                 thumbX: try frame(of: thumb).origin.x,
+                markerX: try frame(of: marker).origin.x,
                 slope: try pixelsPerBar(in: freshRuler),
                 rulerFrame: try frame(of: freshRuler)
             )
         }
 
+        /// A snapshot taken once the ruler has stopped moving — and, when the
+        /// park was supposed to move the thumb, only after it visibly has.
+        ///
+        /// This replaces the flat `Thread.sleep(0.15)` that followed every
+        /// park here: Logic animates the thumb and (when it follows the
+        /// playhead) the whole ruler over several frames, and a fixed sleep
+        /// is a guess at how long that takes. Reading nil rather than a
+        /// stale x is the point — a thumb that never followed the park would
+        /// otherwise be MEASURED as the target bar's line and place the write
+        /// a whole range away, which is exactly the class of silent error
+        /// this fix exists to remove.
+        func settledSnapshot(movedFrom: CGFloat?) throws -> Snap? {
+            var previous: Snap?
+            var moved = movedFrom == nil
+            let deadline = Date().addingTimeInterval(0.6)
+            while Date() < deadline {
+                let now = try snapshot()
+                if let movedFrom, abs(now.thumbX - movedFrom) >= 0.5 { moved = true }
+                if moved, let previous,
+                   abs(now.thumbX - previous.thumbX) < 0.5,
+                   abs(now.regionX - previous.regionX) < 0.5,
+                   abs(now.markerX - previous.markerX) < 0.5 {
+                    return now
+                }
+                previous = now
+                Thread.sleep(forTimeInterval: 0.02)
+            }
+            return moved ? previous : nil
+        }
+
+        /// Parks the playhead on a bar line, or says why it could not. A bar
+        /// past the end of the project is where `convergeSlider` runs into
+        /// Logic's own clamp; that is a reachability refusal, not a write
+        /// failure, and it names the bar the playhead actually stopped on.
+        func park(on bar: Int) throws {
+            do {
+                try convergeSlider(
+                    in: controlBar, sliderName: LogicUIStrings.Element.playheadBarSlider, target: bar
+                )
+            } catch {
+                let reached = playheadGroup(in: (try? controlBarGroup()) ?? controlBar)
+                    .flatMap { sliderValue($0, LogicUIStrings.Element.playheadBarSlider) }
+                throw LogicianError.trackNotExposed(
+                    requested: "bar \(bar)",
+                    exposed: "the playhead cannot be moved there — it stopped at bar "
+                        + "\(reached.map(String.init) ?? "?"), which is as far as this project goes. "
+                        + "Ask for a range inside the project, or lengthen the project first"
+                )
+            }
+            try convergeSlider(
+                in: controlBar, sliderName: LogicUIStrings.Element.playheadBeatSlider, target: 1
+            )
+        }
+
+        var parkedBar = savedBar
+        var lastThumbX: CGFloat?
+        /// Parks and reads, or nil when the thumb never followed.
+        func parkAndRead(_ bar: Int) throws -> Snap? {
+            let expectMovement = bar != parkedBar
+            try park(on: bar)
+            parkedBar = bar
+            let snap = try settledSnapshot(movedFrom: expectMovement ? lastThumbX : nil)
+            if let snap { lastThumbX = snap.thumbX }
+            return snap
+        }
+
         // Anchor calibration: park the playhead on the region's bar line so the
         // thumb identifies which bar the (grid-snapped) region sits on, and
         // measure the constant thumb-to-bar-line pixel offset.
+        //
+        // The first guess comes from the ruler's average slope, which is only
+        // right in a project that never changes meter (see `RulerBarMapping`).
+        // So a guess that misses is no longer retried at ±1 and given up on:
+        // the miss is MEASURED in pixels and the next candidate is that many
+        // bars away, which converges from any distance — including from past a
+        // meter change, where the old ±1 search could not reach the region at
+        // all and the whole tool refused.
         let initial = try snapshot()
-        let approximateBar = try approximateBarAt(x: initial.regionX, in: try rulerArea())
-        var anchor: (bar: Int, thumbOffset: CGFloat, regionX: CGFloat, slope: CGFloat)?
-        for candidate in [approximateBar, approximateBar - 1, approximateBar + 1] where candidate >= 1 {
-            try convergeSlider(in: controlBar, sliderName: LogicUIStrings.Element.playheadBarSlider, target: candidate)
-            try convergeSlider(in: controlBar, sliderName: LogicUIStrings.Element.playheadBeatSlider, target: 1)
-            Thread.sleep(forTimeInterval: 0.15)
-            let snap = try snapshot()
-            if abs(snap.regionX - snap.thumbX) <= snap.slope * 0.55 {
+        lastThumbX = initial.thumbX
+        var candidate = try approximateBarAt(x: initial.regionX, in: try rulerArea())
+        var tried: [Int] = []
+        var lastGapBars: Double?
+        var anchor: (bar: Int, thumbOffset: CGFloat, regionX: CGFloat, markerX: CGFloat, slope: CGFloat)?
+        while anchor == nil, tried.count < 5, candidate >= 1, !tried.contains(candidate) {
+            tried.append(candidate)
+            guard let here = try parkAndRead(candidate) else { break }
+            // THE BAR'S OWN WIDTH, not the ruler's average. MEASURED
+            // 2026-09-03 on the sandbox at its resting zoom: a 5/4 bar is
+            // 17 px where the average slope says 13.4, and the region's frame
+            // is inset a constant 8 px to the right of its locator line — so
+            // judged in average bars the region sat 0.60 bars from its OWN bar
+            // line, outside the tolerance, and the search oscillated between
+            // bars 43 and 44 and refused a region it was looking straight at.
+            // The neighbouring bar line gives the real width for one more park.
+            let neighbour = ((try? parkAndRead(candidate + 1)) ?? nil)
+                ?? (candidate > 1 ? ((try? parkAndRead(candidate - 1)) ?? nil) : nil)
+            let width = neighbour.map {
+                abs(($0.thumbX - $0.markerX) - (here.thumbX - here.markerX))
+            } ?? here.slope
+            let gap = here.regionX - here.thumbX
+            let off = RulerBarMapping.barsOff(gapPixels: gap, localPixelsPerBar: width)
+            if off == 0 {
                 anchor = (
                     bar: candidate,
-                    thumbOffset: snap.regionX - snap.thumbX,
-                    regionX: snap.regionX,
-                    slope: snap.slope
+                    thumbOffset: gap,
+                    regionX: here.regionX,
+                    markerX: here.markerX,
+                    slope: here.slope
                 )
                 break
             }
+            lastGapBars = Double(gap / max(width, 1))
+            candidate = max(1, candidate + off)
         }
         guard let anchored = anchor else {
+            let residual = lastGapBars.map {
+                ", and the last one left the region \(String(format: "%.2f", $0)) bars from the playhead"
+            } ?? ""
             throw LogicianError.openVerificationFailed(
-                "Could not anchor the cycle region to a bar line via the playhead thumb."
+                "Could not anchor the cycle region to a bar line via the playhead thumb (tried bar"
+                    + (tried.count == 1 ? " " : "s ")
+                    + tried.map(String.init).joined(separator: ", ") + residual + ")."
             )
+        }
+
+        // The two bar lines this call is about, MEASURED rather than
+        // extrapolated: the playhead is parked on each of them and the thumb
+        // is read, which is the same evidence the anchor above is built from.
+        // The average slope is kept only as the fallback and as the number the
+        // result reports the measurement AGAINST, so a caller can see how far
+        // a straight-line ruler would have missed.
+        let averageSlope = anchored.slope
+        let anchorOffset = anchored.regionX - anchored.markerX
+        func extrapolatedOffset(ofBar bar: Int) -> CGFloat {
+            anchorOffset + averageSlope * CGFloat(bar - anchored.bar)
+        }
+        var startOffset = extrapolatedOffset(ofBar: startBar)
+        var endOffset = extrapolatedOffset(ofBar: endBar)
+        var pixelsPerBarHere = averageSlope
+        var mappingRoute = "average_slope_extrapolation"
+        var averageSlopeErrorBars: Double?
+        if let startSnap = try parkAndRead(startBar), let endSnap = try parkAndRead(endBar) {
+            let measuredStart = startSnap.thumbX + anchored.thumbOffset - startSnap.markerX
+            let measuredEnd = endSnap.thumbX + anchored.thumbOffset - endSnap.markerX
+            let localSlope = RulerBarMapping.localPixelsPerBar(
+                startOffset: measuredStart, endOffset: measuredEnd, bars: endBar - startBar
+            )
+            if RulerBarMapping.isPlausibleSlope(local: localSlope, average: averageSlope) {
+                averageSlopeErrorBars = RulerBarMapping.errorBars(
+                    measured: measuredStart, extrapolated: startOffset, pixelsPerBar: localSlope
+                )
+                startOffset = measuredStart
+                endOffset = measuredEnd
+                pixelsPerBarHere = localSlope
+                mappingRoute = "measured_bar_lines"
+            }
         }
 
         // Verified drag semantics in the cycle strip (2026-08-24): a drag that
@@ -1064,21 +1229,21 @@ extension LogicAccessibility {
         // A pure AXPosition write moves the region start exactly one grid-snapped
         // bar landing. Combine them so the drag start never touches the region.
         let preDrag = try snapshot()
-        // The playhead is on the anchor bar, so the thumb plus the measured
-        // constant offset IS that bar's line. A horizontal scroll moves every
-        // pixel in the ruler by the same amount, so recovery only has to add
-        // the shift it measured.
-        var originBarX = preDrag.thumbX + anchored.thumbOffset
-        func xForBar(_ bar: Int) -> CGFloat {
-            originBarX + preDrag.slope * CGFloat(bar - anchored.bar)
-        }
+        let originalStartOffset = preDrag.regionX - preDrag.markerX
+        let originalRangeText = originalLength
+            .map { "bars \(anchored.bar)-\(anchored.bar + $0)" } ?? "where it was"
+        // Every bar line is held as an offset from the Start marker, so the
+        // absolute x is only ever computed from a marker reading taken now.
+        var markerX = preDrag.markerX
+        func startX() -> CGFloat { markerX + startOffset }
+        func endX() -> CGFloat { markerX + endOffset }
         // A drag that ends on the ruler's last pixel is not really reachable,
         // so demand three quarters of a bar of air at each edge.
-        let visibilityMargin = preDrag.slope * 0.75
+        let visibilityMargin = pixelsPerBarHere * 0.75
         func rangeIsVisible() -> Bool {
             RulerVisibility.isVisible(
-                startX: xForBar(startBar),
-                endX: xForBar(endBar),
+                startX: startX(),
+                endX: endX(),
                 rulerMinX: preDrag.rulerFrame.minX,
                 rulerMaxX: preDrag.rulerFrame.maxX,
                 margin: visibilityMargin
@@ -1089,14 +1254,14 @@ extension LogicAccessibility {
             recentredBy = try recentreRuler(
                 shift: {
                     RulerVisibility.shiftToReveal(
-                        startX: xForBar(startBar),
-                        endX: xForBar(endBar),
+                        startX: startX(),
+                        endX: endX(),
                         rulerMinX: preDrag.rulerFrame.minX,
                         rulerMaxX: preDrag.rulerFrame.maxX,
                         margin: visibilityMargin
                     )
                 },
-                apply: { moved in originBarX += moved },
+                apply: { moved in markerX += moved },
                 satisfied: rangeIsVisible
             )
             guard rangeIsVisible() else {
@@ -1104,15 +1269,13 @@ extension LogicAccessibility {
                     requested: "bars \(startBar)-\(endBar)",
                     exposed: "the target range is outside the visible ruler and scrolling it back "
                         + "did not reach it (the ruler moved \(Int(recentredBy.rounded())) px of the "
-                        + "\(Int(RulerVisibility.shiftToReveal(startX: xForBar(startBar), endX: xForBar(endBar), rulerMinX: preDrag.rulerFrame.minX, rulerMaxX: preDrag.rulerFrame.maxX, margin: visibilityMargin).rounded())) px still needed). "
+                        + "\(Int(RulerVisibility.shiftToReveal(startX: startX(), endX: endX(), rulerMinX: preDrag.rulerFrame.minX, rulerMaxX: preDrag.rulerFrame.maxX, margin: visibilityMargin).rounded())) px still needed). "
                         + "Zoom the Tracks area out, or ask for a range nearer bar \(anchored.bar)"
                 )
             }
         }
-        let startX = xForBar(startBar)
-        let endX = xForBar(endBar)
         let stripY = preDrag.regionY + 10
-        let writeRoute: String
+        let writeRoute = originalLength == targetLength ? "ax_position_grid_snap" : "cg_drag_create"
 
         func regionFrameNow() throws -> CGRect {
             guard let current = rulerChild(try rulerArea(), LogicUIStrings.Element.cycleRegion) else {
@@ -1137,25 +1300,23 @@ extension LogicAccessibility {
         func covers(_ frame: CGRect, _ x: CGFloat) -> Bool {
             x >= frame.minX - 3 && x <= frame.maxX + 3
         }
-
-        if originalLength == targetLength {
-            // Same length: the grid-snapped position write is enough.
-            writeRoute = "ax_position_grid_snap"
-            try setRegionPosition(x: startX)
-        } else {
-            writeRoute = "cg_drag_create"
-            var dragFrom = CGPoint(x: startX, y: stripY)
-            var dragTo = CGPoint(x: endX, y: stripY)
+        /// Sizes the region by dragging the strip, moving the region out of
+        /// the way first when it covers the point the drag must start on.
+        /// Shared with the restore below, so a failed write is put back by
+        /// exactly the mechanism that made it.
+        func dragRange(fromX: CGFloat, toX: CGFloat) throws {
+            var dragFrom = CGPoint(x: fromX, y: stripY)
+            var dragTo = CGPoint(x: toX, y: stripY)
             var currentFrame = try regionFrameNow()
-            if covers(currentFrame, startX) {
-                if !covers(currentFrame, endX) {
+            if covers(currentFrame, fromX) {
+                if !covers(currentFrame, toX) {
                     // Drag backwards; only the start point must avoid the region.
                     swap(&dragFrom, &dragTo)
                 } else {
                     // The region covers both locator targets: move it aside first.
-                    try setRegionPosition(x: min(startX + preDrag.slope, preDrag.rulerFrame.maxX - 2))
+                    try setRegionPosition(x: min(fromX + preDrag.slope, preDrag.rulerFrame.maxX - 2))
                     currentFrame = try regionFrameNow()
-                    guard !covers(currentFrame, startX) else {
+                    guard !covers(currentFrame, fromX) else {
                         throw LogicianError.openVerificationFailed(
                             "Could not move the existing cycle region away from the drag start point."
                         )
@@ -1171,24 +1332,134 @@ extension LogicAccessibility {
             Thread.sleep(forTimeInterval: 0.3)
         }
 
-        // Semantic verification: with the playhead on the start bar, the thumb
-        // (plus the measured constant offset) must line up with the region edge,
-        // and the region's size description must report the requested bar count.
-        try convergeSlider(in: controlBar, sliderName: LogicUIStrings.Element.playheadBarSlider, target: startBar)
-        try convergeSlider(in: controlBar, sliderName: LogicUIStrings.Element.playheadBeatSlider, target: 1)
-        Thread.sleep(forTimeInterval: 0.15)
-        let verifySnap = try snapshot()
-        let startError = (verifySnap.regionX - verifySnap.thumbX - anchored.thumbOffset) / verifySnap.slope
-        guard let resized = rulerChild(try rulerArea(), LogicUIStrings.Element.cycleRegion),
-              abs(startError) <= 0.3,
-              cycleLengthBars(resized) == targetLength else {
-            let actualLength = rulerChild((try? rulerArea()) ?? ruler, LogicUIStrings.Element.cycleRegion)
-                .map { stringAttribute($0, "AXSizeDescription") } ?? "?"
-            throw LogicianError.verificationFailed(
-                requested: "cycle bars \(startBar)-\(endBar) (\(targetLength) bars)",
-                actual: "start is \(String(format: "%.2f", startError)) bars off, size is '\(actualLength)'",
-                restored: false
+        /// The region as the ruler shows it right now, marker-relative so it
+        /// can be compared with the offsets measured above at any scroll
+        /// position.
+        func regionNow() -> (offset: CGFloat, length: Int?, size: String)? {
+            guard let fresh = try? rulerArea(),
+                  let current = rulerChild(fresh, LogicUIStrings.Element.cycleRegion),
+                  let marker = rulerChild(fresh, LogicUIStrings.Element.startMarker),
+                  let regionFrame = try? frame(of: current),
+                  let markerFrame = try? frame(of: marker) else { return nil }
+            return (
+                regionFrame.origin.x - markerFrame.origin.x,
+                cycleLengthBars(current),
+                stringAttribute(current, "AXSizeDescription")
             )
+        }
+        func describeRange(_ state: (offset: CGFloat, length: Int?, size: String)?) -> String {
+            guard let state else { return "a position the ruler would not report" }
+            // The ruler's AVERAGE slope, not the width measured at the target:
+            // this describes a region that may be anywhere, and a local width
+            // is only right locally. It is an estimate and the sentence says
+            // so — the length beside it is read, not estimated.
+            let bar = RulerBarMapping.barAt(
+                offset: state.offset, anchorOffset: anchorOffset,
+                anchorBar: anchored.bar, pixelsPerBar: averageSlope
+            )
+            guard let length = state.length else { return "about bar \(bar), length unreadable" }
+            return "about bars \(bar)-\(bar + length)"
+        }
+        func rangeIsOriginal() -> Bool {
+            let now = regionNow()
+            return RulerBarMapping.isSameRange(
+                offset: now?.offset, originalOffset: originalStartOffset,
+                length: now?.length, originalLength: originalLength,
+                pixelsPerBar: pixelsPerBarHere
+            )
+        }
+        /// Puts the locators back where this call found them, and says whether
+        /// that worked. A failed write used to leave the cycle region wherever
+        /// the wrong write had put it and report `Restored: false` — the same
+        /// defect `setPlayhead` had for the playhead, fixed the same way
+        /// (2026-09-03).
+        func restoreRange() -> (restored: Bool, leftAt: String) {
+            if rangeIsOriginal() { return (true, originalRangeText) }
+            guard let originalLength, let now = regionNow() else {
+                return (false, describeRange(regionNow()))
+            }
+            if now.length == originalLength {
+                if let marker = (try? snapshot())?.markerX {
+                    try? setRegionPosition(x: marker + originalStartOffset)
+                }
+            } else {
+                // The original END bar line is measured the same way the
+                // target's was, and only falls back to the local slope when
+                // the playhead cannot be parked on it any more.
+                let originalEndBar = anchored.bar + originalLength
+                let measuredEnd = ((try? parkAndRead(originalEndBar)) ?? nil)
+                    .map { $0.thumbX + anchored.thumbOffset - $0.markerX }
+                let endBack = measuredEnd
+                    ?? (originalStartOffset + pixelsPerBarHere * CGFloat(originalLength))
+                if let marker = (try? snapshot())?.markerX {
+                    try? dragRange(fromX: marker + originalStartOffset, toX: marker + endBack)
+                }
+            }
+            return rangeIsOriginal()
+                ? (true, originalRangeText)
+                : (false, describeRange(regionNow()))
+        }
+        /// Folds the restore into the error, so a refusal never doubles as a
+        /// half-finished write. Cycle mode goes back too: the drag engages it
+        /// the way it would for a human, and a call that failed asked for that
+        /// even less than a call that succeeded.
+        func abandoning(_ error: Error) -> Error {
+            let outcome = restoreRange()
+            if let before = cycleEnabledBefore, cycleButtonState() != before {
+                _ = try? MCUController.setCycle(before) ?? setCycle(enabled: before)
+            }
+            let sentence = RulerBarMapping.restoreSentence(
+                restored: outcome.restored, original: originalRangeText, leftAt: outcome.leftAt
+            )
+            switch error as? LogicianError {
+            case .verificationFailed(let requested, let actual, _):
+                return LogicianError.verificationFailed(
+                    requested: requested,
+                    actual: outcome.restored ? actual : "\(actual); \(sentence)",
+                    restored: outcome.restored
+                )
+            case .openVerificationFailed(let detail):
+                return LogicianError.openVerificationFailed("\(detail) \(sentence)")
+            case .writeFailed(let detail):
+                return LogicianError.writeFailed("\(detail). \(sentence)")
+            default:
+                return error
+            }
+        }
+
+        do {
+            if writeRoute == "ax_position_grid_snap" {
+                // Same length: the grid-snapped position write is enough.
+                try setRegionPosition(x: startX())
+            } else {
+                try dragRange(fromX: startX(), toX: endX())
+            }
+
+            // Semantic verification, and no second playhead park to pay for
+            // it: the start bar's line was MEASURED against the ruler's Start
+            // marker, the marker travels with every pixel in the ruler, so the
+            // region's own offset from it is comparable to that measurement at
+            // any scroll position. The size description still has to report
+            // the requested bar count.
+            guard let after = regionNow() else {
+                throw LogicianError.verificationFailed(
+                    requested: "cycle bars \(startBar)-\(endBar) (\(targetLength) bars)",
+                    actual: "the cycle region could not be re-read",
+                    restored: false
+                )
+            }
+            let startError = RulerBarMapping.errorBars(
+                measured: after.offset, extrapolated: startOffset, pixelsPerBar: pixelsPerBarHere
+            )
+            guard abs(startError) <= 0.3, after.length == targetLength else {
+                throw LogicianError.verificationFailed(
+                    requested: "cycle bars \(startBar)-\(endBar) (\(targetLength) bars)",
+                    actual: "start is \(String(format: "%.2f", startError)) bars off, size is '\(after.size)'",
+                    restored: false
+                )
+            }
+        } catch {
+            throw abandoning(error)
         }
 
         var cycleWarning: String?
@@ -1207,6 +1478,13 @@ extension LogicAccessibility {
         }
         let finalCycle = cycleButtonState()
 
+        var mapping: [String: Any] = [
+            "route": mappingRoute,
+            "px_per_bar": (pixelsPerBarHere * 10).rounded() / 10
+        ]
+        if let averageSlopeErrorBars {
+            mapping["average_slope_error_bars"] = (averageSlopeErrorBars * 100).rounded() / 100
+        }
         var result: [String: Any] = [
             "success": true,
             "verified": true,
@@ -1220,9 +1498,11 @@ extension LogicAccessibility {
                 "length_bars": originalLength ?? -1
             ],
             "write_route": writeRoute,
+            "mapping": mapping,
             "cycle_enabled_before": cycleEnabledBefore ?? NSNull(),
             "cycle_enabled": finalCycle ?? NSNull(),
-            "verification": "playhead-thumb alignment at the start bar and AXSizeDescription reporting \(targetLength) bars"
+            "verification": "the region's own distance from the ruler's Start marker against the "
+                + "measured bar line of bar \(startBar), and AXSizeDescription reporting \(targetLength) bars"
         ]
         if abs(recentredBy) >= 1 {
             result["ruler_recentred_px"] = Int(recentredBy.rounded())
