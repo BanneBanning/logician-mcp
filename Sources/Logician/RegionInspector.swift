@@ -112,8 +112,11 @@ enum RegionInspector {
     }
 
     /// The name field, compared the way every check in this family compares a
-    /// region name: trimmed, and with the arrangement map's " (muted)" suffix
-    /// off, because the map prints it and the panel does not.
+    /// region name: trimmed, and with Logic's `, muted` state suffix off. The
+    /// arrangement map no longer prints it (`parseRegion` cleans the name at
+    /// the source since 2026-09-03), but this side reads the INSPECTOR's own
+    /// string, so the strip stays here and goes through the one shared word
+    /// list — `RegionNameAnnotation`.
     static func canonicalPanelName(_ raw: String) -> String {
         PrintedRegion.canonicalName(raw).trimmingCharacters(in: .whitespaces)
     }

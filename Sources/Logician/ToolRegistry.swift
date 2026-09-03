@@ -222,7 +222,7 @@ extension MCPServer {
                         "scope": ["type": "string", "enum": ["region", "track"], "description": "'region' (default) prints the named region; 'track' prints the whole selected track."],
                         "track_name": ["type": "string", "description": "The region's track (required for scope 'region'); the track to print for scope 'track'."],
                         "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
-                        "region_name": ["type": "string"],
+                        "region_name": ["type": "string", "description": Tool.regionNameNote],
                         "start_bar": ["type": "integer", "description": "The region's current start bar."],
                         "name": ["type": "string", "description": "Name for the printed region/file. Logic's default is '<region>_bip'."],
                         "destination": ["type": "string", "enum": ["new_track", "selected_track"], "description": "Where the printed audio lands."],
@@ -817,7 +817,7 @@ extension MCPServer {
             Tool(
                 name: "logic_list_regions",
                 title: "List regions",
-                description: "The arrangement map: every region on every rendered track row, with name, start/end bar (and beat when off the barline), type (midi/audio) and selection state — parsed from Logic's own accessibility descriptions. Read-only. Optionally filter to one track. THIS MAP CAN BE INCOMPLETE AND NOW SAYS SO IN FIELDS, not in a footnote: `partial` (true when rows are PROVABLY missing), `completeness` ('partial' or 'unknown' - never 'complete', because a row Logic has not rendered publishes nothing at all), `partial_evidence`, `missing_track_numbers` where the numbering names them, and `coverage_checked` saying which signals were read. By default it reads the ROW NUMBERING only, which is free - a map holding rows 1-9 and 20-29 has already proved ten rows exist that it cannot see. Collapsed track stacks and a scrolled Tracks area can hide rows WITHOUT leaving a gap in the numbering: pass check_hidden_rows: true to read the track header column and scroll bar too (measured +40-50 ms on a 95-120 ms call). REGIONS HAVE NO STABLE HANDLE: they are addressed by (track_name, region_name, start_bar), and start_bar is exactly what an edit changes - so re-read this map between two edits of the same region instead of reusing the first read's start_bar. Every row here carries its `track_number`, and that is what to pass to the region tools when several rows share a name (an imported project is full of 'Studio Grand' rows): a name that matches two rendered rows is now REFUSED as ambiguous rather than resolved to the first of them, and track_number + track_name are cross-checked against each other. Duplicate region names make verification count occurrences rather than identify a region, which is why every edit tool selects exclusively first. FIELDS OMITTED AT THEIR DEFAULT: start_beat/end_beat on the barline, and `selected` when false (52 of 54 regions on the reference project, 17% of the payload) - absent means not selected. `type` IS NOT GUARANTEED: it is parsed from the region's help sentence, which Logic published for all 54 regions on 2026-09-02 and for only 2 of the same 54 hours earlier, so where one region on a row carries it the rest are filled in from it (type_from: 'track_row', because a track holds one kind of region) and where none does the field is ABSENT - which means unknown, never 'not audio'. logic_select_region or logic_describe_tracks answers it outright. EMPTY IS PROVEN, NOT ASSUMED: a walk that finds no track rows is cross-checked against the track header column, and an arrangement that is unreadable (or visibly holds tracks the walk cannot see - e.g. a non-English Logic UI) is REFUSED with the reason rather than reported as an empty project.",
+                description: "The arrangement map: every region on every rendered track row, with name, start/end bar (and beat when off the barline), type (midi/audio), mute state and selection state — parsed from Logic's own accessibility descriptions. Read-only. `name` IS THE REGION'S OWN NAME AND `muted` IS BESIDE IT, which is new: Logic writes a region's live state into the same string it publishes the name in (`808 Mutation Bass, muted`), and this map used to report that whole string as the name — so with ONE track soloed, 53 of the reference project's 54 regions were renamed by this reader and every region tool then refused the name it had just published (measured 2026-09-03). The state now comes back as `muted`, and `muted: true` has TWO causes the element does not distinguish: the region's own mute, and the silence a solo on another track puts it in. `muted: \"unavailable\"` means the name ends in a ', …' this build cannot read as a state word (a localized Logic, or a region genuinely named with a comma) — never that it is unmuted. Both spellings are still accepted wherever a region_name is taken, so a name copied out of an older answer still lands. Optionally filter to one track. THIS MAP CAN BE INCOMPLETE AND NOW SAYS SO IN FIELDS, not in a footnote: `partial` (true when rows are PROVABLY missing), `completeness` ('partial' or 'unknown' - never 'complete', because a row Logic has not rendered publishes nothing at all), `partial_evidence`, `missing_track_numbers` where the numbering names them, and `coverage_checked` saying which signals were read. By default it reads the ROW NUMBERING only, which is free - a map holding rows 1-9 and 20-29 has already proved ten rows exist that it cannot see. Collapsed track stacks and a scrolled Tracks area can hide rows WITHOUT leaving a gap in the numbering: pass check_hidden_rows: true to read the track header column and scroll bar too (measured +40-50 ms on a 95-120 ms call). REGIONS HAVE NO STABLE HANDLE: they are addressed by (track_name, region_name, start_bar), and start_bar is exactly what an edit changes - so re-read this map between two edits of the same region instead of reusing the first read's start_bar. Every row here carries its `track_number`, and that is what to pass to the region tools when several rows share a name (an imported project is full of 'Studio Grand' rows): a name that matches two rendered rows is now REFUSED as ambiguous rather than resolved to the first of them, and track_number + track_name are cross-checked against each other. Duplicate region names make verification count occurrences rather than identify a region, which is why every edit tool selects exclusively first. FIELDS OMITTED AT THEIR DEFAULT: start_beat/end_beat on the barline, and `selected` when false (52 of 54 regions on the reference project, 17% of the payload) - absent means not selected. `type` IS NOT GUARANTEED: it is parsed from the region's help sentence, which Logic published for all 54 regions on 2026-09-02 and for only 2 of the same 54 hours earlier, so where one region on a row carries it the rest are filled in from it (type_from: 'track_row', because a track holds one kind of region) and where none does the field is ABSENT - which means unknown, never 'not audio'. logic_select_region or logic_describe_tracks answers it outright. EMPTY IS PROVEN, NOT ASSUMED: a walk that finds no track rows is cross-checked against the track header column, and an arrangement that is unreadable (or visibly holds tracks the walk cannot see - e.g. a non-English Logic UI) is REFUSED with the reason rather than reported as an empty project.",
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -842,7 +842,7 @@ extension MCPServer {
                     "properties": [
                         "track_name": ["type": "string"],
                         "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
-                        "region_name": ["type": "string"],
+                        "region_name": ["type": "string", "description": Tool.regionNameNote],
                         "start_bar": ["type": "integer"],
                         "exclusive": ["type": "boolean", "description": "Default true: clear other selections first. false ADDS this region to the current selection and reports selected_before/selected_count."]
                     ],
@@ -864,7 +864,7 @@ extension MCPServer {
                     "properties": [
                         "track_name": ["type": "string"],
                         "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
-                        "region_name": ["type": "string"],
+                        "region_name": ["type": "string", "description": Tool.regionNameNote],
                         "start_bar": ["type": "integer"]
                     ],
                     "required": ["track_name"],
@@ -885,7 +885,7 @@ extension MCPServer {
                     "properties": [
                         "track_name": ["type": "string"],
                         "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
-                        "region_name": ["type": "string"],
+                        "region_name": ["type": "string", "description": Tool.regionNameNote],
                         "start_bar": ["type": "integer", "description": "The region's current start bar."],
                         "apply": ["type": "boolean", "description": "false (default) previews and changes nothing; true commits."]
                     ],
@@ -914,7 +914,7 @@ extension MCPServer {
                         ],
                         "track_name": ["type": "string", "description": "The anchor's track; required for every mode except 'all' and 'none'."],
                         "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
-                        "region_name": ["type": "string", "description": "Which region is the anchor (with start_bar to disambiguate)."],
+                        "region_name": ["type": "string", "description": "Which region is the anchor (with start_bar to disambiguate). " + Tool.regionNameNote],
                         "start_bar": ["type": "integer", "description": "The anchor region's current start bar."]
                     ],
                     "required": ["mode"],
@@ -936,7 +936,7 @@ extension MCPServer {
                     "properties": [
                         "track_name": ["type": "string"],
                         "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
-                        "region_name": ["type": "string", "description": "Which region; with start_bar, to disambiguate."],
+                        "region_name": ["type": "string", "description": "Which region; with start_bar, to disambiguate. " + Tool.regionNameNote],
                         "start_bar": ["type": "integer", "description": "The region's CURRENT start bar."],
                         "at_bar": ["type": "integer", "minimum": 1, "description": "Bar to cut at; must be inside the region."],
                         "at_beat": ["type": "integer", "minimum": 1, "description": "Beat within that bar, 1-based. Default 1 (the bar line)."],
@@ -966,7 +966,7 @@ extension MCPServer {
                     "properties": [
                         "track_name": ["type": "string"],
                         "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
-                        "region_name": ["type": "string"],
+                        "region_name": ["type": "string", "description": Tool.regionNameNote],
                         "start_bar": ["type": "integer", "description": "Which region (its current start bar)."],
                         "by_bars": ["type": "integer", "description": "Positive = right, negative = left."],
                         "by_beats": ["type": "integer"]
@@ -989,7 +989,7 @@ extension MCPServer {
                     "properties": [
                         "track_name": ["type": "string"],
                         "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
-                        "region_name": ["type": "string"],
+                        "region_name": ["type": "string", "description": Tool.regionNameNote],
                         "start_bar": ["type": "integer"],
                         "to_bar": ["type": "integer"],
                         "to_track": ["type": "string", "description": "Destination track; default same track."],
@@ -1014,7 +1014,7 @@ extension MCPServer {
                     "properties": [
                         "track_name": ["type": "string", "description": "Select this track's region first. Omit to read whatever is selected."],
                         "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
-                        "region_name": ["type": "string", "description": "With track_name: which region."],
+                        "region_name": ["type": "string", "description": "With track_name: which region. " + Tool.regionNameNote],
                         "start_bar": ["type": "integer", "description": "With track_name: the region's current start bar."],
                         "include_quantize_values": [
                             "type": "boolean",
@@ -1039,7 +1039,7 @@ extension MCPServer {
                     "properties": [
                         "track_name": ["type": "string", "description": "Which track the region is on. Required for scope 'region'."],
                         "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
-                        "region_name": ["type": "string", "description": "Which region, with start_bar to disambiguate."],
+                        "region_name": ["type": "string", "description": "Which region, with start_bar to disambiguate. " + Tool.regionNameNote],
                         "start_bar": ["type": "integer", "description": "The region's CURRENT start bar."],
                         "scope": [
                             "type": "string",
@@ -1084,13 +1084,13 @@ extension MCPServer {
             Tool(
                 name: "logic_rename_region",
                 title: "Rename a region",
-                description: "Rename ONE region, in about 0.18 s (measured 2026-09-02). Logic's Region inspector publishes the region's name as an editable text field, so this is a single write and a confirm — no dialog, no key command, and the inspector's disclosure triangles are not even touched. The region is selected exclusively first (track_name plus region_name and/or start_bar; ambiguity is refused with the candidates listed) and the rename is verified in BOTH channels before it reports success: the inspector reads the new name back AND the arrangement map shows it on the region at that position, compared exactly, case included — the two disagreeing is a verification_failed naming both. Names are the ARRANGEMENT's, not the audio file's — renaming an audio region never touches the file on disk, and Undo restores the old name. Compare-and-set with expected_current_name. Three notes worth knowing: a MUTED region reads as '<name>, muted' in the arrangement map while the inspector shows the bare name, and this tool compares the bare names; if Logic renumbers OTHER regions on the track as a side effect (the way it renumbers default marker names by position), the ones that moved are reported in `also_renamed`; and the two strings Logic prints in that name field for ITSELF — '2 selected', and the '... Defaults' it shows when no region is selected — are refused as names before anything is written, because a region carrying one reads as a selection state to every Region-inspector tool. To rename a TRACK use logic_rename_track; to rename several regions call this once per region.",
+                description: "Rename ONE region, in about 0.18 s (measured 2026-09-02). Logic's Region inspector publishes the region's name as an editable text field, so this is a single write and a confirm — no dialog, no key command, and the inspector's disclosure triangles are not even touched. The region is selected exclusively first (track_name plus region_name and/or start_bar; ambiguity is refused with the candidates listed) and the rename is verified in BOTH channels before it reports success: the inspector reads the new name back AND the arrangement map shows it on the region at that position, compared exactly, case included — the two disagreeing is a verification_failed naming both. Names are the ARRANGEMENT's, not the audio file's — renaming an audio region never touches the file on disk, and Undo restores the old name. Compare-and-set with expected_current_name. Three notes worth knowing: a MUTED region publishes '<name>, muted' as its accessibility description while the inspector shows the bare name, and both channels are compared on the bare name (since 2026-09-03 the arrangement map strips that state off the name and reports it as `muted` instead, so the two now agree by construction) - the one name this cannot round-trip is a new_name that itself ends in ', muted', which the map is unable to tell from a muted region of the shorter name; if Logic renumbers OTHER regions on the track as a side effect (the way it renumbers default marker names by position), the ones that moved are reported in `also_renamed`; and the two strings Logic prints in that name field for ITSELF — '2 selected', and the '... Defaults' it shows when no region is selected — are refused as names before anything is written, because a region carrying one reads as a selection state to every Region-inspector tool. To rename a TRACK use logic_rename_track; to rename several regions call this once per region.",
                 inputSchema: [
                     "type": "object",
                     "properties": [
                         "track_name": ["type": "string", "description": "Which track the region is on."],
                         "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
-                        "region_name": ["type": "string", "description": "Which region (its current name), with start_bar to disambiguate."],
+                        "region_name": ["type": "string", "description": "Which region (its current name), with start_bar to disambiguate. " + Tool.regionNameNote],
                         "start_bar": ["type": "integer", "description": "The region's current start bar."],
                         "new_name": ["type": "string", "description": "The new name. One line, non-empty."],
                         "expected_current_name": ["type": "string", "description": "Compare-and-set: the name you believe the region carries. A mismatch refuses and writes nothing."]
@@ -1900,7 +1900,7 @@ extension MCPServer {
                     "properties": [
                         "track_name": ["type": "string", "description": "Select this track's region first (exclusive selection). Omit to read whatever is currently selected."],
                         "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
-                        "region_name": ["type": "string", "description": "With track_name: which region."],
+                        "region_name": ["type": "string", "description": "With track_name: which region. " + Tool.regionNameNote],
                         "start_bar": ["type": "integer", "description": "With track_name: the region's current start bar."],
                         "limit": ["type": "integer", "description": "Maximum events in the result, default 500. The full count is always reported as event_count."]
                     ],
@@ -1927,7 +1927,7 @@ extension MCPServer {
                         ],
                         "track_name": ["type": "string", "description": "Select this track's region first (exclusive). Omit to edit whatever region is showing."],
                         "track_number": ["type": "integer", "description": Tool.regionTrackNumberNote],
-                        "region_name": ["type": "string", "description": "With track_name: which region."],
+                        "region_name": ["type": "string", "description": "With track_name: which region. " + Tool.regionNameNote],
                         "start_bar": ["type": "integer", "description": "With track_name: the region's current start bar."],
                         "bar": ["type": "integer", "minimum": 1, "description": "The event's bar (for 'create', the bar to put it on). Required."],
                         "beat": ["type": "integer", "minimum": 1, "description": "The event's beat within the bar. Narrows the address; for 'create' it is where the note goes (default 1)."],

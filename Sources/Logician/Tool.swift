@@ -237,6 +237,21 @@ struct Tool {
         + " WITH track_name: the two are cross-checked, and a pair that disagrees is refused"
         + " before anything is written."
 
+    /// The one sentence every `region_name` argument owes the caller, because
+    /// the name a region publishes is not always the name it has.
+    ///
+    /// Logic writes a region's live MUTE state into the same `AXDescription`
+    /// it publishes the name in, so `Crash` reads `Crash, muted` the moment it
+    /// is muted OR any other track is soloed. Until 2026-09-03 the arrangement
+    /// map reported that whole string as the name and these arguments matched
+    /// it exactly, so one soloed track made every region tool refuse the names
+    /// the server itself had just printed. Both spellings are accepted now,
+    /// which is what keeps a name replayed out of an older answer working.
+    static let regionNameNote = "The region's own name. Logic writes its mute state into the"
+        + " name it publishes (`Crash, muted` while the region is muted or another track is"
+        + " soloed); the arrangement map reports the CLEAN name with `muted` beside it, and both"
+        + " spellings are accepted here."
+
     /// The mirror of `axInsertIndexNote`, for the Mackie physical slot.
     static let mcuInsertSlotNote = " MACKIE physical slot 1-8 (logic_list_inserts route 'mcu'), NOT the Accessibility insert_index — see INSERT NUMBERING in the server instructions."
 

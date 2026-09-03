@@ -1899,6 +1899,26 @@ with every render coming back as audio the agent can listen to.
   **1 243 ms**. That patch was checked against a forced fresh read of Logic's Tempo List, which
   agreed with it exactly; a map with more than one event is still forgotten rather than guessed.
 
+- **A soloed track no longer renames every region in the project.** Logic writes a
+  region's live state into the same string it publishes the name in, so a region reads
+  `808 Mutation Bass, muted` while it is muted *or* while any other track is soloed — and
+  the arrangement map handed that whole string back as the region's `name`. Measured on
+  the reference project with ONE track soloed: **53 of its 54 regions were renamed by the
+  reader**, across 14 of the 19 rendered rows, and `logic_select_region`,
+  `logic_get_region_params` and `logic_delete_region` then refused the names
+  `logic_list_regions` had just printed (`not_exposed`, 3 of 3). Every region reader now
+  reports the region's OWN name with **`muted` beside it** — `true`, `false`, or
+  `"unavailable"` where the name ends in a `, …` this build cannot read as a state word,
+  which is what a localized Logic gets instead of a confidently wrong `false`. `muted:
+  true` covers both causes because the element does not distinguish them. Both spellings
+  of a name are accepted wherever a `region_name` is taken, so a name copied out of an
+  older answer still lands. Verified live: the same three calls refuse on the old binary
+  and succeed on the new one; muting a region reads back `{name: "Crash", muted: true}`
+  and unmuting it — addressed by the annotated spelling — reads back `muted: false`; with
+  the solo off, 0 of 54 regions report muted. The one name that cannot round-trip is a
+  region literally called `Kick, muted`, which publishes the same bytes as a muted `Kick`;
+  the guide says so.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

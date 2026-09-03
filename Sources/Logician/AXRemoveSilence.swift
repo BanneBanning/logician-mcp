@@ -469,7 +469,9 @@ extension LogicAccessibility {
         let before = LogicAccessibility.typedRowRegions(targetRow.regions.map(parseRegion))
         let candidates = before.filter { entry in
             if let regionName,
-               (entry["name"] as? String)?.caseInsensitiveCompare(regionName) != .orderedSame {
+               !RegionNameAnnotation.matches(
+                   name: (entry["name"] as? String) ?? "", request: regionName
+               ) {
                 return false
             }
             if let startBar, entry["start_bar"] as? Int != startBar { return false }

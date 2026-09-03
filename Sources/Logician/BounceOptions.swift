@@ -156,11 +156,19 @@ struct ArrangementRegion: Equatable {
 /// and the choice prefers the name the caller asked for.
 enum PrintedRegion {
 
-    /// Logic's Accessibility suffix for a muted region.
-    static let mutedSuffix = ", muted"
-
+    /// A region's own name, with Logic's live-state suffix off.
+    ///
+    /// This used to be the only place in the server that knew a region's
+    /// `AXDescription` carries `, muted`, and it knew it privately: the
+    /// arrangement map itself reported the annotated string as the region's
+    /// `name`, so a soloed track renamed every region in the project on every
+    /// other reader. Since 2026-09-03 `parseRegion` cleans the name at the
+    /// source and this is a second pass over an already-clean string — kept
+    /// because the bounce diff also compares names the INSPECTOR published,
+    /// and routed through the one shared word list so there is no second
+    /// vocabulary to keep in step.
     static func canonicalName(_ name: String) -> String {
-        name.hasSuffix(mutedSuffix) ? String(name.dropLast(mutedSuffix.count)) : name
+        RegionNameAnnotation.parse(name).name
     }
 
     private static func key(_ region: ArrangementRegion) -> String {
