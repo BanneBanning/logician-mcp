@@ -1564,6 +1564,23 @@ with every render coming back as audio the agent can listen to.
   breaks the tie, exactly as `logic_rename_region` already did, and a genuine
   multi-selection still reports itself honestly (`subject: multiple`, two regions selected,
   49 ms).
+- **With a plug-in window or the Mixer in front, the region tools stop stalling and start
+  telling you why.** Every region tool checks that Logic's Tracks area has the keyboard
+  focus before it fires a key command, and repairs it if it does not — a real cure, when the
+  focus is somewhere in the project window. But when the front window belongs to somebody
+  else, no repair is possible: an Accessibility write cannot take the key window away from
+  another window. The tools spent about a second and a quarter discovering that, every call,
+  and then said only that the focus was unverified. They now look at which window holds the
+  focus first, and if it is not the project window they skip the repair they cannot make and
+  name the window and the one call that closes it — `logic_close_plugin_window`, or
+  `logic_set_mixer {open: false}`. Measured live on 2026-09-03 with a Space Designer window
+  open: `logic_select_regions` **1 565 → 214 ms** (`mode: "none"`) and **3 274 → 499 ms**
+  (`mode: "track"`), `logic_copy_region` **6 547 → 2 173 ms**, `logic_delete_region`
+  **2 567 → 969 ms**; with the Mixer up, `logic_select_regions` **1 916 → 742 ms**. Every
+  one of those calls still did its work and still verified it — only the waiting is gone.
+  Nothing changed where the repair does work: right after a List Editors read the focus is
+  outside the Tracks area, and it is still put back (320–327 ms, unchanged), and a healthy
+  call is untouched (`logic_select_regions` 168–256 ms before, 169–268 ms after).
 
 ### Known limitations (honest by design)
 

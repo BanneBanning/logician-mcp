@@ -234,6 +234,195 @@ final class TracksAreaFocusTests: XCTestCase {
         XCTAssertTrue(sentence.contains("'Notes Crossing Split Point'"), sentence)
     }
 
+    // MARK: - Rung 1b: the key window belongs to somebody else
+
+    // The table below is the LIVE one, measured 2026-09-03 against the sandbox
+    // `Testlåt Copy`: each state was induced for real and the full ladder
+    // was run against it. `nil` here means "a rung won, keep climbing"; a
+    // `ForeignKeyWindow` means "every rung wrote successfully and Logic's
+    // focused element never moved".
+    //
+    //   plug-in window (AXDialog)     no rung wins   1 565 ms -> 214 ms
+    //   Mixer window (channel strip)  no rung wins   1 916 ms -> 742 ms
+    //   after a List Editors read     ax_selected_children wins, 320-327 ms
+    //   Tracks area                   already focused, no probe cost at all
+
+    private func foreign(
+        identity: TracksAreaFocus.ProjectWindowIdentity = .isNotProjectWindow,
+        subrole: String, title: String = "", hasDocument: Bool = false
+    ) -> TracksAreaFocus.ForeignKeyWindow? {
+        TracksAreaFocus.foreignKeyWindow(
+            identity: identity, subrole: subrole, title: title, hasDocument: hasDocument
+        )
+    }
+
+    func testAPluginWindowIsUnrepairableAndNamesTheToolThatClosesIt() {
+        // Measured: plug-in window focused, all three rungs wrote, focus never
+        // moved, 1 565 ms burnt for an `unverified` reached in one window read.
+        let window = foreign(subrole: "AXDialog", title: "Crash")
+        XCTAssertEqual(window?.kind, LogicWindowKind.pluginOrAuxiliary)
+        XCTAssertEqual(window?.wayOut, "close it with logic_close_plugin_window")
+        XCTAssertEqual(window?.label, "plugin_or_auxiliary 'Crash'")
+    }
+
+    func testTheMixerIsUnrepairableAndNamesItsOwnToggle() {
+        // The Mixer is a SECOND standard window carrying the same document, so
+        // the document alone cannot tell it from the project window — the
+        // title's view segment does, exactly as `projectWindow()` filters it.
+        // Measured 2026-09-03: opening it moves the key focus onto one of its
+        // channel strips and every rung then loses (1 916 ms of them).
+        let window = foreign(
+            subrole: "AXStandardWindow", title: "Testlåt Copy - Mixer: Tracks",
+            hasDocument: true
+        )
+        XCTAssertEqual(window?.kind, LogicWindowKind.mixer)
+        XCTAssertEqual(window?.wayOut, "close it with logic_set_mixer {open: false}")
+    }
+
+    func testTheProjectWindowItselfAlwaysKeepsTheLadder() {
+        // The focus on a control-bar button (2026-09-01) or just after a List
+        // Editors read (2026-09-03, `ax_selected_children`, 2/2) is still
+        // INSIDE the project window, and those are the states a rung has won
+        // from. Identity decides it, with no title read at all.
+        XCTAssertNil(
+            foreign(
+                identity: .isProjectWindow, subrole: "AXStandardWindow",
+                title: "Testlåt Copy - Tracks", hasDocument: true
+            )
+        )
+        // …even for a window that would otherwise classify as foreign: being
+        // the element `projectWindow()` returns outranks every attribute.
+        XCTAssertNil(foreign(identity: .isProjectWindow, subrole: "AXDialog", title: "Crash"))
+    }
+
+    func testAnUnidentifiableProjectWindowKeepsTheLadderForAProjectShapedWindow() {
+        // "Cannot see" is not "the focus is elsewhere": with no project window
+        // resolvable, a standard document window that is not the Mixer is
+        // treated as the project window and the ladder runs.
+        XCTAssertNil(
+            foreign(
+                identity: .unknown, subrole: "AXStandardWindow",
+                title: "Testlåt Copy - Tracks", hasDocument: true
+            )
+        )
+        XCTAssertEqual(
+            foreign(identity: .unknown, subrole: "AXDialog", title: "Crash")?.kind,
+            LogicWindowKind.pluginOrAuxiliary
+        )
+    }
+
+    func testAFloatingOrDocumentlessWindowIsForeignAndSaysToComeBackToTheProjectWindow() {
+        // Key Commands is an AXFloatingWindow; a document-less standard window
+        // is a Logic window with no project in it. Neither has a close tool of
+        // its own, so the way out is the honest generic one.
+        XCTAssertEqual(
+            foreign(subrole: "AXFloatingWindow", title: "Key Command Assignments")?.wayOut,
+            "bring Logic's project (Tracks) window to the front"
+        )
+        XCTAssertEqual(
+            foreign(subrole: "AXStandardWindow", title: "Loop Browser")?.kind,
+            LogicWindowKind.standard
+        )
+    }
+
+    func testAnUntitledForeignWindowStillReadsAsSomething() {
+        // `AXWindow 'dialog'` with no title is exactly what the 2026-09-01
+        // measurement saw; the label must never come back empty.
+        XCTAssertEqual(foreign(subrole: "AXDialog")?.label, "plugin_or_auxiliary")
+        XCTAssertTrue(foreign(subrole: "AXDialog")?.dictionary["window_title"] is NSNull)
+    }
+
+    func testTheForeignVerdictIsStillUnverifiedWithNoWriteRoute() {
+        // The verdict does not change — only its price. Every consumer of
+        // `state` keeps working, and nothing claims a focus it does not have.
+        let outcome = TracksAreaFocus.Outcome.foreignKeyWindow(
+            element: "AXWindow 'dialog'",
+            window: TracksAreaFocus.ForeignKeyWindow(
+                kind: LogicWindowKind.pluginOrAuxiliary, title: "Crash",
+                wayOut: "close it with logic_close_plugin_window"
+            )
+        )
+        XCTAssertEqual(outcome.state, "unverified")
+        XCTAssertEqual(outcome.route, "none")
+        XCTAssertEqual(outcome.focusedElement, "AXWindow 'dialog'")
+    }
+
+    func testTheForeignSummaryNamesTheWindowAndTheWayOut() {
+        let outcome = TracksAreaFocus.Outcome.foreignKeyWindow(
+            element: "AXWindow 'dialog'",
+            window: TracksAreaFocus.ForeignKeyWindow(
+                kind: LogicWindowKind.mixer, title: "Testlåt Copy - Mixer: Tracks",
+                wayOut: "close it with logic_set_mixer {open: false}"
+            )
+        )
+        XCTAssertTrue(outcome.summary.contains("UNVERIFIED"), outcome.summary)
+        XCTAssertTrue(outcome.summary.contains("Mixer: Tracks"), outcome.summary)
+        XCTAssertTrue(outcome.summary.contains("logic_set_mixer {open: false}"), outcome.summary)
+        // It must not read as a refusal: the command still fires.
+        XCTAssertFalse(outcome.summary.contains("refused"), outcome.summary)
+    }
+
+    func testTheForeignDictionaryCarriesTheWindowMachineReadably() {
+        let outcome = TracksAreaFocus.Outcome.foreignKeyWindow(
+            element: nil,
+            window: TracksAreaFocus.ForeignKeyWindow(
+                kind: LogicWindowKind.pluginOrAuxiliary, title: "Crash",
+                wayOut: "close it with logic_close_plugin_window"
+            )
+        )
+        let dictionary = outcome.dictionary
+        XCTAssertEqual(dictionary["state"] as? String, "unverified")
+        XCTAssertTrue(dictionary["focused_element"] is NSNull)
+        let blocked = dictionary["blocked_by"] as? [String: Any]
+        XCTAssertEqual(blocked?["window_kind"] as? String, "plugin_or_auxiliary")
+        XCTAssertEqual(blocked?["window_title"] as? String, "Crash")
+        XCTAssertEqual(
+            blocked?["way_out"] as? String, "close it with logic_close_plugin_window"
+        )
+        // The repairable verdicts gain nothing: `blocked_by` is present only
+        // when something really is blocking.
+        XCTAssertNil(
+            TracksAreaFocus.Outcome.unverified(element: nil).dictionary["blocked_by"]
+        )
+        XCTAssertNil(
+            TracksAreaFocus.Outcome.alreadyFocused(element: "x").dictionary["blocked_by"]
+        )
+    }
+
+    func testAPasteThatDidNothingUnderAForeignWindowStillBlamesFocusFirst() {
+        let reason = TracksAreaFocus.pasteFailedReason(
+            toBar: 20, barAlreadyOccupied: false,
+            focus: .foreignKeyWindow(
+                element: "AXWindow 'dialog'",
+                window: TracksAreaFocus.ForeignKeyWindow(
+                    kind: LogicWindowKind.pluginOrAuxiliary, title: "Crash",
+                    wayOut: "close it with logic_close_plugin_window"
+                )
+            ),
+            dialogTitles: []
+        )
+        XCTAssertTrue(reason.contains("FIRST SUSPECT"), reason)
+        XCTAssertTrue(reason.contains("logic_close_plugin_window"), reason)
+        XCTAssertTrue(reason.hasSuffix("Clipboard state uncertain"), reason)
+    }
+
+    func testTheForeignSummaryComesBackOutOfASelectionResult() {
+        // The carried-around form every nudge/split/multi-select refusal reads.
+        let selection: [String: Any] = [
+            "key_focus": TracksAreaFocus.Outcome.foreignKeyWindow(
+                element: "AXWindow 'dialog'",
+                window: TracksAreaFocus.ForeignKeyWindow(
+                    kind: LogicWindowKind.pluginOrAuxiliary, title: "Crash",
+                    wayOut: "close it with logic_close_plugin_window"
+                )
+            ).dictionary
+        ]
+        XCTAssertTrue(
+            TracksAreaFocus.summary(inSelectionResult: selection)
+                .contains("logic_close_plugin_window")
+        )
+    }
+
     // MARK: - Reading the record back out of a selection result
 
     func testTheSummaryComesOutOfASelectionResult() {

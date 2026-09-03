@@ -91,6 +91,103 @@ enum TracksAreaFocus {
         return name.isEmpty ? role : "\(role) '\(name)'"
     }
 
+    /// Another Logic window holds the key focus, and no rung of the repair
+    /// ladder can take it away from there.
+    ///
+    /// MEASURED 2026-09-01 and re-measured 2026-09-03 (sandbox `Testlåt
+    /// Copy`, both binaries in one session): with a plug-in window
+    /// (`AXWindow 'dialog'`), or Logic's Mixer (a channel strip,
+    /// `AXLayoutItem 'Acke Vocals'`), holding the key window, `selectTrack`,
+    /// the raw `AXSelectedChildren` rewrite and the `Has Focus` press all wrote
+    /// successfully and Logic's focused element did not move — an Accessibility
+    /// write into one window cannot make another window stop being the key
+    /// window. The ladder paid two 8 × 50 ms polls and a button press for the
+    /// privilege, and returned the SAME `unverified` a single window read
+    /// returns:
+    ///
+    /// | state | tool | old | new |
+    /// |---|---|---|---|
+    /// | plug-in window | `select_regions {mode: none}` | 1 565 ms | **214 ms** |
+    /// | plug-in window | `select_regions {mode: track}` | 3 274 ms | **499 ms** |
+    /// | plug-in window | `copy_region` (4 bars) | 6 547 ms | **2 173 ms** |
+    /// | plug-in window | `delete_region` | 2 567 ms | **969 ms** |
+    /// | Mixer window | `select_regions {mode: none}` | 1 916 ms | **742 ms** |
+    ///
+    /// The states this deliberately does NOT cover, because a rung wins them:
+    /// anything inside the project window. Measured the same session, right
+    /// after a List Editors read the focus is outside the Tracks area and
+    /// `ax_selected_children` puts it back, 2/2, in 320–327 ms.
+    ///
+    /// So this is not a refusal and not a new verdict — it is the same
+    /// `unverified` reached without the ~1.2 s, plus the one thing the old
+    /// report could not say: which window has the focus and which tool call
+    /// gives it back.
+    struct ForeignKeyWindow: Equatable {
+        /// `LogicWindowKind`'s vocabulary — the same word `logic_list_windows`
+        /// publishes for this window, so an agent can find it in that list.
+        let kind: String
+        let title: String
+        /// The way out, named as a tool call, the way the region refusals name
+        /// theirs.
+        let wayOut: String
+
+        var label: String {
+            title.isEmpty ? kind : "\(kind) '\(title)'"
+        }
+
+        var dictionary: [String: Any] {
+            [
+                "window_kind": kind,
+                "window_title": title.isEmpty ? NSNull() : title,
+                "way_out": wayOut
+            ]
+        }
+    }
+
+    /// Which Logic window the focus sits in, relative to the project window.
+    /// `unknown` is not `isNotProjectWindow`: a window list that cannot be read
+    /// keeps the ladder, because "cannot see" and "the focus is in another
+    /// window" lead to opposite actions.
+    enum ProjectWindowIdentity: Equatable {
+        case isProjectWindow
+        case isNotProjectWindow
+        case unknown
+    }
+
+    /// The tool call that hands the Tracks area its focus back, by window kind.
+    static func wayOut(fromWindowKind kind: String) -> String {
+        switch kind {
+        case LogicWindowKind.pluginOrAuxiliary:
+            return "close it with logic_close_plugin_window"
+        case LogicWindowKind.mixer:
+            return "close it with logic_set_mixer {open: false}"
+        default:
+            return "bring Logic's project (Tracks) window to the front"
+        }
+    }
+
+    /// Is the focused window one the repair ladder provably cannot win from?
+    /// `nil` means "run the ladder" — the answer for the project window itself
+    /// (where every measured repair DID win: the focus on a control-bar button,
+    /// the inspector, a List Editors pane) and for a window that cannot be
+    /// identified at all.
+    ///
+    /// Pure, so the table of shapes is pinned by tests rather than by whichever
+    /// windows happened to be open during a live pass.
+    static func foreignKeyWindow(
+        identity: ProjectWindowIdentity, subrole: String, title: String, hasDocument: Bool
+    ) -> ForeignKeyWindow? {
+        if identity == .isProjectWindow { return nil }
+        let kind = LogicWindowKind.classify(
+            subrole: subrole, title: title, hasDocument: hasDocument
+        )
+        // Identity could not be established (no project window in Logic's
+        // window list): believe the classification rather than guessing, and
+        // keep the ladder for anything that reads as the project window.
+        if identity == .unknown, kind == LogicWindowKind.project { return nil }
+        return ForeignKeyWindow(kind: kind, title: title, wayOut: wayOut(fromWindowKind: kind))
+    }
+
     /// What the probe found and what, if anything, was done about it.
     enum Outcome: Equatable {
         /// The Tracks area already held the focus; nothing was written.
@@ -104,12 +201,16 @@ enum TracksAreaFocus {
         /// worked — but the result says so, and a command that then does
         /// nothing has its first suspect named.
         case unverified(element: String?)
+        /// The same verdict as `unverified`, reached in one read because the
+        /// key window belongs to somebody else. Reports `state: "unverified"`
+        /// deliberately: nothing about the answer changed, only its price.
+        case foreignKeyWindow(element: String?, window: ForeignKeyWindow)
 
         var state: String {
             switch self {
             case .alreadyFocused: return "already_focused"
             case .restored: return "restored"
-            case .unverified: return "unverified"
+            case .unverified, .foreignKeyWindow: return "unverified"
             }
         }
 
@@ -117,7 +218,7 @@ enum TracksAreaFocus {
             switch self {
             case .alreadyFocused: return "none"
             case .restored(let route, _): return route
-            case .unverified: return "none"
+            case .unverified, .foreignKeyWindow: return "none"
             }
         }
 
@@ -126,16 +227,21 @@ enum TracksAreaFocus {
             case .alreadyFocused(let element): return element
             case .restored(_, let element): return element
             case .unverified(let element): return element
+            case .foreignKeyWindow(let element, _): return element
             }
         }
 
         var dictionary: [String: Any] {
-            [
+            var payload: [String: Any] = [
                 "state": state,
                 "write_route": route,
                 "focused_element": focusedElement ?? NSNull(),
                 "note": summary
             ]
+            if case .foreignKeyWindow(_, let window) = self {
+                payload["blocked_by"] = window.dictionary
+            }
+            return payload
         }
 
         /// One sentence, reusable inside a refusal.
@@ -153,6 +259,15 @@ enum TracksAreaFocus {
                     + (element.map { " (the focused element reads as \($0))" } ?? "")
                     + " — Cut/Copy/Paste/Nudge/Delete act on the focused area, and a command"
                     + " fired without it does nothing at all, silently."
+            case .foreignKeyWindow(let element, let window):
+                return "Whether Logic's keyboard focus is in the Tracks area is UNVERIFIED:"
+                    + " the key window is ANOTHER Logic window (\(window.label))"
+                    + (element.map { ", focused on \($0)" } ?? "")
+                    + ". No Accessibility write can take the key window away from another"
+                    + " window — measured 2026-09-03, no rung of the focus repair ladder has"
+                    + " ever won from here — so none was attempted and no time was spent"
+                    + " trying. Cut/Copy/Paste/Nudge/Delete act on the focused area; to rule"
+                    + " focus out entirely, \(window.wayOut) and repeat the call."
             }
         }
     }
@@ -193,7 +308,7 @@ enum TracksAreaFocus {
         switch focus {
         case .alreadyFocused, .restored:
             reason += ". Keyboard focus is not the cause: " + focus.summary.lowercasedFirst
-        case .unverified:
+        case .unverified, .foreignKeyWindow:
             reason += ". FIRST SUSPECT: " + focus.summary.lowercasedFirst
         }
         return reason + " " + dialogSentence(dialogTitles) + " Clipboard state uncertain"
@@ -286,6 +401,59 @@ extension LogicAccessibility {
         }
     }
 
+    /// The window the focused element lives in.
+    ///
+    /// Three routes, because MEASURED 2026-09-03 the cheap ones are not
+    /// enough: with Logic's Mixer focused, the focused element is a channel
+    /// strip (`AXLayoutItem 'Bas'`) sitting deeper than the focus chain's
+    /// 8-level depth limit, and the chain search alone found no window at all
+    /// — the short circuit silently did not fire and the tool paid the full
+    /// 2.0 s ladder. So: the two standard pointers first (one attribute read
+    /// each, exact at any depth), then the chain the caller already holds,
+    /// then a deeper walk of its own.
+    func windowOfFocusedElement(_ chain: [AXUIElement]?) -> AXUIElement? {
+        guard let focused = chain?.first else { return nil }
+        for name in ["AXTopLevelUIElement", kAXWindowAttribute as String] {
+            if let candidate = elementAttribute(focused, name), isWindow(candidate) {
+                return candidate
+            }
+        }
+        if let inChain = chain?.first(where: isWindow) { return inChain }
+        return ancestry(of: focused, maximumDepth: 24, stoppingAtWindow: false).first(where: isWindow)
+    }
+
+    private func isWindow(_ element: AXUIElement) -> Bool {
+        stringAttribute(element, kAXRoleAttribute as String) == kAXWindowRole as String
+    }
+
+    /// Is the key focus in a Logic window the repair ladder cannot win from?
+    ///
+    /// Identity, not vocabulary, decides the common case: the window either IS
+    /// the element `projectWindow()` returns or it is not, which needs no
+    /// window title and survives every UI language. The kind is read only to
+    /// NAME the way out — `logic_close_plugin_window` for a plug-in window,
+    /// `logic_set_mixer {open: false}` for the Mixer — and to keep the ladder
+    /// when the project window cannot be resolved at all.
+    ///
+    /// Cost: one window walk (0.87–0.92 ms warm, 33.6 ms cold — measured
+    /// 2026-09-02) plus three attribute reads, paid ONLY when the Tracks area
+    /// does not already hold the focus, i.e. never on the healthy path.
+    func foreignKeyWindow(_ chain: [AXUIElement]?) -> TracksAreaFocus.ForeignKeyWindow? {
+        guard let window = windowOfFocusedElement(chain) else { return nil }
+        let identity: TracksAreaFocus.ProjectWindowIdentity
+        if let project = try? projectWindow() {
+            identity = CFEqual(project, window) ? .isProjectWindow : .isNotProjectWindow
+        } else {
+            identity = .unknown
+        }
+        return TracksAreaFocus.foreignKeyWindow(
+            identity: identity,
+            subrole: stringAttribute(window, kAXSubroleAttribute as String),
+            title: stringAttribute(window, kAXTitleAttribute as String),
+            hasDocument: documentPath(of: window) != nil
+        )
+    }
+
     func elementFacts(_ element: AXUIElement) -> TracksAreaFocus.ElementFacts {
         TracksAreaFocus.ElementFacts(
             role: stringAttribute(element, kAXRoleAttribute as String),
@@ -321,6 +489,10 @@ extension LogicAccessibility {
     /// The ladder, cheapest first, each rung proven by re-reading Logic's
     /// focused element:
     /// 1. the Tracks area already holds the focus — no write at all;
+    /// 1b. the key window is another Logic window (a plug-in window, the
+    ///    Mixer): there is no rung to climb, so the ladder is skipped and the
+    ///    `unverified` verdict names the window and the tool call that closes
+    ///    it — see `TracksAreaFocus.ForeignKeyWindow` for the measurements;
     /// 2. the target track is not selected: `selectTrack`, which is the
     ///    measured cure verbatim (and carries the surface-debt settle and the
     ///    channel-focus bookkeeping a real selection change owes);
@@ -337,6 +509,12 @@ extension LogicAccessibility {
     /// the report is what changes: the copy, the nudge and the delete taken in
     /// that state all landed and all said `key_focus: unverified` rather than
     /// claiming a focus they did not have.
+    ///
+    /// RE-MEASURED 2026-09-03, which is why rung 1b exists: that state is the
+    /// one the ladder is WORST at. It cannot win it, and it took ~1.2–1.4 s to
+    /// find out (two 8 × 50 ms polls plus the `Has Focus` press, plus the
+    /// header walks around them) before returning the same sentence rung 1b
+    /// returns after one window read.
     @discardableResult
     func ensureTracksAreaKeyFocus(
         trackName: String, trackNumber: Int? = nil
@@ -378,6 +556,13 @@ extension LogicAccessibility {
             return .alreadyFocused(element: label ?? "unreadable")
         }
         let before = label
+        // Rung 0: is there anything to climb? A key window that is not the
+        // project window cannot be talked out of it from here (see
+        // `ForeignKeyWindow`), and the ladder's price for finding that out is
+        // ~1.2 s of polling for a verdict identical to this one.
+        if let foreign = foreignKeyWindow(chain) {
+            return .foreignKeyWindow(element: before, window: foreign)
+        }
         guard let group = try? trackHeaderGroup() else { return .unverified(element: before) }
         let headers = parsedTrackHeaders(in: group)
         let resolved: TrackHeader?
