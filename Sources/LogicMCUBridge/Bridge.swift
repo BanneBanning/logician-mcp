@@ -483,21 +483,39 @@ let keycmdHoldEnvVar = "LOGICIAN_KEYCMD_HOLD_MS"
 /// on purpose: it takes the raw value rather than reading `ProcessInfo`
 /// itself, so it is testable without touching a real process environment.
 ///
-/// 40 ms IS THE HISTORICAL DEFAULT, UNCHANGED: this is `pressButton`'s
-/// UNSWEPT sibling. The MCU button hold above was swept live 2026-09-02
-/// (`bf511e5`) and its default dropped to a measured 0 ms; this hold has
-/// had no equivalent live sweep run against it yet, and it is ~96% of
-/// `logic_trigger_key_command`'s 50-52 ms wall clock
-/// (KEY-COMMANDS-REVIEW.md, 2026-09-03). The default moves only after
-/// `keycmd_hold_sweep.py` (scratchpad) repeats that measurement against
-/// the key-command plane specifically — not before, and not by guessing
-/// that a note-based plane behaves like a button-based one.
+/// 0 ms IS THE MEASURED DEFAULT, swept live 2026-09-03 (sandbox "CS
+/// Testlåt Copy", daemon at `1e393a7`) with `keycmd_hold_sweep.py`, the
+/// same method the MCU button hold used the day before (`bf511e5`):
+/// `Create Marker` fired via `logic_mcu_command {cmd:"keycmd", note:104,
+/// channel:16, hold_ms:…}` on the dedicated "Logic MCP Commands" port,
+/// playhead parked on an unmarked bar, markers counted and deleted after
+/// every fire.
 ///
-/// A malformed or missing override falls back to the 40 ms default rather
+/// | hold_ms | wall ms | created | duplicated | dropped |
+/// |---|---|---|---|---|
+/// | 0 | 1 | 1/1 | 0 | 0 |
+/// | 1 | 2 | 1/1 | 0 | 0 |
+/// | 5 | 7 | 1/1 | 0 | 0 |
+/// | 10 | 15 | 1/1 | 0 | 0 |
+/// | 20 | 25 | 1/1 | 0 | 0 |
+/// | 40 | 50 | 1/1 | 0 | 0 |
+/// | 0, ten more fires | 0.9-3.0 (median 1.1) | 10/10 | 0 | 0 |
+///
+/// Sixteen fires at a 0 ms hold, sixteen markers, zero duplicates, zero
+/// drops — the same 16/16 result the button sweep got. The 0.2 ms point
+/// the button sweep also cleared is NOT reachable through `hold_ms` (an
+/// `Int` count of milliseconds) and was not measured here; the honest
+/// claim this table supports is "0-40 ms all work," not "anything smaller
+/// would too." `pressButton`'s hold dropped the day before for the same
+/// reason on the button-based plane; this is the note-based plane's own
+/// measurement, not an assumption that it would behave the same way.
+///
+/// A malformed or missing override falls back to this 0 ms default rather
 /// than failing the command — the same leniency every other field on this
-/// wire gets.
+/// wire gets. The environment override and any per-message `hold_ms`
+/// still work exactly as before, for whichever surface gets swept next.
 func resolveKeycmdDefaultHoldMs(envOverride raw: String?) -> Int {
-    guard let raw, let ms = Int(raw) else { return 40 }
+    guard let raw, let ms = Int(raw) else { return 0 }
     return ms
 }
 

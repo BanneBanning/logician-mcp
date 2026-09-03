@@ -11,12 +11,13 @@ extension MCUController {
     /// anything in the user's key command set.
     ///
     /// `holdMs` is the wire's `hold_ms` (see `BridgeCommand.keycmdHoldMs`):
-    /// `nil` leaves the daemon on its own default (UNCHANGED at 40 ms until
-    /// the live sweep — `keycmd_hold_sweep.py` — measures a safer one), and
-    /// a value asks for exactly that hold, including 0. Only
-    /// `logic_mcu_command`'s `keycmd` route exposes it today;
-    /// `logic_trigger_key_command` still asks for nothing, which is the
-    /// same 40 ms it has always had.
+    /// `nil` leaves the daemon on its own default, MEASURED live 2026-09-03
+    /// by `keycmd_hold_sweep.py` (0-40 ms all created exactly one marker,
+    /// 16/16 at 0 ms, zero duplicates, zero drops) and now compiled to 0 ms
+    /// — see `resolveKeycmdDefaultHoldMs`. A value asks for exactly that
+    /// hold, including 0. Only `logic_mcu_command`'s `keycmd` route exposes
+    /// it today; `logic_trigger_key_command` still asks for nothing, which
+    /// now means the measured 0 ms instead of the old flat 40 ms.
     static func triggerKeyCommand(note: Int, channel: Int, holdMs: Int? = nil) throws -> [String: Any] {
         guard let entry = KeyCommandRegistry.entry(note: note, channel: channel) else {
             // A refusal names the alternative — it does not paste the whole

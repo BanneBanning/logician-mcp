@@ -498,9 +498,9 @@ extension MCPServer {
             }
             let channel = arguments["channel"] as? Int ?? 16
             // Exposed here, not on logic_trigger_key_command: this is the
-            // route keycmd_hold_sweep.py drives to measure the plane's
-            // unswept hold. Absent means the daemon's own default (40 ms,
-            // unchanged) — see BridgeCommand.keycmdHoldMs.
+            // route keycmd_hold_sweep.py drove to measure the plane's
+            // hold, 2026-09-03. Absent means the daemon's own default,
+            // now a measured 0 ms — see BridgeCommand.keycmdHoldMs.
             let holdMs = arguments["hold_ms"] as? Int
             return MCPServer.mcuCommandResult(
                 cmd: cmd, arguments: arguments,
