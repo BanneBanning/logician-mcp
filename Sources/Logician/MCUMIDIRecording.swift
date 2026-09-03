@@ -138,6 +138,247 @@ enum SoloBounceReport {
     }
 }
 
+/// The four decisions a MIDI take makes around the recording itself, lifted out
+/// of the live path so each can be pinned without Logic running. Every one of
+/// them was wrong on 2026-09-02, and none of them was visible in the result:
+///
+/// * the SHUTDOWN aborted the MIDI stream — an all-notes-off blast on all
+///   sixteen channels, into the very port Logic was recording from — BEFORE it
+///   stopped the transport, so a two-note take read back through
+///   `logic_list_events` as eighteen events, sixteen of them
+///   `Control 64 = Sustain, 0`, measured twice;
+/// * the SYNC took the pre-roll bar's beat count from the control bar's
+///   signature AT THE PLAYHEAD, so on a project with a 5/4 stretch the beat
+///   edge could never be observed and the take fell into the uncompensated
+///   bar-line branch — silently, 39 ms late, while the same call with the
+///   playhead at bar 1 landed 21.5 ms early;
+/// * the PARK paid for Logic's own count-in bar, a whole extra bar of wall
+///   clock (4 035 ms at 120 BPM 4/4 where 2 000 was asked for) that nothing in
+///   the tool looked at although `logic_get_transport` already reports it;
+/// * the RESULT named no region, while its description told the caller to
+///   remove the take with Undo and `logic_delete_region` had been doing it in
+///   0.7 s, 5/5.
+enum MIDITakePlan {
+
+    // MARK: Where to park before the record press
+
+    /// Where the playhead goes before record is pressed, and where the sync
+    /// then watches for its beat edge.
+    struct Park: Equatable {
+        /// The bar the playhead is parked at.
+        let bar: Int
+        /// The bar the sync watches: always `startBar - 1`, whether the
+        /// playhead was parked there or Logic's count-in rolls through it.
+        let preRollBar: Int
+        /// `logic_count_in` or `own_pre_roll` — reported, because it decides
+        /// what the call costs and which bar Logic starts recording at.
+        let route: String
+        let note: String
+    }
+
+    /// Measured 2026-09-02 (`profiles/logic_record_midi.md`): with count-in ON
+    /// and the playhead parked at `startBar - 1`, the transport was observed
+    /// rolling one bar BEFORE the parked bar (timecode `  0 1 1 13`), so the
+    /// sync waited TWO bars — 4 035 ms at 120 BPM 4/4 against the one bar the
+    /// tool asked for. Logic's count-in already IS a pre-roll bar, so when the
+    /// flag says it is on the playhead is parked at `startBar` and the count-in
+    /// bar does the leading in: one bar of wall clock, not two, and the sync
+    /// still observes `startBar - 1` on the way past (a count-in longer than
+    /// one bar simply passes through it).
+    ///
+    /// A count-in flag that could not be read (`nil`) keeps the tool's own
+    /// pre-roll bar. Guessing the cheap route wrong would leave the sync with
+    /// no bar to observe at all.
+    static func park(startBar: Int, countIn: Bool?) -> Park {
+        guard countIn == true else {
+            return Park(
+                bar: startBar - 1, preRollBar: startBar - 1, route: "own_pre_roll",
+                note: countIn == nil
+                    ? "Parked one bar early for the timecode sync; Logic's count-in flag could not be read, so the tool's own pre-roll bar was used."
+                    : "Parked one bar early for the timecode sync (Logic's count-in is off)."
+            )
+        }
+        return Park(
+            bar: startBar, preRollBar: startBar - 1, route: "logic_count_in",
+            note: "Logic's count-in provides the pre-roll bar, so the playhead is parked ON start_bar instead of one bar early - one bar of wall clock rather than two (measured -2.0 s at 120 BPM 4/4)."
+        )
+    }
+
+    // MARK: The sync, and which branch of it ran
+
+    /// Which crossing the stream was timed off.
+    enum SyncBranch: String {
+        /// The pre-roll bar's LAST BEAT was observed, so exactly one beat
+        /// remains to the take's first bar line and the stream can be
+        /// scheduled that beat ahead.
+        case beatEdge = "beat_edge"
+        /// The last beat was missed and the bar line itself was the first
+        /// thing seen — there is no lead left to schedule into.
+        case barLine = "bar_line"
+    }
+
+    /// How much of the pre-roll bar is LEFT, from the position the MCU display
+    /// actually published — the number that replaces "one beat, presumably".
+    ///
+    /// The 10-digit display carries `BBB bb dd ttt`: `division` is the sixteenth
+    /// of the beat (1-4) and `ticks` the tick inside it (1-240), 960 ticks to a
+    /// beat. Logic blanks both to 0 on some paints, and then only the whole beat
+    /// is known — `nil`, and the caller falls back to the nominal beat.
+    ///
+    /// WHY IT MATTERS, measured 2026-09-02 over five takes at bar 2 of the
+    /// reference project, all on the beat-edge branch, all read back out of
+    /// Logic's Event List: assuming exactly one beat of lead put the notes
+    /// anywhere from 22.9 ms EARLY to 23.4 ms LATE on identical arguments — a
+    /// 46 ms band, because the edge is not observed when it happens but when
+    /// Logic next repaints the display, and the implied latency sampled 23.1,
+    /// 40.7, 45.5, 46.4 and 48.1 ms. A constant can only centre that band. The
+    /// position the same repaint publishes says exactly how far past the edge
+    /// it is, so the lead is computed instead of assumed and the band collapses
+    /// to the 5 ms poll interval.
+    static func beatsRemainingInBar(
+        beat: Int, division: Int, ticks: Int, beatsInBar: Int
+    ) -> Double? {
+        guard beatsInBar > 0, beat >= 1, beat <= beatsInBar else { return nil }
+        guard (1...4).contains(division), (1...240).contains(ticks) else { return nil }
+        let elapsed = Double(beat - 1) + Double((division - 1) * 240 + (ticks - 1)) / 960
+        let remaining = Double(beatsInBar) - elapsed
+        guard remaining > 0, remaining <= Double(beatsInBar) else { return nil }
+        return remaining
+    }
+
+    /// The display latency still worth subtracting, in ms.
+    ///
+    /// With the sub-beat position READ (`beatsRemainingInBar`), what is left
+    /// between the repaint and the note sounding is the 5 ms sync poll, the
+    /// mirror read (0.4-1.3 ms measured) and everything from the bridge's
+    /// CoreMIDI send to Logic's input. Measured 2026-09-02 with NO
+    /// compensation at all, three takes: the notes landed 16.1, 17.2 and
+    /// 20.3 ms late — a 4.2 ms band, against the 46 ms one an assumed beat
+    /// gives — so the residual is real, constant, and 18 ms is the mean of
+    /// those three.
+    ///
+    /// Where Logic blanked the division/ticks digits the lead is the nominal
+    /// beat again, and then the old constants apply — and they differ by route,
+    /// which is the other thing five takes showed (measured 2026-09-02, all off
+    /// a 500 ms lead): inside a pre-roll bar THIS tool parked the lag is ~23 ms
+    /// (the profile's two takes landed 21.5 ms early on the 45 ms default),
+    /// while inside Logic's count-in bar it is ~46 ms. `sync_compensation_ms`
+    /// overrides all three, and the result says which was applied.
+    static func defaultCompensationMs(route: String, positionExact: Bool) -> Double {
+        if positionExact { return 18 }
+        return route == "logic_count_in" ? 46 : 23
+    }
+
+    /// What the bar-line branch's lateness measured, in ms — reported, never
+    /// compensated. Measured 2026-09-02: 39 ms late, with `shiftMs` 0.
+    static let barLineLatenessMs: Double = 39
+
+    /// How the stream is offset against the observed crossing, and what the
+    /// result says about it.
+    struct SyncPlan: Equatable {
+        let shiftMs: Double
+        /// `SyncBranch.rawValue`.
+        let branch: String
+        /// The compensation that was actually APPLIED. `nil` on the bar-line
+        /// branch, where there is nothing to subtract it from — which is the
+        /// honest form of a knob documented as "raise if notes land early"
+        /// that used to be silently inert exactly where the notes land late.
+        let compensationApplied: Double?
+        let note: String
+    }
+
+    static func syncPlan(
+        branch: SyncBranch, leadMs: Double, compensationMs: Double,
+        positionExact: Bool = false
+    ) -> SyncPlan {
+        switch branch {
+        case .beatEdge:
+            // The clamp stays: a compensation larger than the lead would ask
+            // for a negative offset, which the bridge treats as "already due"
+            // and sends at once — the same thing 0 does, minus the pretence.
+            let how = positionExact
+                ? "the exact position Logic's display published inside the pre-roll bar's last beat"
+                : "the pre-roll bar's last beat, whose remaining length had to be ASSUMED because Logic blanked the display's division/tick digits"
+            let caveat = positionExact
+                ? " The lead is computed from that position rather than assumed, which is what keeps the take off the +/-23 ms band an assumed beat lands in (measured over five takes)."
+                : " Expect up to ~23 ms either side: without the sub-beat digits the edge is only known to the repaint that revealed it."
+            return SyncPlan(
+                shiftMs: max(0, leadMs - compensationMs),
+                branch: branch.rawValue,
+                compensationApplied: min(compensationMs, leadMs),
+                note: "Timed off \(how): the stream was scheduled \(Int(leadMs.rounded())) ms ahead"
+                    + (compensationMs > 0
+                        ? " minus \(Int(compensationMs.rounded())) ms of measured display latency."
+                        : ".")
+                    + caveat
+            )
+        case .barLine:
+            return SyncPlan(
+                shiftMs: 0,
+                branch: branch.rawValue,
+                compensationApplied: nil,
+                note: "The pre-roll bar's last beat was missed and the take's own bar line was the first crossing seen, so there was no lead to schedule into and sync_compensation_ms does NOT apply: the stream went out on detection. Expect the notes ~\(Int(barLineLatenessMs.rounded())) ms late (measured). Quantize if that matters."
+            )
+        }
+    }
+
+    // MARK: The shutdown, whose ORDER is the whole of defect D1
+
+    /// What the take's shutdown may do, given whether Logic was observed to
+    /// have stopped recording.
+    struct Shutdown: Equatable {
+        /// Whether the all-notes-off blast may be sent at all.
+        let silence: Bool
+        let state: String
+        let warning: String?
+    }
+
+    /// `midi_abort` calls the bridge's `silenceMIDIIn()`, which sends CC123 and
+    /// **CC64 = 0 on all sixteen channels into the "Logic MCP MIDI In" port**
+    /// (`Bridge.swift:440`). That port is the one Logic records from, so the
+    /// blast is only safe once Logic has stopped recording — and until
+    /// 2026-09-02 it was sent FIRST, which is why a two-note take read back as
+    /// eighteen events with sixteen spurious sustain-pedal-ups in it.
+    ///
+    /// So the silence is a consequence of the stop, not a peer of it. When the
+    /// record LED cannot be confirmed dark the blast is NOT sent: a stuck note
+    /// is a sound the user can stop, and sixteen controller events written into
+    /// their region are not.
+    static func shutdown(recordingStopped: Bool) -> Shutdown {
+        guard recordingStopped else {
+            return Shutdown(
+                silence: false,
+                state: "stop_unconfirmed",
+                warning: "The transport could not be confirmed OUT of record (the MCU record LED stayed lit), so the stuck-note all-notes-off was NOT sent - it would have been recorded into your region as sixteen sustain-pedal events. Press stop in Logic; if a note is left sounding, logic_transport with action 'stop' silences it."
+            )
+        }
+        return Shutdown(silence: true, state: "stopped_then_silenced", warning: nil)
+    }
+
+    // MARK: What the take LEFT BEHIND
+
+    /// The bar line the recorded region reaches, which is NOT where the take's
+    /// last event sits: Logic keeps recording until the transport stops, and
+    /// the take loop waits out the stream plus a 600 ms tail. Measured
+    /// 2026-09-02: a two-note take whose `end_bar` was 3 produced a region
+    /// spanning bars 2-4.
+    ///
+    /// Under a changing meter this is a walk over the map rather than a
+    /// division, for the same reason `takeEnd` is.
+    static func recordedEndBar(
+        startBar: Int, lastBeat: Double, tailBeats: Double,
+        beatsPerBar: Double, meterMap: MeterMap?
+    ) -> Int {
+        let meter = beatsPerBar > 0 ? beatsPerBar : 4
+        let beats = max(lastBeat + max(tailBeats, 0), 0)
+        guard let map = (meterMap?.isVariable == true) ? meterMap : nil else {
+            return max(startBar + Int((beats / meter).rounded(.up)), startBar + 1)
+        }
+        let end = map.position(atBeatOffset: map.beatOffset(bar: startBar) + beats)
+        return max(end.beatInBar > 1 + 1e-9 ? end.bar + 1 : end.bar, startBar + 1)
+    }
+}
+
 extension MCUController {
     // MARK: The timecode display: mode plausibility
 
@@ -304,6 +545,11 @@ extension MCUController {
 
     // MARK: MIDI recording (composition via the "Logic MCP MIDI In" port)
 
+    /// The MCU's RECORD LED. It is the witness for both ends of a take: that
+    /// Logic armed and rolled, and — since 2026-09-02 — that Logic is out of
+    /// record again before the stream's all-notes-off is allowed to fire.
+    static let recordLED = 0x5F
+
     /// Current bar from the MCU timecode display (BBB bb dd ttt layout), or
     /// nil when the display is not showing a plausible bars/beats position
     /// (SMPTE mode, `ALERT`, blank). Polling loops then see "no position
@@ -320,16 +566,31 @@ extension MCUController {
     }
 
     /// Records composed notes onto the selected track by streaming them over
-    /// the plain "Logic MCP MIDI In" port while Logic records: playhead is
-    /// parked one bar early, record is pressed, and the stream starts on the
-    /// observed timecode crossing into start_bar — so count-in settings do
-    /// not matter. Wholly data-plane: no dialogs, no files, no keypresses.
+    /// the plain "Logic MCP MIDI In" port while Logic records: the playhead is
+    /// parked so that one bar leads into `startBar` — Logic's own count-in bar
+    /// when the transport reports count-in ON, the tool's own pre-roll bar when
+    /// it does not (`MIDITakePlan.park`) — record is pressed, and the stream
+    /// starts on the observed timecode crossing into `startBar`. Wholly
+    /// data-plane: no dialogs, no files, no keypresses.
+    ///
+    /// `preRollLastBeat` and `preRollLastBeatMs` are computed by the caller from
+    /// the project's own METER and TEMPO maps at bar `startBar - 1`, not from
+    /// the control bar's reading at the playhead. That distinction is defect D3
+    /// (2026-09-02): the control bar publishes the signature and tempo IN FORCE
+    /// WHERE THE PLAYHEAD IS, so on a project whose bar 41 is 5/4 a take at bar
+    /// 2 waited for a fifth beat of a four-beat bar, never saw it, and fell
+    /// into the bar-line branch — which is the branch `sync_compensation_ms`
+    /// cannot reach. The take's timing therefore depended on where the user had
+    /// left the playhead.
     static func recordMIDI(
         logic: LogicAccessibility,
         trackName: String, trackNumber: Int?,
         events: [(offsetMs: Double, bytes: [UInt8])],
+        listedEvents: Int,
         startBar: Int, tailMs: Double,
-        tempo: Double, beatsPerBar: Double, syncCompensationMs: Double
+        preRollLastBeat: Int, preRollLastBeatMs: Double,
+        meterRoute: String,
+        syncCompensationMs: Double?
     ) throws -> [String: Any] {
         guard startBar >= 2 else {
             throw LogicianError.invalidArguments(
@@ -351,6 +612,14 @@ extension MCUController {
         _ = try? setPlaying(false)
         let transport = try logic.getTransport()
         let savedBar = transport["playhead_bar"] as? Int
+        // The count-in flag rides along on the snapshot that was already being
+        // read for `savedBar`, so knowing what Logic's count-in will cost is
+        // free. Nothing reads it beyond the park decision, and nothing writes
+        // it: switching a user's count-in off would be a settings write with a
+        // restore to get wrong.
+        let park = MIDITakePlan.park(
+            startBar: startBar, countIn: transport["count_in"] as? Bool
+        )
 
         var selected = false
         if let channel = ((try? findChannel(trackName: trackName)) ?? nil) {
@@ -362,37 +631,67 @@ extension MCUController {
             )
         }
 
-        _ = try logic.setPlayhead(barNumber: startBar - 1, beat: nil)
+        _ = try logic.setPlayhead(barNumber: park.bar, beat: nil)
         // A record press within ~0.5 s of the playhead LCD converge gets
-        // swallowed by Logic while the field is still hot — settle first.
+        // swallowed by Logic while the field is still hot. That used to be a
+        // blind `Thread.sleep(0.6)` — 3.9% of the warm call — with the DECISIVE
+        // check eight lines below it costing 0.4–1.3 ms (measured 2026-09-02).
+        // So the positive check is the wait now: `setPlayhead` has already
+        // verified the playhead against Logic's own control bar, and the
+        // display is settled once it shows that same bar. SMPTE digits that
+        // merely LOOK like a position fail here too. Still nothing recorded;
+        // restore the playhead ourselves since the cleanup `defer` below is not
+        // armed yet.
         _ = quiescentStatus()
-        Thread.sleep(forTimeInterval: 0.6)
-        // Now the decisive check: setPlayhead verified the playhead against
-        // Logic's own control bar, and the display has settled after that
-        // move — so the bar it shows must be the bar we parked at. SMPTE
-        // digits that merely LOOK like a position fail here. Still nothing
-        // recorded; restore the playhead ourselves since the cleanup `defer`
-        // below is not armed yet.
-        do {
-            try requireBeatsDisplay(
-                expectedBar: startBar - 1,
-                operation: "MIDI recording sync at bar \(startBar)"
-            )
-        } catch {
+        var parkError: Error?
+        let settleDeadline = Date().addingTimeInterval(1.5)
+        while true {
+            parkError = nil
+            do {
+                try requireBeatsDisplay(
+                    expectedBar: park.bar,
+                    operation: "MIDI recording sync at bar \(startBar)"
+                )
+                break
+            } catch {
+                parkError = error
+                guard Date() < settleDeadline else { break }
+                Thread.sleep(forTimeInterval: 0.02)
+            }
+        }
+        if let parkError {
             if let bar = savedBar { _ = try? logic.setPlayhead(barNumber: bar, beat: nil) }
-            throw error
+            throw parkError
         }
         try press("record")
-        defer {
-            _ = try? MCUBridge.send(.midiAbort) // stuck-note safety
+        // The shutdown, whose ORDER is defect D1: the stop comes first and the
+        // all-notes-off blast only after Logic is out of record, because that
+        // blast goes into the port Logic is recording FROM. See
+        // `MIDITakePlan.shutdown`. This closure is the shutdown for every path;
+        // the happy path calls it explicitly so the result can report it, and
+        // the `defer` catches the throwing and cancelled ones.
+        var shutdownReport: MIDITakePlan.Shutdown?
+        func stopRecording() -> MIDITakePlan.Shutdown {
+            if let report = shutdownReport { return report }
             _ = try? setPlaying(false)
+            // The record LED is the same witness the arm check used, read the
+            // same way: no new mechanism, and it costs one status look when
+            // Logic has already stopped.
+            let stopped = pollStatus(until: { !ledLit(recordLED, in: $0) }, attempts: 20) != nil
+            let report = MIDITakePlan.shutdown(recordingStopped: stopped)
+            if report.silence { _ = try? MCUBridge.send(.midiAbort) } // stuck-note safety
+            shutdownReport = report
+            return report
+        }
+        defer {
+            _ = stopRecording()
             if let bar = savedBar {
                 _ = try? logic.setPlayhead(barNumber: bar, beat: nil)
             }
         }
         reportProgress("record pressed; waiting for the transport", percent: 10)
         // Record LED confirms Logic is actually rolling/armed.
-        guard pollStatus(until: { ledLit(0x5F, in: $0) }) != nil else {
+        guard pollStatus(until: { ledLit(recordLED, in: $0) }) != nil else {
             throw LogicianError.verificationFailed(
                 requested: "recording started",
                 actual: "the MCU record LED never lit",
@@ -400,14 +699,18 @@ extension MCUController {
             )
         }
         // Sync on the timecode crossing into the LAST BEAT of the pre-roll
-        // bar: from there exactly one beat remains to start_bar, so events
-        // are scheduled one beat ahead minus the measured display latency
-        // (~50 ms edge-detect lag when syncing on the bar line itself).
-        let msPerBeat = 60000.0 / tempo
-        let lastBeat = max(Int(beatsPerBar.rounded()), 1)
+        // bar: from there exactly one beat remains to start_bar, so events are
+        // scheduled one beat ahead minus the measured display latency. Both
+        // numbers come from the project's maps AT THAT BAR (see the doc
+        // comment); the control bar's reading at the playhead is what defect
+        // D3 was.
+        let lastBeat = max(preRollLastBeat, 1)
         let syncDeadline = Date().addingTimeInterval(20)
-        var leadMs = 0.0
-        var synced = false
+        var branch: MIDITakePlan.SyncBranch?
+        // How much of the pre-roll bar the display said was left when the edge
+        // was seen — nil when Logic blanked the sub-beat digits.
+        var remainingBeats: Double?
+        var syncPosition: String?
         // The parked display can already read e.g. "beat 4" from an earlier
         // stop (setPlayhead only converges the bar), so no edge may be
         // accepted until the timecode has visibly CHANGED — proof that the
@@ -415,12 +718,20 @@ extension MCUController {
         let parkedTimecode = freshStatus()?["timecode"] as? String
         var rolling = false
         var recordRetried = false
+        // …and PROOF OF MOTION IS NOT PROOF OF POSITION. The bar-line branch
+        // used to accept the first `position.bar >= startBar` it saw, so a
+        // transport that started PAST the range would have had the whole take
+        // streamed at the wrong bar under `success: true, verified: true`. The
+        // pre-roll bar must be observed first; a transport already past it is
+        // a refusal, not a take (candidate N5, and `logic_record_automation`'s
+        // N4 is the same shape).
+        var sawPreRoll = false
         let rollDeadline = Date().addingTimeInterval(4)
         reportProgress("armed; waiting for the playhead to reach bar \(startBar)", percent: 20)
         while Date() < syncDeadline {
-            // The `defer` above aborts the stream, stops the transport and puts
-            // the playhead back, so a cancellation here unwinds through exactly
-            // the same path a thrown sync failure does.
+            // The `defer` above stops the transport, silences the stream and
+            // puts the playhead back, so a cancellation here unwinds through
+            // exactly the same path a thrown sync failure does.
             try checkCancelled()
             if !rolling {
                 let current = freshStatus()?["timecode"] as? String
@@ -434,30 +745,59 @@ extension MCUController {
                     Thread.sleep(forTimeInterval: 0.005); continue
                 }
             }
-            if let position = timecodeBarBeat() {
-                if position.bar >= startBar {
-                    synced = true // missed the beat edge; fall back to the bar line
+            if case .beats(let bar, let beat, let division, let ticks) = timecodeReading() {
+                if bar < startBar { sawPreRoll = true }
+                if bar >= startBar {
+                    guard sawPreRoll else {
+                        throw LogicianError.verificationFailed(
+                            requested: "the take to start on the crossing into bar \(startBar)",
+                            actual: "the transport was already at bar \(bar) the first time the position display could be read, so the pre-roll bar (\(park.preRollBar), \(park.route)) was never observed and the crossing could not be timed. Streaming now would put the whole take at the wrong position. Nothing was streamed",
+                            restored: true
+                        )
+                    }
+                    branch = .barLine // missed the beat edge; fall back to the bar line
                     break
                 }
-                if position.bar == startBar - 1, position.beat >= lastBeat {
-                    synced = true
-                    leadMs = msPerBeat
+                if bar == park.preRollBar, beat >= lastBeat {
+                    // The same repaint that revealed the edge also says how far
+                    // PAST it we are, so the lead is measured rather than
+                    // assumed to be a whole beat. `syncPosition` is reported:
+                    // the position a take was timed off is part of the take,
+                    // the way `logic_read_automation`'s sampled position is
+                    // part of the reading.
+                    remainingBeats = MIDITakePlan.beatsRemainingInBar(
+                        beat: beat, division: division, ticks: ticks, beatsInBar: lastBeat
+                    )
+                    syncPosition = "\(bar) \(beat) \(division) \(ticks)"
+                    branch = .beatEdge
                     break
                 }
             }
             Thread.sleep(forTimeInterval: 0.005)
         }
-        guard synced else {
+        guard let branch else {
             throw LogicianError.verificationFailed(
                 requested: "playhead reaching bar \(startBar)",
                 actual: "the timecode never crossed into the start bar within 20 s",
                 restored: true
             )
         }
-        let shiftMs = max(0, leadMs - syncCompensationMs)
+        // The lead: the pre-roll bar's last beat scaled by how much of it the
+        // display said was still to run. Without those digits it is the whole
+        // beat, and then the route's measured constant compensates for it.
+        let positionExact = branch == .beatEdge && remainingBeats != nil
+        let leadMs = branch == .beatEdge
+            ? preRollLastBeatMs * (remainingBeats ?? 1) : 0
+        let sync = MIDITakePlan.syncPlan(
+            branch: branch, leadMs: leadMs,
+            compensationMs: syncCompensationMs ?? MIDITakePlan.defaultCompensationMs(
+                route: park.route, positionExact: positionExact
+            ),
+            positionExact: positionExact
+        )
         let streamResponse = try MCUBridge.send(.midiStream(
             events: events.map {
-                MIDIStreamEvent(offsetMs: $0.offsetMs + shiftMs, bytes: $0.bytes)
+                MIDIStreamEvent(offsetMs: $0.offsetMs + sync.shiftMs, bytes: $0.bytes)
             }
         ))
         guard streamResponse.ok, let durationMs = streamResponse.durationMs else {
@@ -484,19 +824,45 @@ extension MCUController {
             Thread.sleep(forTimeInterval: min(0.1, takeSeconds - elapsed))
         }
         reportProgress("take finished", percent: 100)
-        // defer handles abort, stop and playhead restore
+        // Stop and silence HERE rather than in the `defer`, in that order, so
+        // the result can say what the shutdown did. The `defer` still runs and
+        // still restores the playhead; `stopRecording` is idempotent.
+        let shutdown = stopRecording()
         // `verified` belongs to the RECORDING: reaching here means the
         // transport was rolling, the stream went out with host-time stamps,
         // and the stop/restore path completed - anything less throws above.
         // Whether the result SOUNDS is a separate observation the caller
         // reports as verification_render.
-        return [
+        var result: [String: Any] = [
             "success": true,
             "verified": true,
-            "events_streamed": events.count,
+            // What `logic_list_events` will report on the region: notes count
+            // once (their note-offs are the same row's length), CC and bend
+            // events one each. Until 2026-09-02 this field was the wire
+            // count — 4 for a two-note take — and could not be diffed against
+            // the region it had just written.
+            "events_streamed": listedEvents,
+            "midi_messages_streamed": events.count,
+            "events_note": "events_streamed counts events the way Logic's Event List does, so it can be diffed against logic_list_events; midi_messages_streamed is the raw count on the wire (a note is a note-on plus a note-off).",
             "stream_duration_ms": durationMs,
-            "write_route": "midi_in_record"
+            "write_route": "midi_in_record",
+            "sync_branch": sync.branch,
+            "sync_lead_ms": (leadMs * 10).rounded() / 10,
+            "sync_lead_route": positionExact ? "display_sub_beat_position" : "assumed_whole_beat",
+            "sync_position": syncPosition ?? NSNull(),
+            "sync_shift_ms": (sync.shiftMs * 10).rounded() / 10,
+            "sync_compensation_ms_applied": sync.compensationApplied ?? NSNull(),
+            "sync_beats_per_bar": lastBeat,
+            "sync_meter_route": meterRoute,
+            "sync_note": sync.note,
+            "pre_roll_bar": park.preRollBar,
+            "pre_roll_route": park.route,
+            "pre_roll_note": park.note,
+            "shutdown": shutdown.state,
+            "shutdown_note": "The transport is stopped BEFORE the stream's all-notes-off, because that safety blast goes into the same MIDI port Logic records from: sent while the transport rolled it wrote sixteen 'Control 64 = Sustain, 0' events into the take (measured 2026-09-02)."
         ]
+        if let warning = shutdown.warning { result["warning"] = warning }
+        return result
     }
 
     /// Track-level A/B: two freeze renders around one verified MCU parameter

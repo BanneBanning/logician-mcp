@@ -216,7 +216,18 @@ extension MCUController {
             }
         }
         reportProgress("freeze armed; rolling the transport", percent: 10)
-        _ = try? setPlaying(true)
+        // A PRESS, not a verified `setPlaying(true)`. Logic does not light the
+        // MCU play LED during an offline freeze render, so the readback could
+        // only ever wait out its whole budget: measured 2 487 / 2 487 / 2 474
+        // ms against `pollStatus`'s 15 x 0.15 s (2026-09-02), three values
+        // inside 13 ms of each other, with the throw swallowed by `try?` and
+        // the render's own positive proof — the `.aif` and
+        // `FreezeInProgress.lock` — found 0.2 ms later, 3/3. Negative proof of
+        // something that cannot happen, paid in full where a positive one was
+        // already in hand. The loop below still proves the render STARTED, and
+        // its 10 s `startDeadline` still catches a toggle or a press that never
+        // engaged; that refusal names the swallowed press among its causes.
+        _ = try? press("play")
 
         // The render announces itself with FreezeInProgress.lock plus the
         // growing .aif; completion is the lock disappearing AND the file
@@ -293,7 +304,7 @@ extension MCUController {
             throw LogicianError.openVerificationFailed(
                 (renderStarted
                     ? "freeze render started but no finished file appeared within 180 s"
-                    : "freeze never engaged within 10 s of play. Likely causes: the track is a stack or bus (not freezable), it has nothing to render, the Freeze button is not enabled in the track header (Logic: Track > Configure Track Header > Freeze), or the Toggle Track Freeze key-command binding is orphaned - run logic_setup_key_commands with relearn: true to repair")
+                    : "freeze never engaged within 10 s of play. Likely causes: the track is a stack or bus (not freezable), it has nothing to render, the Freeze button is not enabled in the track header (Logic: Track > Configure Track Header > Freeze), the play press was swallowed by Logic, or the Toggle Track Freeze key-command binding is orphaned - run logic_setup_key_commands with relearn: true to repair")
                     + (restored
                         ? ". The track was returned to its unfrozen state."
                         : ". The track could NOT be confirmed unfrozen - check the track header and unfreeze it manually if it is still lit.")
