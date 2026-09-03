@@ -295,21 +295,102 @@ enum MCUController {
     /// session.
     static let surfaceWakeTimeoutMs = 600
 
-    /// Wakes a surface whose mirror has only gone QUIET, with one press.
+    /// The probe presses, in the order they are tried — and there are two of
+    /// them for a measured reason.
     ///
-    /// `bank_left` is the probe because it is the one press whose worst case is
-    /// a bank the next thing to happen walks back anyway: every tool that reads
-    /// banks starts at the left edge (`resetToLeftmostBank`) and every tool
-    /// that addresses a channel resolves through it. It is also literally the
-    /// press that fixed this by hand (2026-09-02, events 890 → 909).
+    /// A wake probe has one job: make Logic SEND something. A bank step does,
+    /// in ~4 ms — but only when there is a bank to step to. At an edge Logic
+    /// answers a bank press with nothing at all; that silence is precisely what
+    /// `bankLeftLooksLikeEdge` reads the left edge FROM. So a probe hardcoded
+    /// to one direction cannot fire exactly where the surface most often rests:
+    /// `resolveChannel` walks to the leftmost bank and scans right, which makes
+    /// bank 0 the common resting position, and `bank_left` there is a no-op.
     ///
-    /// Returns the now-live status, or nil when Logic did not answer — which
-    /// is the evidence that the fault is not idleness.
+    /// Measured live 2026-09-03 (profiles/logic_set_track_mute.md §0): after 15
+    /// idle minutes at bank 0, `bank_left` produced ZERO new `received_events`
+    /// across 3 s and `logic_list_strips` refused with "the surface connection
+    /// itself is the suspect", while one `bank_right` immediately after
+    /// produced two events and flipped `online` back to true. Logic, the daemon
+    /// and the link had been healthy the whole time — the probe was the only
+    /// thing that was broken.
+    ///
+    /// RIGHT first, because the leftmost bank is the common rest and the right
+    /// edge is the rarer one; LEFT second, for a surface resting at the right
+    /// edge. One of the two moves unless the project is a single bank wide, and
+    /// that case still refuses rather than guessing (see `wakeSurface`).
+    ///
+    /// Both edges measured 2026-09-03 on `Testlåt Copy`: at the leftmost
+    /// bank `bank_left` produced +0 events across the whole 600 ms budget while
+    /// `bank_right` produced +19 in 25 ms and the walk back restored the row
+    /// byte for byte; at the rightmost bank `bank_right` produced +0 and
+    /// `bank_left` +9. So the pair answers from either edge, in ~25 ms when the
+    /// first direction can move and ~630 ms when it is the edge.
+    static let wakeProbePresses = ["bank_right", "bank_left"]
+
+    /// The press that undoes a probe press, so a woken surface is handed back
+    /// on the bank it was resting on rather than one step off it.
+    static func wakeProbeInverse(_ probe: String) -> String? {
+        switch probe {
+        case "bank_right": return "bank_left"
+        case "bank_left": return "bank_right"
+        default: return nil
+        }
+    }
+
+    /// Did the probe press make Logic send anything?
+    ///
+    /// The event COUNTER is the proof, not the absence of a `timed_out` flag: a
+    /// reply that lost the flag (or a daemon that did not answer the wait at
+    /// all) must read as "no answer", because reading it as an answer is how a
+    /// dead link gets reported as a live one. Pure, so both silences are tested
+    /// without a surface.
+    static func wakeProbeAnswered(eventsBefore: Int, reply: [String: Any]?) -> Bool {
+        guard let reply, reply["timed_out"] as? Bool != true,
+              let now = reply["received_events"] as? Int else { return false }
+        return now > eventsBefore
+    }
+
+    /// Wakes a surface whose mirror has only gone QUIET, and leaves it standing
+    /// exactly where it was.
+    ///
+    /// A silent probe press is evidence about the BANK, not about the link: it
+    /// says this direction is an edge. Only a surface that stays silent in both
+    /// directions is reported as unreachable. On the way out the bank step is
+    /// walked back, so a tool that was about to resolve a channel starts from
+    /// the same place it would have without the probe.
+    ///
+    /// Returns the now-live status, or nil when Logic answered neither probe —
+    /// which is the evidence that the fault is not idleness.
     static func wakeSurface() -> [String: Any]? {
-        let events = statusSnapshot()["received_events"] as? Int ?? -1
-        guard (try? press("bank_left")) != nil else { return nil }
-        _ = awaitEvents(since: events, timeoutMs: surfaceWakeTimeoutMs)
-        return freshStatus()
+        let start = statusSnapshot()
+        var events = start["received_events"] as? Int ?? -1
+        let rowBefore = start["lcd_top"] as? String
+        for probe in wakeProbePresses {
+            guard (try? press(probe)) != nil else { return nil }
+            let reply = awaitEvents(since: events, timeoutMs: surfaceWakeTimeoutMs)
+            guard wakeProbeAnswered(eventsBefore: events, reply: reply) else {
+                // An edge, not a corpse. Keep the counter honest (a no-op press
+                // leaves it where it was) and try the other direction.
+                events = reply?["received_events"] as? Int ?? events
+                continue
+            }
+            // Logic is there. Put the bank back before the caller sees the
+            // surface: the probe is diagnostics, not navigation.
+            if let back = wakeProbeInverse(probe) {
+                let moved = freshStatus()?["received_events"] as? Int ?? events
+                try? press(back)
+                _ = awaitEvents(since: moved, timeoutMs: surfaceWakeTimeoutMs)
+            }
+            let woken = freshStatus()
+            if let rowBefore, let now = woken?["lcd_top"] as? String, now != rowBefore {
+                // Not a failure — every channel resolution re-navigates from
+                // the left edge — but it is the one thing this probe promises
+                // and does not verify, so it is said out loud.
+                debugLog("wakeSurface: '\(probe)' woke the surface, but the bank did not walk back")
+            }
+            return woken
+        }
+        return nil
     }
 
     /// The guard every control-surface tool takes before its first press: the

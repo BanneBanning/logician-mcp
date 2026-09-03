@@ -82,4 +82,68 @@ final class SurfaceLivenessTests: XCTestCase {
     func testTheStaleThresholdIsTenMinutes() {
         XCTAssertEqual(MCUController.staleMirrorSeconds, 600)
     }
+
+    // MARK: - The wake probe
+
+    /// FS-3, hit live 2026-09-03: the probe was a hardcoded `bank_left`, the
+    /// surface was resting at bank 0 where `bank_left` moves nothing, Logic
+    /// sends no MIDI for a press that changes nothing — and a healthy session
+    /// was refused as unreachable after 15 idle minutes. A probe therefore
+    /// cannot be one fixed direction: it must be able to move whichever edge
+    /// the surface is resting against.
+    func testTheProbeCanMoveFromEitherEdge() {
+        XCTAssertEqual(MCUController.wakeProbePresses.count, 2)
+        // RIGHT first: `resolveChannel` walks to the leftmost bank and scans
+        // right, so bank 0 is the common resting position and the leftward
+        // press is the one that cannot fire there.
+        XCTAssertEqual(MCUController.wakeProbePresses.first, "bank_right")
+        XCTAssertEqual(
+            MCUController.wakeProbePresses.last,
+            MCUController.wakeProbeInverse(MCUController.wakeProbePresses[0])
+        )
+    }
+
+    /// Every probe press is walked back, so a woken surface is handed to the
+    /// caller on the bank it was resting on.
+    func testEveryProbeKnowsItsWayBack() {
+        for probe in MCUController.wakeProbePresses {
+            XCTAssertNotNil(MCUController.wakeProbeInverse(probe), probe)
+        }
+        XCTAssertEqual(MCUController.wakeProbeInverse("bank_right"), "bank_left")
+        XCTAssertEqual(MCUController.wakeProbeInverse("bank_left"), "bank_right")
+        XCTAssertNil(MCUController.wakeProbeInverse("play"))
+    }
+
+    /// The answer is the event COUNTER moving, and nothing else. This is the
+    /// whole test the probe exists to run, and every way of getting it wrong
+    /// reports a dead link as a live one.
+    func testOnlyANewEventCountsAsAnAnswer() {
+        // The measured live case: 93 674 → 93 693 after one `bank_right`.
+        XCTAssertTrue(
+            MCUController.wakeProbeAnswered(
+                eventsBefore: 93674,
+                reply: ["timed_out": false, "received_events": 93693]
+            )
+        )
+        // The measured failing case: three reads, 93 568 every time.
+        XCTAssertFalse(
+            MCUController.wakeProbeAnswered(
+                eventsBefore: 93568,
+                reply: ["timed_out": true, "received_events": 93568]
+            )
+        )
+        // A counter that did not move is silence whatever the flag says.
+        XCTAssertFalse(
+            MCUController.wakeProbeAnswered(
+                eventsBefore: 93568,
+                reply: ["timed_out": false, "received_events": 93568]
+            )
+        )
+        // A reply with no counter proves nothing, and no reply at all — the
+        // daemon did not answer the wait — proves less.
+        XCTAssertFalse(
+            MCUController.wakeProbeAnswered(eventsBefore: 93568, reply: ["timed_out": false])
+        )
+        XCTAssertFalse(MCUController.wakeProbeAnswered(eventsBefore: 93568, reply: nil))
+    }
 }

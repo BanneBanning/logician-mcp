@@ -214,12 +214,96 @@ extension MCUController {
         return BankScan(banks: banks, standingBanner: standingBanner)
     }
 
+    /// Is this ONE cell spelling a control name Logic paints over a strip's
+    /// name (`MCULCDStrings.controlNameBanners`) rather than a strip's name?
+    ///
+    /// Both planes' spellings come from the same list, so the census's
+    /// row-level check and `bankedAtMatch`'s cell-level one can never disagree
+    /// about what a banner looks like.
+    static func isControlBannerCell(_ cell: String) -> Bool {
+        MCULCDStrings.controlNameBanners.contains(cell.trimmingCharacters(in: .whitespaces))
+    }
+
     /// The first cell of `row` that has the exact spelling of one of the
     /// control names Logic paints over a strip's name (`MCULCDStrings.controlNameBanners`).
     static func controlBannerCell(in row: String) -> String? {
         lcdFields(row)
             .map { $0.trimmingCharacters(in: .whitespaces) }
-            .first { MCULCDStrings.controlNameBanners.contains($0) }
+            .first(where: isControlBannerCell)
+    }
+
+    /// May this bank map be written to `bank-cache.json`?
+    ///
+    /// FS-4, measured 2026-09-03 (profiles/logic_set_track_solo.md): a full
+    /// scan run while a press banner was standing wrote the literal `"Solo"`
+    /// into `808`'s slot on disk, where it outlived the banner, the call and
+    /// the process. Every later resolution that landed on that bank then met a
+    /// cached row the live surface could never reproduce, and paid a
+    /// guaranteed-to-fail 1.5 s wait plus a second full rescan — 4 332 ms for
+    /// one solo restore, 3 627 of it inside `findChannel`.
+    ///
+    /// The scan waits a banner out first (`rowWithoutControlBanner`); this is
+    /// the guard for the case where it would not fade. Pure, so the poisoned
+    /// shape is tested without a surface.
+    static func bankMapCacheable(_ bankTops: [String]) -> Bool {
+        bankTops.allSatisfy { controlBannerCell(in: $0) == nil }
+    }
+
+    /// A per-strip control THIS SERVER pressed, and therefore a cell Logic is
+    /// expected to be painting the control's own name over right now.
+    ///
+    /// The record exists for one reason: to tell "the banner over that cell is
+    /// mine, from a press I made a moment ago" apart from "that cell says
+    /// something the bank map does not". The first is a transient this process
+    /// caused and can wait out for free; the second is a stale map, and
+    /// `bankedAtMatch` must still fall through to a full rescan for it.
+    struct ControlPressBanner: Equatable {
+        /// The track whose cell was painted — matched by name, so a resolution
+        /// of any OTHER track never gets the wildcard.
+        let track: String
+        /// The strip index within the showing bank.
+        let channel: Int
+        /// When the press went out.
+        let at: Date
+    }
+
+    nonisolated(unsafe) static var lastControlPressBanner: ControlPressBanner? // single-threaded server loop
+
+    /// Records a per-strip press whose echo is a banner over that strip's name
+    /// cell. Called at the press, not at the readback: the banner is up ~0.22 s
+    /// later and the clock that matters is the press's.
+    static func noteControlPressBanner(track: String, channel: Int, at: Date = Date()) {
+        lastControlPressBanner = ControlPressBanner(track: track, channel: channel, at: at)
+    }
+
+    /// How long after our own press a banner on that cell is still credibly
+    /// ours.
+    ///
+    /// Longer than `controlBannerFadeBudget`, and deliberately: that budget
+    /// bounds a WAIT, so it is sized to the 1.94-1.99 s the banner was measured
+    /// to stand under 50 ms polling, while this bounds a piece of EVIDENCE and
+    /// has to cover the longest stand anyone has seen. The solo profile hit the
+    /// full tax at ~6.0 s after the press that painted the cell
+    /// (profiles/logic_set_track_solo.md §5, 2026-09-03), so the real fade sits
+    /// somewhere in a 2-8 s band rather than on a fixed number.
+    ///
+    /// Widening it costs nothing in safety: the wildcard only ever fires on a
+    /// cell that LITERALLY spells one of Logic's control names, on the strip
+    /// this server just pressed, for the track it is resolving — an expired
+    /// record only sends the call down the slow path it used to always take.
+    static let ownPressBannerTrustSeconds: TimeInterval = 8.0
+
+    /// Is a banner over `channel` this server's OWN, from a press young enough
+    /// to still be standing? Pure, so the rule is tested without a surface.
+    ///
+    /// Three things must agree: the same track (by name), the same strip index,
+    /// and a press no older than `ownPressBannerTrustSeconds`.
+    static func ownPressBannerStanding(
+        _ record: ControlPressBanner?, track: String, channel: Int, now: Date
+    ) -> Bool {
+        guard let record, record.track == track, record.channel == channel else { return false }
+        let age = now.timeIntervalSince(record.at)
+        return age >= 0 && age <= ownPressBannerTrustSeconds
     }
 
     /// What a look at a row carrying a control-name cell settled on.
