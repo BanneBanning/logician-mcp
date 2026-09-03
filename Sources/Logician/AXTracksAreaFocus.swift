@@ -213,6 +213,16 @@ enum TracksAreaFocus {
     }
 }
 
+/// Which header row a focus repair may write into. Two cases, because the two
+/// kinds of caller know different things: an anchored region command names its
+/// track, and an anchorless one (`logic_select_regions` mode `all`/`none`)
+/// knows only that SOME track is selected and that changing which one is not
+/// its business.
+private enum FocusRepairTarget {
+    case named(String, Int?)
+    case whicheverIsSelected
+}
+
 private extension String {
     /// Lowercases only the first character, so a standalone sentence can be
     /// spliced into a longer one without shouting mid-clause. File-private:
@@ -311,10 +321,10 @@ extension LogicAccessibility {
     /// The ladder, cheapest first, each rung proven by re-reading Logic's
     /// focused element:
     /// 1. the Tracks area already holds the focus — no write at all;
-    /// 2. the anchor track is not selected: `selectTrack`, which is the
+    /// 2. the target track is not selected: `selectTrack`, which is the
     ///    measured cure verbatim (and carries the surface-debt settle and the
     ///    channel-focus bookkeeping a real selection change owes);
-    /// 3. the anchor track IS selected (the `already_selected` hole): rewrite
+    /// 3. the target track IS selected (the `already_selected` hole): rewrite
     ///    `AXSelectedChildren` with it anyway — the write `selectTrack` skips;
     /// 4. press the header's `Has Focus` radio button.
     ///
@@ -331,15 +341,53 @@ extension LogicAccessibility {
     func ensureTracksAreaKeyFocus(
         trackName: String, trackNumber: Int? = nil
     ) -> TracksAreaFocus.Outcome {
+        ensureTracksAreaKeyFocus(repairingWith: .named(trackName, trackNumber))
+    }
+
+    /// The same probe and the same repair for a command that names NO track.
+    ///
+    /// `logic_select_regions` modes `all` and `none` were the only two paths in
+    /// the region family with no focus probe at all — measured 2026-09-02, all
+    /// six `none` results and both `all` results in that profile carried no
+    /// `key_focus` key, while every anchored mode carried one — because the
+    /// probe used to be reachable only through an anchor region, and these two
+    /// modes have none. They are also the two that most need it: with the focus
+    /// elsewhere their command lands on another Logic view, the honest
+    /// after-check correctly says nothing moved, and the failure could name
+    /// everything EXCEPT the likeliest cause.
+    ///
+    /// The repair writes into whatever track Logic ALREADY has selected, so it
+    /// changes nothing an agent can observe except the focus — inventing a
+    /// track here would move the track selection a `mode: "none"` call never
+    /// asked about. With no header reading selected there is nothing to write
+    /// that is not a change of state, so the verdict is `unverified` and the
+    /// call goes ahead and says so, exactly as the anchored path does when the
+    /// headers cannot be read.
+    @discardableResult
+    func ensureTracksAreaKeyFocus() -> TracksAreaFocus.Outcome {
+        ensureTracksAreaKeyFocus(repairingWith: .whicheverIsSelected)
+    }
+
+    @discardableResult
+    private func ensureTracksAreaKeyFocus(
+        repairingWith target: FocusRepairTarget
+    ) -> TracksAreaFocus.Outcome {
         let chain = focusedElementChain()
         let label = chain?.first.map { TracksAreaFocus.label(elementFacts($0)) }
         if tracksAreaHoldsKeyFocus(chain) == true {
             return .alreadyFocused(element: label ?? "unreadable")
         }
         let before = label
-        guard let group = try? trackHeaderGroup(),
-              let headers = try? parsedTrackHeaders(),
-              let target = try? resolveTrack(headers, name: trackName, number: trackNumber) else {
+        guard let group = try? trackHeaderGroup() else { return .unverified(element: before) }
+        let headers = parsedTrackHeaders(in: group)
+        let resolved: TrackHeader?
+        switch target {
+        case .named(let trackName, let trackNumber):
+            resolved = try? resolveTrack(headers, name: trackName, number: trackNumber)
+        case .whicheverIsSelected:
+            resolved = headers.first { $0.selected }
+        }
+        guard let target = resolved else {
             return .unverified(element: before)
         }
         if !target.selected {

@@ -1882,6 +1882,62 @@ extension LogicAccessibility {
         )
     ]
 
+    /// What a selection command's own goal was, and how the result says it
+    /// landed.
+    ///
+    /// Pure, so the contract is pinned by tests rather than by a live Logic —
+    /// and because the poll's break condition and the reported `state` have to
+    /// be ONE judgement. They were not: the poll broke on "the count moved at
+    /// all" while `state` was written `expectedChange ? "selected" :
+    /// "unchanged"` for every mode, so a `mode: "none"` that correctly cleared
+    /// three regions came back `state: "selected"` with `selected_count: 0`
+    /// (measured 2026-09-02, 6 of 6 live calls) and a caller branching on
+    /// `state` read a clean deselection as a selection.
+    struct MultiRegionSelectionVerdict: Equatable {
+        let success: Bool
+        let state: String
+    }
+
+    static func multiRegionSelectionVerdict(
+        mode: String, before: Int, after: Int
+    ) -> MultiRegionSelectionVerdict {
+        guard mode == "none" else {
+            // More than there were, or more than one: the anchor pass leaves
+            // exactly one selected, so "still 1" is the shape of a command
+            // that did nothing.
+            let selected = after > before || after > 1
+            return MultiRegionSelectionVerdict(
+                success: selected, state: selected ? "selected" : "unchanged"
+            )
+        }
+        guard after == 0 else {
+            return MultiRegionSelectionVerdict(success: false, state: "unchanged")
+        }
+        // A selection that was empty before the command is a verified no-op,
+        // not a clear that happened — `already_clear` says so the way every
+        // other no-op in this server does.
+        return MultiRegionSelectionVerdict(
+            success: true, state: before == 0 ? "already_clear" : "cleared"
+        )
+    }
+
+    /// Why a selection command changed nothing, in the direction the mode was
+    /// actually asked to move. "Nothing more to select" was said to a
+    /// `mode: "none"` call as well, which had asked for the opposite.
+    static func multiRegionSelectionFailure(
+        mode: String, before: Int, after: Int, focusSentence: String?
+    ) -> String {
+        let lead = mode == "none"
+            ? "The selection did not clear (\(before) -> \(after) still selected on the rendered "
+                + "rows). Either 'Deselect All' is not bound in this Logic (check "
+                + "logic_list_key_commands), or it fired at a part of Logic other than the "
+                + "Tracks area."
+            : "The selection count did not move (\(before) -> \(after)). Either the command is "
+                + "not bound in this Logic (check logic_list_key_commands), or there genuinely "
+                + "was nothing more to select."
+        return lead + (focusSentence.map { " " + $0 } ?? "") + " Nothing was edited."
+    }
+
     /// Selects MORE than one region, by anchoring on one and firing a learned
     /// Logic selection command. The count is the proof: `selectedRegionCount()`
     /// is read before and after, and a mode that changed nothing is reported
@@ -1892,6 +1948,19 @@ extension LogicAccessibility {
     /// selection commands all act on what is currently selected, so this
     /// selects the anchor exclusively first — the same primitive the region
     /// edits already guard on.
+    ///
+    /// `all` and `none` have no anchor, and until 2026-09-02 that also meant no
+    /// Tracks-area focus probe at all — the only two paths in the region family
+    /// without one, and the two that could not even NAME the missing focus in
+    /// their failure, because the sentence hung off the anchor. They now take
+    /// the anchorless probe (`ensureTracksAreaKeyFocus()`, which repairs
+    /// against whatever track is already selected) and carry `key_focus` like
+    /// every other mode.
+    ///
+    /// The after-count looks BEFORE it waits: measured 2026-09-02, the old
+    /// loop's blind 0.25 s sleep preceded a count that had already moved in 8
+    /// of 8 samples — 250 ms of dead time on every call, and 2.0 s on a mode
+    /// with nothing to do.
     /// - Parameter trackNumber: addresses the anchor's ROW by number instead
     ///   of trusting the name to be unique (see `resolveRegionRow`).
     func selectRegions(
@@ -1905,6 +1974,7 @@ extension LogicAccessibility {
             )
         }
         var anchor: [String: Any]?
+        var anchorlessFocus: TracksAreaFocus.Outcome?
         if mode != "all" && mode != "none" {
             guard let trackName else {
                 throw LogicianError.invalidArguments(
@@ -1912,7 +1982,15 @@ extension LogicAccessibility {
                         + "start_bar when the track holds more than one region)"
                 )
             }
-            let regions = try regionSnapshot(trackName: trackName, trackNumber: trackNumber)
+            // ONE walk, handed to both readers of it. `regionSnapshot` used to
+            // walk the arrangement and `selectRegion` walk the same tree again
+            // 60 ms later with nothing written in between — the fold
+            // `logic_move_region` and `logic_rename_region` already took, worth
+            // 55-60 ms on every anchored call (measured 2026-09-02).
+            let rows = try regionRows()
+            let regions = try regionSnapshot(
+                trackName: trackName, trackNumber: trackNumber, alreadyWalkedRows: rows
+            )
             // One region on the track needs no further identification; more
             // than one and the caller has to say which, exactly as
             // logic_select_region requires.
@@ -1920,32 +1998,51 @@ extension LogicAccessibility {
                 anchor = try selectRegion(
                     trackName: trackName, regionName: regions[0]["name"] as? String,
                     startBar: regions[0]["start_bar"] as? Int, exclusive: true,
-                    trackNumber: trackNumber, forKeyCommand: true
+                    trackNumber: trackNumber, forKeyCommand: true, alreadyWalkedRows: rows
                 )
             } else {
                 anchor = try selectRegion(
                     trackName: trackName, regionName: regionName,
                     startBar: startBar, exclusive: true,
-                    trackNumber: trackNumber, forKeyCommand: true
+                    trackNumber: trackNumber, forKeyCommand: true, alreadyWalkedRows: rows
                 )
             }
+        } else {
+            // `all` and `none` have no anchor to carry the focus probe, and
+            // used to fire with the one precondition every sibling command
+            // checks neither established nor reported. See
+            // `ensureTracksAreaKeyFocus()`.
+            anchorlessFocus = ensureTracksAreaKeyFocus()
         }
         let before = try selectedRegionCount()
         let wasRegistered = KeyCommandRegistry.note(named: entry.command) != nil
         try fireKeyCommand(
             entry.command, learnIfMissing: true, source: "logic_select_regions"
         )
-        var after = before
-        for _ in 0..<8 {
-            Thread.sleep(forTimeInterval: 0.25)
+        // LOOK FIRST. The loop this replaces slept 0.25 s before it ever
+        // counted, and the count had already moved on the first look in 8 of 8
+        // live samples, every mode (measured 2026-09-02) — 250 ms of dead time
+        // on every successful call, 55% of a `mode: "none"`. The key command is
+        // a synchronous MCU-note trigger (40-50 ms), so the budget is here for
+        // the genuinely slow case and nothing else, and a mode whose goal is
+        // ALREADY met — `none` on an empty selection, `all` on a fully selected
+        // project — now costs one count instead of the old 8 x 0.25 s = 2.0 s.
+        var after = try selectedRegionCount()
+        let deadline = Date().addingTimeInterval(0.4)
+        while !LogicAccessibility.multiRegionSelectionVerdict(
+            mode: mode, before: before, after: after
+        ).success, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.03)
             after = try selectedRegionCount()
-            if after != before { break }
         }
-        let expectedChange = mode == "none" ? (after == 0) : (after > before || after > 1)
+        let verdict = LogicAccessibility.multiRegionSelectionVerdict(
+            mode: mode, before: before, after: after
+        )
+        let expectedChange = verdict.success
         var result: [String: Any] = [
             "success": expectedChange,
             "verified": expectedChange,
-            "state": expectedChange ? "selected" : "unchanged",
+            "state": verdict.state,
             "mode": mode,
             "command": entry.command,
             "means": entry.meaning,
@@ -1970,13 +2067,22 @@ extension LogicAccessibility {
                 "start_bar": anchor["start_bar"] ?? NSNull()
             ]
         }
-        if let anchor, let keyFocus = anchor["key_focus"] { result["key_focus"] = keyFocus }
+        if let anchor, let keyFocus = anchor["key_focus"] {
+            result["key_focus"] = keyFocus
+        } else if let anchorlessFocus {
+            result["key_focus"] = anchorlessFocus.dictionary
+        }
         if !expectedChange {
-            result["note"] = "The selection count did not move (\(before) -> \(after)). Either the "
-                + "command is not bound in this Logic (check logic_list_key_commands), or there "
-                + "genuinely was nothing more to select"
-                + (anchor.map { " - " + TracksAreaFocus.summary(inSelectionResult: $0) } ?? "")
-                + " Nothing was edited."
+            // The focus sentence, whichever way this call came by one — the
+            // anchored modes carry it inside the selection they took, `all` and
+            // `none` in their own probe. It used to be attached only when an
+            // anchor existed, which is never for the two modes that cannot
+            // establish the focus in the first place.
+            let focusSentence = anchor.map { TracksAreaFocus.summary(inSelectionResult: $0) }
+                ?? anchorlessFocus?.summary
+            result["note"] = LogicAccessibility.multiRegionSelectionFailure(
+                mode: mode, before: before, after: after, focusSentence: focusSentence
+            )
         }
         return result
     }
