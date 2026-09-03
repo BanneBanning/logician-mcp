@@ -107,7 +107,7 @@ final class BridgeProcessTests: XCTestCase {
     func testParsesTheRealMachinesPSOutput() {
         let output = """
         24761 ./.build/release/logician --bridge
-         7662 /Users/dev/Desktop/Progg/Random Projekt/Logic MCP/.build/release/logician
+         7662 /Users/dev/Projects/Random Projekt/Logic MCP/.build/release/logician
          1234 vim notes.txt
         """
         let parsed = BridgeProcess.parsePS(output)

@@ -27,7 +27,7 @@ Spawn ONE Opus agent with this mission (or do it inline if the session is dedica
 
 **0 · Identify.** Run `logic_health` via the in-process harness. Record the full
 `logic_ui_language` payload. The `language` code names the output directory:
-`/Users/dev/Desktop/Progg/Random Projekt/Logician-archive/locales/<code>/`.
+the archive's `locales/<code>/` directory (a sibling of this repo).
 If it reports `en`, stop and tell the user the switch did not take (Logic keeps the
 language it launched with — quit and relaunch).
 
