@@ -81,6 +81,73 @@ enum TrackRowAddressing {
             ? "none rendered"
             : rows.map { "\($0.number): \($0.name)" }.joined(separator: ", ")
     }
+
+    /// The number and the NAME out of a `Track 7 “Bass”` description — the one
+    /// parse, for the track-header column and for the arrangement's region
+    /// rows alike.
+    ///
+    /// **Why it is shared.** Logic appends the row's live STATE after the
+    /// closing quote, and the two readers disagreed about whether that was
+    /// part of the name. The header column's parse took the text BETWEEN the
+    /// quotes and never saw it; `regionRows()` had its own parse that split on
+    /// the opening quote and kept the TAIL, so with track 26 soloed the same
+    /// row was `Crash` to `logic_list_tracks` and `Crash, solo` to
+    /// `logic_list_regions`, and `resolveRegionRow` refused the caller's own
+    /// reported name: *"Track 26 is named 'Crash, solo', not 'Crash'"* on
+    /// `logic_copy_region`, `logic_delete_region` and `logic_select_region`
+    /// alike (reproduced live 2026-09-03 on the pre-fix binary, 5 of 5 calls;
+    /// the split profile hit it as four consecutive refusals whose reported
+    /// `actual` alternated between the two spellings). One parse, so the two
+    /// planes cannot disagree again.
+    ///
+    /// **Measured annotations** — live 2026-09-03, English Logic Pro 12.3.1,
+    /// reference project, track 26 read through this walk with each state set
+    /// and verified by `logic_track_info`:
+    ///
+    /// | state | row description | reads |
+    /// |---|---|---|
+    /// | plain | `Track 26 “Crash”` | 6/6 |
+    /// | soloed | `Track 26 “Crash”, solo` | 3/3 |
+    /// | muted | `Track 26 “Crash”, mute` | 2/2 |
+    /// | record-armed | `Track 26 “Crash”` — **no annotation** | 2/2 |
+    ///
+    /// So the row carries the two states that silence a track and not the one
+    /// that arms it; frozen and hidden were not tested. The suffix is `, mute`
+    /// on the row (the REGION elements on a silenced track say `, muted`
+    /// instead — a separate leak, on `parseRegion`'s name, still open).
+    ///
+    /// **The rule is STRUCTURAL, not a word list**: everything outside the
+    /// quoted span is punctuation and state, whatever Logic writes there, so
+    /// the annotations nobody has measured (frozen, hidden) and a LOCALIZED
+    /// one are dropped by the same rule with no table to update — there is
+    /// deliberately no list of English state words here to fall off. What does
+    /// not survive a localized Logic is the row walk itself
+    /// (`trackDescriptionPrefix`, the quote glyphs) — see `LogicUIStrings`.
+    ///
+    /// A track whose real name genuinely ends in `, solo` keeps it: it is
+    /// inside the quotes, and this parse never looks at the words.
+    ///
+    /// Returns nil when the text is not a track description at all, so the
+    /// caller decides whether that is "skip this element" or "keep the row and
+    /// say the name is unparsed".
+    static func parseRowDescription(
+        _ description: String,
+        prefix: String = LogicUIStrings.Format.trackDescriptionPrefix,
+        openQuote: Character = LogicUIStrings.Format.openQuote,
+        closeQuote: Character = LogicUIStrings.Format.closeQuote
+    ) -> (number: Int, name: String)? {
+        guard description.hasPrefix(prefix),
+              let open = description.firstIndex(of: openQuote),
+              let close = description.lastIndex(of: closeQuote),
+              open < close else {
+            return nil
+        }
+        let numberText = description[
+            description.index(description.startIndex, offsetBy: prefix.count)..<open
+        ].trimmingCharacters(in: .whitespaces)
+        guard let number = Int(numberText) else { return nil }
+        return (number, String(description[description.index(after: open)..<close]))
+    }
 }
 
 /// How a region on a row is asked for, and how a refusal about it reads.

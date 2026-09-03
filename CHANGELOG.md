@@ -1782,6 +1782,20 @@ with every render coming back as audio the agent can listen to.
   **403-444 ms → 41-54 ms**. The refusal → expand → select hidden row → collapse round trip
   still works exactly as before, live, both directions.
 
+- **A soloed or muted track no longer makes the region tools refuse their own answers.** Logic
+  writes a track row's live state into the row's own description — `Track 26 “Crash”, solo` — and
+  the arrangement map read that tail as part of the NAME while the track list read the same row as
+  plain `Crash`. Every region tool addresses a row by name, so with one track soloed
+  `logic_copy_region`, `logic_delete_region` and `logic_select_region` all refused the name the
+  server itself had just reported: *"Track 26 is named 'Crash, solo', not 'Crash'"* — reproduced
+  live, 5 of 5 calls, on a project whose only unusual feature was one soloed track. The two
+  readers now share one parse, which takes the name from between Logic's quotes and lets the state
+  outside them go: measured live on the same track, `, solo` (3/3 reads) and `, mute` (2/2) are
+  gone from the name, a record-armed track turns out to publish no annotation at all (2/2), and
+  the same select-copy-delete chain runs clean with each of the three flags set. The rule is
+  structural rather than a list of English words, so a frozen or hidden row — and a translated
+  Logic — drop their annotations the same way.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

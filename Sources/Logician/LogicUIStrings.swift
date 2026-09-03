@@ -700,7 +700,7 @@ enum LogicUIStrings {
     ///
     /// | format | where it is parsed |
     /// |---|---|
-    /// | `Track N “Name”` | `parseTrackDescription`, `regionRows()` |
+    /// | `Track N “Name”` | `TrackRowAddressing.parseRowDescription` (one parse, both planes) |
     /// | `120,0000` (decimal comma) | `TempoMap.parseTempoListPosition`, `normalizedFormattedValue` |
     /// | `-6,0 dB` | `decibelValue(of:)`, `ChannelStrip.parseDb` |
     /// | `-oo dB` | `ChannelStrip.parseDb`, the send-level tools |
@@ -709,8 +709,13 @@ enum LogicUIStrings {
     enum Format {
         /// A track header/region row is described `Track 7 “Bass”` — with
         /// TYPOGRAPHIC quotes, U+201C and U+201D, not `"`. Read by
-        /// `parseTrackDescription` and `regionRows()`; a straight-quote build
-        /// of Logic would make every region read return nothing.
+        /// `TrackRowAddressing.parseRowDescription`, for the track-header
+        /// column and the region row walk alike; a straight-quote build of
+        /// Logic would make every region read return nothing.
+        ///
+        /// The quotes are also what tells the NAME from the row's live state:
+        /// Logic writes `Track 26 “Crash”, solo` on a soloed row, and the
+        /// parse takes only what is between them (measured 2026-09-03).
         ///
         /// FRENCH (R4, exact code points): `Piste 1 « Lofi Pad »` is
         /// `P i s t e SP 1 SP U+00AB U+00A0 L o f i SP P a d U+00A0 U+00BB` —
