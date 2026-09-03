@@ -1382,6 +1382,29 @@ with every render coming back as audio the agent can listen to.
   exactly one differing cell, which is exactly what a rename produces), so it survived a whole
   session. The next surface call rescans instead, measured at 1 378 ms on the reference
   project.
+- **A duplicate that did not happen says so.** `logic_duplicate_track` used to answer
+  `duplicated_not_visible` — *"the copy may be off-screen, scroll and re-read"* — whenever the
+  rendered rows had not changed, on any project that renders part of its track list, which is
+  most of them. So a key command Logic silently declined came back looking like a copy the
+  agent simply could not see: measured 2026-09-03 on the reference project, duplicating the
+  `Drums` stack took 4 415 ms to say exactly that about a project where nothing at all had
+  happened. Now the two are told apart by evidence. A copy lands directly BELOW its source and
+  renumbers every row under it, so rendered rows below the source that kept their numbers
+  REFUTE the insertion, and the result is `state: "unchanged"`, `insertion_refuted: true`, and
+  a sentence naming the cause — including the one this found: **Logic does not duplicate the
+  main track of a folder or summing stack**, while the subtracks inside it duplicate normally
+  (`Fill` in 463 ms, a plain `Crash` in 563 ms, minutes apart on the same project). No
+  `duplicated_` state can be claimed over a census that did not move by one character, and the
+  same rule now guards `logic_create_track`.
+- **A track hidden behind a collapsed stack is no longer refused like a typo.** Ten of the
+  reference project's twenty-nine tracks live inside one collapsed stack and are not rendered
+  at all, and asking for one by name got the same sentence a misspelling gets. The refusal now
+  says the list is provably short of the project, names the track numbers that exist and are
+  not in it, and names the stack and the exact call that opens it —
+  `logic_set_track_stack {track_name: "Drum Synth Kit", track_number: 9, expanded: true}`. The
+  evidence was already being computed for `logic_list_tracks`; only the refusal was not
+  carrying it. A name that nothing proves missing still gets the plain refusal, so the two
+  messages differ exactly where the two situations do.
 
 ### Known limitations (honest by design)
 

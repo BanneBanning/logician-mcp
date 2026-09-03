@@ -128,22 +128,94 @@ enum TrackChange {
     /// What the result may claim when the poll ran out without seeing a row
     /// appear.
     ///
-    /// This is the D2 fix. The old verification was `after.count > before` over
-    /// VISIBLE rows, so a project whose Tracks area is scrolled away from the
-    /// insertion point answered `success: false, "No new track appeared"` about
-    /// a track that Logic had created and nothing cleaned up — the agent's next
-    /// move is to fire the command again, and now there are two. When the
-    /// listing itself says it is partial, "I did not see it" is the honest
-    /// statement and "nothing happened" is not one this plane can make.
+    /// This is the D2 fix, and then the fix to the fix. The original
+    /// verification was `after.count > before` over VISIBLE rows, so a project
+    /// whose Tracks area is scrolled away from the insertion point answered
+    /// `success: false, "No new track appeared"` about a track that Logic had
+    /// created and nothing cleaned up — the agent's next move is to fire the
+    /// command again, and now there are two. When the listing itself says it
+    /// is partial, "I did not see it" is the honest statement and "nothing
+    /// happened" is not one this plane can make.
+    ///
+    /// But `partial` alone decided that, and `partial` is TRUE on every call
+    /// against the reference project (19 of 29 rows rendered), so the answer
+    /// to "the rendered rows did not move" was `_not_visible` unconditionally
+    /// — including for a key command that fired into the void. Observed live
+    /// 2026-09-02 and reproduced on the old binary 2026-09-03:
+    /// `logic_duplicate_track {track_name: "Drums", track_number: 5}` came
+    /// back `state: "duplicated_not_visible"` in 4 415–4 488 ms while the
+    /// listing before and after was byte-identical, 19 rows, `Fill` still at
+    /// 6, nothing renumbered. `_not_visible` means "it may have landed where I
+    /// cannot see"; a census that did not move by one character is not that
+    /// case, and saying so is the silent-wrongness failure this whole file
+    /// exists to prevent.
+    ///
+    /// And nothing was wrong with the plane: `Crash` duplicated in 563 ms
+    /// minutes later, and `Fill` — a subtrack INSIDE the same stack — in 463
+    /// ms. `Drums` is the main track of a track stack (`is_stack: true`), and
+    /// Logic's Duplicate Track is a silent no-op on one. That is a fact only
+    /// the honest verdict can surface: `_not_visible` sent the agent looking
+    /// for a copy that was never made.
+    ///
+    /// So the third answer: the rendered census is IDENTICAL — same rows, same
+    /// numbers, same names, in the same order. That is a positive observation
+    /// and not the absence of one, and no `created_*`/`duplicated_*` state may
+    /// be claimed over it.
     enum Unseen: Equatable {
-        /// The listing proved itself incomplete: the track may exist off-screen.
+        /// The listing proved itself incomplete AND the rendered rows moved
+        /// without a new name appearing: the track may exist off-screen.
         case notVisible
+        /// The rendered census did not move at all. Nothing was inserted
+        /// anywhere this call can see, whatever else the listing is missing.
+        case unchanged
         /// Nothing proved the listing incomplete, and it did not move.
         case nothing
     }
 
-    static func unseenVerdict(partial: Bool) -> Unseen {
-        partial ? .notVisible : .nothing
+    static func unseenVerdict(partial: Bool, before: [Row], after: [Row]) -> Unseen {
+        guard partial else { return .nothing }
+        return censusMoved(before: before, after: after) ? .notVisible : .unchanged
+    }
+
+    /// Did the rendered census move AT ALL — count, numbering, names, order?
+    ///
+    /// `selected` is deliberately not part of it: both tools that ask MOVE the
+    /// selection themselves (a duplicate selects the copy, and `selectTrack`
+    /// selects the source before the key command is even fired), so a
+    /// selection that differs is the tool's own footprint and not evidence
+    /// that a row appeared.
+    ///
+    /// The NUMBERS are what make this stronger than the name multiset. A copy
+    /// lands directly below its source and renumbers every row under it
+    /// (measured 2026-09-01, 10 of 10 runs), so an insertion that pushed a row
+    /// off the bottom of the rendered range still shifts every number in
+    /// between — the count stays put and the census plainly moved.
+    static func censusMoved(before: [Row], after: [Row]) -> Bool {
+        guard before.count == after.count else { return true }
+        return zip(before, after).contains { $0.number != $1.number || $0.name != $1.name }
+    }
+
+    /// Does the rendered census PROVE that nothing was inserted below row
+    /// `number`?
+    ///
+    /// The insertion point of both key commands is known: Logic puts a new or
+    /// duplicated track directly BELOW the selected one and renumbers
+    /// everything under it (measured 2026-09-01, `logic_duplicate_track`
+    /// profile §4.2 — source 26 `Crash` → copy 27 `Crash`, `Vinyl` 27→28,
+    /// `Audio 8` 28→29, on 10 of 10 runs). So a rendered row that still
+    /// carries its old number below the source is not the absence of evidence;
+    /// it is evidence of absence, and it is the one claim a row COUNT can
+    /// never make on a partial listing.
+    ///
+    /// False when there is no rendered row below the source at all — then the
+    /// copy would have landed outside the rendered range and this plane has
+    /// nothing to say.
+    static func insertionRefutedBelow(before: [Row], after: [Row], number: Int) -> Bool {
+        let witnesses = before.filter { $0.number > number }
+        guard !witnesses.isEmpty else { return false }
+        return witnesses.allSatisfy { row in
+            after.contains { $0.number == row.number && $0.name == row.name }
+        }
     }
 
     // MARK: Deleting
@@ -217,7 +289,10 @@ enum TrackChange {
         // The row is rendered and still reads something else: that is a
         // provable non-event, whatever the rest of the listing is missing.
         if after.contains(where: { $0.number == number }) { return .unchanged }
-        return unseenVerdict(partial: partial) == .notVisible ? .notVisible : .unchanged
+        // A rename inserts and removes nothing, so the census comparison the
+        // create/duplicate verdict runs does not apply here: the question is
+        // only whether the ONE addressed row is rendered, and it is not.
+        return partial ? .notVisible : .unchanged
     }
 
     /// MEASURED 2026-09-02 (`logic_rename_track` profile §3–§3.4). The rename

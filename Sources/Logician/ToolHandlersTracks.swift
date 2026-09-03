@@ -90,26 +90,58 @@ extension MCPServer {
                     + " logic_list_tracks before naming it to logic_load_instrument."
             }
         } else {
-            switch TrackChange.unseenVerdict(partial: partial) {
+            switch TrackChange.unseenVerdict(partial: partial, before: before, after: after) {
             case .notVisible:
                 result["state"] = "created_not_visible"
                 result["warning"] = "This project renders only part of its track list"
-                    + " (`partial: true`), so the visible rows not changing does NOT mean no"
-                    + " track was created."
-                result["note"] = "The key command fired and the rendered rows did not change, but"
-                    + " they are not all the rows. Scroll the Tracks area and re-read"
+                    + " (`partial: true`) and the rendered rows moved without a new name"
+                    + " appearing, so a track may have been created outside them."
+                result["note"] = "The key command fired and the rendered rows shifted, but they"
+                    + " are not all the rows. Scroll the Tracks area and re-read"
                     + " logic_list_tracks before firing this again — a repeat of a create that"
                     + " already worked leaves two tracks behind, and Undo is a blind instrument."
-            case .nothing:
-                result["state"] = "failed"
-                result["note"] = "No new track appeared. Nothing here left a dialog up; if Logic"
-                    + " is showing one, answer it and call again."
+            case .unchanged, .nothing:
+                // Same rule as `handleDuplicateTrack`: an unmoved census is a
+                // positive observation, and `created_not_visible` may not be
+                // claimed over it just because the listing is partial.
+                result["state"] = "unchanged"
+                let anchor = before.first(where: \.selected)?.number
+                let refuted = anchor.map {
+                    TrackChange.insertionRefutedBelow(before: before, after: after, number: $0)
+                } ?? false
+                result["insertion_refuted"] = refuted
+                let census = "The \(after.count) rendered track rows read identically before and"
+                    + " after this call — same numbers, same names, same order."
+                let cause = " Nothing was created. Either the key command did not reach Logic —"
+                    + " check logic_health, and answer any dialog Logic is showing — or Logic"
+                    + " declined it here."
+                if refuted {
+                    result["note"] = census + " A new track lands directly BELOW the selected one"
+                        + " and renumbers every row under it, and the rows under track"
+                        + " \(anchor ?? 0) are rendered and did not renumber." + cause
+                } else if !partial {
+                    result["note"] = census + " Nothing proved this listing short of the project"
+                        + " and it did not move." + cause
+                } else {
+                    result["warning"] = "This project renders only part of its track list"
+                        + " (`partial: true`) and no rendered row sits below the selected one, so"
+                        + " a new track below it would not show here."
+                    result["note"] = census + " Nothing was inserted anywhere this call can see,"
+                        + " which is NOT the same as nothing having happened. Scroll the Tracks"
+                        + " area and re-read logic_list_tracks before firing this again — a repeat"
+                        + " of a create that already worked leaves two tracks behind."
+                }
             }
         }
         // The bank map describes this project's track ORDER — see
         // `invalidateBankMap()`. A create that may have landed invalidates it
-        // just as surely as one that provably did.
-        if created || result["state"] as? String == "created_not_visible" {
+        // just as surely as one that provably did; a census that refutes the
+        // insertion outright has changed no order, and throwing the map away
+        // then costs the next surface call a 1 378 ms rescan for nothing.
+        if created
+            || result["state"] as? String == "created_not_visible"
+            || (result["state"] as? String == "unchanged"
+                && result["insertion_refuted"] as? Bool == false) {
             invalidateBankMap()
         }
         return result
@@ -219,28 +251,67 @@ extension MCPServer {
                     + " two rows."
             }
         } else {
-            switch TrackChange.unseenVerdict(partial: partial) {
+            switch TrackChange.unseenVerdict(partial: partial, before: before, after: after) {
             case .notVisible:
                 result["state"] = "duplicated_not_visible"
                 result["warning"] = "This project renders only part of its track list"
-                    + " (`partial: true`), so the visible rows not changing does NOT mean no copy"
-                    + " was made."
-                result["note"] = "The key command fired and the rendered rows did not change, but"
-                    + " they are not all the rows. Scroll the Tracks area and re-read"
+                    + " (`partial: true`) and the rendered rows moved without a new name"
+                    + " appearing, so a copy may have landed outside them."
+                result["note"] = "The key command fired and the rendered rows shifted, but they"
+                    + " are not all the rows. Scroll the Tracks area and re-read"
                     + " logic_list_tracks before firing this again - a repeat of a duplicate that"
                     + " already worked leaves a second copy, carrying a second set of the"
                     + " source's regions, and Undo is a blind instrument."
-            case .nothing:
-                result["state"] = "failed"
-                result["note"] = "No copy appeared. Nothing here left a dialog up; if Logic is"
-                    + " showing one, answer it and call again."
+            case .unchanged, .nothing:
+                // The census did not move by one character, so no
+                // `duplicated_*` state may be claimed over it - whatever the
+                // listing is missing elsewhere. See `TrackChange.Unseen` for
+                // the live call this replaces.
+                result["state"] = "unchanged"
+                let sourceNumber = selection.result["track_number"] as? Int
+                let refuted = sourceNumber.map {
+                    TrackChange.insertionRefutedBelow(before: before, after: after, number: $0)
+                } ?? false
+                result["insertion_refuted"] = refuted
+                let census = "The \(after.count) rendered track rows read identically before and"
+                    + " after this call - same numbers, same names, same order."
+                let cause = " Nothing was changed and nothing needs undoing. LOGIC DOES NOT"
+                    + " DUPLICATE A TRACK STACK: if the source is the MAIN track of a folder or"
+                    + " summing stack (`is_stack: true` in logic_list_tracks) the command is a"
+                    + " silent no-op, measured 2026-09-03 - duplicate the subtracks inside it"
+                    + " instead, which works normally. Otherwise the key command did not reach"
+                    + " Logic: check logic_health, and answer any dialog Logic is showing."
+                if refuted {
+                    result["note"] = census + " A copy lands directly BELOW its source and"
+                        + " renumbers every row under it, and the rows under track"
+                        + " \(sourceNumber ?? 0) are rendered and did not renumber, so NO copy was"
+                        + " made." + cause
+                } else if !partial {
+                    result["note"] = census + " Nothing proved this listing short of the project"
+                        + " and it did not move, so NO copy was made." + cause
+                } else {
+                    result["warning"] = "This project renders only part of its track list"
+                        + " (`partial: true`) and no rendered row sits below the source, so a copy"
+                        + " directly below it would not show here."
+                    result["note"] = census + " Nothing was inserted anywhere this call can see,"
+                        + " which is NOT the same as nothing having happened: no rendered row sits"
+                        + " below the source, so a copy would have landed outside them. Scroll the"
+                        + " Tracks area and re-read logic_list_tracks before firing this again - a"
+                        + " repeat of a duplicate that already worked leaves a second copy,"
+                        + " carrying a second set of the source's regions."
+                }
             }
         }
         // The bank map describes this project's track ORDER, and this tool
         // inserts a row in the middle of it and renumbers everything below.
         // A duplicate that may have landed invalidates it as surely as one
-        // that provably did.
-        if duplicated || result["state"] as? String == "duplicated_not_visible" {
+        // that provably did - but a census that refutes the insertion outright
+        // has changed no order, and throwing the map away then costs the next
+        // surface call a 1 378 ms rescan for nothing.
+        if duplicated
+            || result["state"] as? String == "duplicated_not_visible"
+            || (result["state"] as? String == "unchanged"
+                && result["insertion_refuted"] as? Bool == false) {
             invalidateBankMap()
         }
         return result

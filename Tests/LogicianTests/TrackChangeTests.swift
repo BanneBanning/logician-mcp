@@ -218,27 +218,154 @@ final class TrackChangeTests: XCTestCase {
     }
 
     /// A duplicate whose row is off-screen: the visible count did not rise and
-    /// no name is new, but the listing has proved itself partial. Reporting
+    /// no name is new, but the rows that ARE rendered plainly moved — Logic
+    /// renumbered them around an insertion this listing cannot show. Reporting
     /// "failed" invites a second call, and a second copy carries a second set
     /// of the source's regions.
     func testACopyOffScreenIsNotVisibleRatherThanFailed() {
-        let before = rows(["Kick", "Snare", "Crash"])
-        let after = rows(["Kick", "Snare", "Crash"])
+        let before = [
+            TrackChange.Row(number: 20, name: "Kick", selected: false),
+            TrackChange.Row(number: 21, name: "Snare", selected: false),
+            TrackChange.Row(number: 22, name: "Crash", selected: false)
+        ]
+        // The copy landed above the rendered window: every number shifted by
+        // one and the row that was 22 fell off the bottom.
+        let after = [
+            TrackChange.Row(number: 21, name: "Kick", selected: false),
+            TrackChange.Row(number: 22, name: "Snare", selected: false),
+            TrackChange.Row(number: 23, name: "Crash", selected: false)
+        ]
         XCTAssertFalse(TrackChange.trackAppeared(before: before, after: after))
-        XCTAssertEqual(TrackChange.unseenVerdict(partial: true), .notVisible)
+        XCTAssertEqual(
+            TrackChange.unseenVerdict(partial: true, before: before, after: after), .notVisible
+        )
     }
 
     // MARK: What an unseen create may say
 
-    /// D2. A listing that has proved itself incomplete cannot say "nothing
-    /// happened" — the agent's next move on that answer is to fire the command
-    /// again, and then there are two tracks.
-    func testAPartialListingThatDidNotMoveMeansNotVisibleNotNothing() {
-        XCTAssertEqual(TrackChange.unseenVerdict(partial: true), .notVisible)
+    /// THE REGRESSION THIS FILE NOW EXISTS FOR. Observed live 2026-09-02:
+    /// `logic_duplicate_track {track_name: "Drums", track_number: 5}` came
+    /// back `state: "duplicated_not_visible"` in 4 488 ms while the listing
+    /// before and after was byte-identical — 19 rows, `Fill` still at 6,
+    /// nothing renumbered. `partial` is true on every call against that
+    /// project, and `partial` alone used to decide this, so a key command that
+    /// fired into the void was reported as a copy that might be off-screen.
+    /// A census that did not move by one character is not that case.
+    func testAnUnmovedRenderedCensusIsNeverNotVisible() {
+        let before = rows(["Kick", "Drums", "Fill", "Bass"])
+        let after = rows(["Kick", "Drums", "Fill", "Bass"])
+        XCTAssertFalse(TrackChange.trackAppeared(before: before, after: after))
+        XCTAssertEqual(
+            TrackChange.unseenVerdict(partial: true, before: before, after: after), .unchanged
+        )
     }
 
     func testAnUnrefutedListingThatDidNotMoveMeansNothingHappened() {
-        XCTAssertEqual(TrackChange.unseenVerdict(partial: false), .nothing)
+        let unmoved = rows(["A", "B"])
+        XCTAssertEqual(
+            TrackChange.unseenVerdict(partial: false, before: unmoved, after: unmoved), .nothing
+        )
+    }
+
+    /// A row going AWAY is not an appearance, but it is movement: something
+    /// happened to the rendered window and this plane cannot say what, so the
+    /// cautious verdict is the right one.
+    func testACensusThatLostARowIsNotVisibleRatherThanUnchanged() {
+        XCTAssertEqual(
+            TrackChange.unseenVerdict(
+                partial: true, before: rows(["A", "B", "C"]), after: rows(["A", "B"])
+            ),
+            .notVisible
+        )
+    }
+
+    // MARK: Did the rendered census move at all
+
+    func testTheSelectionMovingIsNotTheCensusMoving() {
+        // Both tools that ask this move the selection themselves — a duplicate
+        // selects the copy, and `selectTrack` selects the source before the
+        // key command is fired — so a differing `selected` flag is the tool's
+        // own footprint and never evidence that a row appeared.
+        XCTAssertFalse(
+            TrackChange.censusMoved(
+                before: rows(["Kick", "Drums", "Fill"], selected: "Kick"),
+                after: rows(["Kick", "Drums", "Fill"], selected: "Drums")
+            )
+        )
+    }
+
+    func testRenumberingIsCensusMovementEvenWhenTheNamesAreTheSame() {
+        let before = [TrackChange.Row(number: 6, name: "Fill", selected: false)]
+        let after = [TrackChange.Row(number: 7, name: "Fill", selected: false)]
+        XCTAssertTrue(TrackChange.censusMoved(before: before, after: after))
+    }
+
+    func testARenamedRowAtTheSameNumberIsCensusMovement() {
+        let before = [TrackChange.Row(number: 6, name: "Fill", selected: false)]
+        let after = [TrackChange.Row(number: 6, name: "Fill 2", selected: false)]
+        XCTAssertTrue(TrackChange.censusMoved(before: before, after: after))
+    }
+
+    func testADifferentRowCountIsAlwaysCensusMovement() {
+        XCTAssertTrue(
+            TrackChange.censusMoved(before: rows(["A"]), after: rows(["A", "B"]))
+        )
+    }
+
+    // MARK: Proving the copy was NOT made
+
+    /// The insertion point is known: the copy lands directly below its source
+    /// and renumbers every row under it (10 of 10 runs, 2026-09-01). So rows
+    /// below the source that still carry their old numbers are evidence of
+    /// absence — the one claim a row COUNT can never make on a partial list.
+    func testRowsBelowTheSourceKeepingTheirNumbersRefuteTheInsertion() {
+        let census = rows(["Kick", "Drums", "Fill", "Bass"])
+        XCTAssertTrue(
+            TrackChange.insertionRefutedBelow(before: census, after: census, number: 2)
+        )
+    }
+
+    /// The same test against a duplicate that really happened: `Fill` 3 → 4.
+    func testARealInsertionIsNotRefuted() {
+        let before = rows(["Kick", "Drums", "Fill", "Bass"])
+        let after = [
+            TrackChange.Row(number: 1, name: "Kick", selected: false),
+            TrackChange.Row(number: 2, name: "Drums", selected: false),
+            TrackChange.Row(number: 3, name: "Drums", selected: true),
+            TrackChange.Row(number: 4, name: "Fill", selected: false),
+            TrackChange.Row(number: 5, name: "Bass", selected: false)
+        ]
+        XCTAssertFalse(
+            TrackChange.insertionRefutedBelow(before: before, after: after, number: 2)
+        )
+    }
+
+    /// Nothing rendered below the source: the copy would have landed outside
+    /// the rendered rows, so this plane refutes nothing and must not pretend
+    /// to. The result then keeps its "scroll and re-read" warning.
+    func testNoRenderedRowBelowTheSourceRefutesNothing() {
+        let census = rows(["Kick", "Drums"])
+        XCTAssertFalse(
+            TrackChange.insertionRefutedBelow(before: census, after: census, number: 2)
+        )
+    }
+
+    /// The live shape of 2026-09-02, end to end: `Drums` at 5 with `Fill` at 6
+    /// still at 6 afterwards. Unchanged AND refuted — the result may say "no
+    /// copy was made" outright.
+    func testTheDrumsReproIsUnchangedAndRefuted() {
+        let census = [
+            TrackChange.Row(number: 4, name: "Kick", selected: false),
+            TrackChange.Row(number: 5, name: "Drums", selected: true),
+            TrackChange.Row(number: 6, name: "Fill", selected: false),
+            TrackChange.Row(number: 7, name: "Bass", selected: false)
+        ]
+        XCTAssertEqual(
+            TrackChange.unseenVerdict(partial: true, before: census, after: census), .unchanged
+        )
+        XCTAssertTrue(
+            TrackChange.insertionRefutedBelow(before: census, after: census, number: 5)
+        )
     }
 
     // MARK: A row went away

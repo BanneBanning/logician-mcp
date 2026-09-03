@@ -567,6 +567,13 @@ enum LogicianError: LocalizedError {
     case windowAmbiguous(String, Int)
     case pluginNotOpen(String)
     case trackNotFound(String, available: [String])
+    /// The name matched no rendered track header AND the header column can
+    /// prove it is short of the project — rows behind a collapsed stack, or
+    /// scrolled out. Distinct from `trackNotFound`, which says the name is not
+    /// there: this one says it may well be, and `hint` names the stack and the
+    /// call that opens it. Same `not_found` code, same fall-through to the
+    /// control surface; only the sentence differs, which is the whole point.
+    case trackNotRendered(String, available: [String], hint: String)
     case trackAmbiguous(String, numbers: [Int])
     case trackMismatch(number: Int, expected: String, actual: String)
     /// Several regions on ONE track row answer to the same request. Distinct
@@ -611,7 +618,8 @@ enum LogicianError: LocalizedError {
         case .accessibilityNotTrusted: return "not_trusted"
         case .logicNotRunning: return "not_running"
         case .windowNotFound, .parameterNotFound, .insertNotFound, .trackNotFound,
-             .stripNotFound, .presetNotFound, .keyCommandNotFound: return "not_found"
+             .trackNotRendered, .stripNotFound, .presetNotFound,
+             .keyCommandNotFound: return "not_found"
         case .parameterAmbiguous, .insertAmbiguous, .windowAmbiguous, .trackAmbiguous,
              .stripAmbiguous, .presetAmbiguous, .regionAmbiguous: return "ambiguous"
         case .valueNotWritable, .trackNotExposed, .windowNotClosable, .trackNotStack: return "not_exposed"
@@ -677,6 +685,9 @@ enum LogicianError: LocalizedError {
             return "The plugin window was not open: \(detail)"
         case .trackNotFound(let name, let available):
             return "No visible track header matches '\(name)'. Visible tracks: \(available.joined(separator: ", ")). Scrolled-out tracks are not exposed."
+        case .trackNotRendered(let name, let available, let hint):
+            return "No RENDERED track header matches '\(name)'. Rendered tracks: "
+                + "\(available.joined(separator: ", ")). " + hint
         case .trackAmbiguous(let name, let numbers):
             return "Track name '\(name)' is ambiguous; it matches track numbers \(numbers.map(String.init).joined(separator: ", ")). Pass track_number to disambiguate."
         case .trackMismatch(let number, let expected, let actual):
