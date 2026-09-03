@@ -1061,6 +1061,83 @@ final class RegionInspectorTests: XCTestCase {
         XCTAssertNil(plan.debt)
     }
 
+    // MARK: - …and the one state that cancels the deferral
+
+    /// A call that had to SHOW a hidden Inspector closes what it opened before
+    /// `callTool` presses the pane away. Deferring here would leave the user's
+    /// disclosure state changed behind a pane that looks untouched — and out
+    /// of reach of every later settle, which cannot show the Inspector.
+    func testAHiddenInspectorIsPaidBackBeforeThePaneGoesAway() {
+        let plan = LogicAccessibility.planInspectorRestore(
+            standing: nil, openedRegionPanel: true, openedMore: true,
+            projectDocument: "/Music/A.logicx", inspectorShownByThisCall: true
+        )
+        XCTAssertTrue(plan.closeRegionPanelNow)
+        XCTAssertTrue(plan.closeMoreNow)
+        XCTAssertNil(plan.debt)
+    }
+
+    /// It is also the last chance to pay an EARLIER call's debt in this
+    /// document, so that one is settled here too rather than stranded.
+    func testAHiddenInspectorAlsoSettlesAnEarlierCallsDebt() {
+        let standing = LogicAccessibility.InspectorDebt(
+            regionPanel: true, more: false, projectDocument: "/Music/A.logicx"
+        )
+        let plan = LogicAccessibility.planInspectorRestore(
+            standing: standing, openedRegionPanel: false, openedMore: false,
+            projectDocument: "/Music/A.logicx", inspectorShownByThisCall: true
+        )
+        XCTAssertTrue(plan.closeRegionPanelNow)
+        XCTAssertFalse(plan.closeMoreNow)
+        XCTAssertNil(plan.debt)
+    }
+
+    /// …but never ANOTHER document's: that panel is gone, and pressing its
+    /// triangles here would close a stranger's.
+    func testAHiddenInspectorDoesNotPayAnotherProjectsDebt() {
+        let standing = LogicAccessibility.InspectorDebt(
+            regionPanel: true, more: true, projectDocument: "/Music/A.logicx"
+        )
+        let plan = LogicAccessibility.planInspectorRestore(
+            standing: standing, openedRegionPanel: false, openedMore: true,
+            projectDocument: "/Music/B.logicx", inspectorShownByThisCall: true
+        )
+        XCTAssertFalse(plan.closeRegionPanelNow)
+        XCTAssertTrue(plan.closeMoreNow)
+        XCTAssertNil(plan.debt)
+    }
+
+    /// A hidden Inspector whose panel was already open (Logic remembers the
+    /// triangle across a hide) presses nothing at all: this call opened
+    /// nothing, so it owes nothing, and the disclosure is the user's.
+    func testAHiddenInspectorClosesNothingItDidNotOpen() {
+        let plan = LogicAccessibility.planInspectorRestore(
+            standing: nil, openedRegionPanel: false, openedMore: false,
+            projectDocument: "/Music/A.logicx", inspectorShownByThisCall: true
+        )
+        XCTAssertFalse(plan.closeRegionPanelNow)
+        XCTAssertFalse(plan.closeMoreNow)
+        XCTAssertNil(plan.debt)
+    }
+
+    /// The common case is untouched, stated explicitly: an Inspector the user
+    /// already had open still gets the deferral the profile measured 13×
+    /// cheaper.
+    func testAnInspectorTheUserLeftOpenStillDefers() {
+        let plan = LogicAccessibility.planInspectorRestore(
+            standing: nil, openedRegionPanel: true, openedMore: true,
+            projectDocument: "/Music/A.logicx", inspectorShownByThisCall: false
+        )
+        XCTAssertFalse(plan.closeRegionPanelNow)
+        XCTAssertFalse(plan.closeMoreNow)
+        XCTAssertEqual(
+            plan.debt,
+            LogicAccessibility.InspectorDebt(
+                regionPanel: true, more: true, projectDocument: "/Music/A.logicx"
+            )
+        )
+    }
+
     /// ...and a debt already standing is not thrown away by one unreadable
     /// document: it carries its own project and is checked again at settle
     /// time.

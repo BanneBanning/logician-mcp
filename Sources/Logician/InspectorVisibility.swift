@@ -41,6 +41,28 @@ import Foundation
 //
 // and with the Inspector SHOWN nothing moved: 241 / 613 / 276 ms against the
 // old build's 241 / 618 / 266, track_info 178 / 191 against 160 / 163.
+//
+// THE REGION INSPECTOR joined them on 2026-09-03, and it needed two things
+// the track family did not. Its plane is the PANE, not a channel strip (see
+// `InspectorEvidence`), and its Region panel is deliberately left OPEN across
+// calls (`AXRegionInspector.InspectorDebt`) — a debt that cannot survive a
+// pane this call is about to press away, so it is settled first. Measured the
+// same session, Inspector hidden, sandbox "Testlåt Copy":
+//
+//     logic_get_region_params  ->  refused in 458 / 314 ms
+//                              ->  1 495 / 1 081 ms, full rows
+//     logic_set_region_params  ->  refused in 334 / 324 ms
+//                              ->  1 473 / 1 524 ms, verified write + restore
+//     logic_rename_region      ->  refused in 349 ms
+//                              ->  912 + 877 ms round trip, verified
+//
+// with the Inspector SHOWN unchanged: 776 / 258 / 756 / 683 / 553 / 392 ms
+// against the old build's 642 / 338 / 743 / 777 / 498 / 472, and the
+// disclosure deferral untouched (`panel_state.restore: "deferred"`, closed at
+// shutdown). Logic REMEMBERS the disclosure across a hide: a panel left open,
+// hidden and shown again read back "already open", which is why leaving that
+// debt standing behind a hidden Inspector would have been a permanent
+// invisible change rather than a saving.
 
 /// What Logic's inspector plane was able to say, this call.
 ///
@@ -68,6 +90,39 @@ enum InspectorPresence: String, Equatable {
         guard let names = stripNames else { return .unavailable }
         return names.isEmpty ? .hidden : .shown
     }
+
+    /// The same verdict for a reader of the INSPECTOR PANE rather than of a
+    /// channel strip — the Region inspector's question. `nil` means the
+    /// project window itself could not be read.
+    ///
+    /// A pane that is on screen with its Channel Strip section collapsed
+    /// answers `shown` here and `hidden` to `verdict(stripNames:)`, and both
+    /// are right: the Region panel is reachable and no strip is. That is why
+    /// the two questions are asked separately rather than one being derived
+    /// from the other — see `InspectorEvidence`.
+    static func verdict(inspectorPanePublished: Bool?) -> InspectorPresence {
+        guard let published = inspectorPanePublished else { return .unavailable }
+        return published ? .shown : .hidden
+    }
+}
+
+/// What "the Inspector is showing" MEANS to the caller that needs it.
+///
+/// One pane, two planes this server reads out of it, and they fail
+/// independently: a track tool needs a channel STRIP, and the Region
+/// inspector needs the PANE (its Region panel is published whenever the pane
+/// is, collapsed triangle and all). Asking the strips question on the Region
+/// path would read a collapsed Channel Strip section as a hidden Inspector
+/// and press `View > Inspector` at a pane that is already open — hiding it,
+/// which is the one outcome worse than refusing.
+///
+/// It is also what a RESTORE is confirmed against: the press back is only
+/// believed once the same probe that proved the show says the pane is gone.
+enum InspectorEvidence: String, Equatable {
+    /// At least one inspector channel strip is published.
+    case channelStrip
+    /// The Inspector pane itself is published, whatever its panels are doing.
+    case inspectorPane
 }
 
 /// Logic's Inspector, held open across ONE tool call.
@@ -102,8 +157,15 @@ final class InspectorHold {
     private(set) var attempted = false
     /// …and it worked, so this call owes a press back.
     private(set) var openedByUs = false
+    /// Which plane proved the show, and therefore which plane has to say the
+    /// pane is gone again before the restore is believed.
+    private(set) var shownFor: InspectorEvidence?
     /// Whether that press back was confirmed. `nil` until it is owed.
     private(set) var restored: Bool?
+    /// Why Logic itself refused a press, when it did. Published as
+    /// `inspector_note`, because "the Inspector is standing open" is a state
+    /// the user can fix once they are told what is holding it.
+    private(set) var obstacle: String?
 
     init() {}
 
@@ -112,8 +174,14 @@ final class InspectorHold {
     }
 
     func noteAttempt() { attempted = true }
-    func noteOpened() { openedByUs = true }
+    func noteOpened(for evidence: InspectorEvidence) {
+        openedByUs = true
+        shownFor = evidence
+    }
     func noteRestored(_ confirmed: Bool) { restored = confirmed }
+    /// First obstacle only: the press back that follows a failed press would
+    /// otherwise overwrite the reason the first one failed.
+    func noteObstacle(_ text: String) { if obstacle == nil { obstacle = text } }
 
     /// What a tool result says about the Inspector. Empty when this call never
     /// looked at the inspector plane at all — a field that is absent means the
@@ -121,6 +189,7 @@ final class InspectorHold {
     var resultFields: [String: Any] {
         guard let observed else { return [:] }
         var fields: [String: Any] = ["inspector": observed.rawValue]
+        if let obstacle { fields["inspector_note"] = obstacle }
         guard openedByUs else { return fields }
         fields["inspector_shown_for_call"] = true
         fields["inspector_restored"] = restored ?? false
@@ -145,6 +214,15 @@ extension LogicAccessibility {
         InspectorPresence.verdict(stripNames: (try? inspectorStrips())?.map(\.name))
     }
 
+    /// Is the plane this caller needs on screen right now? One read, and it is
+    /// the read the caller was going to take anyway.
+    func inspectorIsShowing(_ evidence: InspectorEvidence) -> Bool {
+        switch evidence {
+        case .channelStrip: return !(((try? inspectorStrips()) ?? []).isEmpty)
+        case .inspectorPane: return inspectorPaneGroup() != nil
+        }
+    }
+
     /// Presses `View > Inspector`, which is a toggle, so this is both the show
     /// and the hide.
     ///
@@ -158,13 +236,63 @@ extension LogicAccessibility {
     /// settle budget: get Logic to the front first, and if that is impossible,
     /// do not press at all. Free when Logic already is frontmost
     /// (`ensureLogicFrontmost` returns on its first check).
+    ///
+    /// Returns false when the item could not be pressed at all — including
+    /// when Logic has GREYED IT OUT, which it answers `.success` to and
+    /// ignores. A refused press records WHY on the hold, so the result can say
+    /// it instead of publishing a bare `inspector_restored: false`.
     private func pressInspectorMenuItem() -> Bool {
         guard (try? ensureLogicFrontmost(for: "showing Logic's Inspector")) != nil else {
             return false
         }
-        return (try? pressMenuItem(
-            containing: LogicUIStrings.Menu.inspector, underMenu: LogicUIStrings.Menu.view
-        )) != nil
+        keyProjectWindowForInspectorPress()
+        do {
+            try pressMenuItem(
+                containing: LogicUIStrings.Menu.inspector,
+                underMenu: LogicUIStrings.Menu.view,
+                requireEnabled: true
+            )
+            return true
+        } catch {
+            inspectorHold?.noteObstacle(
+                error.localizedDescription
+                    + " MEASURED CAUSE (2026-09-03): Logic disables View > Inspector while a"
+                    + " PLUG-IN window is its key window, and a plug-in window keeps that"
+                    + " status even when Accessibility reports the project window as focused."
+                    + " Close the plug-in window (logic_close_plugin) and the Inspector can be"
+                    + " shown or hidden again, or press I in Logic."
+            )
+            return false
+        }
+    }
+
+    /// Makes Logic's PROJECT window its key window, so the `View > Inspector`
+    /// press that follows is not greyed out. Unconditional and cheap: an
+    /// `AXRaise` plus one attribute write, both no-ops for the window that
+    /// already has it.
+    ///
+    /// WHY, measured live 2026-09-03 on the sandbox — this is the
+    /// `logic_survey_plugins` §7 defect, and the mechanism is NOT the one that
+    /// profile suspected. `logic_open_plugin` against a hidden Inspector came
+    /// back `inspector_shown_for_call: true`, `inspector_restored: false`, and
+    /// left the Inspector standing open. Reproduced here, then probed: with
+    /// the plug-in window open, `View > Inspector` read **`AXEnabled 0`** and
+    /// a plain System Events click on it did nothing either — while
+    /// `AXFocusedWindow` and `AXMainWindow` BOTH named the project window.
+    /// Accessibility's idea of the focused window and Logic's idea of its key
+    /// window had come apart, so no comparison of the two could have caught
+    /// it; what fixed it was performing `AXRaise` on the project window and
+    /// setting its `AXMain`, after which the same item read `AXEnabled 1`
+    /// immediately.
+    ///
+    /// Nothing is handed back afterwards, deliberately: there is no reliable
+    /// reading of which window Logic considered key (that is the very fact
+    /// that lied), and Logic's plug-in windows float above the document
+    /// window, so raising the project window under one does not hide it.
+    private func keyProjectWindowForInspectorPress() {
+        guard let project = try? projectWindow() else { return }
+        _ = AXUIElementPerformAction(project, "AXRaise" as CFString)
+        AXUIElementSetAttributeValue(project, kAXMainAttribute as CFString, kCFBooleanTrue)
     }
 
     /// Shows Logic's Inspector for the rest of this tool call, once, when a
@@ -176,8 +304,11 @@ extension LogicAccessibility {
     /// the press is its own undo, and leaving a stray pane open because a
     /// fragment matched the wrong item is the one failure this can cause on
     /// its own.
+    /// - Parameter evidence: which plane has to appear for this to count as a
+    ///   show — a channel strip for the track family, the pane itself for the
+    ///   Region inspector. See `InspectorEvidence`.
     @discardableResult
-    func showInspectorForThisCall() -> Bool {
+    func showInspectorForThisCall(evidence: InspectorEvidence = .channelStrip) -> Bool {
         guard let hold = inspectorHold, !hold.attempted else { return false }
         hold.noteAttempt()
         guard pressInspectorMenuItem() else { return false }
@@ -185,8 +316,8 @@ extension LogicAccessibility {
             if lookFirstShouldSleep(attempt: attempt) {
                 Thread.sleep(forTimeInterval: Self.inspectorRepaintGap)
             }
-            if !(((try? inspectorStrips()) ?? []).isEmpty) {
-                hold.noteOpened()
+            if inspectorIsShowing(evidence) {
+                hold.noteOpened(for: evidence)
                 return true
             }
         }
@@ -199,6 +330,8 @@ extension LogicAccessibility {
     /// pays nothing.
     func restoreInspectorAfterCall() {
         guard let hold = inspectorHold, hold.openedByUs else { return }
+        // The same plane that proved the show has to say it is gone.
+        let evidence = hold.shownFor ?? .channelStrip
         guard pressInspectorMenuItem() else {
             hold.noteRestored(false)
             return
@@ -210,7 +343,7 @@ extension LogicAccessibility {
             if lookFirstShouldSleep(attempt: attempt) {
                 Thread.sleep(forTimeInterval: Self.inspectorRepaintGap)
             }
-            if ((try? inspectorStrips()) ?? []).isEmpty {
+            if !inspectorIsShowing(evidence) {
                 hold.noteRestored(true)
                 return
             }
@@ -234,6 +367,27 @@ extension LogicAccessibility {
                     : ".")
                 + " Show it in Logic (View > Inspector, or the I key) and call again;"
                 + " if it is already showing, its Channel Strip section is collapsed."
+                + " Nothing was read or written."
+        )
+    }
+
+    /// The same refusal for the Region inspector, which needs the PANE rather
+    /// than a channel strip and so cannot say anything about a collapsed
+    /// Channel Strip section. Pure, so the sentence is tested.
+    ///
+    /// Under a second, always: the panel read that discovers this state is one
+    /// depth-8 walk, and the one press it is allowed to try is bounded by
+    /// `inspectorRepaintLooks`. Nothing here polls a selection.
+    static func hiddenInspectorRegionRefusal(showAttempted: Bool) -> LogicianError {
+        LogicianError.trackNotExposed(
+            requested: "the Region inspector",
+            exposed: "Logic is publishing no Inspector pane at all, so the 'Region:' panel"
+                + " this reads is not on screen"
+                + (showAttempted
+                    ? " — this call pressed View > Inspector to show it (which needs Logic"
+                        + " frontmost) and the pane did not appear."
+                    : ".")
+                + " Show it in Logic (View > Inspector, or the I key) and call again."
                 + " Nothing was read or written."
         )
     }

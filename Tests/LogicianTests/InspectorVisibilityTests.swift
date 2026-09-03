@@ -33,6 +33,30 @@ final class InspectorVisibilityTests: XCTestCase {
         XCTAssertNotEqual(InspectorPresence.verdict(stripNames: nil), .hidden)
     }
 
+    // MARK: What an inspector-PANE look means
+
+    /// The Region inspector reads the pane, not a strip, and asks its own
+    /// question — the same three answers off a different look.
+    func testAPublishedInspectorPaneMeansShown() {
+        XCTAssertEqual(InspectorPresence.verdict(inspectorPanePublished: true), .shown)
+        XCTAssertEqual(InspectorPresence.verdict(inspectorPanePublished: false), .hidden)
+    }
+
+    func testAPaneLookThatCouldNotBeTakenIsUnavailableNotHidden() {
+        XCTAssertEqual(InspectorPresence.verdict(inspectorPanePublished: nil), .unavailable)
+        XCTAssertNotEqual(InspectorPresence.verdict(inspectorPanePublished: nil), .hidden)
+    }
+
+    /// The two looks are allowed to DISAGREE, and that is the point: an
+    /// Inspector on screen with its Channel Strip section collapsed publishes
+    /// no strip and a perfectly readable 'Region:' panel. Deriving the Region
+    /// inspector's precondition from the strips walk would have pressed
+    /// `View > Inspector` at a pane that was already open — hiding it.
+    func testACollapsedStripSectionIsHiddenToOneReaderAndShownToTheOther() {
+        XCTAssertEqual(InspectorPresence.verdict(stripNames: []), .hidden)
+        XCTAssertEqual(InspectorPresence.verdict(inspectorPanePublished: true), .shown)
+    }
+
     /// The three verdicts are what the result publishes, verbatim.
     func testTheVerdictsAreTheirOwnResultValues() {
         XCTAssertEqual(InspectorPresence.shown.rawValue, "shown")
@@ -130,7 +154,7 @@ final class InspectorVisibilityTests: XCTestCase {
         let hold = InspectorHold()
         hold.observe(.hidden)
         hold.noteAttempt()
-        hold.noteOpened()
+        hold.noteOpened(for: .channelStrip)
         hold.noteRestored(true)
         XCTAssertEqual(hold.resultFields["inspector"] as? String, "hidden")
         XCTAssertEqual(hold.resultFields["inspector_shown_for_call"] as? Bool, true)
@@ -141,7 +165,7 @@ final class InspectorVisibilityTests: XCTestCase {
         let hold = InspectorHold()
         hold.observe(.hidden)
         hold.noteAttempt()
-        hold.noteOpened()
+        hold.noteOpened(for: .channelStrip)
         XCTAssertEqual(hold.resultFields["inspector_restored"] as? Bool, false)
     }
 
@@ -154,6 +178,33 @@ final class InspectorVisibilityTests: XCTestCase {
         XCTAssertFalse(hold.openedByUs)
         XCTAssertNil(hold.resultFields["inspector_shown_for_call"])
         XCTAssertNil(hold.resultFields["inspector_restored"])
+    }
+
+    /// A show is proved by ONE plane, and the restore has to be confirmed
+    /// against the same one: a Region-inspector call confirmed against the
+    /// strips walk would believe any press at all, because a pane whose
+    /// Channel Strip section is collapsed publishes no strip either way.
+    func testTheHoldRemembersWhichPlaneProvedTheShow() {
+        let strip = InspectorHold()
+        strip.noteAttempt()
+        strip.noteOpened(for: .channelStrip)
+        XCTAssertEqual(strip.shownFor, .channelStrip)
+
+        let pane = InspectorHold()
+        pane.observe(.hidden)
+        pane.noteAttempt()
+        pane.noteOpened(for: .inspectorPane)
+        XCTAssertEqual(pane.shownFor, .inspectorPane)
+        XCTAssertEqual(pane.resultFields["inspector_shown_for_call"] as? Bool, true)
+    }
+
+    /// A call that showed nothing names no plane — there is no press to
+    /// confirm, so there is nothing to confirm it against.
+    func testAHoldThatShowedNothingNamesNoPlane() {
+        let hold = InspectorHold()
+        XCTAssertNil(hold.shownFor)
+        hold.noteAttempt()
+        XCTAssertNil(hold.shownFor)
     }
 
     /// One press per call. The alternative is a tool that drums on Logic's
@@ -198,5 +249,81 @@ final class InspectorVisibilityTests: XCTestCase {
             .hiddenInspectorRefusal(requested: "the channel strip for 'Bas'", showAttempted: true)
             .errorDescription ?? ""
         XCTAssertTrue(message.contains("Channel Strip section is collapsed"), message)
+    }
+
+    // MARK: When Logic itself refuses the press
+
+    /// `View > Inspector` is GREYED OUT while a plug-in window is Logic's key
+    /// window (measured 2026-09-03 — and Accessibility named the project
+    /// window as focused throughout, so no focus comparison could have caught
+    /// it). A press Logic refuses leaves the Inspector standing open, which is
+    /// a state the user can fix the moment they are told what is holding it —
+    /// so the reason travels on the result.
+    func testAPressLogicRefusedIsReportedWithItsReason() {
+        let hold = InspectorHold()
+        hold.observe(.hidden)
+        hold.noteAttempt()
+        hold.noteOpened(for: .channelStrip)
+        hold.noteObstacle("the menu item is DISABLED right now")
+        hold.noteRestored(false)
+        XCTAssertEqual(hold.resultFields["inspector_restored"] as? Bool, false)
+        XCTAssertEqual(
+            hold.resultFields["inspector_note"] as? String, "the menu item is DISABLED right now"
+        )
+    }
+
+    /// The FIRST reason, not the last: a failed show presses back, and that
+    /// second refusal would otherwise overwrite the explanation for the first.
+    func testOnlyTheFirstObstacleIsKept() {
+        let hold = InspectorHold()
+        hold.observe(.hidden)
+        hold.noteObstacle("first")
+        hold.noteObstacle("second")
+        XCTAssertEqual(hold.resultFields["inspector_note"] as? String, "first")
+    }
+
+    /// A call Logic never refused says nothing about obstacles — an absent
+    /// note is not an empty one.
+    func testACallWithNoObstacleReportsNoNote() {
+        let hold = InspectorHold()
+        hold.observe(.shown)
+        XCTAssertNil(hold.resultFields["inspector_note"])
+    }
+
+    // MARK: The Region inspector's own refusal
+
+    /// The pane is the Region inspector's whole precondition, so its refusal
+    /// names the same way out — and it is only ever reached with the pane
+    /// genuinely absent.
+    func testTheRegionRefusalNamesTheMenuItemAndTheKey() {
+        let message = LogicAccessibility
+            .hiddenInspectorRegionRefusal(showAttempted: false)
+            .errorDescription ?? ""
+        XCTAssertTrue(message.contains("View > Inspector"), message)
+        XCTAssertTrue(message.contains("I key"), message)
+        XCTAssertTrue(message.contains("Region:"), message)
+        XCTAssertTrue(message.contains("Nothing was read or written"), message)
+    }
+
+    func testTheRegionRefusalSaysWhenTheShowWasAlreadyTried() {
+        let tried = LogicAccessibility
+            .hiddenInspectorRegionRefusal(showAttempted: true)
+            .errorDescription ?? ""
+        XCTAssertTrue(tried.contains("pressed View > Inspector"), tried)
+        let untried = LogicAccessibility
+            .hiddenInspectorRegionRefusal(showAttempted: false)
+            .errorDescription ?? ""
+        XCTAssertFalse(untried.contains("pressed View > Inspector"), untried)
+    }
+
+    /// It must NOT borrow the strip refusal's collapsed-section theory: the
+    /// Region panel is published whenever the pane is, so "your Channel Strip
+    /// section is collapsed" would send someone to fix an unrelated triangle.
+    func testTheRegionRefusalDoesNotBlameTheChannelStripSection() {
+        let message = LogicAccessibility
+            .hiddenInspectorRegionRefusal(showAttempted: true)
+            .errorDescription ?? ""
+        XCTAssertFalse(message.contains("Channel Strip"), message)
+        XCTAssertFalse(message.contains("channel strip"), message)
     }
 }

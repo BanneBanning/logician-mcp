@@ -77,15 +77,55 @@ extension LogicAccessibility {
         }
     }
 
-    func regionInspectorPanel() throws -> RegionInspectorPanel {
-        let window = try projectWindow()
-        guard let inspector = firstDescendant(of: window, maximumDepth: AXDepth.inspectorPanel, where: {
+    /// Logic's Inspector PANE, or nil when Logic is not publishing one — the
+    /// Region inspector's half of the "is the Inspector showing?" question
+    /// (`InspectorEvidence.inspectorPane`). The 'Region:' panel lives inside
+    /// this group and is published with it whether its triangle is open or
+    /// shut, so the pane is the whole precondition.
+    func inspectorPaneGroup() -> AXUIElement? {
+        guard let window = try? projectWindow() else { return nil }
+        return inspectorPaneGroup(in: window)
+    }
+
+    private func inspectorPaneGroup(in window: AXUIElement) -> AXUIElement? {
+        firstDescendant(of: window, maximumDepth: AXDepth.inspectorPanel) {
             stringAttribute($0, kAXRoleAttribute as String) == "AXGroup"
-                && stringAttribute($0, kAXDescriptionAttribute as String) == LogicUIStrings.Element.inspector
-        }) else {
-            throw LogicianError.trackNotExposed(
-                requested: "the Region inspector",
-                exposed: "the left inspector is not showing — open it in Logic (View > Show Inspector, or the I key)"
+                && stringAttribute($0, kAXDescriptionAttribute as String)
+                    == LogicUIStrings.Element.inspector
+        }
+    }
+
+    /// The Region panel, showing Logic's Inspector first if it has to.
+    ///
+    /// A hidden Inspector used to end all three Region-inspector tools right
+    /// here, with a refusal telling the agent to press a menu item this server
+    /// can press itself — the state the track family has repaired since
+    /// 2026-09-03 (`InspectorHold`). It is the same repair, with the pane as
+    /// the evidence instead of a channel strip: one press, one bounded
+    /// repaint poll, and `callTool` presses it back on the way out. What the
+    /// call FOUND is recorded first, so the result still says `hidden`.
+    func regionInspectorPanel() throws -> RegionInspectorPanel {
+        let window: AXUIElement
+        do {
+            window = try projectWindow()
+        } catch {
+            // The plane could not be asked at all — never `hidden`, which
+            // would read as "the user hid it".
+            inspectorHold?.observe(.unavailable)
+            throw error
+        }
+        var pane = inspectorPaneGroup(in: window)
+        inspectorHold?.observe(InspectorPresence.verdict(inspectorPanePublished: pane != nil))
+        // One press per call, and only when the pane is genuinely absent: a
+        // press against a pane that IS on screen would HIDE it. Nothing
+        // happens when no hold is installed (the shutdown debt settle) or when
+        // one was already attempted.
+        if pane == nil, showInspectorForThisCall(evidence: .inspectorPane) {
+            pane = inspectorPaneGroup()
+        }
+        guard let inspector = pane else {
+            throw Self.hiddenInspectorRegionRefusal(
+                showAttempted: inspectorHold?.attempted == true
             )
         }
         guard let list = children(of: inspector).first(where: {
@@ -317,6 +357,17 @@ extension LogicAccessibility {
     ///    was just asked about, in a panel Logic itself remembers between
     ///    sessions because users toggle it constantly.
     ///
+    /// THE ONE STATE THAT CANCELS IT, added 2026-09-03: a call that had to
+    /// SHOW a hidden Inspector to reach the panel at all. Argument 4 above
+    /// depends on the residue being visible — the panel the agent just read,
+    /// on screen — and argument 1 depends on the panel still being reachable.
+    /// Behind a pane that is about to be pressed shut, neither holds: the
+    /// change is invisible until the user next presses `I`, and no later call
+    /// (`settleInspectorDebt` included, which cannot show the pane and does
+    /// not try) can close what it left open. So such a call pays the whole
+    /// debt on its way out instead, while the pane is still there — see
+    /// `planInspectorRestore`.
+    ///
     /// What it costs, stated plainly: a session killed outright (SIGKILL, a
     /// crash) never reaches `MCPServer.shutdown()` and leaves the panel open;
     /// and a user who closes the panel and then deliberately reopens it during
@@ -346,11 +397,27 @@ extension LogicAccessibility {
         let debt: InspectorDebt?
     }
 
+    /// - Parameter inspectorShownByThisCall: this call found Logic's Inspector
+    ///   HIDDEN, showed it to reach the panel, and presses it back before the
+    ///   result is built. Defaults to false, the pre-existing world where the
+    ///   pane the debt names is still on screen when the call ends.
+    ///
+    /// MEASURED 2026-09-03, and it is what makes the deferral a leak rather
+    /// than a saving on that path: Logic REMEMBERS the disclosure across a
+    /// hide. A panel left open by a killed session, hidden with
+    /// `View > Inspector` and shown again, read back "already open" — so a
+    /// debt deferred past the hide would sit there invisibly until the user
+    /// next pressed `I`, and no later settle could reach it
+    /// (`settleInspectorDebt` cannot show the pane and does not try). Paying
+    /// it costs the ~0.3 s closing pair on a call already spending
+    /// ~1.0-1.5 s, and the next hidden-Inspector call re-opens the panel on
+    /// its own account.
     static func planInspectorRestore(
         standing: InspectorDebt?,
         openedRegionPanel: Bool,
         openedMore: Bool,
-        projectDocument: String?
+        projectDocument: String?,
+        inspectorShownByThisCall: Bool = false
     ) -> InspectorRestorePlan {
         // No readable document, no deferral. A restore that cannot be scoped
         // to the project it belongs to could be paid back into a DIFFERENT
@@ -369,6 +436,27 @@ extension LogicAccessibility {
         // screen. It can never be verified again, so it is retired rather than
         // carried.
         let carried = standing?.projectDocument == projectDocument ? standing : nil
+        // A HIDDEN Inspector cancels the deferral, and pays off whatever was
+        // already owed while the pane is still reachable.
+        //
+        // The debt is a bet that the panel will still be there next time: it
+        // buys the next region call the ~600 ms re-open, and its residue is
+        // defensible only because what is left on screen is the Region panel
+        // showing the parameters the agent was just asked about. Neither half
+        // survives a pane that is about to be pressed away. The panel would go
+        // back to being INVISIBLY changed — the user sees their Inspector
+        // exactly as they left it, hiding a disclosure state this server
+        // altered and, with the pane gone, can no longer reach to close: a
+        // debt nothing can settle is not a debt, it is a leak. So it is
+        // settled here, in the one window where it is cheap, and the next
+        // hidden-Inspector call opens the panel again on its own account.
+        guard !inspectorShownByThisCall else {
+            return InspectorRestorePlan(
+                closeMoreNow: openedMore || (carried?.more ?? false),
+                closeRegionPanelNow: openedRegionPanel || (carried?.regionPanel ?? false),
+                debt: nil
+            )
+        }
         let debt = InspectorDebt(
             regionPanel: (carried?.regionPanel ?? false) || openedRegionPanel,
             more: (carried?.more ?? false) || openedMore,
@@ -479,11 +567,16 @@ extension LogicAccessibility {
             }
         }
 
+        // This call showed a hidden Inspector and `callTool` presses it back
+        // once the handler returns, so anything still open then is out of
+        // reach — see `planInspectorRestore`.
+        let inspectorShownByThisCall = inspectorHold?.openedByUs == true
         let plan = Self.planInspectorRestore(
             standing: Self.inspectorDebt,
             openedRegionPanel: panelWasClosed,
             openedMore: openedMore,
-            projectDocument: try? projectDocumentPath()
+            projectDocument: try? projectDocumentPath(),
+            inspectorShownByThisCall: inspectorShownByThisCall
         )
         Self.inspectorDebt = plan.debt
         closePanelOnExit = plan.closeRegionPanelNow
@@ -491,11 +584,23 @@ extension LogicAccessibility {
 
         state["region_panel"] = panelWasClosed
             ? (plan.closeRegionPanelNow ? "opened and restored" : "opened and left open")
-            : "already open"
+            // Found open, and closed anyway: an earlier call in this session
+            // opened it, and this one is the last chance to pay that back.
+            : (plan.closeRegionPanelNow ? "found open from an earlier call and restored" : "already open")
         if openedMore {
             state["more"] = plan.closeMoreNow ? "opened and restored" : "opened and left open"
         } else if moreTriangle != nil {
-            state["more"] = moreWasClosed ? "closed" : "already open"
+            state["more"] = moreWasClosed
+                ? "closed"
+                : (plan.closeMoreNow ? "found open from an earlier call and restored" : "already open")
+        }
+        if inspectorShownByThisCall, plan.closeRegionPanelNow || plan.closeMoreNow {
+            state["restore"] = "settled"
+            state["restore_note"] = "Logic's Inspector was HIDDEN, so this call showed it to reach "
+                + "the Region panel and presses it back — which means the disclosures were closed "
+                + "here, while the pane was still reachable, rather than left open for a next call "
+                + "that would have to show the pane again anyway. Nothing is owed and nothing was "
+                + "left changed behind a hidden Inspector."
         }
         if plan.debt != nil {
             state["restore"] = "deferred"

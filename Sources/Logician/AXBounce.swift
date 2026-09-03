@@ -33,10 +33,20 @@ extension LogicAccessibility {
     /// one got missed. Free when Logic already is frontmost:
     /// `ensureLogicFrontmost` returns on its very first check (measured
     /// 2026-09-03: ~1 ms warm against 935 ms when Logic had to be activated).
+    /// - Parameter requireEnabled: refuse a DISABLED item instead of pressing
+    ///   it. Logic answers `.success` to the `AXPress` of a greyed-out item
+    ///   and does nothing at all, so a caller that can explain the greying to
+    ///   the user is better off being told (measured 2026-09-03: `View >
+    ///   Inspector` reads `AXEnabled 0` while a plug-in window is Logic's key
+    ///   window, and three presses in a row — this server's and a System
+    ///   Events click as a control — left the Inspector exactly as it was).
+    ///   Off by default: for the other callers a stale disabled flag would
+    ///   turn a press that works into a refusal that does not.
     func pressMenuItem(
         containing fragment: String,
         underMenu parent: String,
         pressLikelyInert: Bool = false,
+        requireEnabled: Bool = false,
         settled: (() -> Bool)? = nil
     ) throws {
         try ensureLogicFrontmost(for: "the '\(fragment)' menu press")
@@ -93,6 +103,12 @@ extension LogicAccessibility {
         }
         guard let item = target else {
             throw LogicianError.windowNotFound("menu item '\(fragment)' under '\(parent)'")
+        }
+        if requireEnabled, stringAttribute(item, kAXEnabledAttribute as String) == "0" {
+            throw LogicianError.preconditionUnmet(
+                "Logic's '\(parent) > \(fragment)' menu item is DISABLED right now, so pressing"
+                    + " it would answer success and do nothing. Nothing was pressed."
+            )
         }
         let status = AXUIElementPerformAction(item, kAXPressAction as CFString)
         guard status == .success else {
