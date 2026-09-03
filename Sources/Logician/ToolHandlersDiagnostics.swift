@@ -497,9 +497,14 @@ extension MCPServer {
                 throw LogicianError.invalidArguments("keycmd requires an integer note")
             }
             let channel = arguments["channel"] as? Int ?? 16
+            // Exposed here, not on logic_trigger_key_command: this is the
+            // route keycmd_hold_sweep.py drives to measure the plane's
+            // unswept hold. Absent means the daemon's own default (40 ms,
+            // unchanged) — see BridgeCommand.keycmdHoldMs.
+            let holdMs = arguments["hold_ms"] as? Int
             return MCPServer.mcuCommandResult(
                 cmd: cmd, arguments: arguments,
-                reply: try MCUController.triggerKeyCommand(note: note, channel: channel)
+                reply: try MCUController.triggerKeyCommand(note: note, channel: channel, holdMs: holdMs)
             )
         }
         var command: [String: Any] = [:]

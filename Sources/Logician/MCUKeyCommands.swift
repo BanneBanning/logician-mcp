@@ -9,7 +9,15 @@ extension MCUController {
     /// Fires a key command learned onto the "Logic MCP Commands" port. Only
     /// registry-listed notes are sent — an unlisted note could be bound to
     /// anything in the user's key command set.
-    static func triggerKeyCommand(note: Int, channel: Int) throws -> [String: Any] {
+    ///
+    /// `holdMs` is the wire's `hold_ms` (see `BridgeCommand.keycmdHoldMs`):
+    /// `nil` leaves the daemon on its own default (UNCHANGED at 40 ms until
+    /// the live sweep — `keycmd_hold_sweep.py` — measures a safer one), and
+    /// a value asks for exactly that hold, including 0. Only
+    /// `logic_mcu_command`'s `keycmd` route exposes it today;
+    /// `logic_trigger_key_command` still asks for nothing, which is the
+    /// same 40 ms it has always had.
+    static func triggerKeyCommand(note: Int, channel: Int, holdMs: Int? = nil) throws -> [String: Any] {
         guard let entry = KeyCommandRegistry.entry(note: note, channel: channel) else {
             // A refusal names the alternative — it does not paste the whole
             // registry into an error string. This used to render 1159 B of
@@ -25,7 +33,7 @@ extension MCUController {
                     + "logic_learn_key_command adds one"
             )
         }
-        let response = try MCUBridge.send(.keycmd(note: note, channel: channel))
+        let response = try MCUBridge.send(.keycmd(note: note, channel: channel, holdMs: holdMs))
         guard response.ok else {
             throw LogicianError.writeFailed("keycmd failed: \(response.error ?? "?")")
         }

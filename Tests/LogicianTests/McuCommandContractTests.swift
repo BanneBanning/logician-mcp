@@ -110,6 +110,17 @@ final class McuCommandContractTests: XCTestCase {
         XCTAssertTrue(try tool.description.contains("hold_ms"))
     }
 
+    /// keycmd shares the `hold_ms` field but NOT its default — 0 is the
+    /// press family's measured default, 40 ms is the key-command plane's
+    /// unswept historical one. A caller who only reads "hold_ms defaults to
+    /// 0" and applies that to keycmd would be describing a sweep that has
+    /// not happened.
+    func testTheDescriptionNamesKeycmdsOwnUnsweptHoldDefault() throws {
+        let description = try tool.description
+        XCTAssertTrue(description.contains("keycmd {note, channel, hold_ms}"))
+        XCTAssertTrue(description.contains("40 ms"))
+    }
+
     // MARK: - The result contract
 
     private func result(

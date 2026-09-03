@@ -472,6 +472,35 @@ func pressButton(note: UInt8, holdMs: Int = 0) {
     send([0x90, note, 0x00])
 }
 
+/// The environment variable the live sweep can set to change the
+/// key-command plane's compiled-in hold default without editing every
+/// message it sends — see `resolveKeycmdDefaultHoldMs`.
+let keycmdHoldEnvVar = "LOGICIAN_KEYCMD_HOLD_MS"
+
+/// Resolves the key-command plane's hold DEFAULT — the hold a `keycmd`
+/// message gets when it names no `hold_ms` of its own — against an
+/// optional environment-variable string, already read by the caller. Pure
+/// on purpose: it takes the raw value rather than reading `ProcessInfo`
+/// itself, so it is testable without touching a real process environment.
+///
+/// 40 ms IS THE HISTORICAL DEFAULT, UNCHANGED: this is `pressButton`'s
+/// UNSWEPT sibling. The MCU button hold above was swept live 2026-09-02
+/// (`bf511e5`) and its default dropped to a measured 0 ms; this hold has
+/// had no equivalent live sweep run against it yet, and it is ~96% of
+/// `logic_trigger_key_command`'s 50-52 ms wall clock
+/// (KEY-COMMANDS-REVIEW.md, 2026-09-03). The default moves only after
+/// `keycmd_hold_sweep.py` (scratchpad) repeats that measurement against
+/// the key-command plane specifically — not before, and not by guessing
+/// that a note-based plane behaves like a button-based one.
+///
+/// A malformed or missing override falls back to the 40 ms default rather
+/// than failing the command — the same leniency every other field on this
+/// wire gets.
+func resolveKeycmdDefaultHoldMs(envOverride raw: String?) -> Int {
+    guard let raw, let ms = Int(raw) else { return 40 }
+    return ms
+}
+
 /// Moves a motor fader to an absolute 14-bit position, as a hand on the
 /// surface would: touch on, position, touch off.
 ///
@@ -768,8 +797,13 @@ func handleCommand(_ object: BridgeCommand) -> BridgeResponse {
         // conversion evaluate UInt8(-1), which TRAPS and takes the whole
         // daemon down. Every valid channel (1...16) is unaffected.
         let channel = UInt8(truncatingIfNeeded: (object.channel ?? 16) - 1) & 0x0F
+        let holdMs = object.keycmdHoldMs(
+            default: resolveKeycmdDefaultHoldMs(
+                envOverride: ProcessInfo.processInfo.environment[keycmdHoldEnvVar]
+            )
+        )
         sendCommandPort([0x90 | channel, UInt8(note), 0x7F])
-        usleep(40000)
+        if holdMs > 0 { usleep(UInt32(holdMs * 1000)) }
         sendCommandPort([0x80 | channel, UInt8(note), 0x00])
         var response = BridgeResponse.success
         response.sentNote = note
