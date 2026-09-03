@@ -2116,6 +2116,38 @@ with every render coming back as audio the agent can listen to.
   is exactly how this one slipped through the first two fixes. Free when Logic is
   already frontmost, on the order of the same near-zero cost `View > Inspector`
   measured.
+- **A hidden Inspector no longer costs you the region tools either.** With Logic's
+  Inspector closed, `logic_get_region_params`, `logic_set_region_params` and
+  `logic_rename_region` refused outright — *"the left inspector is not showing"* — while
+  every track tool had learned to show it on demand. They read and write Logic's Region
+  panel, which lives in that pane, so they now show it for the length of the call and
+  press it back: **1.5 / 1.1 s of real rows and 1.5 s of verified write where there was a
+  refusal, and a rename round trip in 0.88 + 0.91 s.** With the Inspector already showing,
+  nothing moved (0.78 / 0.26 s reads, 0.76 / 0.68 s writes, 0.55 + 0.39 s rename, against
+  0.64 / 0.34, 0.74 / 0.78, 0.50 + 0.47 before). The one thing that did have to change is
+  the panel's own disclosure: it is normally left OPEN so the next region call does not
+  spend ~0.6 s re-opening it, but Logic remembers that triangle across a hide, so a debt
+  left behind a pane this server is about to close would be an invisible change nothing
+  could ever settle. On that path the disclosures are therefore closed before the pane
+  goes, and `panel_state.restore` says `settled` rather than `deferred`. All three tools
+  now report `inspector` (`shown` / `hidden` / `unavailable`) like the track family, plus
+  `inspector_shown_for_call` and a confirmed `inspector_restored`; an Inspector that
+  genuinely cannot be reached is refused in under a second naming View > Inspector and
+  the `I` key.
+- **And the Inspector no longer gets stranded open by a plug-in window.**
+  `logic_open_plugin` on a track whose Inspector this server had shown came back
+  `inspector_restored: false` and left the pane standing open for the rest of the
+  session — every later call in that session saw a changed window layout nobody asked
+  for. Measured cause: Logic **disables** View > Inspector while a plug-in window is its
+  key window, and answers a press on the greyed-out item with success anyway; worse,
+  Accessibility named the project window as focused the whole time, so no amount of
+  comparing focus could have caught it. The Inspector press now raises the project
+  window first (two attribute writes, free when it is already the key window) and refuses
+  a disabled item instead of pressing it, so a press that cannot work is reported rather
+  than believed: three plug-ins opened and closed from a hidden Inspector now report
+  `inspector_restored: true` six times out of six, where the first call alone used to
+  fail. When Logic does refuse the press, the result carries `inspector_note` saying
+  which window is holding the Inspector open and how to let go of it.
 
 ### Known limitations (honest by design)
 
