@@ -1610,6 +1610,17 @@ with every render coming back as audio the agent can listen to.
   of failing — with the poll budget it does keep honoured to the millisecond (a stated 2.25 s
   used to run to 2.48-2.56 s because the deadline was only checked between rounds).
 
+- **The three tools that stop through `logic_set_playing` on their way out now say what the
+  stop found.** The fix above settled the press itself; `logic_record_midi`,
+  `logic_record_automation` and `logic_render_track` still called it from their own cleanup
+  through `try?` and threw the verdict away — a stop verified through a fallback witness
+  because the LED never echoed, or refused outright because no witness could say Logic was
+  rolling, came back indistinguishable from a clean, silent stop, and a `led_desync` warning
+  had nowhere to surface. Each of the three now reports the cleanup stop's own verdict as
+  `transport_stop` (`state`, `transport_witnesses`, `led_desync`), plus a top-level `warning`
+  when the LEDs disagreed or the stop was refused. The cleanup order itself is unchanged —
+  stop, then confirm out of record, then silence.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

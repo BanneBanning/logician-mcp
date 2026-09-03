@@ -234,3 +234,52 @@ func transportAction(desired: Bool, verdict: TransportVerdict) -> TransportActio
     guard let playing = verdict.playing else { return desired ? .press : .unresolved }
     return playing == desired ? .alreadyThere : .press
 }
+
+/// What a CLEANUP stop found — `logic_record_midi`, `logic_record_automation`
+/// and `logic_render_track` all press `setPlaying(false)` on their way out,
+/// through `try?`, because a cleanup path must not abort over a transport
+/// state Logic disagrees with. Until now that swallowed the verdict too: a
+/// stop verified through the OTHER witnesses (the LED never echoed) or
+/// REFUSED outright (no witness could say the transport was rolling, so
+/// pressing would have been Logic's rewind-to-bar-1) came back indistinguishable
+/// from a clean, silent stop. See `SHIPPED`, `logic_set_playing`, 21f4c03, and
+/// the three cleanup call sites this feeds.
+enum TransportStopOutcome {
+    /// `setPlaying(false)` returned a result: either it pressed and confirmed
+    /// (through the LED or a fallback witness), or it found the transport
+    /// already stopped and pressed nothing.
+    case result([String: Any])
+    /// `setPlaying(false)` returned `nil`: the transport buttons were not
+    /// reachable at all (no control surface, no project window).
+    case unavailable(String)
+    /// `setPlaying(false)` THREW: the witnesses could not agree and the press
+    /// was withheld rather than risked, or a press landed but not even the
+    /// fallback witnesses could confirm it stopped.
+    case refused(String)
+}
+
+/// Pure: shapes a cleanup stop's outcome into the `transport_stop` field every
+/// recording/rendering tool now reports, plus the top-level warning it earns.
+/// The `try? setPlaying(false)` calls at the three cleanup sites stay exactly
+/// that — nothing here may throw or block — only what happens to the verdict
+/// afterwards changes. House style: never `{}` where `{"unavailable": reason}`
+/// belongs, so a stop that could not even be attempted still names why.
+func transportStopReport(_ outcome: TransportStopOutcome) -> (payload: [String: Any], warning: String?) {
+    switch outcome {
+    case .unavailable(let reason):
+        return (["unavailable": reason], nil)
+    case .refused(let reason):
+        return (
+            ["state": "refused", "reason": reason],
+            "the cleanup stop was not confirmed (\(reason)) — Logic's own transport state should be checked before recording again"
+        )
+    case .result(let dict):
+        let ledDesync = dict["led_desync"] as? Bool ?? false
+        let payload: [String: Any] = [
+            "state": dict["state"] as? String ?? NSNull(),
+            "transport_witnesses": dict["transport_witnesses"] ?? NSNull(),
+            "led_desync": ledDesync
+        ]
+        return (payload, ledDesync ? (dict["warning"] as? String) : nil)
+    }
+}

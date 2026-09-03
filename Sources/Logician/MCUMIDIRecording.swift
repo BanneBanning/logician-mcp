@@ -671,9 +671,14 @@ extension MCUController {
         // the happy path calls it explicitly so the result can report it, and
         // the `defer` catches the throwing and cancelled ones.
         var shutdownReport: MIDITakePlan.Shutdown?
+        // The stop's own verdict — verified through a fallback witness, or
+        // refused outright because the transport was never seen rolling —
+        // used to vanish behind `try?` here. Captured once, alongside the
+        // shutdown state it feeds `pollStatus` next.
+        var transportStop: (payload: [String: Any], warning: String?)?
         func stopRecording() -> MIDITakePlan.Shutdown {
             if let report = shutdownReport { return report }
-            _ = try? setPlaying(false)
+            transportStop = stopForCleanup()
             // The record LED is the same witness the arm check used, read the
             // same way: no new mechanism, and it costs one status look when
             // Logic has already stopped.
@@ -861,7 +866,10 @@ extension MCUController {
             "shutdown": shutdown.state,
             "shutdown_note": "The transport is stopped BEFORE the stream's all-notes-off, because that safety blast goes into the same MIDI port Logic records from: sent while the transport rolled it wrote sixteen 'Control 64 = Sustain, 0' events into the take (measured 2026-09-02)."
         ]
-        if let warning = shutdown.warning { result["warning"] = warning }
+        result["transport_stop"] = transportStop?.payload
+            ?? ["unavailable": "the cleanup stop was never reached"]
+        if let warning = shutdown.warning { appendWarning(warning, to: &result) }
+        appendWarning(transportStop?.warning, to: &result)
         return result
     }
 

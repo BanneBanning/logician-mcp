@@ -609,7 +609,9 @@ extension MCUController {
                     return abs(faders[channel] - last.value) <= 40
                 }
             }
-            _ = try? setPlaying(false)
+            let passStop = stopForCleanup()
+            report["transport_stop"] = passStop.payload
+            appendWarning(passStop.warning, to: &report)
             try setAutomationMode("read", logic: logic, trackName: trackName)
             _ = try? MCUBridge.send(.fader(channel: channel, value: originalFader))
             reportProgress("pass complete; back in Read", percent: 72)
@@ -693,7 +695,12 @@ extension MCUController {
                     ])
                 }
             }
-            _ = try? setPlaying(false)
+            // The verify replay's own stop — chronologically the LAST one this
+            // call presses, so it is what `transport_stop` reports when a
+            // verify pass ran at all.
+            let verifyStop = stopForCleanup()
+            report["transport_stop"] = verifyStop.payload
+            appendWarning(verifyStop.warning, to: &report)
             _ = try? MCUBridge.send(.fader(channel: channel, value: originalFader))
             let allPass = !samples.isEmpty && samples.allSatisfy { $0["pass"] as? Bool == true }
             report["verified"] = allPass
@@ -969,6 +976,10 @@ extension MCUController {
 
         reportProgress("arming latch automation", percent: 15)
         try setAutomationMode("latch", logic: logic, trackName: trackName)
+        // The pass's own cleanup stop, captured here (declared before the
+        // `do` since `report` below is not in scope yet) rather than
+        // discarded through `try?`.
+        var passStop: (payload: [String: Any], warning: String?)?
         do {
             _ = try logic.setPlayhead(barNumber: preRollBar, beat: 1)
             // The parked bar is asserted, not assumed: this whole pass is
@@ -1051,7 +1062,7 @@ extension MCUController {
                                isFirst ? 1.0 : (isLast ? 1.5 : max(0.15, min(0.6, entry.msPerBeat / 2000))))
             }
             Thread.sleep(forTimeInterval: 0.5)
-            _ = try? setPlaying(false)
+            passStop = stopForCleanup()
             try setAutomationMode("read", logic: logic, trackName: trackName)
             try view.write(original, 2.0)
             reportProgress("pass complete; back in Read", percent: 72)
@@ -1070,6 +1081,9 @@ extension MCUController {
             "ramp": ramp,
             "write_route": "mcu_vpot_latch"
         ]
+        report["transport_stop"] = passStop?.payload
+            ?? ["unavailable": "the cleanup stop was never reached"]
+        appendWarning(passStop?.warning, to: &report)
         if verify {
             // The automation-mode button presses can knock the surface out of
             // the working view — re-enter it before reading anything.
