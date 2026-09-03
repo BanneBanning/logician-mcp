@@ -67,21 +67,37 @@ extension LogicAccessibility {
         return tracksAreaScrollable(from: group)
     }
 
-    /// The scroll question asked of a header group the caller already resolved.
-    func tracksAreaScrollable(from group: AXUIElement) -> (scrollable: Bool?, position: Double?) {
-        // Walk UP to the enclosing scroll area: the header column sits under
-        // several split/layout wrappers whose depth is not worth hardcoding.
+    /// Walks UP from the header column to the scroll area that clips it: the
+    /// headers sit under several split/layout wrappers whose depth is not
+    /// worth hardcoding. nil when the walk runs out.
+    func enclosingScrollArea(of group: AXUIElement) -> AXUIElement? {
         var current: AXUIElement? = group
-        var scrollArea: AXUIElement?
         for _ in 0..<AXDepth.trackHeaderGroup {
-            guard let element = current else { break }
+            guard let element = current else { return nil }
             if stringAttribute(element, kAXRoleAttribute as String) == "AXScrollArea" {
-                scrollArea = element
-                break
+                return element
             }
             current = elementAttribute(element, kAXParentAttribute as String)
         }
-        guard let area = scrollArea else { return (nil, nil) }
+        return nil
+    }
+
+    /// One element's published frame in screen coordinates, or nil when it
+    /// publishes none this code can decode.
+    func elementFrame(_ element: AXUIElement) -> CGRect? {
+        attribute(element, "AXFrame").flatMap { rectValue($0) }
+    }
+
+    /// The rectangle the Tracks area actually DRAWS its header rows in — the
+    /// enclosing scroll area's frame. Rows scrolled out of it are still
+    /// published, with coordinates outside it (see `stackHeaderIsReachable`).
+    func tracksAreaViewport(from group: AXUIElement) -> CGRect? {
+        enclosingScrollArea(of: group).flatMap { elementFrame($0) }
+    }
+
+    /// The scroll question asked of a header group the caller already resolved.
+    func tracksAreaScrollable(from group: AXUIElement) -> (scrollable: Bool?, position: Double?) {
+        guard let area = enclosingScrollArea(of: group) else { return (nil, nil) }
         guard let bar = elementAttribute(area, kAXVerticalScrollBarAttribute as String) else {
             // No bar published. That USUALLY means the content fits — but this
             // is exactly the inference that would turn "I cannot see" into "there
@@ -554,10 +570,76 @@ extension LogicAccessibility {
         return selectAndRetry()
     }
 
+    /// What `setTrackStack` may do after the Accessibility press did not move
+    /// the disclosure triangle: take the pointer, or refuse and say how to
+    /// let it.
+    ///
+    /// Pure, because the sentence is the product here — the caller has to be
+    /// told which route was tried, that it is the mouse-free one, and that the
+    /// alternative is opt-in.
+    enum StackFoldFallback: Equatable {
+        case mouse
+        case refuse(String)
+    }
+
+    /// A press Logic really carries out takes 42-54 ms to return (measured
+    /// 2026-09-03, 4/4). One that comes back in a fraction of a millisecond
+    /// with `.success` and moves nothing is the signature of this machine's
+    /// AX-ACTION degradation, where reads and attribute writes keep working
+    /// and `AXUIElementPerformAction` becomes a no-op app-wide — measured
+    /// again the same session on the disclosure triangles of all three
+    /// stacks AND on a header's `Has Focus` button, 0.0-0.1 ms each, while
+    /// `logic_select_track`'s `AXSelectedChildren` write kept landing.
+    static let inertActionMilliseconds = 5.0
+
+    static func stackFoldFallback(
+        allowMouse: Bool, trackName: String, expanded: Bool, pressMilliseconds: Double
+    ) -> StackFoldFallback {
+        guard !allowMouse else { return .mouse }
+        var reason = "the Accessibility press on the disclosure triangle of '\(trackName)' did not"
+            + " \(expanded ? "open" : "close") the stack. That press is the mouse-free route"
+            + " and it is the only one Logic leaves: the triangle's AXValue is not settable,"
+            + " the header row publishes no AXDisclosing, and Logic 12.3.1 would not learn a MIDI"
+            + " note for its own Open/Close Track Stack row, or for the directional Open Track"
+            + " Stack (measured 2026-09-03, five attempts across both)."
+        if pressMilliseconds < inertActionMilliseconds {
+            reason += " The press returned success in"
+                + " \(String(format: "%.1f", pressMilliseconds)) ms, where one Logic actually"
+                + " carries out takes 42-54 ms — the signature of Logic's Accessibility ACTIONS"
+                + " having gone inert app-wide (reads and selection writes keep working; measured"
+                + " 2026-09-03). Nothing this server can write will fold the stack while that"
+                + " lasts, EXCEPT the click below, which is not an Accessibility action."
+        }
+        reason += " The remaining route is a synthetic mouse click on the triangle's published"
+            + " frame, which this tool does NOT take unless you ask: call again with"
+            + " allow_mouse: true. Nothing was changed."
+        return .refuse(reason)
+    }
+
+    /// Can a write reach this disclosure triangle where it is drawn?
+    ///
+    /// MEASURED 2026-09-03, and it is the explanation for the six consecutive
+    /// "hit test at the position of disclosure triangle … did not resolve to
+    /// that element" refusals recorded that day: after an expand scrolled the
+    /// Tracks area, stack 9's own triangle was published at **y = -284** —
+    /// above the top of the screen — so the hit test resolved to nothing
+    /// (`kAXErrorIllegalArgument`) and the guard correctly refused to click at
+    /// a point no window covers. One `logic_select_track` on the stack's main
+    /// track brought it back to y = 206 and the hit test resolved again.
+    ///
+    /// UNKNOWN IS REACHABLE. A viewport this code could not read must never
+    /// become the reason a working write is turned away — the same rule
+    /// `TracksAreaFocus` follows for its own probe.
+    static func stackHeaderIsReachable(disclosure: CGRect?, visible: CGRect?) -> Bool {
+        guard let disclosure, !disclosure.isEmpty, let visible, !visible.isEmpty else { return true }
+        return visible.contains(CGPoint(x: disclosure.midX, y: disclosure.midY))
+    }
+
     func setTrackStack(
         trackName: String,
         trackNumber: Int?,
         expanded: Bool,
+        allowMouse: Bool = false,
         expectedProjectPath: String?
     ) throws -> [String: Any] {
         try verifyProjectPath(expectedProjectPath)
@@ -583,7 +665,7 @@ extension LogicAccessibility {
             // surface with its real message rather than a generic failure.
             target = try resolveTrack(before, name: trackName, number: trackNumber)
         }
-        guard let disclosure = target.disclosure, let currentlyExpanded = target.expanded else {
+        guard var disclosure = target.disclosure, let currentlyExpanded = target.expanded else {
             throw LogicianError.trackNotStack(target.name)
         }
 
@@ -597,39 +679,129 @@ extension LogicAccessibility {
             ]
         }
 
-        // AXPress, AXShowMenu and writing AXValue are all silent no-ops on
-        // Logic's track header controls (verified 2026-08-24). This used to
-        // try AXPress first anyway, polling 5 times (100 ms sleep + a full
-        // header walk each) before falling back to the click below — 730-786
-        // ms, 55-57% of every real toggle, spent on a write that can never
-        // succeed. Removed 2026-09-03 (profiles/logic_set_track_stack.md §5):
-        // go straight to the route that worked 8/8 live.
+        // A row Logic PUBLISHES is not necessarily a row Logic DRAWS. The
+        // header column keeps its scrolled-out rows in the Accessibility tree
+        // with off-screen coordinates, so the walk above can hand back a stack
+        // whose triangle is at y = -284 — and then the click route's hit test
+        // resolves to nothing at all (the six refusals of 2026-09-03) and the
+        // press has nothing on screen to press. One `selectTrack` on the
+        // stack's own main track scrolls it back (measured: -284 → 206), which
+        // is the same insurance this tool used to buy UNCONDITIONALLY on every
+        // call; now it is bought only when the geometry says it is needed.
+        var scrolledIntoView = false
+        if !LogicAccessibility.stackHeaderIsReachable(
+            disclosure: elementFrame(disclosure), visible: tracksAreaViewport(from: group)
+        ) {
+            _ = try? selectTrack(
+                trackName: target.name, trackNumber: target.number, expectedProjectPath: nil
+            )
+            // Logic scrolls with an animation, so the frame is polled rather
+            // than read once — and re-read off a fresh walk, because the
+            // scroll republishes the header items.
+            for attempt in 0..<6 {
+                if lookFirstShouldSleep(attempt: attempt) { Thread.sleep(forTimeInterval: 0.06) }
+                guard let refreshed = parsedTrackHeaders(in: group)
+                    .first(where: { $0.number == target.number })?.disclosure else { continue }
+                disclosure = refreshed
+                if LogicAccessibility.stackHeaderIsReachable(
+                    disclosure: elementFrame(refreshed), visible: tracksAreaViewport(from: group)
+                ) {
+                    scrolledIntoView = true
+                    break
+                }
+            }
+        }
+
+        // THE FOLD IS MOUSE-FREE: `AXPress` on the disclosure triangle is the
+        // route, and it is the whole route.
         //
-        // AND THE KEY COMMAND CANNOT REPLACE IT — measured, not assumed.
-        // Logic 12.3.1 does have the row (`Open/Close Track Stack`, read off
-        // the Key Commands window 2026-09-03, under `Main Window Tracks and
-        // Various Editors`), and this tool was converted to fire it. Logic
-        // then refused to LEARN it: four rounds, three distinct candidate
-        // notes each, through both `logic_setup_key_commands` and
-        // `logic_learn_key_command`, and the row's assignment column never
-        // changed once. Nothing landed anywhere either — the whole `track
-        // stack` filter was audited row by row before and after and came back
-        // byte-identical, so it is not a mis-selected neighbour. The same
-        // driver bound `Open Mixer…` on the first try in 1.4 s in the same
-        // session, so the driver was working. The conversion was reverted.
+        // This file said the opposite for ten days — "AXPress, AXShowMenu and
+        // writing AXValue are all silent no-ops on Logic's track header
+        // controls (verified 2026-08-24)" — and the 2026-09-03 profile agreed,
+        // measuring the press falling through to the click 8/8. RE-MEASURED
+        // 2026-09-03, same Logic 12.3.1, same sandbox project, same stack 9
+        // `Drum Synth Kit`: the press lands, 4/4, both directions, in
+        // 22-40 ms — and it lands with Logic in the BACKGROUND (tested with
+        // Finder frontmost), so this route does not take the user's focus
+        // either. What the earlier reading was of is not recoverable and is
+        // not guessed at here; what IS recorded is how it is now checked, so
+        // the claim can never go stale silently again: the press is followed
+        // by `pollStackState`, and if the triangle does not move the tool says
+        // so instead of assuming the route.
         //
-        // What that leaves is this click, and it is worth knowing that it is
-        // FRAGILE in a way no Accessibility read can see: on 2026-09-03 six
-        // consecutive calls refused with "hit test at the position of
+        // The two attribute routes were re-read the same session and are
+        // genuinely closed: the triangle's `AXValue` is NOT settable (Logic
+        // publishes it 0/1 with an `AXMaxValue` of 127 and refuses the write —
+        // the fold state did not change in 2 s), and the header row publishes
+        // no `AXDisclosing` at all. Its only action is `AXPress`.
+        //
+        // AND THE KEY COMMAND STILL CANNOT REPLACE IT. Logic 12.3.1 ships the
+        // rows (`Open Track Stack`, `Close Track Stack`, `Open/Close Track
+        // Stack`, `Open/Close All Track Stacks` — read off the Key Commands
+        // window 2026-09-03 under `Main Window Tracks and Various Editors`,
+        // all four carrying no assignment of any kind), Logic refused four
+        // rounds' worth of attempts to learn the TOGGLE, and the DIRECTIONAL
+        // `Open Track Stack` was attempted once with the user's explicit
+        // permission the same day (search term `track stack`, which is what
+        // finds the row — the default `open track` scrolls past it): 10.98 s,
+        // three candidate notes, `all candidate notes collided or verification
+        // failed`, registry unchanged at 20. That last attempt ran while
+        // Logic's Accessibility ACTIONS were inert (see the refusal text
+        // below), and arming Logic's own Learn checkbox is itself an
+        // `AXPress`, so it is recorded as a failure and NOT as proof that the
+        // directional rows are unbindable. A learned note would also be the
+        // worse route on the healthy path: a Tracks-scoped key command acts on
+        // the SELECTED track, so it would make this call move the user's
+        // selection first, where the press addresses the element itself.
+        //
+        // The mouse click stays as an `allow_mouse: true` fallback only, and
+        // it is worth knowing why it cannot be the default: on 2026-09-03 six
+        // consecutive folds refused with "hit test at the position of
         // disclosure triangle of 'Drum Synth Kit' did not resolve to that
-        // element" while every AX read around it worked. Logic's directional
-        // rows (`Open Track Stack`, `Close Track Stack`) are the untried
-        // candidate; they cost TWO rows in the user's own key command set
-        // instead of one, which is a decision for the user and not for this
-        // comment.
-        let writeRoute = "cg_click_on_ax_frame"
-        try clickElement(disclosure, describedAs: "disclosure triangle of '\(target.name)'")
-        let verified = pollStackState(trackNumber: target.number, expanded: expanded, attempts: 20)
+        // element" while every Accessibility read around them worked. (It was
+        // working again when this shipped — 474 ms expand / 212 ms collapse,
+        // 2/2 — so that failure is transient and invisible, exactly the reason
+        // a coordinate route is not something to depend on.)
+        var writeRoute = "ax_press"
+        var pressWasInert = false
+        let pressStarted = Date()
+        let pressStatus = AXUIElementPerformAction(disclosure, kAXPressAction as CFString)
+        let pressMilliseconds = Date().timeIntervalSince(pressStarted) * 1000
+        // 50 ms ticks over 5 attempts, not the click route's 100 over 20: the
+        // press settles in 22-40 ms measured, so this is already ten times the
+        // observed wait, and a look comes first. A press that is going to be
+        // inert should say so quickly — that refusal is what the caller acts
+        // on.
+        var verified = pressStatus == .success
+            && pollStackState(
+                trackNumber: target.number, expanded: expanded, attempts: 5, interval: 0.05
+            )
+        if !verified {
+            pressWasInert = true
+            switch LogicAccessibility.stackFoldFallback(
+                allowMouse: allowMouse, trackName: target.name, expanded: expanded,
+                pressMilliseconds: pressMilliseconds
+            ) {
+            case .refuse(let reason):
+                throw LogicianError.trackNotExposed(
+                    requested: "\(expanded ? "expanding" : "collapsing") the track stack"
+                        + " '\(target.name)' without the pointer",
+                    exposed: reason
+                )
+            case .mouse:
+                writeRoute = "cg_click_on_ax_frame"
+                // Re-read the triangle: the press may have republished the
+                // header items under the element resolved above, and a click
+                // on a stale frame is the one mistake this route cannot
+                // survive.
+                let refreshed = parsedTrackHeaders(in: group)
+                    .first { $0.number == target.number }?.disclosure ?? disclosure
+                try clickElement(refreshed, describedAs: "disclosure triangle of '\(target.name)'")
+                verified = pollStackState(
+                    trackNumber: target.number, expanded: expanded, attempts: 20
+                )
+            }
+        }
         guard verified else {
             throw LogicianError.openVerificationFailed(
                 "The disclosure triangle of '\(target.name)' did not reach expanded=\(expanded)."
@@ -638,7 +810,9 @@ extension LogicAccessibility {
         var after = parsedTrackHeaders(in: group)
 
         // The click route also selects the stack's main track; restore the
-        // previous selection when that track is still visible.
+        // previous selection when that track is still visible. (The press
+        // route leaves the selection alone, and then this block costs one
+        // comparison.)
         var selectionRestored = "unchanged"
         if let previouslySelected = preSelection {
             let selectionMoved = after.first(where: \.selected)?.number != previouslySelected.number
@@ -667,7 +841,7 @@ extension LogicAccessibility {
             .filter { !afterNumbers.contains($0.number) }
             .map { ["track_number": $0.number, "track_name": $0.name] }
 
-        return [
+        var payload: [String: Any] = [
             "success": true,
             "verified": true,
             "state": expanded ? "expanded" : "collapsed",
@@ -679,20 +853,43 @@ extension LogicAccessibility {
             "hidden_tracks": hidden,
             "note": "Revealed/hidden tracks are the stack's subtracks as far as they fit in the rendered Tracks area."
         ]
+        if pressWasInert {
+            // The pointer was taken, and the caller only knows that if this
+            // says it: `write_route` names the click, and this names WHY the
+            // mouse-free route was not enough this time.
+            payload["ax_press_inert"] = true
+            payload["ax_press_ms"] = Int(pressMilliseconds.rounded())
+            payload["warning"] = "the mouse-free Accessibility press did not move the disclosure"
+                + " triangle, so the allow_mouse click route was used and the pointer moved"
+                + " briefly. The press is the normal route (measured 22-40 ms, 2026-09-03);"
+                + " a press that returns in under a millisecond, as ax_press_ms will show, means"
+                + " Logic's Accessibility actions have gone inert app-wide and every other"
+                + " element-addressed write is affected too."
+        }
+        if scrolledIntoView {
+            // The row was drawn off-screen and had to be scrolled back before
+            // anything could be written to it. Worth saying: it means the
+            // selection moved, and it is the state in which the mouse route
+            // fails its own hit test.
+            payload["scrolled_into_view"] = true
+        }
+        return payload
     }
 
     /// Waits for the disclosure triangle's expansion state to reach
-    /// `expanded` after the click that changes it.
+    /// `expanded` after the write that changes it.
     ///
-    /// Look-first (`lookFirstShouldSleep`): the click is a synchronous
-    /// `CGEvent`, and this is now the only route (the dead `AXPress` attempt
-    /// that used to precede it was removed 2026-09-03 — see `setTrackStack`).
-    /// Every one of the 8 live toggles measured that day converged within
-    /// ~2-3 attempts (profiles/logic_set_track_stack.md §5), so sleeping
-    /// before the very first look was waste on the common case.
-    func pollStackState(trackNumber: Int, expanded: Bool, attempts: Int) -> Bool {
+    /// Look-first (`lookFirstShouldSleep`): both write routes are synchronous
+    /// — an `AXPress` and, behind `allow_mouse`, a `CGEvent` click — so the
+    /// state is often already there on the first look. The press settles in
+    /// 22-40 ms (measured 2026-09-03, 4/4), which is why its caller passes a
+    /// 50 ms `interval` rather than the 100 ms the click route converged
+    /// under in ~2-3 attempts (profiles/logic_set_track_stack.md §5).
+    func pollStackState(
+        trackNumber: Int, expanded: Bool, attempts: Int, interval: TimeInterval = 0.1
+    ) -> Bool {
         for attempt in 0..<attempts {
-            if lookFirstShouldSleep(attempt: attempt) { Thread.sleep(forTimeInterval: 0.1) }
+            if lookFirstShouldSleep(attempt: attempt) { Thread.sleep(forTimeInterval: interval) }
             guard let headers = try? parsedTrackHeaders(),
                   let refreshed = headers.first(where: { $0.number == trackNumber }) else { continue }
             if refreshed.expanded == expanded {
@@ -706,12 +903,13 @@ extension LogicAccessibility {
     /// Used only where Logic's semantic actions are verified no-ops. Refuses to
     /// click unless a hit test at that position resolves to the same element.
     ///
-    /// TWO CALL SITES, and only one of them is opt-in: the empty audio insert
-    /// slot (`AXPlugins.swift`) is reachable only with `allow_mouse: true`,
-    /// while `setTrackStack`'s disclosure triangle is not gated at all. That
-    /// asymmetry is known and was attacked on 2026-09-03 — Logic will not
-    /// learn a MIDI note for `Open/Close Track Stack`, so the key-command
-    /// plane cannot reach the fold (see `setTrackStack`).
+    /// TWO CALL SITES, AND BOTH ARE NOW OPT-IN: the empty audio insert slot
+    /// (`AXPlugins.swift`) and `setTrackStack`'s disclosure triangle both
+    /// need `allow_mouse: true` from the caller. The stack fold was the
+    /// exception until 2026-09-03, when the `AXPress` this file had written
+    /// off as a no-op turned out to fold the stack in 22-40 ms, 4/4, with
+    /// Logic in the background (see `setTrackStack`) — so nothing in this
+    /// server takes the pointer without being asked any more.
     ///
     /// Do not add a third site. The route is coordinate-driven, and
     /// coordinates are the one thing this server's own reads cannot check:
