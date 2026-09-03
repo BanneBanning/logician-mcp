@@ -188,8 +188,16 @@ extension MCUController {
         pluginName: String, logic: LogicAccessibility, trackName: String
     ) throws -> [String: Any]? {
         lastBrowserRefusal = nil
-        guard freshStatus() != nil else {
-            lastBrowserRefusal = "the surface's mirror is stale or the bridge is not running"
+        // requireSurface, not bare freshStatus() — a mirror that has only
+        // gone idle wakes on requireSurface's one wakeSurface() probe rather
+        // than refusing here before findChannel even runs (same defect as
+        // ensurePluginList, fixed 2026-09-03). try? still lets a genuinely
+        // unavailable surface fall through to the refusal below, unchanged.
+        guard (try? requireSurface(
+            "the plug-in browser on the control surface", consequence: "Nothing was written"
+        )) != nil else {
+            lastBrowserRefusal = "the surface's mirror is stale and a wake probe did not bring it"
+                + " back, or the bridge is not running"
             return nil
         }
         // The PL channel view shows the MCU-SELECTED track's inserts without
@@ -819,8 +827,13 @@ extension MCUController {
         insertSlot: Int? = nil
     ) throws -> [String: Any]? {
         lastBrowserRefusal = nil
-        guard freshStatus() != nil else {
-            lastBrowserRefusal = "the surface's mirror is stale or the bridge is not running"
+        // requireSurface, not bare freshStatus() — see addPluginViaBrowser
+        // above; the same idle-mirror defect, fixed the same way 2026-09-03.
+        guard (try? requireSurface(
+            "the plug-in browser on the control surface", consequence: "Nothing was written"
+        )) != nil else {
+            lastBrowserRefusal = "the surface's mirror is stale and a wake probe did not bring it"
+                + " back, or the bridge is not running"
             return nil
         }
         guard let channel = try findChannel(trackName: trackName) else {
