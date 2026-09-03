@@ -678,7 +678,15 @@ extension MCPServer {
             targetValue: requiredString("target_value", in: arguments),
             expectedCurrentValue: arguments["expected_current_value"] as? String,
             tolerance: arguments["tolerance"] as? Double,
-            trackName: requiredString("track_name", in: arguments)
+            trackName: requiredString("track_name", in: arguments),
+            // The second plane, asked only when the surface's insert row gives
+            // one name two slots. `insertPluginNames` drops the instrument
+            // slot, which the surface's list never shows — the comparable
+            // reading, and the same one the browser's cross-check uses.
+            axInsertNames: {
+                guard let track = try? requiredString("track_name", in: arguments) else { return [] }
+                return (try? logic.insertPluginNames(trackName: track)) ?? []
+            }
         ) else {
             throw LogicianError.trackNotExposed(
                 requested: "MCU plugin parameter control",

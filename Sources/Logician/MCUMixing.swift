@@ -631,6 +631,40 @@ extension MCUController {
         return nil
     }
 
+    /// The eight insert cells, read SETTLED: the same row twice in a row with
+    /// no MIDI from Logic in between.
+    ///
+    /// `ensurePluginList` returns the instant the TOP row says "insert list",
+    /// which is the earliest honest answer to "is the view up" and the WRONG
+    /// moment to read the row underneath — Logic paints the slot contents cell
+    /// by cell afterwards, so an un-repainted cell still carries whatever the
+    /// last view left in that position. Live on the demo project 2026-09-03
+    /// that put a second `Cha EQ` (and, on a neighbouring read, the
+    /// instrument's own name) in a slot that is really empty, and a
+    /// `logic_set_plugin_parameter` that names its plug-in refused the write
+    /// as ambiguous.
+    ///
+    /// Seeded with the row the caller has already read, so the common case is
+    /// ONE 120 ms quiescence round rather than two: the row that was right the
+    /// first time is confirmed by the first quiet round. Returns nil when the
+    /// surface left the insert list underneath the read — a row from another
+    /// view is not an insert row at all.
+    static func settledInsertCells(previous: [String]? = nil) -> [String]? {
+        let deadline = Date().addingTimeInterval(1.5)
+        var lastSeen = previous
+        while Date() < deadline {
+            guard let status = freshStatus(),
+                  let bottom = status["lcd_bottom"] as? String,
+                  pluginListView(status: status) == .insertList else { return nil }
+            let cells = lcdFields(bottom)
+            let events = status["received_events"] as? Int ?? -1
+            let quiet = awaitEvents(since: events, timeoutMs: 120)?["timed_out"] as? Bool == true
+            if quiet, cells == lastSeen { return cells }
+            lastSeen = cells
+        }
+        return lastSeen
+    }
+
     static func pluginListViewDescription(_ view: PluginListView) -> String {
         switch view {
         case .insertList: return "the insert list"

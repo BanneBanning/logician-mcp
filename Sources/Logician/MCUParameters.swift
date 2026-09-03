@@ -665,6 +665,94 @@ extension MCUController {
         }
     }
 
+    /// What a plug-in name that matched MORE THAN ONE insert cell turns out
+    /// to mean once the other plane has been asked about it.
+    enum InsertNameResolution: Equatable {
+        /// One cell is real and the rest were never inserts at all. `stale`
+        /// names the cells Accessibility could not account for.
+        case resolved(slot: Int, stale: [Int])
+        /// Both planes hold the plug-in that many times. A genuine duplicate:
+        /// only the caller can say which copy it meant.
+        case duplicate(slots: [Int])
+        /// The second plane could not settle it — it was unreadable, or it
+        /// disagrees with the surface in a way this rule will not guess past.
+        case unresolved(slots: [Int], reason: String)
+    }
+
+    /// Which of several same-named insert cells is the real one, decided by
+    /// asking Accessibility what the strip actually holds.
+    ///
+    /// THE DEFECT THIS CLOSES, measured live 2026-09-03 on the demo project:
+    /// `logic_set_plugin_parameter {Sub Phatty, "Channel EQ", "Peak 1 Gain"}`
+    /// was refused in 1.3 s as ambiguous across two slots, and the same call
+    /// minutes later succeeded in 557 ms against a strip that holds exactly
+    /// ONE Channel EQ. The surface's insert row is repainted cell by cell and
+    /// this server read it the instant the TOP row said "insert list", so a
+    /// cell that had not yet repainted still carried the previous view's
+    /// content — a second `Cha EQ`, or an instrument name, sitting in a slot
+    /// that is really empty. The agent that met that refusal fell back to raw
+    /// vpot presses and lost minutes to it, twice.
+    ///
+    /// The rule is a corroboration walk, deliberately NOT an order mapping:
+    /// MCU slot order and Accessibility ordinals were observed REVERSED on an
+    /// output strip (2026-08-27), so the only thing compared is the multiset
+    /// of names. Each occupied cell, in slot order, consumes one unclaimed AX
+    /// name it plausibly abbreviates; a cell that consumes none is not on the
+    /// strip. The duplicate resolves only when the walk is COMPLETE — every AX
+    /// insert claimed by some cell — and exactly one of the candidates was
+    /// corroborated. Anything less refuses, because a wrong pick here writes a
+    /// parameter into a plug-in nobody named.
+    ///
+    /// `axNames` is `insertPluginNames`' reading: the strip's inserts WITHOUT
+    /// the instrument slot, which the surface's insert list never shows.
+    static func resolveDuplicateInsertSlots(
+        pluginName: String, cells: [String], axNames: [String]
+    ) -> InsertNameResolution {
+        let matches = insertSlotsMatching(pluginName: pluginName, cells: cells)
+        guard !axNames.isEmpty else {
+            return .unresolved(
+                slots: matches,
+                reason: "The Accessibility cross-check that tells a stale LCD cell from a real"
+                    + " second copy could not run: no inspector is showing this strip's channel"
+                    + " strip, so the surface's word is all there is."
+            )
+        }
+        var unclaimed = axNames
+        var corroborated: [Int] = []
+        for (index, raw) in cells.enumerated() {
+            let marker = MCULCDStrings.bypassMarker
+            let bypassed = raw.trimmingCharacters(in: .whitespaces).hasPrefix(marker)
+            let cell = raw.trimmingCharacters(in: CharacterSet(charactersIn: marker + " "))
+            guard !cell.isEmpty, cell != MCULCDStrings.emptySlot else { continue }
+            let width = lcdNameCellWidth - (bypassed ? marker.count : 0)
+            guard let claim = unclaimed.firstIndex(where: {
+                lcdAbbreviationPlausible(track: $0, lcd: cell, cellWidth: width)
+            }) else { continue }
+            unclaimed.remove(at: claim)
+            corroborated.append(index + 1)
+        }
+        guard unclaimed.isEmpty else {
+            return .unresolved(
+                slots: matches,
+                reason: "The two planes do not describe the same strip: Accessibility reads"
+                    + " [\(axNames.joined(separator: ", "))] and the surface's insert row"
+                    + " accounts for none of \(unclaimed.count == 1 ? "one" : "\(unclaimed.count)")"
+                    + " of them, so neither list can be trusted to pick a slot."
+            )
+        }
+        let confirmed = matches.filter(corroborated.contains)
+        if confirmed.count > 1 { return .duplicate(slots: confirmed) }
+        guard let only = confirmed.first else {
+            return .unresolved(
+                slots: matches,
+                reason: "Accessibility reads [\(axNames.joined(separator: ", "))] on this strip"
+                    + " and none of those slots is '\(pluginName)', so every cell that matched"
+                    + " it is a stale LCD paint."
+            )
+        }
+        return .resolved(slot: only, stale: matches.filter { $0 != only })
+    }
+
     /// Sets one plugin parameter on the selected track by converging a vpot
     /// against the LCD value echo. Handles numeric values adaptively and
     /// steps text/enum values until exact match. The track must already be
@@ -676,6 +764,12 @@ extension MCUController {
     /// so it costs nothing on the wire and saves the agent a whole
     /// `logic_list_inserts` round trip. When the surface is already hot on a
     /// plugin whose name matches, even that read is skipped.
+    ///
+    /// `axInsertNames` is the second plane, asked ONLY when the first one gave
+    /// a name two slots (see `resolveDuplicateInsertSlots`). A closure rather
+    /// than a list because the inspector walk behind it costs ~1 s and the
+    /// happy path must not pay it: on every call that resolves cleanly it is
+    /// never invoked.
     static func setPluginParameter(
         slot: Int?,
         pluginName: String? = nil,
@@ -683,7 +777,8 @@ extension MCUController {
         targetValue: String,
         expectedCurrentValue: String?,
         tolerance: Double?,
-        trackName: String? = nil
+        trackName: String? = nil,
+        axInsertNames: () -> [String] = { [] }
     ) throws -> [String: Any]? {
         // Bounds-check BEFORE any lcdFields()[slot-1] indexing below — an
         // out-of-range slot (e.g. an AX ordinal like 9, or an off-by-one to
@@ -702,6 +797,10 @@ extension MCUController {
         var slotName: String?
         var resolvedSlot = slot
         var resolvedBy: String?
+        /// Slots whose cell named the plug-in and which Accessibility says
+        /// hold nothing of the sort. Reported, never silently dropped: it is
+        /// the evidence that the surface's row was lying.
+        var staleInsertCells: [Int] = []
 
         /// The hot view IS the (strip, slot) -> plugin-name cache this route
         /// needs, held in memory and re-proved against the live LCD on every
@@ -721,9 +820,42 @@ extension MCUController {
             if slot == nil { resolvedBy = "hot_view" }
         } else {
             guard let listStatus = try ensurePluginList() else { return nil }
-            let cells = (listStatus["lcd_bottom"] as? String).map { lcdFields($0) } ?? []
+            var cells = (listStatus["lcd_bottom"] as? String).map { lcdFields($0) } ?? []
             if resolvedSlot == nil, let pluginName {
-                let matches = insertSlotsMatching(pluginName: pluginName, cells: cells)
+                var matches = insertSlotsMatching(pluginName: pluginName, cells: cells)
+                resolvedBy = "insert_list"
+                // A row that answers with exactly one slot costs nothing more:
+                // the two recoveries below run only when the first read came
+                // back with none or with two, which is precisely when the row
+                // is most likely to be a half-repainted frame rather than the
+                // strip (see `settledInsertCells`).
+                if matches.count != 1, let settled = settledInsertCells(previous: cells),
+                   settled != cells {
+                    cells = settled
+                    matches = insertSlotsMatching(pluginName: pluginName, cells: cells)
+                    resolvedBy = "insert_list_settled"
+                }
+                if matches.count > 1 {
+                    switch resolveDuplicateInsertSlots(
+                        pluginName: pluginName, cells: cells, axNames: axInsertNames()
+                    ) {
+                    case .resolved(let only, let stale):
+                        matches = [only]
+                        resolvedBy = "insert_list_cross_checked"
+                        staleInsertCells = stale
+                    case .duplicate(let slots):
+                        throw LogicianError.insertAmbiguous(
+                            track: trackName ?? "the selected strip", plugin: pluginName,
+                            slots: slots, parameter: "insert_slot",
+                            detail: "Accessibility reads the same strip and finds the plug-in"
+                                + " there \(slots.count) times too, so this is a real duplicate"
+                                + " and not a stale LCD cell.")
+                    case .unresolved(let slots, let reason):
+                        throw LogicianError.insertAmbiguous(
+                            track: trackName ?? "the selected strip", plugin: pluginName,
+                            slots: slots, parameter: "insert_slot", detail: reason)
+                    }
+                }
                 guard let only = matches.first, matches.count == 1 else {
                     // Both answers are reported, never resolved by picking one:
                     // the insert list is right there in the message, so the
@@ -731,16 +863,11 @@ extension MCUController {
                     let available = cells
                         .map { $0.trimmingCharacters(in: .whitespaces) }
                         .filter { !$0.isEmpty && $0 != MCULCDStrings.emptySlot }
-                    throw matches.isEmpty
-                        ? LogicianError.insertNotFound(
-                            track: trackName ?? "the selected strip",
-                            plugin: pluginName, available: available)
-                        : LogicianError.insertAmbiguous(
-                            track: trackName ?? "the selected strip",
-                            plugin: pluginName, slots: matches, parameter: "insert_slot")
+                    throw LogicianError.insertNotFound(
+                        track: trackName ?? "the selected strip",
+                        plugin: pluginName, available: available)
                 }
                 resolvedSlot = only
-                resolvedBy = "insert_list"
             }
             guard let target = resolvedSlot else { return nil }
             slotName = cells.indices.contains(target - 1)
@@ -782,6 +909,19 @@ extension MCUController {
             if let slotName, !slotName.isEmpty {
                 result["resolved_plugin"] = slotName
             }
+        }
+        if !staleInsertCells.isEmpty {
+            result["stale_insert_cells"] = staleInsertCells
+            appendWarning(
+                "The control surface's insert row named this plug-in in "
+                    + "\(staleInsertCells.count + 1) slots; Accessibility reads it on this strip"
+                    + " once, so slot"
+                    + (staleInsertCells.count == 1 ? " " : "s ")
+                    + staleInsertCells.map(String.init).joined(separator: ", ")
+                    + " had not repainted yet and slot \(finalSlot) is the one that was written."
+                    + " Re-read the inserts if you want the row confirmed.",
+                to: &result
+            )
         }
         return result
     }

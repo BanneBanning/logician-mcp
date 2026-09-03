@@ -568,7 +568,16 @@ enum LogicianError: LocalizedError {
     /// (Accessibility ordinal) or "insert_slot" (Mackie physical slot) — so
     /// the remedy in the message is the one the failing route actually takes,
     /// never an invitation to convert between the two numberings.
-    case insertAmbiguous(track: String, plugin: String, slots: [Int], parameter: String)
+    ///
+    /// `detail` is what the SECOND plane had to say about the duplicate, on
+    /// the one route that asks it (see `MCUController
+    /// .resolveDuplicateInsertSlots`): "both planes agree" is a real duplicate
+    /// an agent should answer with `insert_slot`, while "the cross-check could
+    /// not run" is a refusal the agent may simply retry. nil where no
+    /// cross-check exists.
+    case insertAmbiguous(
+        track: String, plugin: String, slots: [Int], parameter: String, detail: String?
+    )
     case insertMismatch(slot: Int, expected: String, actual: String)
     case openVerificationFailed(String)
     /// The same "could not verify a state change" shape as
@@ -647,6 +656,26 @@ enum LogicianError: LocalizedError {
         }
     }
 
+    /// The machine-readable half of a refusal: the fields the agent's RETRY
+    /// needs, as values rather than as prose it has to parse back out of
+    /// `error`. `callTool` merges them into the failure payload.
+    ///
+    /// Only the cases that name a concrete alternative carry anything. An
+    /// ambiguous insert is the first: the refusal has always listed the slots
+    /// in its sentence, and an agent that had to regex them out of English
+    /// spent a whole extra `logic_list_inserts` round trip instead
+    /// (observed 2026-09-03 on the demo project — the retry after a false
+    /// ambiguity cost minutes of flailing). With `resolved_slots` in the
+    /// payload the retry is one call.
+    var details: [String: Any] {
+        switch self {
+        case .insertAmbiguous(_, _, let slots, let parameter, _):
+            return ["resolved_slots": slots, "resolved_slots_argument": parameter]
+        default:
+            return [:]
+        }
+    }
+
     var errorDescription: String? {
         switch self {
         case .accessibilityNotTrusted:
@@ -681,11 +710,12 @@ enum LogicianError: LocalizedError {
                 + sentenceCased(exposed) + (exposed.hasSuffix(".") ? "" : ".")
         case .insertNotFound(let track, let plugin, let available):
             return "No insert matching '\(plugin)' on track '\(track)'. Available inserts: \(available.joined(separator: ", "))."
-        case .insertAmbiguous(let track, let plugin, let slots, let parameter):
+        case .insertAmbiguous(let track, let plugin, let slots, let parameter, let detail):
             return "Insert '\(plugin)' on track '\(track)' is ambiguous; it occupies slots "
                 + slots.map(String.init).joined(separator: ", ")
                 + " (\(parameter) numbering). Pass \(parameter) to disambiguate — "
                 + "see INSERT NUMBERING in the server instructions."
+                + (detail.map { " " + $0 } ?? "")
         case .insertMismatch(let slot, let expected, let actual):
             return "Insert slot \(slot) holds '\(actual)', not '\(expected)'. No action was taken."
         case .openVerificationFailed(let detail):

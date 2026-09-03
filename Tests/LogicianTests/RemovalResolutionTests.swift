@@ -121,7 +121,7 @@ final class RemovalResolutionTests: XCTestCase {
                 trackName: "Sweeps", insertSlot: nil
             )
         ) { error in
-            guard case .insertAmbiguous(let track, let plugin, let slots, let parameter)
+            guard case .insertAmbiguous(let track, let plugin, let slots, let parameter, _)
                 = error as? LogicianError else {
                 return XCTFail("expected insertAmbiguous, got \(error)")
             }
