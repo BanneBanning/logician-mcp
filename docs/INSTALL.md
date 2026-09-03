@@ -168,7 +168,10 @@ This starts Logician's background helper the first time, which creates three MID
 
 1. In Logic, click the **Logic Pro** menu (top-left) → **Control Surfaces** → **Setup…**
 2. In the window that opens, click **New ▾** (top-left) → **Install…**
-3. In the list, find **Mackie Designs** → **Mackie Control**. Click it, then **Add**.
+3. The list holds 146 devices — type `mackie` in the search field at the top. Click the row named exactly
+   **Mackie Control** (manufacturer **Loud Technologies / Mackie**, module *Logic Control*), then **Add**.
+   > Several neighbouring rows also say Mackie — *Mackie Control C4*, *Mackie Control Extender* and so on.
+   > Plain **Mackie Control** is the one.
 4. A Mackie Control device appears. Click it to select it. On the right, set **both** ports:
    - **Output Port:** `Logic MCP MCU`
    - **Input Port:** `Logic MCP MCU`

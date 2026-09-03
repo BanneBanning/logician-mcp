@@ -39,31 +39,51 @@ Every change is checked against Logic's own readouts and rolled back on a mismat
 > [!NOTE]
 > **You need:** macOS 13+ · Logic Pro · Apple's command-line tools — if `swift --version` fails, run `xcode-select --install` first.
 
-### 1 · Download & build
+### 1 · Get it
 
-Paste into Terminal — the compile takes a minute or two:
+**With Homebrew** &nbsp;*(recommended)*
+
+```bash
+brew install bannebanning/logician/logician
+```
+
+<sub>**Never used Homebrew?** It is the standard way Macs install developer tools — one command to install something, one command to update it later, and it keeps everything in one tidy place instead of scattering folders around your disk. Install it once from [brew.sh](https://brew.sh) (a single paste into Terminal), then run the line above.</sub>
+
+**No Homebrew, no problem** — one line, nothing to sign or trust, because it compiles on your own machine:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BanneBanning/logician-mcp/main/packaging/install.sh | bash
+```
+
+Either way the compile takes **about two minutes**, once. Both finish by printing the steps you have left.
+
+<details>
+<summary>Building from source by hand instead</summary>
+<br>
 
 ```bash
 git clone https://github.com/BanneBanning/logician-mcp.git
 cd logician-mcp && swift build -c release
 ```
 
-**You should see** `Build complete!` on the last line.
+**You should see** `Build complete!` on the last line. Your binary is then at `$(pwd)/.build/release/logician` — use that path wherever the next step says `$(command -v logician)`.
+
+</details>
 
 ### 2 · Connect your AI
 
-From inside that same folder — `$(pwd)` fills in the path so you never copy one by hand. One line for your client, then **restart the client**:
+One line for your client, then **restart the client**. `$(command -v logician)` fills in the path for you:
 
 **Antigravity + Gemini** &nbsp;*(recommended — the agent can actually hear your mix)*
 
 ```bash
-agy mcp add logician "$(pwd)/.build/release/logician"
+agy mcp add logician "$(command -v logician)"
 ```
 
 **Claude Code**
 
 ```bash
-claude mcp add logician -- "$(pwd)/.build/release/logician"
+claude mcp add logician -- "$(command -v logician)"
 ```
 
 <details>
@@ -72,9 +92,9 @@ claude mcp add logician -- "$(pwd)/.build/release/logician"
 
 One-click registration for these clients — **after** step 1 above:
 
-[<img src="https://cursor.com/deeplink/mcp-install-dark.svg" alt="Add Logician to Cursor" height="32">](https://cursor.com/install-mcp?name=logician&config=eyJjb21tYW5kIjoiL2Jpbi9zaCIsImFyZ3MiOlsiLWMiLCJleGVjIFwiJEhPTUUvbG9naWNpYW4tbWNwLy5idWlsZC9yZWxlYXNlL2xvZ2ljaWFuXCIiXX0%3D) &nbsp; [<img src="https://img.shields.io/badge/VS_Code-Install_Logician-0098FF" alt="Install Logician in VS Code" height="32">](https://vscode.dev/redirect/mcp/install?name=logician&config=%7B%22command%22%3A%22%2Fbin%2Fsh%22%2C%22args%22%3A%5B%22-c%22%2C%22exec%20%5C%22%24HOME%2Flogician-mcp%2F.build%2Frelease%2Flogician%5C%22%22%5D%7D) &nbsp; [<img src="https://files.lmstudio.ai/deeplink/mcp-install-dark.svg" alt="Add Logician to LM Studio" height="32">](https://lmstudio.ai/install-mcp?name=logician&config=eyJjb21tYW5kIjoiL2Jpbi9zaCIsImFyZ3MiOlsiLWMiLCJleGVjIFwiJEhPTUUvbG9naWNpYW4tbWNwLy5idWlsZC9yZWxlYXNlL2xvZ2ljaWFuXCIiXX0%3D)
+[<img src="https://cursor.com/deeplink/mcp-install-dark.svg" alt="Add Logician to Cursor" height="32">](https://cursor.com/install-mcp?name=logician&config=eyJjb21tYW5kIjoiL2Jpbi9zaCIsImFyZ3MiOlsiLWMiLCJleGVjIFwiJChjb21tYW5kIC12IGxvZ2ljaWFuIHx8IGVjaG8gJEhPTUUvbG9naWNpYW4tbWNwLy5idWlsZC9yZWxlYXNlL2xvZ2ljaWFuKVwiIl19) &nbsp; [<img src="https://img.shields.io/badge/VS_Code-Install_Logician-0098FF" alt="Install Logician in VS Code" height="32">](https://vscode.dev/redirect/mcp/install?name=logician&config=%7B%22command%22%3A%22%2Fbin%2Fsh%22%2C%22args%22%3A%5B%22-c%22%2C%22exec%20%5C%22%24%28command%20-v%20logician%20%7C%7C%20echo%20%24HOME%2Flogician-mcp%2F.build%2Frelease%2Flogician%29%5C%22%22%5D%7D) &nbsp; [<img src="https://files.lmstudio.ai/deeplink/mcp-install-dark.svg" alt="Add Logician to LM Studio" height="32">](https://lmstudio.ai/install-mcp?name=logician&config=eyJjb21tYW5kIjoiL2Jpbi9zaCIsImFyZ3MiOlsiLWMiLCJleGVjIFwiJChjb21tYW5kIC12IGxvZ2ljaWFuIHx8IGVjaG8gJEhPTUUvbG9naWNpYW4tbWNwLy5idWlsZC9yZWxlYXNlL2xvZ2ljaWFuKVwiIl19)
 
-Straight talk about what these buttons do: they **only** register the server in the client — the one step they replace is the command in step 2. No button can compile Swift or click through Logic's Control Surfaces window, so steps 1, 3 and 4 are still yours. They also assume you cloned into your home folder (`~/logician-mcp` — where step 1 lands if you pasted it into a fresh Terminal). Cloned somewhere else? Use the JSON below instead.
+Straight talk about what these buttons do: they **only** register the server in the client — the one step they replace is the command in step 2. No button can compile Swift or click through Logic's Control Surfaces window, so steps 1, 3 and 4 are still yours. They find the binary whether you installed it with Homebrew or cloned into `~/logician-mcp`; anywhere else, use the JSON below.
 
 **Gemini CLI** — installs as an extension (this repo ships a `gemini-extension.json`), then build inside it:
 
@@ -83,10 +103,10 @@ gemini extensions install https://github.com/BanneBanning/logician-mcp
 cd ~/.gemini/extensions/logician && swift build -c release
 ```
 
-**Any other MCP client** — point it at the binary. Print the exact path with `echo "$(pwd)/.build/release/logician"`, then:
+**Any other MCP client** — point it at the binary. Print the exact path with `command -v logician`, then:
 
 ```json
-{ "mcpServers": { "logician": { "command": "/ABSOLUTE/PATH/TO/logician-mcp/.build/release/logician" } } }
+{ "mcpServers": { "logician": { "command": "/ABSOLUTE/PATH/TO/logician" } } }
 ```
 
 </details>
@@ -96,7 +116,9 @@ cd ~/.gemini/extensions/logician && swift build -c release
 First, ask your agent to **"Run logic_health"** once — that wakes Logician's helper and creates the MIDI port Logic is about to look for. Then, in Logic:
 
 > [!IMPORTANT]
-> **Logic Pro → Control Surfaces → Setup… → New ▾ → Install… → Mackie Control → Add**, then set **Input Port** *and* **Output Port** to **`Logic MCP MCU`**.
+> **Logic Pro → Control Surfaces → Setup… → New ▾ → Install…**, then pick **Mackie Control** and click **Add**. Finally set **Input Port** *and* **Output Port** to **`Logic MCP MCU`**.
+
+Two things that trip people up in that list of 146 devices: use the search field at the top, and pick the row named exactly **Mackie Control** (manufacturer *Loud Technologies / Mackie*) — several neighbouring rows also say Mackie and are not it.
 
 And grant **Accessibility** to your client when macOS asks (or: System Settings → Privacy & Security → Accessibility → switch on your client).
 
