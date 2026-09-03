@@ -6,6 +6,14 @@ import LogicMCUBridge
 final class LogicAccessibility {
     let bundleIdentifier = "com.apple.logic10"
 
+    /// How long ONE `AXValue` write on a stepper control is given to show up
+    /// in a read-back, and it is a CEILING, not a per-step price: the callers
+    /// that use it look first and re-read (1–4 ms an AX read) until the value
+    /// moves, so a control behaving normally never comes near this. Only one
+    /// that has genuinely stopped pays it, once, on the way to the caller's
+    /// own `stuck` verdict. See `setTrackPan`'s `settledStep`.
+    static let axStepperSettleBudget: TimeInterval = 0.12
+
     /// The List Editors pane this CALL is holding open, if any — set only by
     /// `withListEditorsPaneHeld`, which always clears it again on the way out.
     /// A per-call scope rather than the session-level debt the Region inspector

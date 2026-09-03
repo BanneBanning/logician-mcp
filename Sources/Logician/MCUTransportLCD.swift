@@ -311,6 +311,40 @@ extension MCUController {
         return true
     }
 
+    /// Which half of the `PN` toggle a settled pan row is showing.
+    ///
+    /// The two states share the assignment code AND the banner marker, which
+    /// is why neither one alone can decide whether to press:
+    ///
+    /// - `.namesUnderBanner` — the multi-channel names row with Logic's mode
+    ///   banner (`Pan/Surround parameter: Pan`) painted over its right half.
+    ///   The banner is a TRANSIENT (~2 s, `controlNameBanners`' own measured
+    ///   timescale): the view underneath is already the right one, so pressing
+    ///   would toggle AWAY from it. Wait it out.
+    /// - `.singleChannelPan` — the single-channel Pan page
+    ///   (`Pan    -      -   …`), the OTHER half of the toggle. It never
+    ///   clears, so waiting it out waits forever; the way out is another press.
+    ///
+    /// The witness that separates them is the row's own cells: the
+    /// single-channel page blanks every strip cell but the first — four or
+    /// more clearing cells, the same count `settledTopOutcome` reads as "the
+    /// display is being cleared" — while a banner over the names row leaves
+    /// the left-hand NAMES standing underneath it. Pure, so the rule that
+    /// decides a press can be pinned by a test rather than by a surface.
+    enum PanRowState: Equatable {
+        case namesReadable
+        case namesUnderBanner
+        case singleChannelPan
+        case notPanView
+    }
+
+    static func panRowState(assignment: String?, top: String?) -> PanRowState {
+        guard let top, assignment == MCULCDStrings.Assignment.pan else { return .notPanView }
+        let blanked = lcdFields(top).filter { $0 == MCULCDStrings.clearingCell }.count
+        if blanked >= 4 { return .singleChannelPan }
+        return top.contains(MCULCDStrings.parameterBannerMarker) ? .namesUnderBanner : .namesReadable
+    }
+
     /// The assign_pan button TOGGLES between the multi-channel pan view (track
     /// names on top) and a single-channel view ("Pan    -      -   ..."), and
     /// the assignment display reads "PN" in both — so the mode must be verified
@@ -467,12 +501,15 @@ extension MCUController {
                     surfaceDebt = nil
                     return true
                 }
-                if proven.top.contains(MCULCDStrings.parameterBannerMarker)
-                    && proven.assignment == MCULCDStrings.Assignment.pan {
+                if panRowState(assignment: proven.assignment, top: proven.top) == .namesUnderBanner {
                     // Names view with Logic's mode BANNER ("Pan/Surround
                     // parameter: Pan") still covering the right half - it fades
                     // on its own; pressing now would toggle AWAY from the
-                    // correct view, so wait it out.
+                    // correct view, so wait it out. The single-channel Pan page
+                    // reads `PN` and carries the same marker but is NOT this
+                    // state (see `panRowState`): it never fades, so it falls
+                    // through to the press below instead of being waited out
+                    // six times over.
                     debugLog("ensurePanNames[\(iteration)]: waiting out mode banner")
                     if waitForConfirmedFullNames(seconds: 5.0) {
                         surfaceDebt = nil
@@ -751,6 +788,62 @@ extension MCUController {
         return zip(liveCells, cachedCells).filter(!=).count == 1
     }
 
+    /// How many bank_right presses in a row may land on the SAME row before
+    /// the walk calls it the right edge.
+    ///
+    /// Not a tolerance for sloppiness: a press Logic swallows and a press at
+    /// the right edge look identical from here (no MIDI, no repaint), and the
+    /// swallow is real — Logic drops surface messages sent into an unfinished
+    /// repaint, which is exactly what a bank step is. One retry tells them
+    /// apart; the true edge simply reports "unchanged" again, ~200 ms later.
+    static let bankStepStallRetries = 2
+
+    /// What ONE bank_right step of a navigation established, against the row
+    /// the walk is looking for. Pure, so the rule that decides "arrived",
+    /// "keep going", "that press was swallowed" and "there are no more banks"
+    /// is pinned by a test rather than by a surface.
+    enum BankStepVerdict: Equatable {
+        case arrived
+        case stepAgain
+        /// The row did not move. From here a swallowed press and the right
+        /// edge look identical, so the step is sent again before the walk
+        /// believes the second reading.
+        case retryTheStep
+        case outOfBanks(showing: String)
+        case unreadable
+    }
+
+    static func bankStepVerdict(
+        outcome: SettledTopOutcome,
+        expecting expectedTop: String,
+        channel: Int,
+        ownPressBanner: Bool = false,
+        stallsSoFar: Int
+    ) -> BankStepVerdict {
+        // The SAME arrival rule the surface's own "am I already here?" check
+        // uses (`bankedAtMatch`): exact row, or the target's own cell plus at
+        // most one banner elsewhere. A byte-exact test here would walk straight
+        // past the bank it was looking for whenever Logic was still holding a
+        // press banner over some other strip's name.
+        func arrived(_ row: String) -> Bool {
+            bankedAtMatch(
+                live: row, cached: expectedTop, channel: channel,
+                ownPressBanner: ownPressBanner
+            )
+        }
+        switch outcome {
+        case .settled(let next):
+            return arrived(next) ? .arrived : .stepAgain
+        case .unchanged(let row):
+            if arrived(row) { return .arrived }
+            return stallsSoFar < bankStepStallRetries
+                ? .retryTheStep
+                : .outOfBanks(showing: row)
+        case .neverSettled, .surfaceUnreadable:
+            return .unreadable
+        }
+    }
+
     /// Navigates to a bank by index (from leftmost) and verifies the expected
     /// LCD content. Returns false on mismatch (stale cache).
     ///
@@ -776,6 +869,19 @@ extension MCUController {
     /// was waiting out a row it could not match while a banner stood in it —
     /// a far-bank write 2 405 → 1 170 ms, and a far-bank verified no-op
     /// 2 037 → 805 ms.
+    ///
+    /// HOW IT WALKS, and why the count changed. Measured 2026-09-03 on a
+    /// 25-strip project (4 banks of 8, the last one overlapping the third by
+    /// seven cells): `logic_set_track_volume {track_name: "Master"}` asked for
+    /// bank 3, three bank_right presses were sent, only two landed, and the row
+    /// check found bank 2's content — so `Master`, and with it every strip that
+    /// exists only in the last clamped window, was unreachable by name on the
+    /// whole control-surface plane. The presses were blind
+    /// (`awaitEvents(…, 250)` returns on the FIRST byte of a repaint, so the
+    /// next press went into an unfinished one), which is the same "a COUNT
+    /// standing in for a proof" defect `resetToLeftmostBank` was fixed for.
+    /// Each step is settled before the next is sent now, and the budget is
+    /// spent in BANK STEPS THAT HAPPENED rather than in presses that were sent.
     static func navigateToBank(
         _ index: Int, expecting expectedTop: String, channel: Int, ownPressBanner: Bool = false
     ) throws -> Bool {
@@ -787,19 +893,71 @@ extension MCUController {
             debugLog("navigateToBank(\(index)): \(reason) after \(presses) presses")
             return false
         }
-        for _ in 0..<index {
-            let before = freshStatus()?["received_events"] as? Int ?? -1
-            try press("bank_right")
-            _ = awaitEvents(since: before, timeoutMs: 250)
+        // SETTLED, not merely fresh — and this is not a spare 120 ms. The call
+        // that gets here has usually just pressed assign_pan on its way out of
+        // another view, and Logic's mode banner ("Pan/Surround parameter: …")
+        // sits over the names row for ~2 s afterwards. An instantaneous read
+        // catches that banner, sees a row that is not the one it wants, and
+        // starts walking RIGHT across the whole project (measured 2026-09-03:
+        // six wasted presses and 5.9 s on a call whose target was bank 0).
+        // `settledTopOutcome` treats a banner row as transient and waits it
+        // out, so this read answers with the names row underneath it.
+        guard var top = try settledTop() else {
+            debugLog("navigateToBank(\(index)): the leftmost bank's row never settled")
+            return false
         }
-        if waitFor(seconds: 1.5, { status in
-            guard let live = status["lcd_top"] as? String else { return false }
-            return bankedAtMatch(
-                live: live, cached: expectedTop, channel: channel,
+        func arrivedAt(_ row: String) -> Bool {
+            bankedAtMatch(
+                live: row, cached: expectedTop, channel: channel,
                 ownPressBanner: ownPressBanner
             )
-        }) != nil { return true }
-        debugLog("navigateToBank(\(index)): expected '\(expectedTop)' actual '\(freshStatus()?["lcd_top"] as? String ?? "?")'")
+        }
+        if arrivedAt(top) { return true }
+        // MOVES, not presses. `index` is still the distance — a bank map's
+        // rows are contiguous windows, so `index` genuine row changes from the
+        // left edge land on bank `index` and a row that is not the expected one
+        // there means the CACHE is stale, which is a rescan and not more
+        // walking. What the loop no longer counts is presses SENT: a press
+        // Logic swallowed moved nothing, so it buys a retry instead of eating
+        // one of the steps. That is the whole `Master` fix, and it is also why
+        // a miss still costs only `index` presses rather than a walk to the
+        // right-hand edge.
+        var stalls = 0
+        var moves = 0
+        var presses = 0
+        while moves < index && presses < bankScanCap {
+            let beforeEvents = freshStatus()?["received_events"] as? Int ?? -1
+            try press("bank_right")
+            presses += 1
+            let outcome = try settledTopOutcome(previous: top, eventsBeforePress: beforeEvents)
+            switch bankStepVerdict(
+                outcome: outcome, expecting: expectedTop, channel: channel,
+                ownPressBanner: ownPressBanner, stallsSoFar: stalls
+            ) {
+            case .arrived:
+                return true
+            case .stepAgain:
+                stalls = 0
+                moves += 1
+                if case .settled(let next) = outcome { top = next }
+            case .retryTheStep:
+                stalls += 1
+            case .outOfBanks(let row):
+                debugLog(
+                    "navigateToBank(\(index)): the surface stopped stepping right after"
+                        + " \(presses) presses / \(moves) bank steps, showing '\(row)'"
+                        + " — expected '\(expectedTop)'"
+                )
+                return false
+            case .unreadable:
+                debugLog("navigateToBank(\(index)): the row never settled after press \(presses)")
+                return false
+            }
+        }
+        debugLog(
+            "navigateToBank(\(index)): \(moves) bank steps in \(presses) presses left the row"
+                + " reading '\(top)' — expected '\(expectedTop)'"
+        )
         return false
     }
 
