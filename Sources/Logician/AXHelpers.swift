@@ -155,20 +155,14 @@ extension LogicAccessibility {
         return slot
     }
 
+    /// `Track 7 “Bass”` → `(7, "Bass")`, and a row carrying a live state
+    /// annotation (`Track 7 “Bass”, solo`) → the same answer. The rule itself
+    /// is `TrackRowAddressing.parseRowDescription`, shared with the
+    /// arrangement's region walk since 2026-09-03 — this parse was the good
+    /// one and `regionRows()` had its own, which folded the annotation into
+    /// the name and made the two planes disagree about what a row is called.
     func parseTrackDescription(_ description: String) -> (number: Int, name: String)? {
-        let prefix = LogicUIStrings.Format.trackDescriptionPrefix
-        guard description.hasPrefix(prefix),
-              let openQuote = description.firstIndex(of: LogicUIStrings.Format.openQuote),
-              let closeQuote = description.lastIndex(of: LogicUIStrings.Format.closeQuote) else {
-            return nil
-        }
-        let numberText = description[
-            description.index(description.startIndex, offsetBy: prefix.count)..<openQuote
-        ]
-            .trimmingCharacters(in: .whitespaces)
-        guard let number = Int(numberText) else { return nil }
-        let name = String(description[description.index(after: openQuote)..<closeQuote])
-        return (number, name)
+        TrackRowAddressing.parseRowDescription(description)
     }
 
     /// The `windowNotFound` reason `trackHeaderGroup()` reports, verbatim.

@@ -47,19 +47,29 @@ extension LogicAccessibility {
                   description.contains(LogicUIStrings.Format.openQuote) else {
                 return .descend
             }
-            let digits = description
-                .dropFirst(LogicUIStrings.Format.trackDescriptionPrefix.count)
-                .prefix { $0.isNumber }
-            let name = description.split(separator: LogicUIStrings.Format.openQuote).last.map {
-                String($0).replacingOccurrences(
-                    of: String(LogicUIStrings.Format.closeQuote), with: ""
-                )
-            } ?? description
+            // The SHARED parse (`TrackRowAddressing.parseRowDescription`), not
+            // a second one. This walk used to split on the opening quote and
+            // keep the tail, which meant it kept whatever Logic had appended
+            // AFTER the closing quote — and Logic appends the row's live state
+            // there, so a soloed row read as `Crash, solo` here while
+            // `logic_list_tracks` read the same row as `Crash`, and every
+            // region tool refused the caller's own reported name with
+            // `trackMismatch` (measured live 2026-09-03, see that function).
+            //
+            // A description this parse cannot read keeps its row: the walk has
+            // already proved it is a track layout area, and dropping it would
+            // silently shrink the arrangement map — the one answer shaped
+            // exactly like a correct one. It keeps the raw description as the
+            // name and row 0, which is what this code always did on that
+            // branch, and both are visible to the caller as wrong.
+            let parsed = TrackRowAddressing.parseRowDescription(description)
+            let digits = parsed.map(\.number)
+            let name = parsed?.name ?? description
             let regions = children(of: element).filter {
                 stringAttribute($0, "AXRoleDescription")
                     == LogicUIStrings.Element.regionRoleDescription
             }
-            rows.append((Int(digits) ?? 0, name, regions))
+            rows.append((digits ?? 0, name, regions))
             return .skipChildren // region items have no nested rows
         }
         return rows
