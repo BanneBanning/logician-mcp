@@ -1,7 +1,7 @@
 import Foundation
 
-/// What one `logic_set_track_volume` call asks for, resolved against the value
-/// the fader is actually sitting at.
+/// What the VOLUME half of one `logic_set_track_mix` call asks for, resolved
+/// against the value the fader is actually sitting at.
 ///
 /// The whole point is that BOTH routes (control surface and inspector strip)
 /// already read the current dB before they move anything, so "2 dB louder" and
@@ -11,11 +11,11 @@ import Foundation
 /// Pure and unit-tested: this is arithmetic and a comparison, and getting
 /// either wrong writes a wrong fader value that reports itself as verified.
 struct VolumeWrite {
-    /// `db`, when the caller named an absolute target.
+    /// `volume_db`, when the caller named an absolute target.
     let absoluteDb: Double?
-    /// `relative_db`, when the caller named an offset instead.
+    /// `relative_volume_db`, when the caller named an offset instead.
     let relativeDb: Double?
-    /// `expected_current_db`, the compare-and-set precondition.
+    /// `expected_current_volume_db`, the compare-and-set precondition.
     let expectedCurrentDb: Double?
 
     /// How far a reading may sit from `expected_current_db` and still count as
@@ -27,15 +27,15 @@ struct VolumeWrite {
     init(absoluteDb: Double?, relativeDb: Double?, expectedCurrentDb: Double?) throws {
         guard absoluteDb == nil || relativeDb == nil else {
             throw LogicianError.invalidArguments(
-                "db and relative_db are mutually exclusive: db is an ABSOLUTE target,"
-                    + " relative_db an offset from the value read immediately before the write."
-                    + " Pass one of them. NOTHING was written."
+                "volume_db and relative_volume_db are mutually exclusive: volume_db is an ABSOLUTE"
+                    + " target, relative_volume_db an offset from the value read immediately before"
+                    + " the write. Pass one of them. NOTHING was written."
             )
         }
         guard absoluteDb != nil || relativeDb != nil else {
             throw LogicianError.invalidArguments(
-                "missing number: db (the absolute target in dB) or relative_db (an offset in dB"
-                    + " from the current value, e.g. 2 for '2 dB louder')"
+                "missing number: volume_db (the absolute target in dB) or relative_volume_db"
+                    + " (an offset in dB from the current value, e.g. 2 for '2 dB louder')"
             )
         }
         self.absoluteDb = absoluteDb
@@ -70,66 +70,313 @@ struct VolumeWrite {
     }
 }
 
+/// What ONE `logic_set_track_mix` call asks of a track: any subset of the four
+/// independent scalar settings of a channel strip, parsed and cross-checked
+/// BEFORE the first of them is written.
+///
+/// Four tools became one (`logic_set_track_volume`, `_pan`, `_mute`, `_solo`,
+/// 2026-09-03 token audit fold #4: 6,280 bytes of `tools/list` for four
+/// descriptions that repeated the same addressing, verification and
+/// compare-and-set rules four times). The four WRITE paths are untouched — the
+/// fold is the surface, and this struct is the whole of the new argument
+/// handling, which is why it is pure and unit-tested: an ordering or
+/// mutual-exclusion mistake here writes a value nobody asked for and then
+/// reports it as verified.
+struct TrackMixPlan {
+    /// The four settings, in the ORDER they are written.
+    ///
+    /// Solo last, mute second-last, and not for tidiness: Logic flashes the
+    /// mute LED of every channel a standing solo silences, so the mute
+    /// readback has to be taken across a blink window (1.4 s) instead of a
+    /// settled one (0.3 s) whenever a solo stands. Writing mute BEFORE solo
+    /// means one call asking for both does not open that window on itself.
+    enum Parameter: String, CaseIterable {
+        case volume, pan, mute, solo
+    }
+
+    /// A pan write and its own precondition.
+    struct PanWrite: Equatable {
+        let position: Int
+        let expectedCurrent: Int?
+    }
+
+    /// A mute or solo write and its own precondition.
+    struct ToggleWrite: Equatable {
+        let enabled: Bool
+        let expectedCurrent: Bool?
+    }
+
+    let volume: VolumeWrite?
+    let pan: PanWrite?
+    let mute: ToggleWrite?
+    let solo: ToggleWrite?
+
+    /// Exactly the parameters this call asked for, in write order.
+    var order: [Parameter] {
+        Parameter.allCases.filter { parameter in
+            switch parameter {
+            case .volume: return volume != nil
+            case .pan: return pan != nil
+            case .mute: return mute != nil
+            case .solo: return solo != nil
+            }
+        }
+    }
+
+    init(arguments: [String: Any]) throws {
+        let absolute = MCPServer.doubleArgument("volume_db", in: arguments)
+        let relative = MCPServer.doubleArgument("relative_volume_db", in: arguments)
+        // Only built when a volume target was actually named: VolumeWrite's own
+        // "one of the two is required" guard is for the fader tool it came
+        // from, and here a call that names no volume at all is asking for the
+        // other three parameters.
+        volume = absolute == nil && relative == nil ? nil : try VolumeWrite(
+            absoluteDb: absolute, relativeDb: relative,
+            expectedCurrentDb: MCPServer.doubleArgument("expected_current_volume_db", in: arguments)
+        )
+        pan = try TrackMixPlan.integer("pan", in: arguments).map {
+            PanWrite(
+                position: $0,
+                expectedCurrent: try TrackMixPlan.integer("expected_current_pan", in: arguments)
+            )
+        }
+        mute = (arguments["mute"] as? Bool).map {
+            ToggleWrite(enabled: $0, expectedCurrent: arguments["expected_current_mute"] as? Bool)
+        }
+        solo = (arguments["solo"] as? Bool).map {
+            ToggleWrite(enabled: $0, expectedCurrent: arguments["expected_current_solo"] as? Bool)
+        }
+        guard volume != nil || pan != nil || mute != nil || solo != nil else {
+            throw LogicianError.invalidArguments(
+                "nothing to set. Pass at least one of volume_db (or relative_volume_db), pan,"
+                    + " mute, solo — any subset of them goes in ONE call. NOTHING was written."
+                    + " To READ the current values instead, call logic_track_info or"
+                    + " logic_mixer_snapshot."
+            )
+        }
+        // A guard for a parameter this call does not write is a typo, and
+        // silently dropping it would tell the caller a precondition had been
+        // checked that never was — the same reason `additionalProperties:
+        // false` is enforced on every schema.
+        try TrackMixPlan.refuseGuardWithoutItsWrite(
+            "expected_current_volume_db", for: "volume_db or relative_volume_db",
+            requested: volume != nil, in: arguments
+        )
+        try TrackMixPlan.refuseGuardWithoutItsWrite(
+            "expected_current_pan", for: "pan", requested: pan != nil, in: arguments
+        )
+        try TrackMixPlan.refuseGuardWithoutItsWrite(
+            "expected_current_mute", for: "mute", requested: mute != nil, in: arguments
+        )
+        try TrackMixPlan.refuseGuardWithoutItsWrite(
+            "expected_current_solo", for: "solo", requested: solo != nil, in: arguments
+        )
+    }
+
+    private static func refuseGuardWithoutItsWrite(
+        _ guardKey: String, for parameter: String, requested: Bool, in arguments: [String: Any]
+    ) throws {
+        guard arguments[guardKey] != nil, !requested else { return }
+        throw LogicianError.invalidArguments(
+            "\(guardKey) was passed without \(parameter): a compare-and-set guards ONE write and"
+                + " this call asks for no \(parameter.hasPrefix("volume") ? "volume" : parameter)"
+                + " write. NOTHING was written."
+        )
+    }
+
+    /// The top-level verdict of one call, assembled from the per-parameter
+    /// sections it produced — in write order, each one either a write path's own
+    /// payload or a refusal this tool built.
+    ///
+    /// Pure, and the reason it is pure: `success` and `verified` here are
+    /// CONJUNCTIONS, and a conjunction with one term read wrong is a result
+    /// claiming a write nobody made. Each section keeps its own vocabulary
+    /// (`volume_set`, `already_on`, `mute_led_blinking`, …) so an agent that
+    /// read `logic_mixer_snapshot` meets one set of words rather than two; what
+    /// this adds is the roll-up — which parameters landed, which were already
+    /// there, which were refused — plus the top-level `state` that decides
+    /// whether the "judge it by ear" note is owed (see `Tool.changedNothing`).
+    static func verdict(
+        sections: [(parameter: String, payload: [String: Any])]
+    ) -> [String: Any] {
+        var written: [String] = []
+        var unchanged: [String] = []
+        var refused: [String] = []
+        var notAttempted: [String] = []
+        var refusals: [String] = []
+        var verified = true
+        var result: [String: Any] = [:]
+        for (parameter, payload) in sections {
+            result[parameter] = payload
+            if payload["verified"] as? Bool != true { verified = false }
+            switch payload["state"] as? String {
+            case "refused":
+                refused.append(parameter)
+                refusals.append(
+                    "\(parameter) (\(payload["error_code"] as? String ?? "failed")):"
+                        + " \(payload["error"] as? String ?? "no reason given")"
+                )
+            case "not_attempted":
+                notAttempted.append(parameter)
+            default:
+                if Tool.changedNothing(payload) {
+                    unchanged.append(parameter)
+                } else {
+                    written.append(parameter)
+                }
+            }
+        }
+        result["success"] = refused.isEmpty && notAttempted.isEmpty
+        result["verified"] = verified
+        // Three answers, and the difference between them is what a caller acts
+        // on: `set` (something landed), `already_set` (every parameter was
+        // already where it was asked to be, so there is nothing to judge by
+        // ear — see `Tool.changedNothing`), and `refused` (nothing landed at
+        // all, which must not read as `set` just because a write was tried).
+        if !written.isEmpty {
+            result["state"] = "set"
+        } else if refused.isEmpty && notAttempted.isEmpty {
+            result["state"] = "already_set"
+        } else {
+            result["state"] = "refused"
+        }
+        if !written.isEmpty { result["written"] = written }
+        if !unchanged.isEmpty { result["unchanged"] = unchanged }
+        if !refused.isEmpty { result["refused"] = refused }
+        if !notAttempted.isEmpty { result["not_attempted"] = notAttempted }
+        if !refusals.isEmpty {
+            appendWarning(
+                "\(refused.count + notAttempted.count) of \(sections.count) parameter(s) were NOT"
+                    + " written: " + refusals.joined(separator: " | ")
+                    + (notAttempted.isEmpty
+                        ? ""
+                        : ". Not attempted after that: \(notAttempted.joined(separator: ", "))")
+                    + (written.isEmpty
+                        ? ". Nothing was written."
+                        : ". These WERE written: \(written.joined(separator: ", "))"
+                            + " — read each parameter's own section for its readback."),
+                to: &result
+            )
+        }
+        return result
+    }
+
+    /// Unreachable by construction — `order` yields a parameter only when its
+    /// request exists — and a refusal rather than a default value or an empty
+    /// payload, because the one thing this must never do is write a number
+    /// nobody asked for.
+    static func missingRequest(_ parameter: Parameter) -> LogicianError {
+        .invalidArguments("no \(parameter.rawValue) write was requested. NOTHING was written.")
+    }
+
+    /// A knob position, however the client typed it. JSON `5` and `5.0` are the
+    /// same position and `as? Int` alone refuses the second — worth answering
+    /// here rather than in a "missing integer" refusal, because `pan` now
+    /// travels beside `volume_db`, which is a genuine `number`.
+    static func integer(_ key: String, in arguments: [String: Any]) throws -> Int? {
+        if let value = arguments[key] as? Int { return value }
+        guard let value = arguments[key] else { return nil }
+        guard let double = value as? Double, double == double.rounded() else {
+            throw LogicianError.invalidArguments(
+                "\(key) must be a whole knob position (typically -64..63, 0 at center),"
+                    + " not \(value). NOTHING was written."
+            )
+        }
+        return Int(double)
+    }
+}
+
 // Mixing: volume, pan, mute, solo, sends and tempo.
 extension MCPServer {
-    func handleSetTrackMute(_ arguments: [String: Any]) throws -> Any {
-        try setStripToggle(control: "mute", arguments: arguments)
-    }
+    /// The four strip settings in one call, each verified as its own tool
+    /// verified it, each reporting its own section of the result.
+    ///
+    /// The parameters are INDEPENDENT, so a compare-and-set that refuses one of
+    /// them refuses only that one: the guard says something about the fader, or
+    /// the mute, and nothing about the other three. What is NOT independent is
+    /// the plane they all ride on — when the strip itself cannot be addressed
+    /// there is nothing to be learned from asking three more times, so the
+    /// first non-precondition failure stops the call and the parameters behind
+    /// it are reported `not_attempted` rather than paid for.
+    func handleSetTrackMix(_ arguments: [String: Any]) throws -> Any {
+        let plan = try TrackMixPlan(arguments: arguments)
+        let track = try requiredString("track_name", in: arguments)
+        let trackNumber = arguments["track_number"] as? Int
+        let toleranceDb = doubleArgument("tolerance_db", in: arguments) ?? 0.15
+        var sections: [(parameter: String, payload: [String: Any])] = []
+        var stopped: String?
 
-    func handleSetTrackSolo(_ arguments: [String: Any]) throws -> Any {
-        try setStripToggle(control: "solo", arguments: arguments)
-    }
-
-    /// Mute and solo differ only in which strip control they drive;
-    /// the old switch branched on the tool name to pick one.
-    private func setStripToggle(control: String, arguments: [String: Any]) throws -> Any {
-        guard let enabled = arguments["enabled"] as? Bool else {
-            throw LogicianError.invalidArguments("missing boolean: enabled")
+        for parameter in plan.order {
+            if let stopped {
+                sections.append((parameter.rawValue, [
+                    "success": false, "verified": false, "state": "not_attempted",
+                    "reason": "nothing was written for \(parameter.rawValue): " + stopped
+                ]))
+                continue
+            }
+            do {
+                sections.append((parameter.rawValue, try write(
+                    parameter, plan: plan, track: track, trackNumber: trackNumber,
+                    toleranceDb: toleranceDb
+                )))
+            } catch {
+                let code = (error as? LogicianError)?.code ?? "failed"
+                // Nothing has happened yet and the very first parameter failed
+                // for a reason that is not about ITS value: the whole call is a
+                // clean refusal, reported exactly as the single-parameter tool
+                // used to report it.
+                if sections.isEmpty && code != "precondition_failed" { throw error }
+                sections.append((parameter.rawValue, [
+                    "success": false, "verified": false, "state": "refused",
+                    "error_code": code, "error": error.localizedDescription
+                ]))
+                if code != "precondition_failed" {
+                    stopped = "the \(parameter.rawValue) write failed with \(code), so this call"
+                        + " stopped instead of asking the same strip three more times"
+                }
+            }
         }
-        let toggleTrack = try requiredString("track_name", in: arguments)
-        // Both routes already read the control's current state before deciding
-        // whether to press it, so compare-and-set costs nothing extra here.
-        let expected = arguments["expected_current"] as? Bool
-        return try MCUController.setToggle(
-            trackName: toggleTrack, control: control, enabled: enabled,
-            expectedCurrent: expected
-        ) ?? logic.setStripToggle(
-            trackName: toggleTrack,
-            trackNumber: arguments["track_number"] as? Int,
-            control: control,
-            enabled: enabled,
-            expectedCurrent: expected
-        )
+
+        var result: [String: Any] = ["track": track, "track_name": track]
+        for (key, value) in TrackMixPlan.verdict(sections: sections) { result[key] = value }
+        return result
     }
 
-    func handleSetTrackVolume(_ arguments: [String: Any]) throws -> Any {
-        let request = try VolumeWrite(
-            absoluteDb: doubleArgument("db", in: arguments),
-            relativeDb: doubleArgument("relative_db", in: arguments),
-            expectedCurrentDb: doubleArgument("expected_current_db", in: arguments)
-        )
-        let volumeTrack = try requiredString("track_name", in: arguments)
-        let tolerance = (arguments["tolerance_db"] as? Double) ?? 0.15
-        return try MCUController.setVolume(
-            trackName: volumeTrack, request: request, toleranceDb: tolerance
-        ) ?? logic.setTrackVolume(
-            trackName: volumeTrack,
-            trackNumber: arguments["track_number"] as? Int,
-            request: request,
-            toleranceDb: tolerance
-        )
-    }
-
-    func handleSetTrackPan(_ arguments: [String: Any]) throws -> Any {
-        guard let position = arguments["position"] as? Int else {
-            throw LogicianError.invalidArguments("missing integer: position")
+    /// One parameter of the plan, through the same route its own tool took.
+    private func write(
+        _ parameter: TrackMixPlan.Parameter, plan: TrackMixPlan,
+        track: String, trackNumber: Int?, toleranceDb: Double
+    ) throws -> [String: Any] {
+        switch parameter {
+        case .volume:
+            guard let request = plan.volume else { throw TrackMixPlan.missingRequest(parameter) }
+            return try MCUController.setVolume(
+                trackName: track, request: request, toleranceDb: toleranceDb
+            ) ?? logic.setTrackVolume(
+                trackName: track, trackNumber: trackNumber,
+                request: request, toleranceDb: toleranceDb
+            )
+        case .pan:
+            guard let write = plan.pan else { throw TrackMixPlan.missingRequest(parameter) }
+            return try logic.setTrackPan(
+                trackName: track, trackNumber: trackNumber,
+                position: write.position, expectedCurrentPosition: write.expectedCurrent
+            )
+        case .mute, .solo:
+            guard let write = parameter == .mute ? plan.mute : plan.solo else {
+                throw TrackMixPlan.missingRequest(parameter)
+            }
+            // Both routes already read the control's current state before
+            // deciding whether to press it, so compare-and-set costs nothing
+            // extra here.
+            return try MCUController.setToggle(
+                trackName: track, control: parameter.rawValue, enabled: write.enabled,
+                expectedCurrent: write.expectedCurrent
+            ) ?? logic.setStripToggle(
+                trackName: track, trackNumber: trackNumber, control: parameter.rawValue,
+                enabled: write.enabled, expectedCurrent: write.expectedCurrent
+            )
         }
-        return try logic.setTrackPan(
-            trackName: requiredString("track_name", in: arguments),
-            trackNumber: arguments["track_number"] as? Int,
-            position: position,
-            expectedCurrentPosition: arguments["expected_current_position"] as? Int
-        )
     }
 
     func handleAddSend(_ arguments: [String: Any]) throws -> Any {

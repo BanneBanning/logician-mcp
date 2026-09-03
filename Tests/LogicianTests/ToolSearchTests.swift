@@ -124,7 +124,9 @@ final class ToolSearchTests: XCTestCase {
         ("register logic key commands during onboarding", ["logic_setup_key_commands"], "key commands"),
         ("open the event list editor", ["logic_list_events"], "event list"),
         ("record arm a track", ["logic_set_track_record_arm"], "record arm"),
-        ("mute and solo a track", ["logic_set_track_mute", "logic_set_track_solo"], "mute/solo"),
+        ("mute and solo a track", ["logic_set_track_mix"], "mute/solo"),
+        ("set the track volume fader to a db value", ["logic_set_track_mix"], "fader"),
+        ("select every region on a track", ["logic_select_regions"], "select regions"),
         ("freeze a track and render it offline", ["logic_render_track"], "freeze"),
         ("bounce a region in place", ["logic_bounce_in_place"], "bounce in place"),
         ("list the mixer channel strips buses and auxes", ["logic_list_strips"], "strips"),
@@ -135,7 +137,7 @@ final class ToolSearchTests: XCTestCase {
     func testTheProbesScoredQuerySetIsTheOneTheProbeScores() {
         // A guard on the table above, not on the search: a query deleted here
         // to make the score look better would otherwise pass silently.
-        XCTAssertEqual(ToolSearchTests.probeQueries.count, 55)
+        XCTAssertEqual(ToolSearchTests.probeQueries.count, 57)
     }
 
     func testTheProbesScoredQueriesAllHitTopFive() throws {
@@ -164,8 +166,8 @@ final class ToolSearchTests: XCTestCase {
         XCTAssertEqual(ToolSearch.tokenize("recording"), ["recording", "record"])
         // Too short for the rule (len > len(suffix) + 2), exactly as in Python.
         XCTAssertEqual(ToolSearch.tokenize("les"), ["les"])
-        XCTAssertEqual(ToolSearch.tokenize("logic_set_track_volume"),
-                       ["logic", "set", "track", "volume"])
+        XCTAssertEqual(ToolSearch.tokenize("logic_set_track_mix"),
+                       ["logic", "set", "track", "mix"])
         XCTAssertEqual(ToolSearch.tokenize("  "), [])
     }
 

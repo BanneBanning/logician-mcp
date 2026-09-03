@@ -130,7 +130,9 @@ QUERIES = [
     ("register logic key commands during onboarding", {"logic_setup_key_commands"}, "key commands"),
     ("open the event list editor", {"logic_list_events"}, "event list"),
     ("record arm a track", {"logic_set_track_record_arm"}, "record arm"),
-    ("mute and solo a track", {"logic_set_track_mute", "logic_set_track_solo"}, "mute/solo"),
+    ("mute and solo a track", {"logic_set_track_mix"}, "mute/solo"),
+    ("set the track volume fader to a db value", {"logic_set_track_mix"}, "fader"),
+    ("select every region on a track", {"logic_select_regions"}, "select regions"),
     ("freeze a track and render it offline", {"logic_render_track"}, "freeze"),
     ("freeze a track to save cpu", {"logic_render_track"}, "freeze",
      "asks for a capability this server does not have: logic_render_track "

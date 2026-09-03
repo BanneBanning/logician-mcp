@@ -40,7 +40,7 @@ struct Tool {
     let name: String
     /// A short human name for approval dialogs and tool pickers, e.g. "Bounce
     /// a bar range". Required, not defaulted: without it a client renders the
-    /// raw `logic_set_track_volume` at the human who has to decide whether to
+    /// raw `logic_set_track_mix` at the human who has to decide whether to
     /// allow it, and a snake_case identifier is not what a person reads
     /// fastest under a permission prompt. Terse on purpose — it is a label,
     /// and the description is one field away.

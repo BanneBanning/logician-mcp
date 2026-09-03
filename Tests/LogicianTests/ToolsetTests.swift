@@ -87,7 +87,7 @@ final class ToolsetTests: XCTestCase {
         XCTAssertLessThan(offered.count, server.toolRegistry().count)
         for essential in [
             "logic_health", "logic_list_tracks", "logic_track_info", "logic_mixer_snapshot",
-            "logic_set_track_volume", "logic_list_inserts", "logic_set_plugin_parameter",
+            "logic_set_track_mix", "logic_list_inserts", "logic_set_plugin_parameter",
             "logic_bounce_range", "logic_evaluate_change", "logic_setup_key_commands"
         ] {
             XCTAssertTrue(offered.contains(essential), "core is missing \(essential)")

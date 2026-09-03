@@ -318,7 +318,7 @@ final class MCPProtocolTests: XCTestCase {
         XCTAssertEqual(result["ttlMs"] as? Int, toolListCacheTTLMs)
         XCTAssertEqual(result["cacheScope"] as? String, "public")
         XCTAssertNotNil((result["_meta"] as? [String: Any])?["io.modelcontextprotocol/serverInfo"])
-        XCTAssertEqual((result["tools"] as? [[String: Any]])?.count, 85)
+        XCTAssertEqual((result["tools"] as? [[String: Any]])?.count, 81)
     }
 
     /// A legacy client has no schema for `resultType` or the caching hints, so
@@ -595,7 +595,7 @@ final class MCPProtocolTests: XCTestCase {
     func testToolsListIsWellFormedAndComplete() throws {
         let response = try XCTUnwrap(server.handle(request("tools/list", id: 1)))
         let tools = try XCTUnwrap((response["result"] as? [String: Any])?["tools"] as? [[String: Any]])
-        XCTAssertEqual(tools.count, 85)
+        XCTAssertEqual(tools.count, 81)
         let names = tools.compactMap { $0["name"] as? String }
         XCTAssertEqual(Set(names).count, tools.count, "duplicate tool name")
         XCTAssertTrue(names.allSatisfy { $0.hasPrefix("logic_") })
@@ -610,7 +610,7 @@ final class MCPProtocolTests: XCTestCase {
     /// Every tool carries a short human name, and every one is distinct.
     ///
     /// The point is the approval prompt: a client that renders
-    /// `logic_set_track_volume` is showing a person a snake_case identifier at
+    /// `logic_set_track_mix` is showing a person a snake_case identifier at
     /// the moment they have to decide whether to allow it. Distinct because a
     /// picker that lists "Set a plugin parameter" twice cannot be read, and
     /// terse because a label that wraps is a description in the wrong field —
@@ -648,7 +648,7 @@ final class MCPProtocolTests: XCTestCase {
         }
     }
 
-    /// The census the result-key inventory produced: 32 tools can put a
+    /// The census the result-key inventory produced: 33 tools can put a
     /// top-level `warning` in their result. A new emitter that forgets the flag
     /// (or a flag on a tool that cannot warn) fails here rather than shipping a
     /// key no description mentions.
@@ -663,8 +663,9 @@ final class MCPProtocolTests: XCTestCase {
             "logic_project_snapshot", "logic_read_automation", "logic_record_automation",
             "logic_record_midi", "logic_remove_automation", "logic_remove_plugin",
             "logic_remove_silence", "logic_render_track",
-            "logic_reset_to", "logic_select_region", "logic_set_metronome", "logic_set_mixer",
+            "logic_reset_to", "logic_select_regions", "logic_set_metronome", "logic_set_mixer",
             "logic_set_tempo",
+            "logic_set_track_mix",
             "logic_set_track_record_arm", "logic_split_region", "logic_tempo_events"
         ]
         let flagged = Set(server.toolRegistry().filter(\.mayWarn).map(\.name))
@@ -688,15 +689,17 @@ final class MCPProtocolTests: XCTestCase {
         }
     }
 
-    /// `db` stopped being required when `relative_db` arrived; the handler
-    /// enforces "exactly one of them", which a JSON Schema `required` cannot.
+    /// The volume target was never `required` once `relative_volume_db`
+    /// existed; the handler enforces "exactly one of them", which a JSON Schema
+    /// `required` cannot. Since the 2026-09-03 fold the fader shares its tool
+    /// with pan, mute and solo, so the only required argument is the TRACK.
     func testVolumeTakesEitherAnAbsoluteOrARelativeTargetAndSaysSo() throws {
         let tool = try XCTUnwrap(
-            server.toolRegistry().first { $0.name == "logic_set_track_volume" }
+            server.toolRegistry().first { $0.name == "logic_set_track_mix" }
         )
         XCTAssertEqual(tool.inputSchema["required"] as? [String], ["track_name"])
         let properties = try XCTUnwrap(tool.inputSchema["properties"] as? [String: Any])
-        for key in ["db", "relative_db", "expected_current_db"] {
+        for key in ["volume_db", "relative_volume_db", "expected_current_volume_db"] {
             XCTAssertNotNil(properties[key], key)
         }
         XCTAssertTrue(tool.description.contains("ABSOLUTE"))
@@ -723,10 +726,10 @@ final class MCPProtocolTests: XCTestCase {
     func testARefusalForAToolWithArgumentsStillListsThemSorted() {
         XCTAssertEqual(
             MCPServer.unknownArgumentRefusal(
-                tool: "logic_set_track_pan", unknown: ["db", "aim"],
+                tool: "logic_set_track_mix", unknown: ["db", "aim"],
                 accepted: ["track_name", "pan"]
             ),
-            "logic_set_track_pan does not accept: aim, db. Accepted: pan, track_name."
+            "logic_set_track_mix does not accept: aim, db. Accepted: pan, track_name."
                 + " The argument was NOT applied - do not assume it took effect."
         )
     }

@@ -454,16 +454,6 @@ extension MCPServer {
         )
     }
 
-    func handleSelectRegion(_ arguments: [String: Any]) throws -> Any {
-        return try logic.selectRegion(
-            trackName: requiredString("track_name", in: arguments),
-            regionName: arguments["region_name"] as? String,
-            startBar: arguments["start_bar"] as? Int,
-            exclusive: arguments["exclusive"] as? Bool ?? true,
-            trackNumber: try regionTrackNumber(in: arguments)
-        )
-    }
-
     func handleDeleteRegion(_ arguments: [String: Any]) throws -> Any {
         return try logic.deleteRegion(
             trackName: requiredString("track_name", in: arguments),
@@ -483,12 +473,48 @@ extension MCPServer {
         )
     }
 
+    /// One tool over two implementations: the element-level selection of ONE
+    /// region (`mode: "region"`, the default), and Logic's own selection
+    /// COMMANDS for a track's worth of them, everything after a point, all, or
+    /// none.
+    ///
+    /// Folded 2026-09-03 (token audit fold #5, `logic_select_region` removed):
+    /// two tools advertised 5,648 bytes of `tools/list` to say the same things
+    /// about anchors, project-wide scope and counts-see-visible-rows twice.
+    /// Both write paths are untouched — `mode` is the whole of the dispatch,
+    /// and it defaults to the single-region one, so a call written for the old
+    /// tool works under the new name unchanged.
     func handleSelectRegions(_ arguments: [String: Any]) throws -> Any {
-        return try logic.selectRegions(
-            mode: try requiredString("mode", in: arguments),
-            trackName: arguments["track_name"] as? String,
+        let mode = (arguments["mode"] as? String) ?? "region"
+        let exclusive = arguments["exclusive"] as? Bool
+        guard mode == "region" else {
+            // `exclusive` is the one argument that means nothing to the command
+            // modes: each of them selects its anchor exclusively first and then
+            // extends, so there is no additive form of "the whole track" to
+            // ask for. Refused rather than dropped — a caller who passed it
+            // believes their existing selection is being kept.
+            guard exclusive == nil else {
+                throw LogicianError.invalidArguments(
+                    "exclusive belongs to mode 'region', which selects ONE region. Mode '\(mode)'"
+                        + " fires Logic's own selection command, which REPLACES the selection"
+                        + " (the anchor is selected exclusively first, then extended from)."
+                        + " To add one more region to what it selected, call again with"
+                        + " mode 'region' and exclusive: false. NOTHING was selected."
+                )
+            }
+            return try logic.selectRegions(
+                mode: mode,
+                trackName: arguments["track_name"] as? String,
+                regionName: arguments["region_name"] as? String,
+                startBar: arguments["start_bar"] as? Int,
+                trackNumber: try regionTrackNumber(in: arguments)
+            )
+        }
+        return try logic.selectRegion(
+            trackName: requiredString("track_name", in: arguments),
             regionName: arguments["region_name"] as? String,
             startBar: arguments["start_bar"] as? Int,
+            exclusive: exclusive ?? true,
             trackNumber: try regionTrackNumber(in: arguments)
         )
     }

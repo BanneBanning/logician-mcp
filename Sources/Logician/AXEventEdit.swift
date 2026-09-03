@@ -462,7 +462,7 @@ extension LogicAccessibility {
                     + " (columns: \(table.columns.joined(separator: ", "))). Nothing here is a MIDI"
                     + " event and none of these cells is editable. Select a region first —"
                     + " pass track_name (plus region_name and/or start_bar), or call"
-                    + " logic_select_region — and read it back with logic_list_events."
+                    + " logic_select_regions — and read it back with logic_list_events."
             ))
         }
         // Logic's own two counts disagreeing with each other is the truncated

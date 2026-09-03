@@ -435,7 +435,7 @@ extension MCPServer {
             + " the lane's breakpoints. THE CONTROL IS LEFT WHERE THE AUTOMATION LAST PUT IT, not"
             + " where it stood before the curve was written (measured 2026-09-03: a track at"
             + " -5.1 dB read -2.9 dB after its curve was deleted), so check the static value with"
-            + " logic_mixer_snapshot and set it with logic_set_track_volume if it matters."
+            + " logic_mixer_snapshot and set it with logic_set_track_mix if it matters."
         appendWarning(verdict.warning, to: &result)
         return result
     }

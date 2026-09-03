@@ -958,7 +958,7 @@ extension LogicAccessibility {
             ) {
                 throw LogicianError.preconditionUnmet(
                     refusal + " Call this tool with no track_name to read whatever the panel IS "
-                        + "showing, or select the region with logic_select_region first."
+                        + "showing, or select the region with logic_select_regions first."
                 )
             }
             settled = panel

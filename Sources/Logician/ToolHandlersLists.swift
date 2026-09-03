@@ -47,7 +47,7 @@ extension MCPServer {
             "columns": read.columns,
             "scope": "the SELECTED region (or the selected track's region at the playhead) — this"
                 + " is what Logic's Event List shows, never the whole project. Select with"
-                + " track_name/region_name/start_bar here, or with logic_select_region first.",
+                + " track_name/region_name/start_bar here, or with logic_select_regions first.",
             "note": "Read out of View > List Editors > Event; the pane and the previously selected"
                 + " tab are restored afterwards. Values are Logic's own cell texts, plus parsed"
                 + " bar/beat/pitch/velocity/length where the columns were recognised."

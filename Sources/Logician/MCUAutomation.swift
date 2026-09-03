@@ -64,7 +64,7 @@ extension MCUController {
                 + " the mode press could never be confirmed and no automation can be recorded"
                 + " on this strip. Automate the tracks feeding the bus instead"
                 + " (logic_track_info names each track's output), or write a static value with"
-                + " logic_set_track_volume / logic_set_send_level."
+                + " logic_set_track_mix / logic_set_send_level."
         )
     }
 
