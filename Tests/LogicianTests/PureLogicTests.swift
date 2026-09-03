@@ -791,7 +791,8 @@ final class PureLogicTests: XCTestCase {
         guard case .verificationFailed(_, _, let restored)? = error else {
             return XCTFail("expected verificationFailed, got \(String(describing: error))")
         }
-        XCTAssertTrue(restored)
+        // `true`, not merely non-nil: the restore was made AND confirmed.
+        XCTAssertEqual(restored, true)
     }
 
     func testStepToTextReportsRestoredFalseWhenAnEndStopSwallowedTheMove() {
@@ -804,7 +805,7 @@ final class PureLogicTests: XCTestCase {
             return XCTFail("expected verificationFailed, got \(String(describing: error))")
         }
         XCTAssertNotEqual(actual, "val0", "the fixture must actually end up elsewhere")
-        XCTAssertFalse(restored, "the LCD reads \(actual), not the original value")
+        XCTAssertEqual(restored, false, "the LCD reads \(actual), not the original value")
     }
 
     func testStepToTextReportsRestoredFalseWhenTheUndoCannotBeSent() {
@@ -832,7 +833,7 @@ final class PureLogicTests: XCTestCase {
         guard case .verificationFailed(_, _, let restored)? = caught else {
             return XCTFail("expected verificationFailed, got \(String(describing: caught))")
         }
-        XCTAssertFalse(restored, "an undo that never reached the bridge is not a restoration")
+        XCTAssertEqual(restored, false, "an undo that never reached the bridge is not a restoration")
     }
 
     func testStepToTextStillReturnsTheMatchWhenItFindsOne() {
