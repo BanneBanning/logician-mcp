@@ -482,8 +482,15 @@ extension LogicAccessibility {
             ]
         }
         try sendKeystrokeToFrontmostLogic(virtualKey: 8, label: "C (cycle)")
-        for _ in 0..<20 {
-            Thread.sleep(forTimeInterval: 0.1)
+        // Look first, sleep only on a miss: an `AXUIElementPerformAction`/key
+        // command's effect is typically readable in single-digit ms, so a
+        // fixed 100 ms sleep before every look was mostly waste on the common
+        // case (borrowed estimate, pattern #9 — never measured live here
+        // because the MCU plane answered on every profiled call, see
+        // profiles/logic_set_cycle.md C1, 2026-09-02). Same 20-look budget,
+        // just moved off the front of it.
+        for attempt in 0..<20 {
+            if lookFirstShouldSleep(attempt: attempt) { Thread.sleep(forTimeInterval: 0.1) }
             if cycleStateFromRuler() == enabled {
                 return [
                     "success": true,
@@ -726,8 +733,15 @@ extension LogicAccessibility {
         guard status == .success else {
             throw LogicianError.writeFailed("AXPress on \(description) returned AXError \(status.rawValue)")
         }
-        for _ in 0..<20 {
-            Thread.sleep(forTimeInterval: 0.1)
+        // Look first, sleep only on a miss — see the identical rationale
+        // above `setCycle`'s key-command fallback (profiles/
+        // logic_set_cycle.md C1, 2026-09-02): an `AXPress` is synchronous and
+        // its effect is usually readable in single-digit ms, so this loop
+        // used to burn a guaranteed 100 ms on the common case. Same 20-look
+        // budget, shared by `setCycle`'s primary AX route and `setPlaying`'s
+        // start path.
+        for attempt in 0..<20 {
+            if lookFirstShouldSleep(attempt: attempt) { Thread.sleep(forTimeInterval: 0.1) }
             guard let refreshed = controlBarChild(try controlBarGroup(), description) else { continue }
             if (stringAttribute(refreshed, kAXValueAttribute as String) == "1") == desired {
                 return [

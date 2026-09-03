@@ -1214,7 +1214,7 @@ Parameters:
 
 #### `logic_set_metronome`
 
-Turn the metronome click on or off via the control surface's click button, verified by reading the control bar's own Metronome Click checkbox back (the same field logic_get_transport reports), with the surface's click LED as a second source. Compare-and-set: already-correct is reported as state: "already_on" / "already_off" and nothing is pressed; a press that does not land is undone. Count-in is a separate setting and is not touched. MAY RETURN `warning` — read it before the rest of the result (RESULT CONTRACT in the server instructions).
+Turn the metronome click on or off via the control surface's click button, verified by reading the surface's own click LED back, with the control bar's Metronome Click checkbox (the same field logic_get_transport reports) as a second source when the LED cannot be read. Compare-and-set: already-correct is reported as state: "already_on" / "already_off" and nothing is pressed; a press that does not land is undone. Count-in is a separate setting and is not touched. MAY RETURN `warning` — read it before the rest of the result (RESULT CONTRACT in the server instructions).
 
 Parameters:
 

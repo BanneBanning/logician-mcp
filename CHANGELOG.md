@@ -1440,6 +1440,23 @@ with every render coming back as audio the agent can listen to.
   accepted the first position at or past `start_bar` once the timecode had visibly moved,
   which proves motion and not position; the pre-roll bar must be observed first now, and a
   transport already past it refuses instead of streaming the whole take somewhere else.
+- **The metronome toggle is fast now: 172-181 ms down to 4-20 ms warm, 8.9 ms down to
+  1.4 ms already-set.** Its verification used to sleep 150 ms BEFORE every look — up to
+  twelve times — although the press's own event wait had already confirmed the LED landed
+  in 0.3-7.4 ms; the loop now checks that result first and sleeps only on an actual miss,
+  the way the rest of the surface's wait loops do. It also used to read the control bar's
+  Metronome Click checkbox through a full Accessibility walk FIRST on every call, including
+  the already-set fast path, even though the free, always-populated click LED is the
+  fallback of record and — on the project this was measured against — the only one that
+  ever resolves; the LED is asked first now, and the checkbox is a fallback for when the
+  LED itself cannot be read.
+- **`logic_set_cycle` and `logic_set_playing` no longer downshift to the slow
+  Accessibility fallback just because Logic has been quiet for a while.** Both gated on a
+  bare in-memory mirror read that returns nothing once it is older than ten minutes, where
+  every other control-surface tool wakes an idle-but-live surface with one probe press
+  first; an agent that came back to an idle session would see cycle and play/stop toggles
+  silently get slower and lose their control-surface verification story instead of just
+  working. They use the same wake-aware gate as the rest of the surface now.
 
 ### Known limitations (honest by design)
 
