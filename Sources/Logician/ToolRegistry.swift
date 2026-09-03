@@ -260,7 +260,7 @@ extension MCPServer {
                         "start_bar": ["type": "integer", "minimum": 1],
                         "end_bar": ["type": "integer", "minimum": 2, "description": "Exclusive: the range ends where this bar begins. Must be greater than start_bar."],
                         "label": ["type": "string", "description": "Filename prefix for the set, e.g. 'cue7'. The track name is appended per stem."],
-                        "expected_project_path": ["type": "string", "description": "Refuse unless this is the open project."]
+                        "expected_project_path": MCPServer.expectedProjectPathRefuseProperty
                     ],
                     "required": ["tracks", "start_bar", "end_bar"],
                     "additionalProperties": false
@@ -297,7 +297,7 @@ extension MCPServer {
                         "tempo": ["type": "number", "description": "Override BPM for bar math (method 'render'); default reads the control bar. Only used when the tempo map cannot be read from the Tempo List — a readable map is integrated and this override does not apply to it. Constant METER is still assumed (signature changes are not read)."],
                         "beats_per_bar": ["type": "number", "description": "Override meter for bar math; default reads the control bar's time signature."],
                         "keep_change": ["type": "boolean", "description": "true keeps the change after measuring; default false rolls it back."],
-                        "expected_project_path": ["type": "string", "description": "Refuse unless this is the open project."],
+                        "expected_project_path": MCPServer.expectedProjectPathRefuseProperty,
                         "include_audio": MCPServer.includeAudioProperty,
                         "blind": MCPServer.blindProperty
                     ],
@@ -322,7 +322,7 @@ extension MCPServer {
                         "track_name": ["type": "string"],
                         "max_pages": ["type": "integer", "description": "Page cap, default 12 (a page this build has not read before costs ~2.1 s of Logic's own indicator fade; large instruments have 80+). The pages actually read are cached, so repeating the same call is cheap. pages_total and truncated report what was left out."],
                         "track_number": ["type": "integer"],
-                        "expected_project_path": ["type": "string", "description": "Refuse unless this is the open project."]
+                        "expected_project_path": MCPServer.expectedProjectPathRefuseProperty
                     ],
                     "required": ["track_name"],
                     "additionalProperties": false
@@ -346,7 +346,7 @@ extension MCPServer {
                         "target_value": ["type": "string"],
                         "expected_current_value": ["type": "string"],
                         "tolerance": ["type": "number"],
-                        "expected_project_path": ["type": "string", "description": "Refuse unless this is the open project."]
+                        "expected_project_path": MCPServer.expectedProjectPathRefuseProperty
                     ],
                     "required": ["track_name", "parameter", "target_value"],
                     "additionalProperties": false
@@ -1441,7 +1441,7 @@ extension MCPServer {
                         "end_bar": ["type": "integer", "minimum": 2, "description": "Exclusive: the slice ends where this bar begins. Must be greater than start_bar."],
                         "tempo": ["type": "number", "description": "Override BPM for the bar math; default reads the control bar. Only used when the tempo map cannot be read from the Tempo List — a readable map is integrated instead. Constant METER is still assumed (signature changes are not read)."],
                         "beats_per_bar": ["type": "number", "description": "Override meter; default reads the control bar's time signature."],
-                        "expected_project_path": ["type": "string", "description": "Absolute .logicx path; when given, the open project's AXDocument must match before anything is changed."],
+                        "expected_project_path": MCPServer.expectedProjectPathStrictProperty,
                         "include_audio": MCPServer.includeAudioProperty,
                         "blind": MCPServer.blindProperty
                     ],
@@ -1669,7 +1669,7 @@ extension MCPServer {
                     "properties": [
                         "track_name": ["type": "string", "description": "Exact track name as shown in the track header."],
                         "track_number": ["type": "integer", "description": "1-based track number; required when several visible tracks share the name."],
-                        "expected_project_path": ["type": "string", "description": "Absolute .logicx path; when given, the open project's AXDocument must match before anything is changed."]
+                        "expected_project_path": MCPServer.expectedProjectPathStrictProperty
                     ],
                     "required": ["track_name"],
                     "additionalProperties": false
@@ -1689,7 +1689,7 @@ extension MCPServer {
                         "track_name": ["type": "string", "description": "Exact name of the stack's main track."],
                         "track_number": ["type": "integer", "description": "1-based track number; required when several visible tracks share the name."],
                         "expanded": ["type": "boolean", "description": "true to show the stack's subtracks, false to hide them."],
-                        "expected_project_path": ["type": "string", "description": "Absolute .logicx path; when given, the open project's AXDocument must match before anything is changed."]
+                        "expected_project_path": MCPServer.expectedProjectPathStrictProperty
                     ],
                     "required": ["track_name", "expanded"],
                     "additionalProperties": false
@@ -1730,7 +1730,7 @@ extension MCPServer {
                         "plugin_name": ["type": "string", "description": "Menu title of the plugin, e.g. 'Gain', 'Channel EQ', 'Decapitator'."],
                         "format": ["type": "string", "description": "Channel format submenu item when offered, default 'Stereo'."],
                         "allow_mouse": ["type": "boolean", "description": "Permit the Accessibility chooser fallback, which moves the pointer. Default false (data-driven MCU browser only)."],
-                        "expected_project_path": ["type": "string", "description": "Refuse unless this is the open project."]
+                        "expected_project_path": MCPServer.expectedProjectPathRefuseProperty
                     ],
                     "required": ["track_name", "plugin_name"],
                     "additionalProperties": false
@@ -1755,7 +1755,7 @@ extension MCPServer {
                         "insert_slot": ["type": "integer", "minimum": 1, "maximum": 8, "description": "Needed only when the same plugin sits in several slots - names which one the mouse-free route removes. Its LCD cell must show plugin_name or the call refuses without pressing anything." + Tool.mcuInsertSlotNote],
                         "insert_index": ["type": "integer", "description": "Same-plugin disambiguator for the allow_mouse Accessibility FALLBACK only (the mouse-free route takes insert_slot instead) - and DESTRUCTIVE if it is wrong: the plugin at that ordinal is the one removed." + Tool.axInsertIndexNote],
                         "allow_mouse": ["type": "boolean", "description": "Permit the Accessibility chooser fallback, which moves the pointer. Default false (data-driven MCU browser only)."],
-                        "expected_project_path": ["type": "string", "description": "Refuse unless this is the open project."]
+                        "expected_project_path": MCPServer.expectedProjectPathRefuseProperty
                     ],
                     "required": ["track_name", "plugin_name"],
                     "additionalProperties": false
@@ -2194,7 +2194,7 @@ extension MCPServer {
                         "instrument": ["type": "string", "description": "Instrument name as Logic's browser shows it, e.g. 'Drum Kit Designer', 'Sampler', 'Analog Lab V'. May include the format ('Drum Kit Designer Stereo')."],
                         "format": ["type": "string", "description": "Channel format to pick when a plugin offers several: 'Stereo', 'Mono' or 'Multi-Output' (Logic also spells that last one 'Multi Output'). Matched case-insensitively against the suffix Logic puts on the browser entry. Default: the first entry whose name matches, and the result reports which format that was."],
                         "max_steps": ["type": "integer", "description": "How many catalog ENTRIES to look at before giving up, default 700 — entries actually shown, not messages sent. A wall-clock budget scales with it (15 s at the default), so a fruitless search stops in seconds instead of minutes and raising this really does buy a longer search. The list holds every installed instrument in every channel format and is grouped by vendor, not alphabetical, so a 'never showed' refusal reports how much of the catalog it got through and which bound it hit."],
-                        "expected_project_path": ["type": "string", "description": "Refuse unless this is the open project."]
+                        "expected_project_path": MCPServer.expectedProjectPathRefuseProperty
                     ],
                     "required": ["track_name", "instrument"],
                     "additionalProperties": false
@@ -2255,12 +2255,13 @@ extension MCPServer {
     /// schema fragment is cheap to rebuild.
     static var includeAudioProperty: [String: Any] { [
         "type": "boolean",
-        // The reasoning — what passing false actually costs you, and how to
-        // listen without the blocks — is the instructions' AUDIO RESULTS
-        // paragraph, sent once per session instead of four times per list.
-        // Said here rather than in four descriptions: the link is the reason
-        // false is no longer a dead end.
-        "description": "Attach the rendered audio as MCP audio content blocks, default true — see AUDIO RESULTS in the server instructions before passing false. Either way the result carries a resource_link to logician://captures/<filename>, so false still leaves you able to fetch the audio with resources/read."
+        // The reasoning — what passing false actually costs you, the
+        // resource_link fallback, how to listen without the blocks — is the
+        // instructions' AUDIO RESULTS AND LISTENING paragraph, sent once per
+        // session instead of four times per list. Shortened 2026-09-03
+        // (token audit Cut 1) to an actual pointer: the paragraph already
+        // said everything below used to repeat.
+        "description": "Attach the rendered audio as MCP audio content blocks (default true) — see AUDIO RESULTS AND LISTENING in the server instructions before passing false."
     ] }
 
     /// The `blind: true` opt-in, declared identically by the three tools whose
@@ -2273,7 +2274,31 @@ extension MCPServer {
     /// `[String: Any]` is not Sendable.
     static var blindProperty: [String: Any] { [
         "type": "boolean",
-        "description": "LISTEN FIRST: withhold this result's measurements of the audio — peak/RMS metrics and, for an A/B, the dB deltas — so the only thing left to describe the sound from is the sound. The audio blocks, every file path, `success`, `verified`, `state` and any `warning` all still come back untouched, and the withheld keys are sealed into the JSON file named by `sealed_metrics_path`, which you open AFTER writing down what you heard (nothing is re-rendered). Default false. If you can receive audio, pass true on your FIRST listen of any material — see LISTENING in the server instructions."
+        // Shortened 2026-09-03 (token audit Cut 1): what it withholds, what
+        // it keeps, and the sealed-file mechanism are spelled out in full in
+        // the instructions' AUDIO RESULTS AND LISTENING paragraph, which
+        // every session already pays for once.
+        "description": "LISTEN FIRST: withhold this result's audio measurements, sealed into `sealed_metrics_path`, until you've described what you heard (default false) — see AUDIO RESULTS AND LISTENING in the server instructions."
+    ] }
+
+    /// The plain compare-and-set form of `expected_project_path`: refuse the
+    /// whole call unless the named path is the open project. Declared
+    /// identically by seven tools (introduced 2026-09-03, token audit Cut 1,
+    /// replacing seven hand-typed copies of the same nine words).
+    static var expectedProjectPathRefuseProperty: [String: Any] { [
+        "type": "string",
+        "description": "Refuse unless this is the open project."
+    ] }
+
+    /// The stricter compare-and-set form: an ABSOLUTE path checked against
+    /// Logic's own `AXDocument` before the write goes out, worded per call
+    /// site for what "before" means there (nothing changed / not a byte sent
+    /// / nothing pressed). Declared once for the "before anything is changed"
+    /// wording, shared by the three tools whose write has no more specific
+    /// verb to name (introduced 2026-09-03, token audit Cut 1).
+    static var expectedProjectPathStrictProperty: [String: Any] { [
+        "type": "string",
+        "description": "Absolute .logicx path; when given, the open project's AXDocument must match before anything is changed."
     ] }
 
     /// What `tools/list` puts on the wire, derived from the registry —
