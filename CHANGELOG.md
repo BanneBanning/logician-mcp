@@ -2356,7 +2356,25 @@ with every render coming back as audio the agent can listen to.
   re-run only rebuilds what changed. Needs the repo public and a pushed tag before
   either path resolves — see `packaging/README.md`.
 
-### Known limitations (honest by design)
+- **The legal and community paperwork a public repo needs, written from what the
+  code and history actually show.** `docs/PROVENANCE.md` traces the Mackie Control
+  implementation to its two real sources — live observation against the
+  maintainer's own Logic Pro, and the publicly-published Mackie Control Universal
+  conventions — states plainly that no confidential specification or GPL-licensed
+  code or tables were used, and names the one thing the repository's own history
+  cannot settle (where the button/note-number table's very first draft came from,
+  since it predates the earliest fine-grained commit) as an open question rather
+  than papering over it. `NOTICE.md` states the Apple/LOUD Audio trademark
+  disclaimer the MIT license text doesn't cover. `CONTRIBUTING.md` sets DCO sign-off
+  (`git commit -s`) as the only bar to a PR, points at the same build/test gates CI
+  runs, and names the non-negotiables (verified writes, honest `unavailable` over a
+  bare `{}`, a hermetic test suite CI already greps for). `SECURITY.md` says plainly
+  that Logician itself has no network code, but that the MCP client on the other end
+  of stdio may forward project names and audio to a cloud model. The four issue
+  templates replacing the single generic one (`setup-problem`, `logic-regression`,
+  `wrong-change`, `client-or-audio`) each ask for `logician doctor --redact` instead
+  of a raw `logic_health` paste, with a visible warning that the unredacted form
+  carries the project's file path and name.
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.
 - Tempo curves are integrated as steps (Logic's Tempo List does not expose them);
