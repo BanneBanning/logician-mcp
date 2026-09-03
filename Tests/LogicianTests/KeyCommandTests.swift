@@ -39,6 +39,18 @@ final class KeyCommandTests: XCTestCase {
         )
     }
 
+    func testFreeNoteStepsOverAProductCommandSittingInTheUpperRange() {
+        // `Open Mixer…` reserves 123 as of 2026-09-03, and 123 is INSIDE the
+        // 122-127 fallback range — so the ranges no longer avoid the named
+        // set by construction the way they did while it was all 100-121.
+        // `freeNote` skips its own reservations; a caller that reserves
+        // nothing still gets the ranges verbatim.
+        var taken = Set(KeyCommandRegistry.learnableNoteRange)
+        taken.insert(122)
+        XCTAssertEqual(KeyCommandRegistry.freeNote(taken: taken), 124)
+        XCTAssertEqual(KeyCommandRegistry.freeNote(taken: taken, reserved: []), 123)
+    }
+
     func testFreeNoteFallsToTheLowRangeLast() {
         var taken = Set(KeyCommandRegistry.learnableNoteRange)
         taken.formUnion(122...127)

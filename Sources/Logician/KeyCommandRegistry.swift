@@ -191,9 +191,22 @@ enum KeyCommandRegistry {
     /// registry file. nil when all three ranges are full — 112 commands is far
     /// past anything real, and a wrong answer there would silently rebind
     /// something, so it refuses instead of wrapping.
-    static func freeNote(taken: Set<Int>) -> Int? {
+    ///
+    /// `reserved` is what keeps the ladder off the PRODUCT's own notes, and it
+    /// is a parameter rather than an assumption about where they live. Until
+    /// 2026-09-03 the named set occupied exactly 100-121, so the three ranges
+    /// above avoided it BY CONSTRUCTION and nothing had to say so. Then
+    /// `Open Mixer…` took 123 — inside the second range — and the arithmetic
+    /// that used to be safe would have handed an arbitrary command the note
+    /// `logic_set_mixer` is about to want, the moment 60-99 filled up. Every
+    /// caller passes `takenNotes()`, which already unions these in; the
+    /// default makes the guarantee hold for a caller that does not.
+    static func freeNote(
+        taken: Set<Int>,
+        reserved: Set<Int> = Set(allNamedCommands.map(\.preferredNote))
+    ) -> Int? {
         let order = Array(learnableNoteRange) + Array(122...127) + Array(21...59)
-        return order.first { !taken.contains($0) }
+        return order.first { !taken.contains($0) && !reserved.contains($0) }
     }
 
     /// The notes one learn may try, in order: the chosen note first, then
@@ -337,7 +350,7 @@ enum KeyCommandRegistry {
     /// French spells those `Modifier les assignations…` under
     /// `Raccourcis clavier` (both captured — see `LogicUIStrings.Menu`).
     ///
-    /// **The 28 French row names below are NOT captured.** Activating
+    /// **The 29 French row names below are NOT captured.** Activating
     /// `Modifier les assignations…` by `AXPress` did not open the window in
     /// two attempts, so the rows could not be read. Note when someone does
     /// capture them: `standardCommands`' search TERMS are English substrings
@@ -366,6 +379,30 @@ enum KeyCommandRegistry {
         static let nextPluginSetting = "Next Plug-in Setting for topmost Plug-in Window"
         static let previousPluginSetting = "Previous Plug-in Setting for topmost Plug-in Window"
         static let createMarker = "Create Marker"
+
+        /// The Mixer window, added 2026-09-03 so `logic_set_mixer` stops
+        /// walking the menu bar. READ OFF Logic 12.3.1's own Key Commands
+        /// window that day (dry-run search term `mixer`), not translated from
+        /// a menu — note LOGIC'S OWN ELLIPSIS, U+2026, which is what the row
+        /// match compares against; its default shortcut is ⌘2.
+        ///
+        /// It sits under `Global Commands`, so it fires regardless of
+        /// keyboard focus and needs no Tracks-area probe. It only OPENS:
+        /// Logic's neighbouring `Show/Hide Mixer` row toggles the Mixer PANE
+        /// rather than the WINDOW this tool manages, so the close direction
+        /// stays the window's own close button — which was never a mouse
+        /// click.
+        ///
+        /// THE ROW THAT IS NOT HERE. `Open/Close Track Stack` was to join it
+        /// (retiring `logic_set_track_stack`'s synthetic mouse click) and
+        /// Logic would not learn it: four rounds, three candidate notes each,
+        /// through both learn tools, the row's assignment column never
+        /// changing and nothing landing on any neighbouring row either. This
+        /// same driver bound `Open Mixer…` on the first try in the same
+        /// session, so the driver was fine. Logic's directional
+        /// `Open Track Stack` / `Close Track Stack` rows are the untried
+        /// candidate and cost two rows in the user's set rather than one.
+        static let openMixer = "Open Mixer\u{2026}"
 
         // MARK: Learned on demand (not in `standardCommands`)
         //
@@ -398,6 +435,7 @@ enum KeyCommandRegistry {
             nudgeRightByBar, nudgeLeftByBar, nudgeRightByBeat, nudgeLeftByBeat,
             duplicateTrack, deleteTrack, renameTrack,
             nextPluginSetting, previousPluginSetting, createMarker,
+            openMixer,
             removeSilenceFromAudioRegion,
             selectAllRegionsOfSameTrack, selectAllFollowing,
             selectAllFollowingOfSameTrack, selectAll, deselectAll
@@ -447,7 +485,17 @@ enum KeyCommandRegistry {
         ("rename track", Name.renameTrack, 119),
         ("next plug-in", Name.nextPluginSetting, 120),
         ("previous plug-in", Name.previousPluginSetting, 121),
-        ("create marker", Name.createMarker, 104)
+        ("create marker", Name.createMarker, 104),
+        // Note 123, deliberately ABOVE the 100-121 block and outside
+        // `learnableNoteRange` (60-99): an arbitrary `logic_learn_key_command`
+        // must never be handed a note one of the product's own tools wants,
+        // and `takenNotes()` reserves it the moment it is named here —
+        // whether or not the user has run the install round yet. The note is
+        // PREFERRED, not guaranteed: on the machine this was measured on
+        // `Open Mixer…` was already bound at 66 by an earlier
+        // `logic_learn_key_command`, the registry matches by NAME, and the
+        // health census counted it as installed either way.
+        ("open mixer", Name.openMixer, 123)
     ]
 
     /// Registered, reserved, spelled — and NOT written into the user's Logic

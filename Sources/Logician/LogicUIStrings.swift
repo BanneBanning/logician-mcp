@@ -655,8 +655,16 @@ enum LogicUIStrings {
     /// | `smartTempo` | `Smart Tempo…` — **survives** |
     /// | `keyCommands` | `Raccourcis clavier` |
     /// | `editAssignments` | `Modifier les assignations…` |
-    /// | `window` | `Fenêtre` |
-    /// | `openMixer` | `Ouvrir la table de mixage` |
+    /// | ~~`window`~~ | ~~`Fenêtre`~~ — **retired 2026-09-03** |
+    /// | ~~`openMixer`~~ | ~~`Ouvrir la table de mixage`~~ — **retired 2026-09-03** |
+    ///
+    /// The last two are kept in this table as a record, not as constants:
+    /// `logic_set_mixer` opened the Mixer through `Window > Open Mixer` until
+    /// 2026-09-03 and now fires Logic's own `Open Mixer…` key command, which
+    /// is a MIDI note and therefore locale-free. That took the last two
+    /// English menu literals off a `.core` tool's path, and nothing else in
+    /// this server addresses the `Window` menu — which is why both constants
+    /// are gone rather than merely unreferenced.
     ///
     /// Two traps a plain translation would walk into:
     ///
@@ -698,9 +706,6 @@ enum LogicUIStrings {
         /// `Logic Pro > Key Commands > Edit Assignments…`
         static let keyCommands = "Key Commands"
         static let editAssignments = "Edit Assignments"
-        /// `Window > Open Mixer`
-        static let window = "Window"
-        static let openMixer = "Open Mixer"
         /// `Mix > Delete Automation > …`. Read off Logic Pro 12.3.1's own
         /// menu bar 2026-09-03 with nothing pressed: the submenu is BUILT
         /// (five items, each publishing its shortcut), so this route pays no
@@ -760,7 +765,7 @@ enum LogicUIStrings {
         /// that is what every call site in this server spells.
         ///
         /// `en` is absent on purpose: English needs no mapping, and an
-        /// identity table would be 28 lines that can drift out of step with
+        /// identity table would be 30 lines that can drift out of step with
         /// `Name`. Anything not listed here is a language nobody has
         /// captured.
         ///

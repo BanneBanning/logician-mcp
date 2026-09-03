@@ -2148,6 +2148,40 @@ with every render coming back as audio the agent can listen to.
   `inspector_restored: true` six times out of six, where the first call alone used to
   fail. When Logic does refuse the press, the result carries `inspector_note` saying
   which window is holding the Inspector open and how to let go of it.
+- **Opening the Mixer no longer walks the menu bar — it fires Logic's own command, and
+  lands about a third faster.** `logic_set_mixer {open: true}` pressed
+  `Window > Open Mixer` and waited for the pane; it now sends Logic's `Open Mixer…` key
+  command as a MIDI note on the dedicated port (`write_route: "key_command"`). Measured
+  on the reference project the same session, warm: **684 ms and 543 ms against 1,035 ms**
+  for the menu press, with `already_open` unchanged at 230/241 ms. Closing is untouched
+  at 689/709 ms — the window's own close button was never a mouse click, and Logic's
+  409–411 ms Accessibility teardown after a close is not reachable by any write route.
+  The window list still proves it either way, 4 opens and 4 closes distinguished exactly,
+  and the poll now looks before it sleeps instead of spending a flat 120 ms on a window
+  that is already there. The durable half is not the milliseconds: it takes the last
+  `Window` and `Open Mixer` English menu literals off a `.core` tool's path, because a
+  key command is a note and Logic does not care what language bound it. It costs one row
+  in the one-time key-command install round, 19 to 20, **learned live in 1.4 s** — the
+  first measurement of a single learn, against the 5.0–6.7 s the code had estimated and
+  the 10.1 s per command the 22-command round averaged before this release's install-round
+  fixes.
+- **And the track-stack fold stays on the mouse, because Logic will not give it up.**
+  `logic_set_track_stack` is the one write in this server that briefly takes the pointer
+  without an `allow_mouse` opt-in, and the plan was to retire it the same way. Logic has
+  the command — `Open/Close Track Stack` is a real row in its Key Commands window — and
+  Logic simply refuses to learn a MIDI note for it: four rounds on 2026-09-03, three
+  candidate notes each, through both `logic_setup_key_commands` and
+  `logic_learn_key_command`, with the row's assignment column never changing once and no
+  neighbouring row picking anything up either (the whole `track stack` filter was audited
+  row by row, before and after, byte-identical). The same driver bound `Open Mixer…` on
+  the first try in the same session, so this is Logic's answer and not a broken tool. The
+  conversion was reverted rather than shipped half-working. What the attempt did leave is
+  a warning worth having: on that same day six consecutive folds refused with *"hit test
+  at the position of disclosure triangle … did not resolve to that element"* while every
+  Accessibility read around them worked — a coordinate-driven route can go dead without
+  anything the server reads being able to see it. The tool now says all of this in its
+  own description, and `write_route` names `cg_click_on_ax_frame` so it is never a
+  surprise.
 
 - **A strip's level, pan, mute and solo are ONE call, and one tool.** `logic_set_track_mix`
   takes any subset of the four — `{volume_db: -3, pan: 12, mute: false}` is a single round

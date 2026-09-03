@@ -72,11 +72,80 @@ final class KeyCommandInstallSetTests: XCTestCase {
         XCTAssertEqual(Set(notes).count, notes.count)
     }
 
-    func testTheInstallRoundIsNineteenCommands() {
+    func testTheInstallRoundIsTwentyCommands() {
         // The number is quoted in the tool description and in the round's own
         // arithmetic, so it is worth failing on rather than drifting.
-        XCTAssertEqual(KeyCommandRegistry.standardCommands.count, 19)
-        XCTAssertEqual(KeyCommandRegistry.allNamedCommands.count, 22)
+        // 19 until 2026-09-03, when `logic_set_mixer` stopped walking the
+        // menu bar (see below).
+        XCTAssertEqual(KeyCommandRegistry.standardCommands.count, 20)
+        XCTAssertEqual(KeyCommandRegistry.allNamedCommands.count, 23)
+    }
+
+    // MARK: - The command the 2026-09-03 conversion added
+
+    /// `Open Mixer…` replaced a menu walk through two English literals in a
+    /// `.core` tool, and it is paid for by exactly one row in the user's own
+    /// key command set. That trade is the argument for its membership, so it
+    /// is written down where a future trim will read it.
+    func testTheConvertedRouteIsInTheInstallRound() {
+        XCTAssertTrue(
+            installed.contains(KeyCommandRegistry.Name.openMixer),
+            "logic_set_mixer fires this on every open; without it the tool learns it on first"
+                + " use and the user pays the Key Commands window mid-session"
+        )
+    }
+
+    /// The companion that did NOT make it, pinned so nobody re-adds it from
+    /// the review without re-running the experiment.
+    ///
+    /// `logic_set_track_stack` was converted to Logic's own
+    /// `Open/Close Track Stack` and Logic would not learn the row: four
+    /// rounds on 2026-09-03, three candidate notes each, through both
+    /// `logic_setup_key_commands` and `logic_learn_key_command`, the row's
+    /// assignment column never changing and no neighbouring row picking
+    /// anything up either. A row here would be a one-time irreversible write
+    /// into the user's Logic that can only ever report `not_found`.
+    func testTheStackFoldIsNotInTheInstallRoundAndIsNotSpelledAtAll() {
+        for name in ["Open/Close Track Stack", "Open Track Stack", "Close Track Stack",
+                     "Open/Close All Track Stacks"] {
+            XCTAssertFalse(installed.contains(name), name)
+            XCTAssertFalse(KeyCommandRegistry.Name.all.contains(name), name)
+        }
+    }
+
+    func testTheConvertedCommandSitsOutsideTheArbitraryLearnRange() {
+        // An arbitrary `logic_learn_key_command` picks from 60-99. A product
+        // command that lived in there would be indistinguishable from an
+        // agent's own binding in the user's window later.
+        let note = KeyCommandRegistry.allNamedCommands
+            .first { $0.name == KeyCommandRegistry.Name.openMixer }?.preferredNote
+        XCTAssertEqual(note, 123)
+        if let note {
+            XCTAssertFalse(KeyCommandRegistry.learnableNoteRange.contains(note))
+            XCTAssertTrue(
+                KeyCommandRegistry.takenNotes().contains(note),
+                "note \(note) is not reserved, so an arbitrary learn could take it"
+            )
+        }
+    }
+
+    func testAFreeNoteNeverLandsOnTheConvertedCommandsReservedNote() {
+        var taken = KeyCommandRegistry.takenNotes()
+        for _ in 0..<8 {
+            guard let note = KeyCommandRegistry.freeNote(taken: taken) else { break }
+            XCTAssertNotEqual(note, 123, "note 123 is reserved for the Mixer command")
+            taken.insert(note)
+        }
+    }
+
+    func testTheMixerCommandKeepsLogicsOwnEllipsis() {
+        // Logic's row is `Open Mixer…` with U+2026, not three periods. The
+        // search term is what finds the row and the NAME is what matches it,
+        // so a helpfully "normalised" ellipsis here is a silent not_found
+        // several seconds into a live learn — and the live dry run confirmed
+        // the row spells it this way (`exact_match: true`, 2026-09-03).
+        XCTAssertTrue(KeyCommandRegistry.Name.openMixer.hasSuffix("\u{2026}"))
+        XCTAssertFalse(KeyCommandRegistry.Name.openMixer.contains("..."))
     }
 
     // MARK: - Create Marker stays
@@ -96,7 +165,7 @@ final class KeyCommandInstallSetTests: XCTestCase {
         // Nothing learned at all: the missing list is the INSTALL set, and the
         // three on-demand commands are not in it.
         let missing = KeyCommandRegistry.standardNotLearned(registryNames: [])
-        XCTAssertEqual(missing.count, 19)
+        XCTAssertEqual(missing.count, 20)
         for command in KeyCommandRegistry.onDemandCommands {
             XCTAssertFalse(missing.contains(command.name), command.name)
         }
