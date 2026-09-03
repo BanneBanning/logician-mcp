@@ -604,6 +604,29 @@ extension LogicAccessibility {
         // ms, 55-57% of every real toggle, spent on a write that can never
         // succeed. Removed 2026-09-03 (profiles/logic_set_track_stack.md §5):
         // go straight to the route that worked 8/8 live.
+        //
+        // AND THE KEY COMMAND CANNOT REPLACE IT — measured, not assumed.
+        // Logic 12.3.1 does have the row (`Open/Close Track Stack`, read off
+        // the Key Commands window 2026-09-03, under `Main Window Tracks and
+        // Various Editors`), and this tool was converted to fire it. Logic
+        // then refused to LEARN it: four rounds, three distinct candidate
+        // notes each, through both `logic_setup_key_commands` and
+        // `logic_learn_key_command`, and the row's assignment column never
+        // changed once. Nothing landed anywhere either — the whole `track
+        // stack` filter was audited row by row before and after and came back
+        // byte-identical, so it is not a mis-selected neighbour. The same
+        // driver bound `Open Mixer…` on the first try in 1.4 s in the same
+        // session, so the driver was working. The conversion was reverted.
+        //
+        // What that leaves is this click, and it is worth knowing that it is
+        // FRAGILE in a way no Accessibility read can see: on 2026-09-03 six
+        // consecutive calls refused with "hit test at the position of
+        // disclosure triangle of 'Drum Synth Kit' did not resolve to that
+        // element" while every AX read around it worked. Logic's directional
+        // rows (`Open Track Stack`, `Close Track Stack`) are the untried
+        // candidate; they cost TWO rows in the user's own key command set
+        // instead of one, which is a decision for the user and not for this
+        // comment.
         let writeRoute = "cg_click_on_ax_frame"
         try clickElement(disclosure, describedAs: "disclosure triangle of '\(target.name)'")
         let verified = pollStackState(trackNumber: target.number, expanded: expanded, attempts: 20)
@@ -682,6 +705,19 @@ extension LogicAccessibility {
     /// Clicks the center of an AX element's frame with a synthetic mouse event.
     /// Used only where Logic's semantic actions are verified no-ops. Refuses to
     /// click unless a hit test at that position resolves to the same element.
+    ///
+    /// TWO CALL SITES, and only one of them is opt-in: the empty audio insert
+    /// slot (`AXPlugins.swift`) is reachable only with `allow_mouse: true`,
+    /// while `setTrackStack`'s disclosure triangle is not gated at all. That
+    /// asymmetry is known and was attacked on 2026-09-03 — Logic will not
+    /// learn a MIDI note for `Open/Close Track Stack`, so the key-command
+    /// plane cannot reach the fold (see `setTrackStack`).
+    ///
+    /// Do not add a third site. The route is coordinate-driven, and
+    /// coordinates are the one thing this server's own reads cannot check:
+    /// on the same day, six consecutive folds refused because the hit test at
+    /// the element's OWN published frame did not resolve to the element, with
+    /// every Accessibility read around it working normally.
     func clickElement(_ element: AXUIElement, describedAs label: String) throws {
         guard let frameValue = attribute(element, "AXFrame") else {
             throw LogicianError.writeFailed("could not read the frame of \(label)")
