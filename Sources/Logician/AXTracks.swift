@@ -111,10 +111,17 @@ extension LogicAccessibility {
     /// rather than being copied. Behaviour here is unchanged: exact name
     /// comparison, and a number that names a differently-named row refuses
     /// before anything is written.
+    ///
+    /// - Parameter caseInsensitive: `logic_track_info` has always matched its
+    ///   `track_name`/`track_names` case-insensitively and keeps doing so; the
+    ///   writing paths compare exactly, as they always have. Only the
+    ///   comparison changes — the refusals, and which rows count as ambiguous,
+    ///   are the shared rule either way.
     func resolveTrack(
         _ headers: [TrackHeader],
         name: String,
-        number: Int?
+        number: Int?,
+        caseInsensitive: Bool = false
     ) throws -> TrackHeader {
         let available = headers.map { "\($0.number): \($0.name)" }
         // The rows this refusal is about are the rows that can say whether
@@ -142,7 +149,7 @@ extension LogicAccessibility {
         }
         let verdict = TrackRowAddressing.resolve(
             rows: headers.map { TrackRowAddressing.Row(number: $0.number, name: $0.name) },
-            name: name, number: number, caseInsensitive: false
+            name: name, number: number, caseInsensitive: caseInsensitive
         )
         switch verdict {
         case .resolved(let resolved):
@@ -194,11 +201,16 @@ extension LogicAccessibility {
     /// rendered and there is nothing for Logic to scroll into view. Only the
     /// `selected` flags may be stale afterwards, and the "before" side of a
     /// create/duplicate verdict does not read them.
+    ///
+    /// It also hands back the inspector channel strip its own verification
+    /// walked to — see `SelectionVerification`. `nil` when the verification
+    /// landed on the rename-staleness branch, where no strip of that name
+    /// exists to hand back.
     func selectTrackReportingRows(
         trackName: String,
         trackNumber: Int?,
         expectedProjectPath: String?
-    ) throws -> (result: [String: Any], rows: [TrackChange.Row]) {
+    ) throws -> (result: [String: Any], rows: [TrackChange.Row], strip: AXUIElement?) {
         try verifyProjectPath(expectedProjectPath)
 
         let group = try trackHeaderGroup()
@@ -214,13 +226,16 @@ extension LogicAccessibility {
         let previous = parsed.first(where: \.selected)
         let previousDescription = previous.map { "\($0.number): \($0.name)" } ?? "unknown"
 
-        if target.selected, trackSelectionVerified(target.item, name: target.name) {
+        let standing = target.selected
+            ? verifySelection(target.item, name: target.name)
+            : .notSelected
+        if standing.isVerified {
             return (selectionResult(
                 state: "already_selected",
                 target: target,
                 previous: previousDescription,
                 writeRoute: "none"
-            ), rows)
+            ), rows, standing.strip)
         }
 
         // The selection is about to MOVE. That is the one moment a deferred
@@ -243,12 +258,16 @@ extension LogicAccessibility {
         MCUController.forgetChannelFocus()
 
         var writeRoute = "ax_selected_children"
+        var landed = SelectionVerification.notSelected
         let setStatus = AXUIElementSetAttributeValue(
             group,
             "AXSelectedChildren" as CFString,
             [target.item] as CFArray
         )
-        if setStatus != .success || !pollTrackSelected(target.item, name: target.name) {
+        if setStatus == .success {
+            landed = pollSelectionVerified(target.item, name: target.name)
+        }
+        if !landed.isVerified {
             // Fallback: press the header's "Has Focus" radio button.
             writeRoute = "has_focus_press"
             guard let focusButton = children(of: target.item).first(where: {
@@ -264,7 +283,8 @@ extension LogicAccessibility {
             guard pressStatus == .success else {
                 throw LogicianError.writeFailed("AXPress on Has Focus returned AXError \(pressStatus.rawValue)")
             }
-            guard pollTrackSelected(target.item, name: target.name) else {
+            landed = pollSelectionVerified(target.item, name: target.name)
+            guard landed.isVerified else {
                 let restored = restoreSelection(previous?.item, in: group)
                 let actual = currentSelectionDescription()
                 throw LogicianError.selectionFailed(requested: target.name, actual: actual, restored: restored)
@@ -283,7 +303,7 @@ extension LogicAccessibility {
             target: target,
             previous: previousDescription,
             writeRoute: writeRoute
-        ), rows)
+        ), rows, landed.strip)
     }
 
     /// Waits for the selection write to be readable on both planes.
@@ -295,13 +315,51 @@ extension LogicAccessibility {
     /// on the first look 100 ms later. The settle is somewhere in (0, 100] ms
     /// and shortening the tick needs a distribution experiment, not a guess.
     func pollTrackSelected(_ item: AXUIElement, name: String) -> Bool {
+        pollSelectionVerified(item, name: name).isVerified
+    }
+
+    /// `pollTrackSelected`, keeping the inspector strip its last look walked
+    /// to. Same polling, same verification, same cost — the strip element is
+    /// simply not thrown away, so a caller that is about to READ that strip
+    /// does not walk the depth-12 tree a second time for the element the
+    /// verification already held (`trackInfo` paid that twice per track:
+    /// 143 ms of a 1 149 ms single-track call, ≈2.8 s of a 19-track read;
+    /// profiles/logic_track_info.md §6).
+    func pollSelectionVerified(_ item: AXUIElement, name: String) -> SelectionVerification {
         for _ in 0..<20 {
             Thread.sleep(forTimeInterval: 0.1)
-            if trackSelectionVerified(item, name: name) {
-                return true
+            let verification = verifySelection(item, name: name)
+            if verification.isVerified {
+                return verification
             }
         }
-        return false
+        return .notSelected
+    }
+
+    /// What `trackSelectionVerified` decided, and — when the inspector itself
+    /// was the witness — the strip element that witnessed it.
+    enum SelectionVerification {
+        /// The two planes do not agree that this track is selected.
+        case notSelected
+        /// The inspector publishes this track's channel strip. This element.
+        case verified(strip: AXUIElement)
+        /// The header says selected and the inspector's name lags because the
+        /// track was renamed in place — a verified selection with no strip of
+        /// that name to hand back (see `InspectorReadback`).
+        case verifiedStaleName
+
+        var isVerified: Bool {
+            if case .notSelected = self { return false }
+            return true
+        }
+
+        /// The witnessing strip, or `nil` when the witness was not one — a
+        /// caller that wants to read the strip must resolve it itself rather
+        /// than be handed a guess.
+        var strip: AXUIElement? {
+            if case .verified(let strip) = self { return strip }
+            return nil
+        }
     }
 
     /// Is the track the caller named really the selected one, on two
@@ -319,10 +377,18 @@ extension LogicAccessibility {
     /// refuse after 8.9 s). Everything the old comparison rejected, it still
     /// rejects.
     func trackSelectionVerified(_ item: AXUIElement, name: String) -> Bool {
+        verifySelection(item, name: name).isVerified
+    }
+
+    /// The verification itself, keeping the strip it proved the selection with
+    /// — `trackSelectionVerified`'s answer plus the element it found on the
+    /// way to it. Nothing about the decision changed when this grew a return
+    /// value: every state the boolean rejected, this rejects.
+    func verifySelection(_ item: AXUIElement, name: String) -> SelectionVerification {
         guard stringAttribute(item, kAXSelectedAttribute as String) == "1" else {
-            return false
+            return .notSelected
         }
-        if (try? inspectorStrip(named: name)) != nil { return true }
+        if let strip = try? inspectorStrip(named: name) { return .verified(strip: strip) }
         // Only reached when the header says selected and the inspector does
         // not agree — which is either the rename staleness or the wrong-strip
         // state, and the extra reads are priced against the 8.9 s the first
@@ -336,8 +402,8 @@ extension LogicAccessibility {
             renderedNames: ((try? parsedTrackHeaders()) ?? []).map(\.name),
             renamedInPlace: LogicAccessibility.renamedInPlace
         )
-        if case .staleAfterRename = verdict { return true }
-        return false
+        if case .staleAfterRename = verdict { return .verifiedStaleName }
+        return .notSelected
     }
 
     func restoreSelection(_ previousItem: AXUIElement?, in group: AXUIElement) -> Bool {

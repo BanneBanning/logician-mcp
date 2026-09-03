@@ -1768,6 +1768,29 @@ with every render coming back as audio the agent can listen to.
   `bank_left` answered not at all, at the rightmost bank the fallback direction answers, and
   the surface is handed back on the row it was standing on.
 
+- **Two tracks with the same name are two tracks again, and reading them is twice as fast.**
+  `logic_track_info` addressed rows by NAME, and Logic lets two tracks share one. The
+  reference project has two called `Ivan Vocals`: asked for every track, the tool found the
+  second one's name equal to the name it was already showing, skipped the re-selection, and
+  reported the FIRST one's fader, pan and routing under the second one's track number —
+  identical payloads, `success: true`, no note. Live proof of the fix on those exact rows:
+  track 22 now comes back at **-14.6 dB, pan 0** against track 21's **0 dB, pan +9**, which is
+  what the control surface independently reads off both strips; before, both said 0 dB and
+  pan +9. Rows are addressed by number throughout now, `track_number` disambiguates a
+  `track_name` the way it does everywhere else in the track family, and a name carried by two
+  rows is refused with their numbers instead of resolved to the first of them. A strip that
+  cannot be proved to be the row that was asked for is reported as `null` with a note, never
+  read off whichever strip happens to be standing. The same pass took out what the reads were
+  waiting for: a fixed third-of-a-second pause after a selection Logic had already confirmed,
+  and a second full walk of the inspector tree for an element the confirmation was already
+  holding. Measured live, 19 tracks: **24.6 s → 13.1 s**; three named tracks **6.4 s → 3.1 s**.
+  `logic_survey_plugins` lost the same kind of pause after each plugin window — it now reads
+  the parameters, reads them again 50 ms later and takes them when the two agree, instead of
+  waiting 300 ms and reading once — and it walks for the track's channel strip once per
+  survey rather than twice per insert, re-checking on every re-use that the strip it kept is
+  still the strip it wants. Each insert now says in `open_state` whether its window really
+  opened, so a window Logic never put up can no longer read as a plugin with no controls.
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

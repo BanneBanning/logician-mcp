@@ -14,6 +14,33 @@ struct DescribedChildren {
     subscript(description: String) -> AXUIElement? { byDescription[description] }
 }
 
+/// Inspector channel strips one tool call has already walked to, so a call
+/// that re-enters the same strip many times walks for it once.
+///
+/// A box, deliberately: it holds elements and counts re-uses, and it decides
+/// NOTHING. Whether a held element may still be used is re-asked of Logic on
+/// every single re-use by `LogicAccessibility.inspectorStrip(named:using:)`,
+/// which is where that judgement belongs and where its cost is documented.
+///
+/// Create one per tool call and let it die with the call. Its lifetime is its
+/// only safety property: `surveyPlugins` selects its track once and then never
+/// changes the selection, which is exactly the window in which "the strip
+/// named X" cannot become a different strip.
+final class InspectorStripCache {
+    private var elements: [String: AXUIElement] = [:]
+    /// How many walks this cache saved — for the tool result to be able to say
+    /// so rather than have the saving inferred from a stopwatch.
+    private(set) var reuses = 0
+
+    init() {}
+
+    subscript(name: String) -> AXUIElement? { elements[name] }
+
+    func store(_ element: AXUIElement, for name: String) { elements[name] = element }
+
+    func noteReuse() { reuses += 1 }
+}
+
 extension LogicAccessibility {
     // MARK: - Channel strip helpers
 
@@ -90,6 +117,51 @@ extension LogicAccessibility {
             requested: "the channel strip for track '\(trackName)'",
             exposed: "the inspector currently shows '\(left.name)'. Select the track in Logic first."
         )
+    }
+
+    /// `inspectorStrip(named:)`, reusing an element THIS CALL already resolved
+    /// when the element still says it is that strip.
+    ///
+    /// The walk behind `inspectorStrip(named:)` is the depth-12, non-stoppable
+    /// `collect` (120.7 ms warm / 201.6 ms cold, measured three times across
+    /// this campaign), and `surveyPlugins` pays it up to twice PER INSERT —
+    /// once inside `openPlugin`, once inside `closePlugin` — for a strip that
+    /// cannot change while the survey runs: the survey selects the track once
+    /// and never selects again. Eight walks on the profiled 4-insert track,
+    /// ≈960 ms of a ~4 000 ms call (profiles/logic_survey_plugins.md K3).
+    ///
+    /// **A cached AX element is never trusted silently.** Every re-use
+    /// re-validates against Logic itself — the element must still publish this
+    /// strip's name AND still call itself an inspector channel strip, two
+    /// attribute reads at ~0.1 ms against the 120 ms walk they replace. An
+    /// element Logic destroyed answers neither (a destroyed `AXUIElement`
+    /// returns `kAXErrorInvalidUIElement`, which `stringAttribute` reads as
+    /// ""), so it fails validation and the walk is paid again. The caller is
+    /// told nothing, because nothing changed for the caller: the strip it gets
+    /// back is the strip it asked for, either way.
+    ///
+    /// Scope it to ONE tool call. A cache that outlives a selection change is
+    /// the wrong-strip bug waiting to happen — two tracks CAN share a name
+    /// (`Ivan Vocals`, rows 21 and 22 of the reference project), and a name is
+    /// all this validation has to compare.
+    func inspectorStrip(
+        named trackName: String, using cache: InspectorStripCache?
+    ) throws -> AXUIElement {
+        if let cached = cache?[trackName], inspectorStripStillNamed(cached, trackName) {
+            cache?.noteReuse()
+            return cached
+        }
+        let strip = try inspectorStrip(named: trackName)
+        cache?.store(strip, for: trackName)
+        return strip
+    }
+
+    /// Does this element still publish itself as the inspector channel strip
+    /// for `trackName`? The two attributes `inspectorStrips()` selects on.
+    func inspectorStripStillNamed(_ element: AXUIElement, _ trackName: String) -> Bool {
+        stringAttribute(element, kAXDescriptionAttribute as String) == trackName
+            && stringAttribute(element, kAXHelpAttribute as String)
+                .localizedCaseInsensitiveContains(LogicUIStrings.Element.inspectorChannelStrip)
     }
 
     func insertSlots(of strip: AXUIElement) -> [InsertSlot] {

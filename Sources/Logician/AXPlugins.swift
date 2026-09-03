@@ -328,6 +328,15 @@ extension LogicAccessibility {
         }
         let strip = try anyInspectorStrip(named: trackName)
         let slots = insertSlots(of: strip)
+        // One survey, one strip: the track is selected once above and never
+        // again, so the strip `openPlugin` and `closePlugin` each walk for —
+        // the depth-12, uncached `inspectorStrip(named:)`, ~120 ms warm — is
+        // the same element every time. Cached for this call only, and
+        // re-validated against Logic on every re-use (see
+        // `inspectorStrip(named:using:)`). Measured 2026-09-03: 8 such walks
+        // on a 4-insert track, ≈960 ms of a ~4 000 ms call
+        // (profiles/logic_survey_plugins.md K3).
+        let stripCache = InspectorStripCache()
         var surveyed: [[String: Any]] = []
         for slot in slots {
             var entry: [String: Any] = [
@@ -340,7 +349,8 @@ extension LogicAccessibility {
                     trackName: trackName,
                     pluginName: slot.name,
                     insertIndex: slot.index,
-                    expectedProjectPath: nil
+                    expectedProjectPath: nil,
+                    stripCache: stripCache
                 )
                 // `swapped_in` counts: Logic reuses one plugin window per
                 // channel, so an insert opened INTO the window a previous
@@ -348,9 +358,18 @@ extension LogicAccessibility {
                 // leaving it up would hand the next insert the same window
                 // again. Only `already_open` — the user's own window,
                 // untouched — is not ours to close.
-                let openedByUs = ["opened", "swapped_in"].contains(openResult["state"] as? String ?? "")
-                Thread.sleep(forTimeInterval: 0.3)
-                let parameters = (try? listParameters(windowTitle: trackName)) ?? []
+                let openState = openResult["state"] as? String ?? ""
+                let openedByUs = ["opened", "swapped_in"].contains(openState)
+                // What the open actually did, per insert. Without it, a
+                // window Logic never opened (`unverified` — the press is
+                // accepted and nothing happens, which is the whole of a
+                // survey on a Logic whose Accessibility actions have gone
+                // inert) reads exactly like a plug-in with no sliders.
+                // Observed live 2026-09-03 on all 7 inserts of `808` and
+                // `Stereo Out`, on both the old and the new binary.
+                entry["open_state"] = openState
+                let settled = settledPluginParameters(windowTitle: trackName)
+                let parameters = settled.parameters
                 entry["accessible_parameters"] = parameters.count
                 entry["parameters"] = parameters.map { parameter -> [String: Any] in
                     [
@@ -368,11 +387,18 @@ extension LogicAccessibility {
                 if parameters.isEmpty {
                     // Distinguish "custom canvas with nothing" from "controls
                     // exposed with other roles than the Compressor-style sliders".
-                    entry["control_census"] = (try? controlCensus(windowTitle: trackName)) ?? [:]
+                    // Already read by the settle poll above, which needs the
+                    // same census to tell an empty window from an unfinished
+                    // one — so it is carried here rather than read again.
+                    entry["control_census"] = settled.census ?? [:]
                 }
+                if let note = settled.note { entry["parameter_settle"] = note }
                 if openedByUs {
                     _ = try? closePlugin(
-                        trackName: trackName, pluginName: slot.name, insertIndex: slot.index
+                        trackName: trackName,
+                        pluginName: slot.name,
+                        insertIndex: slot.index,
+                        stripCache: stripCache
                     )
                 }
             } catch {
@@ -386,17 +412,81 @@ extension LogicAccessibility {
             "track": trackName, "track_name": trackName,
             "surveyed_inserts": surveyed.count,
             "plugins": surveyed,
+            // Said out loud rather than inferred from a stopwatch: how many
+            // depth-12 inspector walks this survey reused instead of repeating.
+            "strip_walks_reused": stripCache.reuses,
             "note": "classification reflects AX slider exposure only; verified write/readback per parameter still requires a live compare-and-set test"
         ]
     }
 
+    /// The plug-in window's parameters, read once the window has stopped
+    /// filling in.
+    ///
+    /// **This replaced a blind `Thread.sleep(0.3)`** fired once per insert —
+    /// measured at exactly 300-304 ms on 11 of 11 inserts, whether the plug-in
+    /// published 0 sliders or 26, 29.9% of the call and its single largest
+    /// phase (2026-09-03, profiles/logic_survey_plugins.md). It was a flat
+    /// certainty tax on a window `openPlugin` has ALREADY polled to a verified
+    /// appeared/swapped/already-open state, and it verified nothing itself:
+    /// one read, taken on trust, after a wait nobody had sized.
+    ///
+    /// What it should have been is this: read, read again 50 ms later, and
+    /// take the answer when two consecutive reads agree — the usual case at
+    /// one 50 ms gap instead of six. A list that never stops moving is
+    /// returned WITH a note saying it may be incomplete, and a window that
+    /// publishes no parameters is asked for its control census (which the
+    /// caller wants anyway) so "a canvas with no sliders" and "a window with
+    /// nothing in it at all" stay different answers.
+    private func settledPluginParameters(
+        windowTitle: String
+    ) -> (parameters: [[String: Any]], census: [String: Int]?, note: String?) {
+        let budget = 6
+        let gap = 0.05
+        var previous: [String]?
+        var parameters: [[String: Any]] = []
+        var note: String?
+        for attempt in 0..<budget {
+            if lookFirstShouldSleep(attempt: attempt) { Thread.sleep(forTimeInterval: gap) }
+            parameters = (try? listParameters(windowTitle: windowTitle)) ?? []
+            let signature = parameters.map {
+                "\($0["name"] ?? "")=\($0["raw_value"] ?? "")"
+            }
+            switch settleDecision(
+                attempt: attempt, budget: budget, proven: false, matchedPrevious: previous == signature
+            ) {
+            case .accept:
+                if attempt > 1 { note = "stable after \(attempt + 1) reads" }
+            case .lookAgain:
+                previous = signature
+                continue
+            case .giveUp:
+                note = "the parameter list was still changing after \(budget) reads"
+                    + " \(Int(gap * 1000)) ms apart — it may be incomplete"
+            }
+            break
+        }
+        guard parameters.isEmpty else { return (parameters, nil, note) }
+        let census = (try? controlCensus(windowTitle: windowTitle)) ?? [:]
+        if census.isEmpty {
+            note = (note.map { $0 + "; " } ?? "")
+                + "the window published neither parameters nor any other control"
+        }
+        return (parameters, census, note)
+    }
+
     // MARK: - Plugin window lifecycle
 
+    /// - Parameter stripCache: the inspector strip this call may reuse instead
+    ///   of walking for. Only a caller that knows the selection cannot move
+    ///   between its calls passes one — `surveyPlugins` does; see
+    ///   `inspectorStrip(named:using:)` for what a re-use is re-validated
+    ///   against.
     func openPlugin(
         trackName: String,
         pluginName: String,
         insertIndex: Int?,
-        expectedProjectPath: String?
+        expectedProjectPath: String?,
+        stripCache: InspectorStripCache? = nil
     ) throws -> [String: Any] {
         if let expected = expectedProjectPath {
             let actual = try projectDocumentPath()
@@ -405,7 +495,7 @@ extension LogicAccessibility {
             }
         }
 
-        let strip = try inspectorStrip(named: trackName)
+        let strip = try inspectorStrip(named: trackName, using: stripCache)
         let slots = insertSlots(of: strip)
         let slot = try resolveSlot(slots, track: trackName, plugin: pluginName, index: insertIndex)
         guard let openButton = slot.openButton else {
@@ -537,12 +627,15 @@ extension LogicAccessibility {
         }
     }
 
+    /// - Parameter stripCache: as `openPlugin`'s — a strip this call may reuse
+    ///   rather than walk for, re-validated on every re-use.
     func closePlugin(
         trackName: String,
         pluginName: String,
-        insertIndex: Int?
+        insertIndex: Int?,
+        stripCache: InspectorStripCache? = nil
     ) throws -> [String: Any] {
-        let strip = try inspectorStrip(named: trackName)
+        let strip = try inspectorStrip(named: trackName, using: stripCache)
         let slots = insertSlots(of: strip)
         let slot = try resolveSlot(slots, track: trackName, plugin: pluginName, index: insertIndex)
         guard let openButton = slot.openButton else {
