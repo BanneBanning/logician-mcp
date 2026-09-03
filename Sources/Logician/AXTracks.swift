@@ -385,6 +385,29 @@ extension LogicAccessibility {
 
     // MARK: - Track stacks
 
+    /// Resolves `setTrackStack`'s target header, calling the scroll-insurance
+    /// `selectAndRetry` closure only when the plain header walk (`resolve`)
+    /// does not already have the row.
+    ///
+    /// `selectTrack` auto-scrolls its target into view for the click that
+    /// follows, but it used to run UNCONDITIONALLY, before this decision even
+    /// existed — 142-304 ms live, 73-74% of a no-op call (measured
+    /// 2026-09-03, profiles/logic_set_track_stack.md §5). Every one of the 8
+    /// live toggles in that profile found the stack's header inside the
+    /// always-rendered range, so `resolve()` always answered there and
+    /// `selectAndRetry` never had to run; it exists for a stack further down
+    /// an unscrolled list, not the common case. Pure and closure-driven —
+    /// mirrors `MCUController.resolveMetronomeState` — so the ORDER is
+    /// unit-tested without a live AX walk: `selectAndRetry` must not run at
+    /// all when `resolve` already answers.
+    static func resolveTrackStackTarget<T>(
+        resolve: () -> T?,
+        selectAndRetry: () -> T?
+    ) -> T? {
+        if let found = resolve() { return found }
+        return selectAndRetry()
+    }
+
     func setTrackStack(
         trackName: String,
         trackNumber: Int?,
@@ -393,12 +416,27 @@ extension LogicAccessibility {
     ) throws -> [String: Any] {
         try verifyProjectPath(expectedProjectPath)
 
-        // Selecting the track first auto-scrolls its header into view; the
-        // disclosure click needs the triangle on screen (hit-test guarded).
-        let preSelection = try parsedTrackHeaders().first(where: \.selected)
-        _ = try? selectTrack(trackName: trackName, trackNumber: trackNumber, expectedProjectPath: nil)
-        let before = try parsedTrackHeaders()
-        let target = try resolveTrack(before, name: trackName, number: trackNumber)
+        let group = try trackHeaderGroup()
+        var before = parsedTrackHeaders(in: group)
+        let preSelection = before.first(where: \.selected)
+
+        let target: TrackHeader
+        if let resolved = LogicAccessibility.resolveTrackStackTarget(
+            resolve: { try? resolveTrack(before, name: trackName, number: trackNumber) },
+            selectAndRetry: {
+                _ = try? selectTrack(trackName: trackName, trackNumber: trackNumber, expectedProjectPath: nil)
+                before = parsedTrackHeaders(in: group)
+                return try? resolveTrack(before, name: trackName, number: trackNumber)
+            }
+        ) {
+            target = resolved
+        } else {
+            // Neither the plain walk nor the scroll-insurance retry found the
+            // row; let `resolveTrack`'s own error (unknown name/number,
+            // ambiguous, hidden behind a collapsed ancestor stack, ...)
+            // surface with its real message rather than a generic failure.
+            target = try resolveTrack(before, name: trackName, number: trackNumber)
+        }
         guard let disclosure = target.disclosure, let currentlyExpanded = target.expanded else {
             throw LogicianError.trackNotStack(target.name)
         }
@@ -413,23 +451,22 @@ extension LogicAccessibility {
             ]
         }
 
-        // AXPress, AXShowMenu and writing AXValue are all silent no-ops on Logic's
-        // track header controls (verified 2026-08-24), so try AXPress briefly and
-        // then fall back to a real click on the triangle's own AX frame.
-        var writeRoute = "ax_press"
-        _ = AXUIElementPerformAction(disclosure, kAXPressAction as CFString)
-        var verified = pollStackState(trackNumber: target.number, expanded: expanded, attempts: 5)
-        if !verified {
-            writeRoute = "cg_click_on_ax_frame"
-            try clickElement(disclosure, describedAs: "disclosure triangle of '\(target.name)'")
-            verified = pollStackState(trackNumber: target.number, expanded: expanded, attempts: 20)
-        }
+        // AXPress, AXShowMenu and writing AXValue are all silent no-ops on
+        // Logic's track header controls (verified 2026-08-24). This used to
+        // try AXPress first anyway, polling 5 times (100 ms sleep + a full
+        // header walk each) before falling back to the click below — 730-786
+        // ms, 55-57% of every real toggle, spent on a write that can never
+        // succeed. Removed 2026-09-03 (profiles/logic_set_track_stack.md §5):
+        // go straight to the route that worked 8/8 live.
+        let writeRoute = "cg_click_on_ax_frame"
+        try clickElement(disclosure, describedAs: "disclosure triangle of '\(target.name)'")
+        let verified = pollStackState(trackNumber: target.number, expanded: expanded, attempts: 20)
         guard verified else {
             throw LogicianError.openVerificationFailed(
                 "The disclosure triangle of '\(target.name)' did not reach expanded=\(expanded)."
             )
         }
-        var after = (try? parsedTrackHeaders()) ?? []
+        var after = parsedTrackHeaders(in: group)
 
         // The click route also selects the stack's main track; restore the
         // previous selection when that track is still visible.
@@ -438,7 +475,6 @@ extension LogicAccessibility {
             let selectionMoved = after.first(where: \.selected)?.number != previouslySelected.number
             if selectionMoved {
                 if let stillVisible = after.first(where: { $0.number == previouslySelected.number }),
-                   let group = try? trackHeaderGroup(),
                    AXUIElementSetAttributeValue(
                        group,
                        "AXSelectedChildren" as CFString,
@@ -446,7 +482,7 @@ extension LogicAccessibility {
                    ) == .success,
                    pollTrackSelected(stillVisible.item, name: stillVisible.name) {
                     selectionRestored = "restored"
-                    after = (try? parsedTrackHeaders()) ?? after
+                    after = parsedTrackHeaders(in: group)
                 } else {
                     selectionRestored = "lost"
                 }
@@ -476,9 +512,18 @@ extension LogicAccessibility {
         ]
     }
 
+    /// Waits for the disclosure triangle's expansion state to reach
+    /// `expanded` after the click that changes it.
+    ///
+    /// Look-first (`lookFirstShouldSleep`): the click is a synchronous
+    /// `CGEvent`, and this is now the only route (the dead `AXPress` attempt
+    /// that used to precede it was removed 2026-09-03 — see `setTrackStack`).
+    /// Every one of the 8 live toggles measured that day converged within
+    /// ~2-3 attempts (profiles/logic_set_track_stack.md §5), so sleeping
+    /// before the very first look was waste on the common case.
     func pollStackState(trackNumber: Int, expanded: Bool, attempts: Int) -> Bool {
-        for _ in 0..<attempts {
-            Thread.sleep(forTimeInterval: 0.1)
+        for attempt in 0..<attempts {
+            if lookFirstShouldSleep(attempt: attempt) { Thread.sleep(forTimeInterval: 0.1) }
             guard let headers = try? parsedTrackHeaders(),
                   let refreshed = headers.first(where: { $0.number == trackNumber }) else { continue }
             if refreshed.expanded == expanded {

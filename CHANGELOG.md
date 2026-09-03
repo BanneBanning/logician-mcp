@@ -1767,6 +1767,20 @@ with every render coming back as audio the agent can listen to.
   can, and puts the bank back: at the leftmost bank `bank_right` answers in 25 ms where
   `bank_left` answered not at all, at the rightmost bank the fallback direction answers, and
   the surface is handed back on the row it was standing on.
+- **Folding a track stack is fast now, and a no-op call barely touches Logic at all.**
+  `logic_set_track_stack` fired a documented dead write on every real toggle — `AXPress`
+  on the disclosure triangle, verified 2026-08-24 to be a silent no-op on Logic's track
+  header controls — then polled it 5 times before falling back to the click that actually
+  works: 730-786 ms, 55-57% of the call, spent on a route that could never succeed
+  (profiles/logic_set_track_stack.md §5). It also ran the scroll-insurance `selectTrack`
+  call unconditionally, before checking whether anything needed to change at all — 73-74%
+  of a no-op call, for a scroll that stack 9 never needed once in 8 live toggles. The dead
+  branch is gone, the state is read first so a no-op returns immediately, the scroll
+  insurance runs only when the header genuinely is not on screen, and the header is walked
+  once before a toggle and once after instead of three times. Measured 2026-09-03, same
+  session, old binary against new: a real toggle **1 527-1 557 ms → 331-374 ms**; a no-op
+  **403-444 ms → 41-54 ms**. The refusal → expand → select hidden row → collapse round trip
+  still works exactly as before, live, both directions.
 
 ### Known limitations (honest by design)
 
