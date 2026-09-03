@@ -20,6 +20,23 @@ Surfaces setup ("Mackie Designs" / "Mackie Control").
 This project has no relationship with LOUD Audio, LLC (owner of the Mackie
 and Mackie Control trademarks) or with Apple Inc. See `NOTICE.md`.
 
+## How this code was written
+
+Every line of source in this repository was written by an AI coding assistant
+(Anthropic's Claude) working under the maintainer's direction, against a real
+Logic Pro on the maintainer's own machine. The maintainer chose what to build,
+read the results, ruled on the trade-offs, and is the person who signs off on
+and takes responsibility for what ships. No external codebase, specification
+document or reference implementation was opened, copied from, or adapted
+during that work.
+
+This matters for provenance in two directions. It means no licensed source
+tree was in front of anyone while the protocol tables were produced. It also
+means the accuracy of anything not verified against Logic itself rests on a
+model's general knowledge rather than on a measurement — which is exactly why
+this project verifies its writes by reading Logic back, and why the sections
+below separate what was observed live from what was not.
+
 ## What "observation" means here, concretely
 
 The bridge (`Sources/LogicMCUBridge/Bridge.swift`) opens virtual CoreMIDI
@@ -87,12 +104,21 @@ be attributed with confidence from the repository's history alone:
    extremely widely published and reimplemented across the industry, which
    is consistent with "typed in from common knowledge, verified where it
    mattered for a shipped tool" — but the repository's own history does not
-   let this document say that with certainty for every entry. **Open
-   question for the maintainer:** were any of these note numbers copied or
-   adapted from a specific external document, project, or piece of code
-   (rather than typed from memory of the public convention, or measured
-   live)? If so, that source needs to be named here, and its license checked
-   against this project's MIT license before v1.0.0 ships.
+   let this document say that with certainty for every entry. **Answered by the maintainer, 2026-09-04:**
+   no external document, project or piece of code was consulted or adapted.
+   Every line of code in this repository — this table included — was written
+   by an AI coding assistant (Anthropic's Claude) working under the
+   maintainer's direction, from its own knowledge of the publicly documented
+   Mackie Control Universal convention. Nothing was copied from a specific
+   source by a human reading it, and no licensed source tree was open while
+   the table was produced. That is an honest account of the process, not a
+   guarantee about a model's training data, and it is recorded here as such:
+   the note numbers match the industry-wide MCU layout because that layout is
+   the convention every implementation of this protocol shares, and the
+   entries that a shipped tool depends on were verified live against Logic's
+   own echoes (see above). Entries no tool exercises have not been
+   individually observed, and this document does not claim they were.
+
 2. **Any earlier, untracked research** that predates `e95e55a`. That commit
    is explicitly a snapshot ("research state... before productization
    restructure"), so whatever informed the pre-snapshot exploration is not
@@ -101,6 +127,11 @@ be attributed with confidence from the repository's history alone:
    project's source, a leaked or published Mackie document — it should be
    named here even if it was only used for orientation and nothing was
    copied.
+
+   **Answered by the maintainer, 2026-09-04:** no external reference was
+   consulted in that period either. The pre-snapshot exploration was the
+   same process as the rest of the project — an AI assistant writing code
+   against a live Logic Pro, with the maintainer reading the results.
 
 Nothing else in the Mackie Control implementation surveyed for this document
 carries an unattributed origin: the LCD string tables, the mode/page state
