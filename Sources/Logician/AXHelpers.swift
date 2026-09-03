@@ -48,21 +48,29 @@ extension LogicAccessibility {
     /// aux strips that are not selectable track headers.
     func anyInspectorStrip(named name: String) throws -> AXUIElement {
         let mainWindow = try projectWindow()
-        let match = firstDescendant(of: mainWindow, maximumDepth: AXDepth.inspectorStrip) { element in
-            stringAttribute(element, kAXRoleAttribute as String) == "AXLayoutItem"
-                && stringAttribute(element, kAXHelpAttribute as String)
-                    .localizedCaseInsensitiveContains(LogicUIStrings.Element.inspectorChannelStrip)
-                && stringAttribute(element, kAXDescriptionAttribute as String) == name
+        func look() -> AXUIElement? {
+            firstDescendant(of: mainWindow, maximumDepth: AXDepth.inspectorStrip) { element in
+                stringAttribute(element, kAXRoleAttribute as String) == "AXLayoutItem"
+                    && stringAttribute(element, kAXHelpAttribute as String)
+                        .localizedCaseInsensitiveContains(LogicUIStrings.Element.inspectorChannelStrip)
+                    && stringAttribute(element, kAXDescriptionAttribute as String) == name
+            }
         }
-        guard let strip = match else {
-            throw LogicianError.trackNotExposed(
-                requested: "an inspector channel strip named '\(name)'",
-                exposed: "no strip with that name is visible. Accessibility only reaches"
-                    + " a strip an inspector is showing — select the track in Logic, or"
-                    + " for an output/aux/bus strip select a track routed to it."
-            )
+        if let strip = look() { return strip }
+        // A miss here is usually "that strip is not on screen", which showing
+        // the Inspector cannot fix. It is worth one show only when the
+        // Inspector is publishing NOTHING — the hidden-Inspector state, where
+        // every headerless strip is out of reach for the same single reason.
+        if inspectorPresence() == .hidden, showInspectorForThisCall(), let strip = look() {
+            return strip
         }
-        return strip
+        throw LogicianError.trackNotExposed(
+            requested: "an inspector channel strip named '\(name)'",
+            exposed: "no strip with that name is visible. Accessibility only reaches"
+                + " a strip an inspector is showing — show Logic's Inspector"
+                + " (View > Inspector, or the I key) and select the track, or"
+                + " for an output/aux/bus strip select a track routed to it."
+        )
     }
 
     /// Every inspector channel strip the project window is showing, named by
@@ -70,7 +78,15 @@ extension LogicAccessibility {
     /// the same list: which strip is the named one, and what the LEFT strip is
     /// currently called (see `InspectorReadback`).
     func inspectorStrips() throws -> [(name: String, help: String, element: AXUIElement)] {
-        let mainWindow = try projectWindow()
+        let mainWindow: AXUIElement
+        do {
+            mainWindow = try projectWindow()
+        } catch {
+            // The plane could not be asked at all — never `hidden`, which
+            // would read as "the user hid it".
+            inspectorHold?.observe(.unavailable)
+            throw error
+        }
         var strips: [(name: String, help: String, element: AXUIElement)] = []
         collect(from: mainWindow, maximumDepth: AXDepth.inspectorStrip) { element in
             guard stringAttribute(element, kAXRoleAttribute as String) == "AXLayoutItem" else { return }
@@ -84,7 +100,22 @@ extension LogicAccessibility {
                 element: element
             ))
         }
+        // Free, and it is the whole detection: "is the Inspector showing?" is
+        // exactly "did this walk find a strip", and this walk is already paid
+        // by the readback that needs the answer. See `InspectorPresence`.
+        inspectorHold?.observe(strips.isEmpty ? .hidden : .shown)
         return strips
+    }
+
+    /// The LEFT strip of a list the caller has already walked. Logic's own
+    /// help text names it; a list with no left-prefixed strip falls back to
+    /// the first, unchanged.
+    func leftInspectorStrip(
+        of strips: [(name: String, help: String, element: AXUIElement)]
+    ) -> (name: String, help: String, element: AXUIElement)? {
+        strips.first(where: {
+            $0.help.hasPrefix(LogicUIStrings.Element.leftInspectorPrefix)
+        }) ?? strips.first
     }
 
     /// What the LEFT inspector channel strip currently calls itself — the name
@@ -92,27 +123,42 @@ extension LogicAccessibility {
     /// comparison can be explained rather than only reported.
     func leftInspectorStripName() -> String? {
         guard let strips = try? inspectorStrips() else { return nil }
-        let left = strips.first(where: {
-            $0.help.hasPrefix(LogicUIStrings.Element.leftInspectorPrefix)
-        }) ?? strips.first
-        return left?.name
+        return leftInspectorStrip(of: strips)?.name
+    }
+
+    /// `inspectorStrip(named:)`'s CHOICE, over strips the caller has already
+    /// walked. Split out so the selection readback can make it without paying
+    /// a second walk for the list it is holding — and so a miss can be
+    /// explained from the same list instead of a third one.
+    func matchInspectorStrip(
+        _ strips: [(name: String, help: String, element: AXUIElement)],
+        named trackName: String
+    ) -> AXUIElement? {
+        guard let left = leftInspectorStrip(of: strips) else { return nil }
+        if left.name == trackName { return left.element }
+        // Output/aux strips ("Stereo Out") live in the right inspector strip
+        // and are addressable by exact name without being selectable tracks.
+        return strips.first(where: { $0.name == trackName })?.element
     }
 
     func inspectorStrip(named trackName: String) throws -> AXUIElement {
-        let strips = try inspectorStrips()
-        guard let left = strips.first(where: {
-            $0.help.hasPrefix(LogicUIStrings.Element.leftInspectorPrefix)
-        }) ?? strips.first else {
-            throw LogicianError.windowNotFound("left inspector channel strip")
+        var strips = try inspectorStrips()
+        // A strip is genuinely needed here and Logic is publishing none, which
+        // since 2026-09-03 is a state this server can repair rather than only
+        // report: show the Inspector for this call and put it back afterwards
+        // (`InspectorHold`). Nothing happens when a hold is not installed, when
+        // one was already attempted, or — the common case — when the walk above
+        // found strips.
+        if strips.isEmpty, showInspectorForThisCall() {
+            strips = (try? inspectorStrips()) ?? []
         }
-        if left.name == trackName {
-            return left.element
+        guard let left = leftInspectorStrip(of: strips) else {
+            throw Self.hiddenInspectorRefusal(
+                requested: "the channel strip for '\(trackName)'",
+                showAttempted: inspectorHold?.attempted == true
+            )
         }
-        // Output/aux strips ("Stereo Out") live in the right inspector strip
-        // and are addressable by exact name without being selectable tracks.
-        if let other = strips.first(where: { $0.name == trackName }) {
-            return other.element
-        }
+        if let strip = matchInspectorStrip(strips, named: trackName) { return strip }
         throw LogicianError.trackNotExposed(
             requested: "the channel strip for track '\(trackName)'",
             exposed: "the inspector currently shows '\(left.name)'. Select the track in Logic first."

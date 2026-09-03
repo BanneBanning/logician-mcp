@@ -20,6 +20,12 @@ final class LogicAccessibility {
     /// keeps, and `ListEditorsPaneHold` argues why it must stay that way.
     var listEditorsPaneHold: ListEditorsPaneHold?
 
+    /// What this CALL saw of Logic's Inspector, and the one show/hide it is
+    /// allowed to perform — installed by `callTool` around every dispatch and
+    /// always cleared again on the way out. See `InspectorHold`; a hold that
+    /// is never consulted costs nothing.
+    var inspectorHold: InspectorHold?
+
     /// Everything `logic_health` needs off the process and Accessibility
     /// planes, gathered in ONE pass: one `runningApplications` lookup, one
     /// window walk, and the resolved process handed back so the UI-language

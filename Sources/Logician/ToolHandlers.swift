@@ -105,6 +105,15 @@ extension MCPServer {
     func callTool(
         name: String, arguments: [String: Any], era: MCPEra = .legacy(protocolVersion)
     ) -> [String: Any] {
+        // Logic's Inspector, for the length of this call. Nothing is read and
+        // nothing is pressed until a tool actually walks the inspector plane,
+        // so a call that never touches it pays nothing and reports nothing —
+        // see `InspectorHold`. Installed here rather than per tool because
+        // "does this tool need a channel strip" is decided by the code path
+        // taken, not by the tool's name: `logic_set_insert_bypass` needs one
+        // for a track and none for a bus.
+        logic.inspectorHold = InspectorHold()
+        defer { logic.inspectorHold = nil }
         do {
             guard let tool = activeTools().first(where: { $0.name == name }) else {
                 // Unreachable from `tools/call` (see unknownToolMessage), kept
@@ -118,6 +127,11 @@ extension MCPServer {
             // content blocks instead can now ask for the paths alone.
             let includeAudio = arguments["include_audio"] as? Bool ?? true
             var payload = try tool.handler(self)(arguments)
+            // The Inspector goes back BEFORE the result is built, so
+            // `inspector_restored` reports a press that has already been
+            // confirmed rather than one that is still owed.
+            logic.restoreInspectorAfterCall()
+            payload = inspectorReported(payload)
             // `blind: true` — withhold the describable metadata so the audio
             // in this same result is the only thing left to describe it from.
             // Applied HERE, centrally, for the same reason the listen note is:
@@ -149,17 +163,35 @@ extension MCPServer {
             }
             return toolResult(payload: payload, isError: false, includeAudio: includeAudio, era: era)
         } catch {
+            logic.restoreInspectorAfterCall()
             return toolResult(
-                payload: [
+                payload: inspectorReported([
                     "success": false,
                     "verified": false,
                     "state": "failed",
                     "error_code": (error as? LogicianError)?.code ?? "failed",
                     "error": error.localizedDescription
-                ],
+                ]),
                 isError: true
             )
         }
+    }
+
+    /// Stamps what this call saw of Logic's Inspector onto the result — the
+    /// state it FOUND, not the state it left behind, and only when it looked
+    /// at all. A refusal gets it too: "the inspector is hidden" is the single
+    /// most useful thing a failed strip read can say.
+    ///
+    /// Never overwrites a field a tool set itself, and never invents one: a
+    /// missing `inspector` means this call never asked, which is a different
+    /// fact from `shown`.
+    private func inspectorReported(_ payload: Any) -> Any {
+        guard let fields = logic.inspectorHold?.resultFields, !fields.isEmpty,
+              var dictionary = payload as? [String: Any] else { return payload }
+        for (key, value) in fields where dictionary[key] == nil {
+            dictionary[key] = value
+        }
+        return dictionary
     }
 
     func requiredString(_ key: String, in arguments: [String: Any]) throws -> String {

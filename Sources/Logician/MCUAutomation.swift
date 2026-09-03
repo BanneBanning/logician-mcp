@@ -106,6 +106,22 @@ extension MCUController {
             }
         }
         if case .headerless = last { throw headerlessAutomationRefusal(trackName: trackName) }
+        // A hidden Inspector publishes no strip for ANY track, so it is not the
+        // ambiguity below — it is one fact with one way out, and this call has
+        // already tried it (`InspectorHold` shows the Inspector for a call that
+        // needs a strip and puts it back). Say so instead of listing three
+        // possibilities the user can rule out at a glance.
+        if logic.inspectorPresence() == .hidden {
+            throw LogicianError.preconditionUnmet(
+                "Logic's Inspector is hidden, so it publishes no channel strip for '\(trackName)'"
+                    + " — or for any track — and an automation-mode press can only be confirmed"
+                    + " off that strip's own label. Nothing was recorded."
+                    + (logic.inspectorHold?.attempted == true
+                        ? " This call pressed View > Inspector to show it and no strip appeared."
+                        : "")
+                    + " Show it in Logic (View > Inspector, or the I key) and call again."
+            )
+        }
         // The inspector never showed the strip. On a bus/aux/output that is the
         // headerless case wearing another face (an inspector shows the selected
         // track's own strip and its output, so `Master`, an aux and most buses

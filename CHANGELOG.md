@@ -2020,6 +2020,26 @@ with every render coming back as audio the agent can listen to.
   `expected_project_path` compare-and-set wordings, still hand-typed on 10 tools, are
   now shared Swift constants too, so a future edit can no longer land on some copies
   and miss the rest.
+- **A hidden Inspector no longer costs you the track tools.** Logic's Inspector is a pane
+  the user can close (View > Inspector, or the `I` key), and with it closed every track
+  tool crawled and then refused work that had already landed: `logic_select_track` took
+  15.7 s to answer "Requested 'Bas', selection is 'Track 2 “Bas”'", `logic_track_info`
+  29.9 s, `logic_record_automation` failed outright. The cause was the readback, not the
+  write — the selection is cross-checked against the left inspector channel strip, and a
+  strip that does not exist is not a strip that disagrees. It is now told apart from one:
+  with no inspector plane to ask, the selected header row's own name is the verification,
+  and the same three calls take 0.26-0.6 s, 1.1 s and a working automation gate. Tools
+  whose payload IS the strip show the Inspector for the length of the call and put it back
+  — `logic_track_info` reads 1.17 s against 30.1 s, with a payload byte-identical to the
+  one it returns with the Inspector open, and `logic_list_inserts` reads the real chain in
+  1.0 s. Every result that looked at the plane now says what it found (`inspector`:
+  `shown` / `hidden` / `unavailable`), a call that showed it says so and whether it got it
+  back (`inspector_shown_for_call`, `inspector_restored`), and a selection proved on the
+  header row alone reports `readback_route: "ax_selected_header_row"` rather than claiming
+  a strip confirmed it. A strip that still cannot be reached is refused in under a second
+  naming View > Inspector, never by polling for half a minute. Showing the Inspector
+  brings Logic to the front for the press: measured the same day, `View > Inspector`
+  answers success and does nothing at all while Logic is in the background.
 
 ### Known limitations (honest by design)
 
