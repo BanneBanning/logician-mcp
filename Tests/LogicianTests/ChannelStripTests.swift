@@ -354,6 +354,33 @@ final class ChannelStripTests: XCTestCase {
         )
     }
 
+    // MARK: - Flagging the instrument's OWN row in an insert list
+
+    /// `logic_list_inserts {route: "ax"}` walks the same `AXGroup` shapes
+    /// `ChannelStrip.read` does and cannot tell an occupied instrument slot
+    /// from a real insert on its own — that is exactly why `logic_track_info`
+    /// asks `ChannelStrip.read` for the instrument's name and flags the
+    /// matching row `is_instrument_slot`. `InsertSlot.isInstrumentSlot` is
+    /// that comparison, isolated: pure, so both readers can flag the row the
+    /// same way instead of one of them silently disagreeing.
+    func testTheInstrumentRowIsFlaggedAgainstTheGeometryDecidedName() {
+        XCTAssertTrue(InsertSlot.isInstrumentSlot(name: "Q-Sampler", instrument: "Q-Sampler"))
+        XCTAssertTrue(
+            InsertSlot.isInstrumentSlot(name: "Drum Machine Designer", instrument: "Drum Machine Designer")
+        )
+        XCTAssertFalse(InsertSlot.isInstrumentSlot(name: "Channel EQ", instrument: "Q-Sampler"))
+    }
+
+    /// A track with no instrument slot at all (an audio strip, or an
+    /// instrument track whose slot reads empty) must never flag a row —
+    /// there is no name to agree with, not a name that happens to match
+    /// nothing.
+    func testNoInstrumentNeverFlagsARow() {
+        XCTAssertFalse(InsertSlot.isInstrumentSlot(name: "Channel EQ", instrument: nil))
+        XCTAssertFalse(InsertSlot.isInstrumentSlot(name: "", instrument: nil))
+        XCTAssertFalse(InsertSlot.isInstrumentSlot(name: "Channel EQ", instrument: ""))
+    }
+
     /// The consequence, and the reason the fix belongs in the classifier: the
     /// count check every plug-in WRITE is gated on now passes on this strip,
     /// against the row the surface really showed (7 inserts and one empty

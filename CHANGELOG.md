@@ -1564,6 +1564,28 @@ with every render coming back as audio the agent can listen to.
   breaks the tie, exactly as `logic_rename_region` already did, and a genuine
   multi-selection still reports itself honestly (`subject: multiple`, two regions selected,
   49 ms).
+- **`logic_add_plugin` stops refusing writes Logic actually abbreviates further.**
+  The `ParEQ`/`Parametric EQ` fix only tolerated an abbreviation that kept its first
+  three characters verbatim, which is not what Logic does whenever it drops a
+  character inside them: `Low Pass Filter` arrives as `LoPass` (`Low` loses its
+  trailing `w`) and `Overdrive` arrives as `Ovrdr` (drops the interior `e`), so
+  adding either landed correctly and the cross-check refused it anyway —
+  `verification_failed`, `restored: false`, with the plug-in left in place because
+  the tool believed its own write had failed. Measured twice live on `Crash`. The
+  match is now the word-by-word walk Logic's own truncation follows: a word, once
+  used, keeps its own first letter and then may drop interior vowels or close
+  early, never a consonant skipped outright — which is also what stops two real
+  plug-ins that share every word but their first (`Bass Amp Designer` /
+  `Guitar Amp Designer`, both plausibly `AmpDes`) from ever both answering to the
+  same abbreviated name: a collision comes back `false` on both sides rather than
+  a wrong `verified: true`, leaving the slot-index proof to settle it.
+- **`logic_list_inserts {route: "ax"}` now flags the instrument's own row.** An
+  occupied INSTRUMENT slot has the identical bypass/open shape as a real insert, so
+  this route always listed it as one more insert with nothing marking it — while
+  `logic_track_info`, reading the same strip, already reported that row
+  `is_instrument_slot: true`. The two now agree: measured live on `Drum Synth Kit`,
+  8 rows here (one flagged) reconcile against route `mcu`'s 7 inserts, which never
+  counted the instrument at all and is unchanged.
 
 ### Known limitations (honest by design)
 

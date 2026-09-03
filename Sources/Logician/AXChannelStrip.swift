@@ -241,7 +241,7 @@ extension LogicAccessibility {
                 "insert_index": slot.index,
                 "name": slot.name,
                 "bypassed": slot.bypassed,
-                "is_instrument_slot": slot.name == reading.instrument
+                "is_instrument_slot": InsertSlot.isInstrumentSlot(name: slot.name, instrument: reading.instrument)
             ] as [String: Any]
         }
         return payload
