@@ -1544,6 +1544,26 @@ with every render coming back as audio the agent can listen to.
   evidence was already being computed for `logic_list_tracks`; only the refusal was not
   carrying it. A name that nothing proves missing still gets the plain refusal, so the two
   messages differ exactly where the two situations do.
+- **A region's parameters are that region's parameters.** `logic_get_region_params` was
+  reading the wrong region and saying nothing about it. It selects the region you name and
+  then reads Logic's Region inspector — but Logic repaints that panel a few milliseconds
+  later than it moves the selection, so the read landed on the region the PREVIOUS call had
+  been looking at and reported its twenty-two rows under the name of the one you asked for.
+  Measured live on 2026-09-02, reading two regions alternately: **5 of 6 reads came back
+  with another region's values** (a read of `Latin` at bar 13 answered with `Crash`'s panel),
+  and nothing in the payload said so. The tool now waits for the inspector to name the
+  region it addressed — a 7 ms look, repeated only while it disagrees, against a 0.3 s
+  budget — and refuses rather than answers if it never does. Same alternation after the fix:
+  **6 of 6 correct**, at a cost of 6–27 ms. `logic_set_region_params` was hiding the same
+  race behind a 72 ms arrangement walk it took for an unrelated reason; the walk is gone and
+  the explicit wait is in its place, so a write is **533–569 ms against 623–637 ms** and a
+  no-op **151 ms against 228 ms**. Both tools also stopped deciding whose parameters are on
+  screen by sniffing a text field the user can write: a region genuinely named `2 selected`
+  or `MIDI Defaults` — Logic's own UI makes them — used to read as a selection state and was
+  locked out of its own quantize, transpose, gain and fades for ever. The arrangement now
+  breaks the tie, exactly as `logic_rename_region` already did, and a genuine
+  multi-selection still reports itself honestly (`subject: multiple`, two regions selected,
+  49 ms).
 
 ### Known limitations (honest by design)
 

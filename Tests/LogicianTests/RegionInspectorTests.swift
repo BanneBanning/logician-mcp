@@ -550,8 +550,9 @@ final class RegionInspectorTests: XCTestCase {
     }
 
     func testWithNoEvidenceTheClassificationIsWhatItAlwaysWas() {
-        // The read path (`logic_get_region_params`) passes no evidence, and
-        // its behaviour is unchanged.
+        // What a call that addressed NO region sees: `logic_get_region_params`
+        // with no track_name reads whatever the user left on screen, nothing
+        // was selected by the call, and "2 selected" is then a true answer.
         XCTAssertEqual(RegionInspector.panelSubject(nameField: "2 selected"), .multiple(count: 2))
         XCTAssertEqual(
             RegionInspector.panelSubject(nameField: "Audio Defaults"), .defaults(kind: "Audio")
@@ -568,6 +569,214 @@ final class RegionInspectorTests: XCTestCase {
         XCTAssertTrue(RegionInspector.PanelSubject.region(name: "Crash").isRegion)
         XCTAssertFalse(RegionInspector.PanelSubject.multiple(count: 3).isRegion)
         XCTAssertFalse(RegionInspector.PanelSubject.defaults(kind: "MIDI").isRegion)
+    }
+
+    // MARK: - What a call that ADDRESSED one region does with the panel
+
+    /// The three Region-inspector tools that name a region — rename, get and
+    /// set — select it exclusively and then have to agree on one question. Only
+    /// a panel naming a region lets any of them past.
+    func testOnlyTheAddressedRegionGetsPastTheAddressedCheck() {
+        XCTAssertNil(
+            RegionInspector.addressedPanelRefusal(
+                .region(name: "Crash"), addressedRegionName: "Crash",
+                outcome: "nothing was written"
+            )
+        )
+        XCTAssertNotNil(
+            RegionInspector.addressedPanelRefusal(
+                .multiple(count: 3), addressedRegionName: "Crash",
+                outcome: "nothing was written"
+            )
+        )
+        XCTAssertNotNil(
+            RegionInspector.addressedPanelRefusal(
+                .defaults(kind: "MIDI"), addressedRegionName: "Crash",
+                outcome: "nothing was read"
+            )
+        )
+        // The map prints a muted region as "<name>, muted" and the panel shows
+        // the bare name; that is not a mismatch.
+        XCTAssertNil(
+            RegionInspector.addressedPanelRefusal(
+                .region(name: "Crash"), addressedRegionName: "Crash, muted",
+                outcome: "nothing was read"
+            )
+        )
+        // A caller that addressed no region (the no-arguments read) has
+        // nothing to compare and nothing to refuse.
+        XCTAssertNil(
+            RegionInspector.addressedPanelRefusal(
+                .region(name: "Crash"), addressedRegionName: nil, outcome: "nothing was read"
+            )
+        )
+    }
+
+    /// THE DEFECT, as it was measured. On 2026-09-02 the old build read
+    /// `Latin` at bar 13 on "Acke Slagverk" straight after selecting it and
+    /// came back `panel_name: "Crash"` — the region the previous call had
+    /// selected, still painted — and reported Crash's twenty-two rows under a
+    /// `region` key naming Latin. A well-formed `.region` subject, and the
+    /// wrong region: the check that only asked "is this a region?" passed it.
+    func testTheStalePanelIsAWellFormedRegionAndStillRefused() {
+        let refusal = RegionInspector.addressedPanelRefusal(
+            .region(name: "Crash"), addressedRegionName: "Latin", outcome: "nothing was read"
+        )
+        XCTAssertEqual(
+            refusal,
+            "the Region inspector is still showing the region 'Crash' rather than 'Latin', the "
+                + "region that was addressed: nothing was read. Logic never repainted the panel "
+                + "onto the new selection, so every row under it is 'Crash's."
+        )
+    }
+
+    /// A refusal that does not say what the tool did NOT do leaves the agent
+    /// guessing whether half a write landed. Each caller supplies its own
+    /// words and they have to survive into the message.
+    func testTheRefusalCarriesEachCallersOwnAccountOfWhatItDidNotDo() {
+        for outcome in ["nothing was written", "nothing was read", "nothing was renamed"] {
+            for subject in [
+                RegionInspector.PanelSubject.multiple(count: 2), .defaults(kind: "Audio"),
+                .region(name: "SomeoneElse")
+            ] {
+                let refusal = RegionInspector.addressedPanelRefusal(
+                    subject, addressedRegionName: "Crash", outcome: outcome
+                )
+                XCTAssertNotNil(refusal)
+                XCTAssertTrue(
+                    refusal?.contains(outcome) == true,
+                    "'\(outcome)' did not survive into the \(subject) refusal"
+                )
+            }
+        }
+    }
+
+    /// The refusal has to name the state it found, not just decline: a
+    /// defaults panel is a different THING (what future regions inherit), and
+    /// a multi-selection refusal has to leave the door open for the region
+    /// that is genuinely called "2 selected".
+    func testTheRefusalNamesTheStateItFoundAndTheWayOutOfIt() {
+        let defaults = RegionInspector.addressedPanelRefusal(
+            .defaults(kind: "MIDI"), addressedRegionName: "Crash", outcome: "nothing was written"
+        )
+        XCTAssertEqual(
+            defaults,
+            "the Region inspector is showing the track's MIDI region DEFAULTS — what every FUTURE "
+                + "region on that track inherits — rather than the region that was addressed: "
+                + "nothing was written. The selection did not take."
+        )
+        let multiple = RegionInspector.addressedPanelRefusal(
+            .multiple(count: 2), addressedRegionName: "Crash", outcome: "nothing was renamed"
+        )
+        XCTAssertEqual(
+            multiple,
+            "2 regions are selected, and the Region inspector's name field then reads '2 selected' "
+                + "rather than naming the addressed region: nothing was renamed. The selection did "
+                + "not take. (A region genuinely NAMED '2 selected' is addressed normally: the "
+                + "arrangement map's name for the selected region is what tells the two apart, and "
+                + "here it did not match.)"
+        )
+    }
+
+    /// The whole chain, as the three tools walk it: classify the panel string
+    /// with the arrangement's evidence, THEN decide. A region named
+    /// "2 selected" is read and written like any other region; the same string
+    /// with the same count but a different addressed region is the state, and
+    /// is refused.
+    func testARegionNamedLikeASelectionStateIsReadAndWrittenLikeAnyOther() {
+        let asARegion = RegionInspector.panelSubject(
+            nameField: "2 selected",
+            evidence: .init(selectedCount: 1, addressedRegionName: "2 selected")
+        )
+        XCTAssertNil(
+            RegionInspector.addressedPanelRefusal(
+                asARegion, addressedRegionName: "2 selected", outcome: "nothing was written"
+            ),
+            "a region genuinely named '2 selected' is still locked out of its own parameters"
+        )
+        let asTheState = RegionInspector.panelSubject(
+            nameField: "2 selected",
+            evidence: .init(selectedCount: 2, addressedRegionName: "Crash")
+        )
+        XCTAssertNotNil(
+            RegionInspector.addressedPanelRefusal(
+                asTheState, addressedRegionName: "Crash", outcome: "nothing was written"
+            )
+        )
+        // And the same for the defaults shape, which is the one the masked
+        // race actually produced live.
+        let namedDefaults = RegionInspector.panelSubject(
+            nameField: "MIDI Defaults",
+            evidence: .init(selectedCount: 1, addressedRegionName: "MIDI Defaults")
+        )
+        XCTAssertNil(
+            RegionInspector.addressedPanelRefusal(
+                namedDefaults, addressedRegionName: "MIDI Defaults", outcome: "nothing was read"
+            )
+        )
+    }
+
+    // MARK: - What the settle poll spends
+
+    /// The race `logic_set_region_params` had masked: its `selectedRegionCount`
+    /// walk was 72 ms of accidental settle in front of the panel read. Deleting
+    /// the walk without replacing the wait would have made a correctly
+    /// addressed write refuse itself (it did, on 2 of 4 live calls, in
+    /// `logic_rename_region`). The replacement looks BEFORE it sleeps, so the
+    /// honest call pays one 7 ms read.
+    func testTheSettlePollLooksBeforeItSleeps() {
+        XCTAssertLessThanOrEqual(
+            LogicAccessibility.PanelSettlePoll.interval, 0.015,
+            "a settle that sleeps first charges every honest call for the rare slow repaint"
+        )
+    }
+
+    /// What the poll is actually waiting FOR, and the reason it is not
+    /// `isRegion`: the stale panel measured live was a well-formed region — the
+    /// previous one. A caller that knows the arrangement map's name for the
+    /// region it just selected waits for that name.
+    func testTheSettlePollWaitsForTheAddressedRegionAndNotJustForAnyRegion() {
+        XCTAssertFalse(
+            LogicAccessibility.panelHasCaughtUp(
+                subject: .region(name: "Crash"), panelName: "Crash", wanted: "Latin"
+            ),
+            "the panel still showing the PREVIOUS region satisfied the old stop condition"
+        )
+        XCTAssertTrue(
+            LogicAccessibility.panelHasCaughtUp(
+                subject: .region(name: "Latin"), panelName: "Latin", wanted: "Latin"
+            )
+        )
+        // A region NAMED like one of Logic's own strings never satisfies
+        // `isRegion`, so waiting on that would burn the whole budget on it
+        // every call. The name match stops the poll and `SelectionEvidence`
+        // settles the classification afterwards.
+        XCTAssertTrue(
+            LogicAccessibility.panelHasCaughtUp(
+                subject: .multiple(count: 2), panelName: "2 selected", wanted: "2 selected"
+            )
+        )
+        // With no addressed region — the no-arguments read — there is no name
+        // to wait for and the poll is not run at all; the fallback is the old
+        // condition.
+        XCTAssertTrue(
+            LogicAccessibility.panelHasCaughtUp(
+                subject: .region(name: "Crash"), panelName: "Crash", wanted: nil
+            )
+        )
+        XCTAssertFalse(
+            LogicAccessibility.panelHasCaughtUp(
+                subject: .defaults(kind: "MIDI"), panelName: "MIDI Defaults", wanted: nil
+            )
+        )
+    }
+
+    /// Cut the WAIT, never the VERIFICATION: the budget has to be worth more
+    /// than the 72 ms walk it replaced, so a selection that is genuinely slow
+    /// to repaint is waited for rather than refused.
+    func testTheSettlePollIsMorePatientThanTheWalkItReplaced() {
+        XCTAssertGreaterThanOrEqual(LogicAccessibility.PanelSettlePoll.budget, 0.3 - 1e-9)
+        XCTAssertGreaterThan(LogicAccessibility.PanelSettlePoll.budget, 0.072)
     }
 
     // MARK: - Both channels, exactly
