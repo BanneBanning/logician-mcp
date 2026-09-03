@@ -16,11 +16,29 @@ extension LogicAccessibility {
     /// pass nothing get exactly the behaviour this had before — press, trust
     /// the status code, return — which is what the bounce path has always
     /// done and what it is live-verified with.
+    ///
+    /// **Logic has to be FRONTMOST before ANY menu bar press, unconditionally.**
+    /// MEASURED live 2026-09-03: `View > Inspector` pressed with Logic in the
+    /// background answered `.success` and left the pane closed, 3/3, including
+    /// a System Events click as a control — the same press with Logic
+    /// frontmost worked first try (`InspectorVisibility.pressInspectorMenuItem`).
+    /// `Mix > Delete Automation` showed the identical shape the same day
+    /// (`AXRemoveAutomation.swift`). Both of those fixes put
+    /// `ensureLogicFrontmost` in front of their own press; a THIRD caller
+    /// (`AXListEditors.withListEditorsTab`, pressing `View > List Editors`) had
+    /// skipped it and silently mis-reported the pane as missing the requested
+    /// tab instead of never having opened at all. Guarding HERE, once, instead
+    /// of at each of the eight call sites means a future caller cannot forget
+    /// it — sprinkling the same guard at every site is exactly how the third
+    /// one got missed. Free when Logic already is frontmost:
+    /// `ensureLogicFrontmost` returns on its very first check (measured
+    /// 2026-09-03: ~1 ms warm against 935 ms when Logic had to be activated).
     func pressMenuItem(
         containing fragment: String,
         underMenu parent: String,
         settled: (() -> Bool)? = nil
     ) throws {
+        try ensureLogicFrontmost(for: "the '\(fragment)' menu press")
         guard let application = NSRunningApplication
             .runningApplications(withBundleIdentifier: bundleIdentifier)
             .first else { throw LogicianError.logicNotRunning }

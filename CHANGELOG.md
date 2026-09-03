@@ -2040,6 +2040,18 @@ with every render coming back as audio the agent can listen to.
   naming View > Inspector, never by polling for half a minute. Showing the Inspector
   brings Logic to the front for the press: measured the same day, `View > Inspector`
   answers success and does nothing at all while Logic is in the background.
+- **Every menu bar press now brings Logic to the front first, not just Inspector and
+  Delete Automation.** The background-press hazard those two fixes found is not
+  particular to either menu: `View > List Editors` had the same shape and no guard,
+  so `logic_tempo_events`, `logic_list_signatures`, `logic_list_events` and
+  `logic_markers` could answer `.success` on the open press while Logic sat in the
+  background and then misreport the pane as open with the wrong tab showing, rather
+  than never having opened at all. The guard now lives in `pressMenuItem` itself —
+  the one function every title-path menu press in the server goes through — so no
+  future caller can leave it out by forgetting to add it at its own call site, which
+  is exactly how this one slipped through the first two fixes. Free when Logic is
+  already frontmost, on the order of the same near-zero cost `View > Inspector`
+  measured.
 
 ### Known limitations (honest by design)
 
