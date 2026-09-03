@@ -55,6 +55,62 @@ final class RemovalResolutionTests: XCTestCase {
         }
     }
 
+    /// The cosmetic defect this fix closes: a not-found refusal must quote
+    /// the channel strip inspector's own insert readback, never the raw MCU
+    /// cells `inserts` carries — an aborted add-browse earlier in the
+    /// session can leave one of those cells showing a stale catalog-scroll
+    /// entry until the next press repaints it, and the two readbacks
+    /// disagreeing is exactly the situation `stripInsertNames` exists for.
+    func testNotFoundQuotesTheInspectorReadbackNotTheStaleMCUCells() {
+        XCTAssertThrowsError(
+            try MCUController.resolveRemovalSlot(
+                inserts: row("Parametric EQ (s/s)  --", "Cha EQ"), pluginName: "Compressor",
+                trackName: "Bas", insertSlot: nil,
+                stripInsertNames: ["Gain", "Channel EQ"]
+            )
+        ) { error in
+            guard case .insertNotFound(_, _, let available) = error as? LogicianError else {
+                return XCTFail("expected insertNotFound, got \(error)")
+            }
+            XCTAssertEqual(available, ["1: Gain", "2: Channel EQ"])
+            XCTAssertFalse(
+                available.contains { $0.contains("Parametric EQ") },
+                "the stale MCU cell must not leak into the refusal"
+            )
+        }
+    }
+
+    func testNotFoundFallsBackToMCUCellsWhenNoInspectorReadbackExists() {
+        // stripInsertNames omitted entirely (nil default) — the only source
+        // there ever was before this fix, and still the honest fallback when
+        // no inspector shows the strip.
+        XCTAssertThrowsError(
+            try MCUController.resolveRemovalSlot(
+                inserts: row("Gain", "Cha EQ"), pluginName: "Compressor",
+                trackName: "Bas", insertSlot: nil
+            )
+        ) { error in
+            guard case .insertNotFound(_, _, let available) = error as? LogicianError else {
+                return XCTFail("expected insertNotFound, got \(error)")
+            }
+            XCTAssertEqual(available, ["1: Gain", "2: Cha EQ"])
+        }
+    }
+
+    func testNotFoundFallsBackToMCUCellsWhenTheInspectorReadbackIsEmpty() {
+        XCTAssertThrowsError(
+            try MCUController.resolveRemovalSlot(
+                inserts: row("Gain", "Cha EQ"), pluginName: "Compressor",
+                trackName: "Bas", insertSlot: nil, stripInsertNames: []
+            )
+        ) { error in
+            guard case .insertNotFound(_, _, let available) = error as? LogicianError else {
+                return XCTFail("expected insertNotFound, got \(error)")
+            }
+            XCTAssertEqual(available, ["1: Gain", "2: Cha EQ"])
+        }
+    }
+
     // MARK: - resolveRemovalSlot: duplicates
 
     func testDuplicatesWithoutInsertSlotThrowAmbiguousNamingTheMackieSlots() {

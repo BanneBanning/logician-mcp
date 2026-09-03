@@ -632,8 +632,19 @@ extension MCUController {
     /// 1-8, NOT the Accessibility insert_index. The LCD name proof holds on
     /// both paths: an `insertSlot` whose cell does not name the plugin is
     /// refused rather than cleared.
+    /// `stripInsertNames` is the channel strip inspector's OWN insert
+    /// readback (Accessibility), used only to word a not-found refusal's
+    /// `available:` list — matching and slot resolution stay on `inserts`
+    /// (the MCU cells), which is what physical `insert_slot` numbering
+    /// means. `inserts` alone used to answer both jobs, so a not-found
+    /// refusal right after an aborted add-browse could quote a stale
+    /// catalog-scroll entry one MCU cell had not yet repainted over as if it
+    /// were the strip's real inserts — cosmetic (the match itself was still
+    /// correct), but confusing. nil (no inspector open) falls back to
+    /// `inserts`, same as before.
     static func resolveRemovalSlot(
-        inserts: [String], pluginName: String, trackName: String, insertSlot: Int?
+        inserts: [String], pluginName: String, trackName: String, insertSlot: Int?,
+        stripInsertNames: [String]? = nil
     ) throws -> Int {
         let matches = inserts.enumerated().filter { _, name in
             let cleaned = name.trimmingCharacters(
@@ -661,9 +672,10 @@ extension MCUController {
         }
         guard matches.count == 1, let target = matches.first else {
             guard !matches.isEmpty else {
+                let readback = (stripInsertNames?.isEmpty == false) ? stripInsertNames! : inserts
                 throw LogicianError.insertNotFound(
                     track: trackName, plugin: pluginName,
-                    available: inserts.enumerated()
+                    available: readback.enumerated()
                         .filter { !$1.isEmpty && $1 != MCULCDStrings.emptySlot }
                         .map { "\($0 + 1): \($1)" }
                 )
@@ -821,13 +833,22 @@ extension MCUController {
         let listEvidence = try verifyPluginListStrip(
             inserts: inserts, logic: logic, trackName: trackName
         )
+        // The channel strip inspector, not the MCU plugin-list view: a
+        // refusal's "Available inserts" is read off THIS, never off `inserts`
+        // (an aborted add-browse earlier in the session can leave a stale
+        // catalog-scroll entry sitting in one MCU cell until the next press
+        // repaints it — the inspector was never part of that view and cannot
+        // carry it). nil only when no inspector shows this strip, the same
+        // condition `verifyPluginListStrip` already names "unavailable".
+        let stripInsertNames = try? logic.insertPluginNames(trackName: trackName)
         // Resolve WHICH slot to clear before anything is pressed — by LCD
         // name while it is unique, by the caller's insert_slot when it is not.
         let slotIndex: Int
         do {
             slotIndex = try resolveRemovalSlot(
                 inserts: inserts, pluginName: pluginName,
-                trackName: trackName, insertSlot: insertSlot
+                trackName: trackName, insertSlot: insertSlot,
+                stripInsertNames: stripInsertNames
             )
         } catch {
             exitToPan()
