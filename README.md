@@ -9,7 +9,7 @@
 [![macOS](https://img.shields.io/badge/macOS-13%2B-black?logo=apple)](#requirements)
 [![CI](https://github.com/BanneBanning/logician-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/BanneBanning/logician-mcp/actions/workflows/ci.yml)
 [![Swift](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](Package.swift)
-[![MCP](https://img.shields.io/badge/MCP-85_tools-4be37a)](docs/AGENT-GUIDE.md)
+[![MCP](https://img.shields.io/badge/MCP-81_tools-4be37a)](docs/AGENT-GUIDE.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
 [What you can say](#what-you-can-say) · [Install](#install) · [How fast](#how-fast-is-it) · [Agent guide](docs/AGENT-GUIDE.md)
@@ -139,7 +139,7 @@ Every one of those numbers includes the verification: Logician reads Logic's own
 - Swift toolchain, to build from source
 - One-time: Accessibility permission for your client, and a Mackie Control device in Logic on the `Logic MCP MCU` ports — `logic_health` walks you through both
 
-## What's inside (85 tools)
+## What's inside (81 tools)
 
 **See** the project: tracks, regions, markers, the whole mixer, any region's MIDI, any plugin's parameters, or all of it as one snapshot. **Mix**: volume, pan, mute, solo, sends, routing, insert bypass — the master chain and buses by name. **Plugins**: add, remove, read and write any parameter, browse presets, load instruments. **Edit**: select, move, copy, split, nudge, rename, quantize, transpose, fades, single notes. **Compose**: whole arrangements by MIDI import in seconds, or performed live through the track's instrument. **Automate**: read, record and remove curves. **Hear**: bounce, bounce in place, stems, freeze renders, A/B — audio comes back inline and as a link, and a listen-first mode holds the metrics back until the agent has actually listened.
 
