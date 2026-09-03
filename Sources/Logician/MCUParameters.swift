@@ -793,7 +793,15 @@ extension MCUController {
                 "give insert_slot or plugin_name to name the plugin on the control-surface route"
             )
         }
-        guard freshStatus() != nil else { return nil }
+        // requireSurface, not bare freshStatus() — a mirror that has only
+        // gone idle wakes on requireSurface's one wakeSurface() probe, and
+        // this gate used to refuse before even the hot-view fast path below
+        // got a chance (ensurePluginList carried the same defect, fixed
+        // 2026-09-03 alongside this call site). try? still lets a genuinely
+        // unavailable surface fall through to nil, unchanged.
+        guard (try? requireSurface(
+            "the plugin parameter route on the control surface", consequence: "Nothing was written"
+        )) != nil else { return nil }
         var slotName: String?
         var resolvedSlot = slot
         var resolvedBy: String?

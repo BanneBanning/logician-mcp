@@ -2324,6 +2324,21 @@ with every render coming back as audio the agent can listen to.
   on a plug-in list read and nothing at all on a parameter write that resolves cleanly.
   `logic_list_inserts {route: "mcu"}` reads the same settled row, so the list an agent
   checks and the list the write resolves against can no longer disagree.
+- **The plug-in family no longer refuses on an idle control surface.** `logic_list_inserts
+  {route: mcu}`, `logic_set_plugin_parameter`, `logic_list_plugin_parameters`,
+  `logic_add_plugin` and `logic_remove_plugin` all funnel through the same insert-list
+  gate, and it used to check only the raw MCU mirror: once nobody had touched Logic for
+  ten minutes it refused *"the control surface's status could not be read at all"* —
+  hit live 2026-09-03 with the mirror 1 054 s idle and Logic simply sitting there, though
+  one `bank_right` press was all it took to answer. Every other control-surface family
+  (`logic_set_cycle`, `logic_set_playing`, `logic_set_metronome`, and seven more call
+  sites) already takes that one wake probe before refusing; the plug-in gate, and the two
+  duplicate copies of it guarding `logic_set_plugin_parameter`'s hot-view fast path and
+  the plug-in browser's `add`/`remove` entry points, now take it too. A genuinely
+  unavailable surface (no daemon, Logic not running, Logic never talked to it) still
+  refuses exactly as before. An idle-past-ten-minutes mirror cannot be arranged in a
+  live session, so this rests on the wake probe's existing coverage plus 4 new unit
+  tests proving the probe fires once per call, never on a retry.
 
 ### Known limitations (honest by design)
 

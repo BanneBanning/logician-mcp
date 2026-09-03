@@ -603,11 +603,49 @@ extension MCUController {
     /// the surface back to the neutral view instead of leaving a `P…` bank
     /// standing (a plug-in view left standing makes the next track selection
     /// auto-open that plug-in's window — see `settleSurfaceDebt`).
+    /// Which surface read attempt N of the insert-list retry loop takes: the
+    /// ONE `requireSurface` wake probe on the first attempt, plain
+    /// `freshStatus` on every attempt after.
+    ///
+    /// A mirror that has merely gone idle (`SurfaceUnavailability
+    /// .logicSilent`, past `staleMirrorSeconds`) answers `requireSurface`'s
+    /// one `wakeSurface()` probe, and the wake leaves it fresh — so
+    /// re-probing on every retry would pay the wake's bank-walk-out-and-back
+    /// cost up to five times over for nothing. Pure and closure-driven so the
+    /// ORDER is unit-tested without a live surface, the same shape as
+    /// `MCUMetronome.resolveMetronomeState`: `wake` must run exactly once
+    /// across a whole loop, never on attempt > 0.
+    static func pluginListSurfaceRead(
+        attempt: Int, wake: () -> [String: Any]?, fresh: () -> [String: Any]?
+    ) -> [String: Any]? {
+        attempt == 0 ? wake() : fresh()
+    }
+
+    /// Gates on `requireSurface`, not bare `freshStatus()` — a mirror that
+    /// has merely gone idle is answerable with `requireSurface`'s one
+    /// `wakeSurface()` probe, and this loop used to refuse instead of taking
+    /// it: hit live on the demo project 2026-09-03, mirror 1 054 s idle,
+    /// Logic simply sitting there, one `bank_right` press was all it took.
+    /// `try?` turns a GENUINE unavailability (no daemon, Logic not running,
+    /// Logic never talked to the surface) back into the nil this loop
+    /// already handled — only the merely-idle case is now answered instead
+    /// of refused. Same shape as `MCUTransportLCD.setPlaying`/`setCycle` and
+    /// `MCUMetronome.setMetronome` (fixed 2026-09-03, 95cbe6f).
     static func ensurePluginList() throws -> [String: Any]? {
         lastPluginListRefusal = nil
         var lastSeen: PluginListView?
-        for _ in 0..<5 {
-            guard let status = freshStatus() else {
+        for attempt in 0..<5 {
+            let status = pluginListSurfaceRead(
+                attempt: attempt,
+                wake: {
+                    try? requireSurface(
+                        "the plug-in insert list on the control surface",
+                        consequence: "Nothing was pressed"
+                    )
+                },
+                fresh: freshStatus
+            )
+            guard let status else {
                 lastPluginListRefusal = "the control surface's status could not be read at all"
                 return nil
             }
