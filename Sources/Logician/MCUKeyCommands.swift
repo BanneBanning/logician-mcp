@@ -93,7 +93,17 @@ extension MCUController {
             )
         }
         let cell = lcdFields(top)[channel]
-        guard lcdAbbreviationPlausible(track: expectedName, lcd: cell) else {
+        // Same rule as the record-arm route's pre-press proof: the cell names
+        // the strip, or the only thing on it is this server's own press banner
+        // (`stripProvenByCell`). Without the second half, muting a track and
+        // then opening a plug-in on it inside the banner's ~2 s window refuses
+        // a strip `findChannel` had just proved — a hole the surface-wake
+        // package opened here by making the resolution fast, and one that
+        // record-arm now reaches too.
+        guard stripProvenByCell(
+            track: expectedName, cell: cell, channel: channel,
+            record: lastControlPressBanner
+        ) else {
             throw LogicianError.verificationFailed(
                 requested: "strip \(channel + 1) showing '\(expectedName)'",
                 actual: "it shows '\(cell)' (bank row: '\(top.trimmingCharacters(in: .whitespaces))'); nothing was selected or written",

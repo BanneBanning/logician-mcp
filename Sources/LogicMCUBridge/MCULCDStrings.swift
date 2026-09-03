@@ -145,7 +145,113 @@ public enum MCULCDStrings {
     /// Per locale, re-measure: solo a track and read `lcd_top`. These ARE
     /// Logic's words for its own controls, so unlike the mode banners (which
     /// stayed English under a French UI) they are expected to translate.
-    public static let controlNameBanners = ["Solo", "Mute", "Select", "Rec/Rdy"]
+    ///
+    /// # These are PHRASES, and one of them is wider than a cell
+    ///
+    /// A banner is painted starting at the touched strip's own cell origin and
+    /// runs for as many characters as the word needs — which is not the same
+    /// as "one cell". MEASURED live on `Testlåt Copy` 2026-09-03, polling
+    /// the LCD mirror every 50 ms from the moment each call RETURNED, across a
+    /// mute, a solo and a record-arm of `Bas` (strip 2 of bank 0, `808` beside
+    /// it). Every one of the six was still standing when its call returned:
+    ///
+    ///     control       banner text      cells   cleared after the return
+    ///     mute on       `Mute`             1     0.44 s   (call 3 743 ms)
+    ///     mute off      `Mute`             1     1.45 s   (call 2 250 ms)
+    ///     solo on       `Solo`             1     1.73 s   (call   794 ms)
+    ///     solo off      `Solo`             1     1.72 s   (call   783 ms)
+    ///     arm on        `Record Enable`    2     2.03 s   (call   264 ms)
+    ///     arm off       `Record Enable`    2     1.24 s   (call   228 ms)
+    ///
+    /// Add the call back and every stand lands in the same ~2 s band the
+    /// 50 ms poll measured on 2026-09-02 (1.94 s and 1.99 s), so this is one
+    /// timed transient with one lifetime, not a per-control number. The last
+    /// row is the short one because Logic repainted the whole row into the
+    /// channel-strip view rather than because that banner faded early.
+    ///
+    /// The row Logic paints while an arm is standing, read verbatim:
+    ///
+    ///     before  |LofPad Bas    808    Inst 2 Drums  Fill   AckSlg IvnSlg |
+    ///     after   |LofPad Record Enable Inst 2 Drums  Fill   AckSlg IvnSlg |
+    ///
+    /// So the record-arm banner covers the touched strip's cell AND its right
+    /// neighbour's, and `808` disappears under the second half of the word.
+    /// `controlNameBannerCells` is what the row checks match on, because the
+    /// LCD is read one 7-character cell at a time; `controlNameBannerSpan`
+    /// says how many of those cells one press is expected to swallow.
+    ///
+    /// `Rec/Rdy` has never been observed — it was listed in 2026-09-02 as the
+    /// obvious guess for the rec/ready button before anyone armed a track
+    /// while watching the row. It is kept because an unused spelling costs
+    /// nothing but one forced repaint if a strip is ever really called that,
+    /// and removing a guess that might be right on another Logic version buys
+    /// nothing.
+    public static let controlNameBanners = [
+        soloBanner, muteBanner, selectBanner, "Rec/Rdy", recordArmBanner
+    ]
+
+    /// The solo banner — one cell, measured.
+    public static let soloBanner = "Solo"
+
+    /// The mute banner — one cell, measured.
+    public static let muteBanner = "Mute"
+
+    /// The select banner — one cell, observed 2026-08-27 by
+    /// `selectChannelVerified`, which reads the strip's name BEFORE pressing
+    /// for exactly this reason.
+    public static let selectBanner = "Select"
+
+    /// The record-arm banner, named because the press sites need to say which
+    /// banner they just caused rather than repeat a literal.
+    ///
+    /// It is the same phrase Logic gives the track header's record button in
+    /// the Accessibility tree (`LogicUIStrings.Element.recordEnable`) —
+    /// the LCD is drawing that control's own name, so a localized Logic
+    /// translates BOTH and a locale pass has to move them together. It
+    /// degrades honestly when only one is done: an unrecognized banner cell is
+    /// never excused, so the resolution simply falls back to the full rescan
+    /// it paid before this list existed.
+    public static let recordArmBanner = "Record Enable"
+
+    /// Every banner phrase cut into the 7-character cells the row is read in,
+    /// deduplicated — `Record Enable` contributes `Record` and `Enable`.
+    ///
+    /// Derived rather than listed so a phrase cannot be added to one list and
+    /// forgotten in the other, and so the cell texts stay a CONSEQUENCE of the
+    /// measured phrase instead of a second transcription of it.
+    public static let controlNameBannerCells: [String] = {
+        var seen: [String] = []
+        for banner in controlNameBanners where !banner.isEmpty {
+            for cell in bannerCells(banner) where !seen.contains(cell) {
+                seen.append(cell)
+            }
+        }
+        return seen
+    }()
+
+    /// How a banner phrase lands on the row: laid down at a cell origin and
+    /// read back one `MCULCDRow.cellWidth` slice at a time, each trimmed the
+    /// way `MCULCDRow.cell` trims. A slice that is all spaces is dropped —
+    /// it is not a cell the row check could ever match on.
+    public static func bannerCells(_ banner: String) -> [String] {
+        var cells: [String] = []
+        var rest = Substring(banner)
+        while !rest.isEmpty {
+            let slice = rest.prefix(MCULCDRow.cellWidth)
+            rest = rest.dropFirst(MCULCDRow.cellWidth)
+            let trimmed = slice.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty { cells.append(trimmed) }
+        }
+        return cells
+    }
+
+    /// How many cells one press of this control is expected to paint over,
+    /// counted from the touched strip's own cell. 1 for every banner but
+    /// record-arm's; anything unknown is 1, which is the conservative answer
+    /// (a narrower span excuses less, never more).
+    public static func controlNameBannerSpan(_ banner: String) -> Int {
+        max(1, bannerCells(banner).count)
+    }
 
     /// The word in the transient page indicator Logic flashes over the top row
     /// after a cursor-left/right press: `Page 3/12`. The indicator hides

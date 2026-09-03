@@ -200,8 +200,13 @@ extension MCUController {
         // seconds. Recording it here is what lets the NEXT resolution of this
         // same track know the odd-looking cell is its own echo rather than a
         // stale bank map, and skip a 1.6-1.7 s re-navigation of the bank the
-        // surface is already standing on (`bankedAtMatch`, FS-1).
-        noteControlPressBanner(track: trackName, channel: channel)
+        // surface is already standing on (`bankedAtMatch`, FS-1). Both of
+        // these words fit inside one 7-character cell, which is what makes
+        // record-arm's `Record Enable` the odd one out.
+        noteControlPressBanner(
+            track: trackName, channel: channel,
+            banner: strip == .mute ? MCULCDStrings.muteBanner : MCULCDStrings.soloBanner
+        )
         // Let the LED repaint ARRIVE before the readback window opens. A window
         // that straddles the press catches the old blink's edges and the new
         // state together, counts two edges, and spends a second whole window

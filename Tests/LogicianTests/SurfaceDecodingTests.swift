@@ -164,7 +164,7 @@ final class SurfaceDecodingTests: XCTestCase {
     func testOurOwnPressBannerOnTheTargetCellKeepsTheFastPath() {
         XCTAssertTrue(
             MCUController.bankedAtMatch(
-                live: bannerBank, cached: mappedBank, channel: 1, ownPressBanner: true
+                live: bannerBank, cached: mappedBank, channel: 1, ownPressBannerCells: 1
             )
         )
         // Both spellings, both planes' controls: `Mute` reads exactly like
@@ -172,7 +172,7 @@ final class SurfaceDecodingTests: XCTestCase {
         let muteBanner = "LofPad Mute   808    Inst 2 Drums  Fill   AckSlg IvnSlg "
         XCTAssertTrue(
             MCUController.bankedAtMatch(
-                live: muteBanner, cached: mappedBank, channel: 1, ownPressBanner: true
+                live: muteBanner, cached: mappedBank, channel: 1, ownPressBannerCells: 1
             )
         )
     }
@@ -185,7 +185,7 @@ final class SurfaceDecodingTests: XCTestCase {
         let renamed = "LofPad Bass 2 808    Inst 2 Drums  Fill   AckSlg IvnSlg "
         XCTAssertFalse(
             MCUController.bankedAtMatch(
-                live: renamed, cached: mappedBank, channel: 1, ownPressBanner: true
+                live: renamed, cached: mappedBank, channel: 1, ownPressBannerCells: 1
             )
         )
     }
@@ -196,7 +196,7 @@ final class SurfaceDecodingTests: XCTestCase {
         let bannerAndDrift = "LofPad Solo   808    Inst 2 Drums  Fill   AckSlg Sweeps "
         XCTAssertFalse(
             MCUController.bankedAtMatch(
-                live: bannerAndDrift, cached: mappedBank, channel: 1, ownPressBanner: true
+                live: bannerAndDrift, cached: mappedBank, channel: 1, ownPressBannerCells: 1
             )
         )
     }
@@ -218,7 +218,7 @@ final class SurfaceDecodingTests: XCTestCase {
                 XCTAssertFalse(
                     MCUController.bankedAtMatch(
                         live: withBanner, cached: referenceBanks[0],
-                        channel: channel, ownPressBanner: true
+                        channel: channel, ownPressBannerCells: 1
                     ),
                     "bank \(index) with a banner on strip \(channel + 1) passed as bank 0"
                 )
@@ -229,9 +229,9 @@ final class SurfaceDecodingTests: XCTestCase {
     // MARK: - Whose banner is it
 
     func testABannerCellIsRecognisedPaddedOrTrimmed() {
-        for banner in MCULCDStrings.controlNameBanners {
-            XCTAssertTrue(MCUController.isControlBannerCell(banner))
-            XCTAssertTrue(MCUController.isControlBannerCell(banner + "  "))
+        for cell in MCULCDStrings.controlNameBannerCells {
+            XCTAssertTrue(MCUController.isControlBannerCell(cell))
+            XCTAssertTrue(MCUController.isControlBannerCell(cell + "  "))
         }
         XCTAssertFalse(MCUController.isControlBannerCell("Bas   "))
         XCTAssertFalse(MCUController.isControlBannerCell(""))
@@ -307,11 +307,11 @@ final class SurfaceDecodingTests: XCTestCase {
         XCTAssertFalse(
             MCUController.bankMapCacheable(referenceBanks + [poisonedBank])
         )
-        for banner in MCULCDStrings.controlNameBanners {
-            let row = "LofPad " + banner.padding(
+        for cell in MCULCDStrings.controlNameBannerCells {
+            let row = "LofPad " + cell.padding(
                 toLength: MCULCDRow.cellWidth, withPad: " ", startingAt: 0
             ) + "808    Inst 2 Drums  Fill   AckSlg IvnSlg "
-            XCTAssertFalse(MCUController.bankMapCacheable([row]), banner)
+            XCTAssertFalse(MCUController.bankMapCacheable([row]), cell)
         }
     }
 
@@ -334,7 +334,7 @@ final class SurfaceDecodingTests: XCTestCase {
         )
         XCTAssertFalse(
             MCUController.bankedAtMatch(
-                live: cleanBank, cached: poisonedBank, channel: 2, ownPressBanner: true
+                live: cleanBank, cached: poisonedBank, channel: 2, ownPressBannerCells: 1
             )
         )
     }
@@ -358,6 +358,252 @@ final class SurfaceDecodingTests: XCTestCase {
     func testTwoCellsOutIsAStaleMapAndTakesTheWalk() {
         let twoOut = "LofPad Solo   Mute   Inst 2 Drums  Fill   AckSlg IvnSlg "
         XCTAssertFalse(MCUController.bankedAtMatch(live: twoOut, cached: mappedBank, channel: 3))
+    }
+
+    // MARK: - The banner that is wider than a cell (record-arm)
+
+    /// Eight cells joined the way the surface paints them, so a test row is
+    /// written as what it says rather than as 56 counted spaces.
+    private func row(_ cells: [String]) -> String {
+        cells.map { $0.padding(toLength: MCULCDRow.cellWidth, withPad: " ", startingAt: 0) }
+            .joined()
+    }
+
+    /// MEASURED live 2026-09-03 on `Testlåt Copy`: arming `Bas` (strip 2,
+    /// `808` beside it) paints `Record Enable` from that strip's cell ORIGIN,
+    /// which is thirteen characters and therefore two cells — the touched
+    /// strip's and its right-hand neighbour's. Everything else Logic paints on
+    /// a per-strip press fits inside one.
+    func testTheRecordArmBannerIsTwoCellsAndTheRestAreOne() {
+        XCTAssertEqual(MCULCDStrings.bannerCells(MCULCDStrings.recordArmBanner), ["Record", "Enable"])
+        XCTAssertEqual(MCULCDStrings.controlNameBannerSpan(MCULCDStrings.recordArmBanner), 2)
+        for banner in [MCULCDStrings.muteBanner, MCULCDStrings.soloBanner, MCULCDStrings.selectBanner] {
+            XCTAssertEqual(MCULCDStrings.controlNameBannerSpan(banner), 1, banner)
+        }
+        // Both halves have to be recognizable on their own: the row is read
+        // one cell at a time and neither cell spells the whole phrase.
+        XCTAssertTrue(MCUController.isControlBannerCell("Record"))
+        XCTAssertTrue(MCUController.isControlBannerCell("Enable"))
+        XCTAssertFalse(MCUController.isControlBannerCell(MCULCDStrings.recordArmBanner))
+    }
+
+    /// The defect this fixes, and its fix, in one pair of assertions. The
+    /// arm-on → arm-off pair the guide recommends met two differing cells on
+    /// the very next resolution; the one-cell budget could not pass them, so
+    /// every repeat paid a full rescan (~5-7 s live) once e7c1a84 made the
+    /// press fast enough to land inside Logic's ~2 s banner window.
+    func testTheTwoCellArmBannerKeepsTheFastPathOnlyWithATwoCellBudget() {
+        let armed = row(["LofPad", "Record", "Enable", "Inst 2", "Drums", "Fill", "AckSlg", "IvnSlg"])
+        XCTAssertTrue(
+            MCUController.bankedAtMatch(
+                live: armed, cached: mappedBank, channel: 1, ownPressBannerCells: 2
+            )
+        )
+        XCTAssertFalse(
+            MCUController.bankedAtMatch(
+                live: armed, cached: mappedBank, channel: 1, ownPressBannerCells: 1
+            )
+        )
+        XCTAssertFalse(
+            MCUController.bankedAtMatch(live: armed, cached: mappedBank, channel: 1)
+        )
+    }
+
+    /// The span runs RIGHTWARDS from the touched strip and stops there. `808`
+    /// lost its cell to the second half of the word, but nobody pressed
+    /// anything on `808` — so a resolution of `808` reads the map as stale and
+    /// takes the walk, which is the only answer that cannot write to the wrong
+    /// strip.
+    func testTheSecondHalfIsNeverExcusedForTheStripThatMerelyLostItsCell() {
+        let armed = row(["LofPad", "Record", "Enable", "Inst 2", "Drums", "Fill", "AckSlg", "IvnSlg"])
+        XCTAssertFalse(
+            MCUController.bankedAtMatch(
+                live: armed, cached: mappedBank, channel: 2, ownPressBannerCells: 2
+            )
+        )
+        let record = MCUController.ControlPressBanner(track: "Bas", channel: 1, cells: 2, at: Date())
+        XCTAssertEqual(
+            MCUController.ownPressBannerCells(record, track: "808", channel: 2, now: Date()), 0
+        )
+    }
+
+    /// A press on the RIGHTMOST strip has no neighbour to bleed into. The span
+    /// is clamped to the row rather than reaching past its last cell, so the
+    /// one cell that exists is excused and the match still holds.
+    func testABannerThatWouldOverlapTheRowsEdgeIsClampedToTheRow() {
+        let armedLast = row(["LofPad", "Bas", "808", "Inst 2", "Drums", "Fill", "AckSlg", "Record"])
+        XCTAssertTrue(
+            MCUController.bankedAtMatch(
+                live: armedLast, cached: mappedBank, channel: 7, ownPressBannerCells: 2
+            )
+        )
+        // And it does not wrap round to cell 0: a drift there is still a
+        // stale map, budget or no budget.
+        let armedLastPlusDrift = row(
+            ["Sweeps", "Bas", "808", "Inst 2", "Drums", "Fill", "AckSlg", "Record"]
+        )
+        XCTAssertFalse(
+            MCUController.bankedAtMatch(
+                live: armedLastPlusDrift, cached: mappedBank, channel: 7, ownPressBannerCells: 2
+            )
+        )
+    }
+
+    /// The banner's words COLLIDING with real strip names, both directions.
+    ///
+    /// A neighbour genuinely called `Enable` simply agrees with the map under
+    /// the banner, so the press still matches on one differing cell. And a
+    /// strip genuinely called `Record` under a STALE map — nobody pressed
+    /// anything — is a rename, which must still be discovered: the wildcard is
+    /// for a banner this process caused, never for a cell that merely looks
+    /// like one.
+    func testTheBannersWordsCollidingWithRealTrackNames() {
+        let mapWithEnable = row(
+            ["LofPad", "Bas", "Enable", "Inst 2", "Drums", "Fill", "AckSlg", "IvnSlg"]
+        )
+        let armed = row(["LofPad", "Record", "Enable", "Inst 2", "Drums", "Fill", "AckSlg", "IvnSlg"])
+        XCTAssertTrue(
+            MCUController.bankedAtMatch(
+                live: armed, cached: mapWithEnable, channel: 1, ownPressBannerCells: 2
+            )
+        )
+        let renamedToRecord = row(
+            ["LofPad", "Record", "808", "Inst 2", "Drums", "Fill", "AckSlg", "IvnSlg"]
+        )
+        XCTAssertFalse(
+            MCUController.bankedAtMatch(live: renamedToRecord, cached: mappedBank, channel: 1)
+        )
+        // The honest cost of listing the two halves: a strip really called
+        // `Record` reads as a banner to the census, which re-reads the row and
+        // believes whatever the repaint says. One forced repaint, no wrong
+        // name — the trade this list has always made.
+        XCTAssertFalse(MCUController.bankMapCacheable([renamedToRecord]))
+    }
+
+    /// A two-cell banner must not reach `bank-cache.json` either: on disk it
+    /// outlives the banner, and both halves would be published as strip names.
+    func testATwoCellBannerIsAlsoRefusedByTheCacheGuard() {
+        let armed = row(["LofPad", "Record", "Enable", "Inst 2", "Drums", "Fill", "AckSlg", "IvnSlg"])
+        XCTAssertFalse(MCUController.bankMapCacheable(referenceBanks + [armed]))
+        XCTAssertEqual(MCUController.controlBannerCell(in: armed), "Record")
+        // …and the row-level check that the scan waits on sees it too — the
+        // same function `rowWithoutControlBanner` calls once per bank.
+        let secondHalfOnly = row(
+            ["LofPad", "Bas", "Enable", "Inst 2", "Drums", "Fill", "AckSlg", "IvnSlg"]
+        )
+        XCTAssertEqual(MCUController.controlBannerCell(in: secondHalfOnly), "Enable")
+    }
+
+    /// The safety property, re-proved at two cells: a wider wildcard still
+    /// cannot make one bank pass as another. Neighbouring banks are SHIFTED
+    /// windows differing in seven or eight cells, so excusing two of them
+    /// leaves five or six.
+    func testTheTwoCellWildcardCannotMakeADifferentBankPass() {
+        for (index, bank) in referenceBanks.enumerated() where index > 0 {
+            for channel in 0..<8 {
+                var cells = MCUController.lcdFields(bank)
+                cells[channel] = "Record"
+                if channel + 1 < cells.count { cells[channel + 1] = "Enable" }
+                XCTAssertFalse(
+                    MCUController.bankedAtMatch(
+                        live: row(cells), cached: referenceBanks[0],
+                        channel: channel, ownPressBannerCells: 2
+                    ),
+                    "bank \(index) with a two-cell banner on strip \(channel + 1) passed as bank 0"
+                )
+            }
+        }
+    }
+
+    /// The press site names the banner it caused and the record carries that
+    /// WIDTH, so the matcher never has to guess it from the live row.
+    func testThePressSiteRecordsHowWideItsBannerIs() {
+        let previous = MCUController.lastControlPressBanner
+        defer { MCUController.lastControlPressBanner = previous }
+        let pressed = Date()
+        MCUController.noteControlPressBanner(
+            track: "Bas", channel: 1, banner: MCULCDStrings.recordArmBanner, at: pressed
+        )
+        XCTAssertEqual(MCUController.lastControlPressBanner?.cells, 2)
+        MCUController.noteControlPressBanner(
+            track: "Bas", channel: 1, banner: MCULCDStrings.muteBanner, at: pressed
+        )
+        XCTAssertEqual(MCUController.lastControlPressBanner?.cells, 1)
+        // An unknown word is one cell — the narrower span excuses less, never
+        // more, so a spelling nobody has measured cannot widen the wildcard.
+        MCUController.noteControlPressBanner(
+            track: "Bas", channel: 1, banner: "", at: pressed
+        )
+        XCTAssertEqual(MCUController.lastControlPressBanner?.cells, 1)
+    }
+
+    /// The pre-press proof, which the fast path moved rather than solved.
+    /// Measured live 2026-09-03: with the resolution no longer waiting the
+    /// banner out, five consecutive record-arm calls read `Record` in the
+    /// cell and refused a strip they had just proved. A banner is accepted
+    /// there — but only ours, only on this strip, and only while it is young.
+    func testTheStripIsProvenByItsNameOrByOurOwnBannerAndNothingElse() {
+        let now = Date()
+        let ours = MCUController.ControlPressBanner(track: "Bas", channel: 1, cells: 2, at: now)
+        // The plain reading is the first and usual answer.
+        XCTAssertTrue(
+            MCUController.stripProvenByCell(
+                track: "Bas", cell: "Bas", channel: 1, record: nil, now: now
+            )
+        )
+        // Our own banner, on our own strip, inside the window.
+        XCTAssertTrue(
+            MCUController.stripProvenByCell(
+                track: "Bas", cell: "Record", channel: 1, record: ours, now: now
+            )
+        )
+        // Nobody pressed anything: a cell that merely looks like a banner
+        // proves nothing, and the write is refused rather than aimed.
+        XCTAssertFalse(
+            MCUController.stripProvenByCell(
+                track: "Bas", cell: "Record", channel: 1, record: nil, now: now
+            )
+        )
+        // Our press, but a different strip — the second half of the banner
+        // landed on `808`'s cell and `808` is not what we pressed.
+        XCTAssertFalse(
+            MCUController.stripProvenByCell(
+                track: "808", cell: "Enable", channel: 2, record: ours, now: now
+            )
+        )
+        // Expired.
+        XCTAssertFalse(
+            MCUController.stripProvenByCell(
+                track: "Bas", cell: "Record", channel: 1, record: ours,
+                now: now.addingTimeInterval(MCUController.ownPressBannerTrustSeconds + 0.1)
+            )
+        )
+        // A wrong name that is not a banner is still a wrong strip.
+        XCTAssertFalse(
+            MCUController.stripProvenByCell(
+                track: "Bas", cell: "St Out", channel: 1, record: ours, now: now
+            )
+        )
+    }
+
+    /// The width expires with the rest of the record: past the trust window a
+    /// two-cell press excuses nothing at all.
+    func testTheTwoCellWidthExpiresWithTheRecord() {
+        let pressed = Date()
+        let record = MCUController.ControlPressBanner(track: "Bas", channel: 1, cells: 2, at: pressed)
+        XCTAssertEqual(
+            MCUController.ownPressBannerCells(record, track: "Bas", channel: 1, now: pressed), 2
+        )
+        XCTAssertEqual(
+            MCUController.ownPressBannerCells(
+                record, track: "Bas", channel: 1,
+                now: pressed.addingTimeInterval(MCUController.ownPressBannerTrustSeconds + 0.1)
+            ),
+            0
+        )
+        XCTAssertTrue(
+            MCUController.ownPressBannerStanding(record, track: "Bas", channel: 1, now: pressed)
+        )
     }
 
     // MARK: - Instrument browser entries

@@ -1842,6 +1842,17 @@ with every render coming back as audio the agent can listen to.
   navigation, and a genuinely stale map still gives up after the distance it was told,
   rather than walking the project. `Master` and `Stereo Out` volume reads, writes and
   restores verified live.
+- **Arming a track and disarming it again is instant.** Logic answers a rec/ready press by
+  painting `Record Enable` over the strip's name on the control surface — thirteen
+  characters, so it covers the touched strip's cell AND its neighbour's, for about two
+  seconds. The surface could already recognise its own one-word `Mute` and `Solo` echoes
+  and carry on, but not a two-cell one, so the second half of every arm-on → arm-off pair
+  read a bank map it could not match and rescanned the whole project: **6 230–6 732 ms,
+  five times out of five**. It now knows how wide its own banner is and stays on the bank
+  it never left — **164–321 ms**, with the track header's Record Enable checkbox
+  confirming every one. Mute and solo are unchanged at **826–842 ms**, a cross-bank write
+  still pays its real navigation, and a full scan run while the banner stands still
+  refuses to write `Record` into the bank cache as if it were a track's name.
 
 - **Two tracks with the same name are two tracks again, and reading them is twice as fast.**
   `logic_track_info` addressed rows by NAME, and Logic lets two tracks share one. The

@@ -748,44 +748,84 @@ extension MCUController {
     /// for the same-channel write straight after it, twice, on two different
     /// strips.
     ///
-    /// `ownPressBanner` is the caller's evidence that the banner is THIS
+    /// `ownPressBannerCells` is the caller's evidence that the banner is THIS
     /// server's, from a press on THIS track and THIS strip index inside the
     /// window a banner has ever been seen to stand in
-    /// (`ownPressBannerStanding`). With it, a cell
-    /// spelling one of Logic's control names (`isControlBannerCell`) is a
-    /// wildcard — and only then; an untouched channel never gets one, so a
-    /// track genuinely renamed to `Mute` still falls through to the rescan.
-    /// Waiting the banner out instead would cost the ~2 s
-    /// (`controlBannerFadeBudget`) that the navigation it saves costs 1.7 s of.
-    /// The one-cell budget is unchanged: the wildcard IS the one cell allowed
-    /// to differ, so a bank that is shifted by even one strip still fails.
+    /// (`ownPressBannerCells(_:track:channel:now:)`), and it says how WIDE
+    /// that press's banner is. Inside that span a cell spelling one of Logic's
+    /// control names (`isControlBannerCell`) is a wildcard — and only there;
+    /// an untouched channel never gets one, so a track genuinely renamed to
+    /// `Mute` still falls through to the rescan. Waiting the banner out
+    /// instead would cost the ~2 s (`controlBannerFadeBudget`) that the
+    /// navigation it saves costs 1.7 s of.
+    ///
+    /// A BANNER IS NOT ALWAYS ONE CELL, which is the whole of the second pass
+    /// here. Logic lays the control's name down at the touched strip's cell
+    /// ORIGIN and lets it run as far as the word does, so `Mute` and `Solo`
+    /// stop inside that strip's seven columns but record-arm's
+    /// `Record Enable` (`MCULCDStrings.recordArmBanner`) runs thirteen columns
+    /// and reads back as the two cells `Record` and `Enable` — the touched
+    /// strip's, and its right-hand neighbour's. Measured live 2026-09-03 on
+    /// `Testlåt Copy`, arming `Bas` (strip 2, `808` beside it):
+    ///
+    ///     before  |LofPad Bas    808    Inst 2 Drums  Fill   AckSlg IvnSlg |
+    ///     after   |LofPad Record Enable Inst 2 Drums  Fill   AckSlg IvnSlg |
+    ///
+    /// The budget is unchanged in the sense that matters: the wildcards ARE
+    /// the only cells allowed to differ. With no press record exactly one cell
+    /// may drift (an unexplained one-cell difference is still the right bank);
+    /// with one, every differing cell must be inside the recorded span AND
+    /// spell a banner. So a bank shifted by even one strip still fails, and
+    /// `Record Enable` plus a genuinely stale cell elsewhere still takes the
+    /// walk.
     ///
     /// Measured A/B on the live sandbox 2026-09-03, same session, same warm
     /// cache, five consecutive same-strip repeats on the bank the surface was
-    /// standing on: **2 382-2 457 ms before, 784-813 ms after**.
+    /// standing on: **2 382-2 457 ms before, 784-813 ms after** (one-cell
+    /// banners).
     ///
-    /// One case this does NOT reach, measured the same session and filed
-    /// rather than fixed here: the banner rides along a bank change (the LCD
-    /// overlay lives at a cell INDEX, not on a strip), so touching strip A,
-    /// then strip B on another bank, then B again meets TWO banner cells on
-    /// the destination row — B's own, plus A's riding at A's old column —
-    /// which is one more than the budget allows, and that repeat still pays
-    /// the navigation (2 358 → 2 380-2 442 ms, unchanged). The evidence for
-    /// excusing the second one exists (this process pressed that column too),
-    /// but excusing a cell for a strip nobody touched is a wider rule than
-    /// this one, and it is not made here on one measurement.
+    /// Record-arm only became fast enough to land inside the banner window in
+    /// e7c1a84, and until the two-cell span was added it paid the full rescan
+    /// on every repeat. Same sandbox, same session, old binary then new, five
+    /// consecutive arm toggles on `Bas` after one clean arm outside the
+    /// window: **6 230 / 6 433 / 6 636 / 6 700 / 6 732 ms before, 164 / 283 /
+    /// 288 / 306 / 321 ms after** — every one of the ten verified by the
+    /// track header's own Record Enable checkbox. The one-cell banners were
+    /// re-measured unchanged in the same runs (mute on/off 826-842 ms with no
+    /// solo standing), and a cross-bank write, which has real navigation to
+    /// pay for, was unchanged at 3 358-4 021 ms.
+    ///
+    /// One case this does NOT reach, measured 2026-09-03 and filed rather than
+    /// fixed here: the banner rides along a bank change (the LCD overlay lives
+    /// at a cell INDEX, not on a strip), so touching strip A, then strip B on
+    /// another bank, then B again meets a banner cell on the destination row
+    /// that belongs to A's old column. The evidence for excusing it exists
+    /// (this process pressed that column too), but excusing a cell for a strip
+    /// nobody touched is a wider rule than this one, and it is not made here.
     static func bankedAtMatch(
-        live: String, cached: String, channel: Int, ownPressBanner: Bool = false
+        live: String, cached: String, channel: Int, ownPressBannerCells: Int = 0
     ) -> Bool {
         if live == cached { return true }
         let liveCells = lcdFields(live)
         let cachedCells = lcdFields(cached)
         guard liveCells.count == cachedCells.count,
               liveCells.indices.contains(channel) else { return false }
-        if liveCells[channel] != cachedCells[channel] {
-            guard ownPressBanner, isControlBannerCell(liveCells[channel]) else { return false }
+        let differing = liveCells.indices.filter { liveCells[$0] != cachedCells[$0] }
+        guard !differing.isEmpty else { return false }
+        // The span stops at the row's edge: a press on the rightmost strip
+        // has no neighbour to bleed into, so there is one cell to excuse and
+        // whatever Logic does with the rest of the word is not this row's
+        // problem.
+        let span = channel..<min(channel + max(0, ownPressBannerCells), liveCells.count)
+        let excused = differing.filter { span.contains($0) && isControlBannerCell(liveCells[$0]) }
+        if excused.isEmpty {
+            // No evidence, so the pre-banner rule stands unchanged: one
+            // unexplained cell is tolerated anywhere but the target's own,
+            // which must read its own name before anything is written to it.
+            if differing.contains(channel) { return false }
+            return differing.count == 1
         }
-        return zip(liveCells, cachedCells).filter(!=).count == 1
+        return differing == excused
     }
 
     /// How many bank_right presses in a row may land on the SAME row before
@@ -817,7 +857,7 @@ extension MCUController {
         outcome: SettledTopOutcome,
         expecting expectedTop: String,
         channel: Int,
-        ownPressBanner: Bool = false,
+        ownPressBannerCells: Int = 0,
         stallsSoFar: Int
     ) -> BankStepVerdict {
         // The SAME arrival rule the surface's own "am I already here?" check
@@ -828,7 +868,7 @@ extension MCUController {
         func arrived(_ row: String) -> Bool {
             bankedAtMatch(
                 live: row, cached: expectedTop, channel: channel,
-                ownPressBanner: ownPressBanner
+                ownPressBannerCells: ownPressBannerCells
             )
         }
         switch outcome {
@@ -883,7 +923,7 @@ extension MCUController {
     /// Each step is settled before the next is sent now, and the budget is
     /// spent in BANK STEPS THAT HAPPENED rather than in presses that were sent.
     static func navigateToBank(
-        _ index: Int, expecting expectedTop: String, channel: Int, ownPressBanner: Bool = false
+        _ index: Int, expecting expectedTop: String, channel: Int, ownPressBannerCells: Int = 0
     ) throws -> Bool {
         // Counting right from an UNPROVEN left edge lands on bank
         // `index + (however far the walk fell short)`, and the row check below
@@ -909,7 +949,7 @@ extension MCUController {
         func arrivedAt(_ row: String) -> Bool {
             bankedAtMatch(
                 live: row, cached: expectedTop, channel: channel,
-                ownPressBanner: ownPressBanner
+                ownPressBannerCells: ownPressBannerCells
             )
         }
         if arrivedAt(top) { return true }
@@ -932,7 +972,7 @@ extension MCUController {
             let outcome = try settledTopOutcome(previous: top, eventsBeforePress: beforeEvents)
             switch bankStepVerdict(
                 outcome: outcome, expecting: expectedTop, channel: channel,
-                ownPressBanner: ownPressBanner, stallsSoFar: stalls
+                ownPressBannerCells: ownPressBannerCells, stallsSoFar: stalls
             ) {
             case .arrived:
                 return true
@@ -1003,7 +1043,7 @@ extension MCUController {
                 if let top = freshStatus()?["lcd_top"] as? String,
                    bankedAtMatch(
                        live: top, cached: cachedTops[match.bank], channel: match.channel,
-                       ownPressBanner: ownPressBannerStanding(
+                       ownPressBannerCells: ownPressBannerCells(
                            lastControlPressBanner, track: trackName,
                            channel: match.channel, now: Date()
                        )
@@ -1012,7 +1052,7 @@ extension MCUController {
                 }
                 if try navigateToBank(
                     match.bank, expecting: cachedTops[match.bank], channel: match.channel,
-                    ownPressBanner: ownPressBannerStanding(
+                    ownPressBannerCells: ownPressBannerCells(
                         lastControlPressBanner, track: trackName,
                         channel: match.channel, now: Date()
                     )

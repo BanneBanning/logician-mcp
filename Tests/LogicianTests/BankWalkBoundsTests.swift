@@ -292,13 +292,14 @@ final class BankWalkBoundsTests: XCTestCase {
     }
 
     func testEveryBannerSpellingIsCheckedAndNoneIsBlank() {
-        for banner in MCULCDStrings.controlNameBanners {
-            XCTAssertFalse(banner.isEmpty)
-            XCTAssertEqual(banner, banner.trimmingCharacters(in: .whitespaces), "'\(banner)' is padded")
-            let row = ([banner] + Array(repeating: "Bas", count: 7))
+        for cell in MCULCDStrings.controlNameBannerCells {
+            XCTAssertFalse(cell.isEmpty)
+            XCTAssertEqual(cell, cell.trimmingCharacters(in: .whitespaces), "'\(cell)' is padded")
+            XCTAssertLessThanOrEqual(cell.count, MCULCDRow.cellWidth, "'\(cell)' is wider than a cell")
+            let row = ([cell] + Array(repeating: "Bas", count: 7))
                 .map { $0.padding(toLength: 7, withPad: " ", startingAt: 0) }
                 .joined()
-            XCTAssertEqual(MCUController.controlBannerCell(in: row), banner)
+            XCTAssertEqual(MCUController.controlBannerCell(in: row), cell)
         }
     }
 }
