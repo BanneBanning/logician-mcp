@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
-# Installs Logician for people without Homebrew: clone (or update), build
-# release, symlink the binary onto PATH. Safe to re-run - re-running only
-# updates the checkout and rebuilds. No `sudo` unless nothing else works,
-# and even then it asks first. Every step prints exactly one line so a
-# failure is easy to point at.
+# Installs Logician for people without Homebrew: clone (or update), check out
+# a RELEASE TAG, build release, symlink the binary onto PATH. Safe to re-run -
+# re-running only moves the checkout to the pinned tag and rebuilds, and it
+# refuses rather than discard work if you have edited the checkout. No `sudo`
+# unless nothing else works, and even then it asks first. Every step prints
+# exactly one line so a failure is easy to point at.
 #
 #   curl -fsSL https://raw.githubusercontent.com/BanneBanning/logician-mcp/main/packaging/install.sh | bash
+#
+# What you get is the tag in DEFAULT_REF below - a fixed, citable commit that
+# was built and tested by CI, not whatever `main` happens to be this hour.
+# Override it with LOGICIAN_REF (a tag, a branch, or a commit SHA) when you
+# specifically want something else:
+#
+#   curl -fsSL .../install.sh | LOGICIAN_REF=main bash
 #
 set -u
 
@@ -24,6 +32,16 @@ REPO_URL="${LOGICIAN_REPO_URL:-https://github.com/BanneBanning/logician-mcp.git}
 INSTALL_DIR="${LOGICIAN_INSTALL_DIR:-$HOME/.logician}"
 BIN_NAME="logician"
 
+# The release this script installs. Bumped with `serverVersion` at every
+# release (packaging/README.md step 1); PackagingSyncTests fails the suite if
+# the two ever disagree, the same drift guard the Homebrew formula has.
+DEFAULT_REF="v1.0.0-beta.1"
+REF="${LOGICIAN_REF:-$DEFAULT_REF}"
+# Set LOGICIAN_FORCE=1 to let the script discard local modifications in the
+# checkout. Off by default: an update that silently ate someone's edits would
+# be a worse failure than refusing to update.
+FORCE="${LOGICIAN_FORCE:-0}"
+
 say() { printf '==> %s\n' "$1"; }
 fail() {
     printf 'error: %s\n' "$1" >&2
@@ -32,21 +50,27 @@ fail() {
 }
 
 # ---------------------------------------------------------------------------
-# 1. macOS version - Logician links AppKit/ApplicationServices APIs that
-#    require macOS 13 (Ventura) or later, the same floor Package.swift
-#    declares.
+# 1. macOS version. The BUILT binary deploys to macOS 13 (Ventura), which is
+#    what Package.swift declares - but this script BUILDS, and building needs
+#    the Swift 6 toolchain that Package.swift's `swift-tools-version: 6.0`
+#    demands. Swift 6 ships in Xcode 16, and Apple installs Xcode 16 only on
+#    macOS 14.5 or later, so 14.5 is the real floor for anyone compiling from
+#    source - which is everyone, here and via Homebrew alike.
 # ---------------------------------------------------------------------------
 say "checking macOS version"
 if [ "$(uname -s)" != "Darwin" ]; then
     fail "Logician only runs on macOS (this is $(uname -s))." \
          "Logic Pro itself is macOS-only, so there is no other platform to support."
 fi
-macos_major="$(sw_vers -productVersion | cut -d. -f1)"
-if [ "${macos_major:-0}" -lt 13 ]; then
-    fail "macOS $(sw_vers -productVersion) is too old; Logician needs macOS 13 (Ventura) or later." \
-         "Update macOS via System Settings > General > Software Update, then re-run this script."
+macos_version="$(sw_vers -productVersion)"
+macos_major="$(printf '%s' "$macos_version" | cut -d. -f1)"
+macos_minor="$(printf '%s' "$macos_version" | cut -d. -f2)"
+if [ "${macos_major:-0}" -lt 14 ] ||
+   { [ "${macos_major:-0}" -eq 14 ] && [ "${macos_minor:-0}" -lt 5 ]; }; then
+    fail "macOS $macos_version cannot build Logician; building needs macOS 14.5 (Sonoma) or later." \
+         "Logician compiles from source with Swift 6, which ships in Xcode 16, which Apple installs only on macOS 14.5+. Update macOS via System Settings > General > Software Update, then re-run this script."
 fi
-say "macOS $(sw_vers -productVersion) OK"
+say "macOS $macos_version OK"
 
 # ---------------------------------------------------------------------------
 # 2. Swift toolchain - ships with Xcode's Command Line Tools, not the full
@@ -57,27 +81,72 @@ if ! swift --version >/dev/null 2>&1; then
     fail "the Swift toolchain was not found (\`swift --version\` failed)." \
          "Install Apple's Command Line Tools, then re-run this script: xcode-select --install"
 fi
-say "Swift toolchain OK ($(swift --version 2>&1 | head -n1))"
+swift_banner="$(swift --version 2>&1 | head -n1)"
+swift_major="$(printf '%s' "$swift_banner" | sed -n 's/.*Swift version \([0-9][0-9]*\).*/\1/p')"
+if [ "${swift_major:-0}" -lt 6 ]; then
+    fail "this Mac has Swift ${swift_major:-an unrecognised version} ($swift_banner); Logician needs Swift 6." \
+         "Update Apple's Command Line Tools (Swift 6 ships with Xcode 16, macOS 14.5+): xcode-select --install, or install Xcode 16 or later from the App Store."
+fi
+say "Swift toolchain OK ($swift_banner)"
 
 # ---------------------------------------------------------------------------
-# 3. Clone into ~/.logician, or update it if it is already there. A fetch +
-#    fast-forward keeps a local `git pull` habit from clashing with a dirty
-#    tree; this is a source checkout the script owns, not one the user hand-
-#    edits, so a hard reset onto the tracked branch is the honest update.
+# 3. Clone into ~/.logician, or update it if it is already there, and put it
+#    on $REF - a release TAG by default, not whatever `main` holds right now.
+#    Two rules make a re-run safe. Nothing is discarded unless you say so:
+#    the update refuses on a modified checkout and names the ways out, and
+#    LOGICIAN_FORCE=1 is the only path that resets over your changes (and it
+#    announces itself). And the move onto the tag is a detached checkout, so
+#    local commits on a branch stay reachable instead of being reset away.
 # ---------------------------------------------------------------------------
+
+# Which object $REF names, once the fetch has brought it in: a tag first (the
+# release case), then a remote branch, then anything git can resolve, which
+# covers a raw commit SHA.
+resolve_ref() {
+    for candidate in "refs/tags/$REF" "refs/remotes/origin/$REF" "$REF"; do
+        if git -C "$INSTALL_DIR" rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null 2>&1; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+check_out_ref() {
+    resolved="$(resolve_ref)" || fail \
+        "$REF does not exist in $REPO_URL." \
+        "If you meant the development branch, re-run with LOGICIAN_REF=main; otherwise check the tag name at https://github.com/BanneBanning/logician-mcp/tags."
+    if ! git -C "$INSTALL_DIR" checkout --quiet --detach "$resolved"; then
+        fail "could not check out $REF in $INSTALL_DIR." \
+             "Move it aside (mv \"$INSTALL_DIR\" \"$INSTALL_DIR.bak\") and re-run this script for a clean clone."
+    fi
+    say "checked out $REF ($(git -C "$INSTALL_DIR" rev-parse --short HEAD))"
+}
+
 if [ -d "$INSTALL_DIR/.git" ]; then
     say "updating existing checkout at $INSTALL_DIR"
-    if ! git -C "$INSTALL_DIR" fetch --quiet origin; then
+    if ! git -C "$INSTALL_DIR" fetch --quiet --tags origin; then
         fail "could not fetch updates into $INSTALL_DIR." \
              "Check your network connection, or delete $INSTALL_DIR and re-run this script for a clean clone."
     fi
-    default_branch="$(git -C "$INSTALL_DIR" remote show origin 2>/dev/null | sed -n 's/.*HEAD branch: //p')"
-    default_branch="${default_branch:-main}"
-    if ! git -C "$INSTALL_DIR" reset --quiet --hard "origin/$default_branch"; then
-        fail "could not update $INSTALL_DIR to the latest $default_branch." \
-             "Delete $INSTALL_DIR and re-run this script for a clean clone."
+    # Tracked files the user has changed. Untracked files (.build above all)
+    # are none of this script's business and are left alone either way.
+    local_changes="$(git -C "$INSTALL_DIR" status --porcelain --untracked-files=no 2>/dev/null)"
+    if [ -n "$local_changes" ]; then
+        if [ "$FORCE" = "1" ]; then
+            say "LOGICIAN_FORCE=1: DISCARDING your local changes in $INSTALL_DIR"
+            printf '%s\n' "$local_changes" >&2
+            if ! git -C "$INSTALL_DIR" reset --quiet --hard HEAD; then
+                fail "could not discard local changes in $INSTALL_DIR." \
+                     "Move it aside (mv \"$INSTALL_DIR\" \"$INSTALL_DIR.bak\") and re-run this script for a clean clone."
+            fi
+        else
+            printf '%s\n' "$local_changes" >&2
+            fail "$INSTALL_DIR has local modifications (listed above); refusing to overwrite them." \
+                 "Commit or stash them, or move the checkout aside (mv \"$INSTALL_DIR\" \"$INSTALL_DIR.bak\"), or re-run with LOGICIAN_FORCE=1 to DISCARD them."
+        fi
     fi
-    say "updated to $(git -C "$INSTALL_DIR" rev-parse --short HEAD)"
+    check_out_ref
 elif [ -d "$INSTALL_DIR" ]; then
     fail "$INSTALL_DIR exists but is not a git checkout." \
          "Move it aside (mv \"$INSTALL_DIR\" \"$INSTALL_DIR.bak\") and re-run this script."
@@ -87,7 +156,7 @@ else
         fail "could not clone $REPO_URL." \
              "Check your network connection and that the repository is reachable, then re-run this script."
     fi
-    say "cloned $(git -C "$INSTALL_DIR" rev-parse --short HEAD)"
+    check_out_ref
 fi
 
 # ---------------------------------------------------------------------------

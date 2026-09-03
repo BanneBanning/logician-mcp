@@ -173,7 +173,7 @@ final class MCPServer: @unchecked Sendable {
     ///
     /// The MAIN thread runs tool calls, because that is the thread every tool
     /// has always run on: they drive the Accessibility API and AppKit, and
-    /// moving 84 handlers to a worker to satisfy a protocol requirement would
+    /// moving every handler to a worker to satisfy a protocol requirement would
     /// be trading a real risk for a cosmetic one. A background thread owns
     /// stdin instead, and answers everything that touches no Logic state —
     /// `ping`, `tools/list`, `initialize`, `server/discover`,
@@ -452,8 +452,8 @@ final class MCPServer: @unchecked Sendable {
 
         case "tools/list":
             let params = request["params"] as? [String: Any] ?? [:]
-            // This server does not paginate: `tools/list` returns all 85 tools
-            // and no `nextCursor`, so there is no cursor it could have issued
+            // This server does not paginate: `tools/list` returns the whole
+            // registry and no `nextCursor`, so there is no cursor it could have issued
             // and every cursor is by definition unrecognized. The spec's answer
             // for an unrecognized cursor is -32602, and saying so is far better
             // than silently returning page one again to a client that believes

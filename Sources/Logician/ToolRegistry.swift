@@ -17,7 +17,7 @@ extension MCPServer {
     /// It is an array literal over string literals: nothing in it reads a
     /// runtime value, and `--toolsets` filters what is OFFERED without
     /// touching what exists, so every construction after the first produces
-    /// the same 84 values as the first. It was doing exactly that — measured
+    /// the same values as the first. It was doing exactly that — measured
     /// 2026-09-01, a `logic_find_tool` call built the whole thing 3 times plus
     /// once per match (13 constructions at `limit: 10`, 1.7 ms) because
     /// `toolsetExclusionNote` asked it "is this a real tool" per hit.

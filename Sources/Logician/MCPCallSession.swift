@@ -185,7 +185,7 @@ final class CallSession: @unchecked Sendable {
 /// The process-wide call session.
 ///
 /// A global for the same reason `MCUController.hotEditView` is one: the
-/// alternative is threading a reporter through 84 tool handlers and every
+/// alternative is threading a reporter through every tool handler and every
 /// helper they call, to reach a handful of poll loops six frames down. It is
 /// `let` on a lock-guarded class rather than `nonisolated(unsafe) var`, so the
 /// concurrency checker is satisfied by construction instead of by assertion.

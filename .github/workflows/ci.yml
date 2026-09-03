@@ -1,11 +1,18 @@
 name: CI
 
-# Triggers: pull requests and manual runs only. A per-push trigger on macOS
-# runners (10x minute multiplier) burned 90% of the month's minutes in two
-# days (2026-09-02); the local gate (scratchpad/merge_branch.sh: release build
-# with -warnings-as-errors + full test suite before every push) covers main.
+# Triggers: pull requests, release tags, and manual runs. Deliberately NOT
+# per-push: a push trigger on macOS runners (10x minute multiplier) burned 90%
+# of the month's minutes in two days (2026-09-02); the local gate
+# (scratchpad/merge_branch.sh: release build with -warnings-as-errors + full
+# test suite before every push) covers main. A TAG is the exception worth
+# paying for - it is the public, citable artifact Homebrew fetches, it cannot
+# be fixed by a force-push, and one run per release is a handful of minutes a
+# month.
 on:
   pull_request:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 concurrency:

@@ -1,8 +1,18 @@
 # Changelog
 
-## 1.0.0 — unreleased
+## 1.0.0-beta.1 — 2026-09-04
 
-The first public release, staged and waiting on the go-public decision.
+The first public release, and it is a **beta** on purpose. The code is not the
+tentative part: 2 293 hermetic tests run on every build, and every one of the 81
+tools has been profiled and fixed against a live Logic Pro. The ENVIRONMENT is.
+All of that verification happened on one Logic version, one UI language and one
+Mac — Logic Pro 12.3.1, English, macOS 15 — and nothing here has yet met a
+different Logic release, a localised UI, another key-command set or another
+audio setup. Those are precisely the conditions that produce the failure this
+server exists to prevent: a confident answer about a state it misread. So the
+first public release is a compatibility test run in the open. Please report
+what breaks, with `logic_health`'s output attached; the version number becomes
+1.0.0 when other people's machines have had their say.
 
 Logician gives any MCP client verified control of Logic Pro: 81 typed tools across
 mixing, plugins (third-party parameters included), regions, MIDI composition and
@@ -2376,7 +2386,33 @@ with every render coming back as audio the agent can listen to.
   of a raw `logic_health` paste, with a visible warning that the unredacted form
   carries the project's file path and name.
 
+- **The release is pinned end to end, and the numbers in it are checked by the build.**
+  Three stale claims went out of this release rather than into it. `install.sh` no
+  longer builds whatever `main` holds at the moment you run it: it checks out the
+  release tag (`LOGICIAN_REF` overrides it), and a re-run over a checkout you have
+  edited now refuses and names the three ways forward instead of hard-resetting your
+  work away — `LOGICIAN_FORCE=1` is the only path that discards anything, and it
+  prints what it is discarding first. The tool count the server tells your agent
+  (*"the default is all 81 tools"*) is now read off the registry at runtime rather
+  than typed into a sentence, where it had drifted to 85 against a real 81, and a new
+  drift guard parses every remaining count claim out of the instructions and the agent
+  guide and fails the suite against the registry itself. `PackagingSyncTests` grew the
+  same treatment for the release metadata: the Homebrew formula's tag, `install.sh`'s
+  pinned ref and `gemini-extension.json`'s version are each cross-checked against
+  `serverVersion`, and the formula's placeholder checksum skips the suite with the
+  release step that fills it in rather than passing quietly. CI now also runs on a
+  pushed `v*` tag — still not on every push, which is what burned 90% of a month of
+  macOS runner minutes in two days.
+
+### Known limitations (honest by design)
+
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.
+- **Building needs macOS 14.5 or later**, though the binary it produces deploys to
+  macOS 13. Nothing here ships as a signed binary, so every install compiles from
+  source, and `Package.swift` is `swift-tools-version: 6.0` — Swift 6 ships in
+  Xcode 16, and Apple installs Xcode 16 only on macOS 14.5+. A Ventura Mac stops
+  before the first line is compiled, with `swift build` answering *"using Swift
+  tools version 6.0.0 but the installed version is 5.9.2"*.
 - Tempo curves are integrated as steps (Logic's Tempo List does not expose them);
   the uncertainty is quantified in results.
 - Track stacks cannot be freeze-rendered (Logic limitation; `solo_bounce` covers it).

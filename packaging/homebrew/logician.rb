@@ -4,7 +4,14 @@
 class Logician < Formula
   desc "MCP server giving AI agents verified hands and ears in Logic Pro"
   homepage "https://github.com/BanneBanning/logician-mcp"
-  url "https://github.com/BanneBanning/logician-mcp/archive/refs/tags/v0.61.0.tar.gz"
+  url "https://github.com/BanneBanning/logician-mcp/archive/refs/tags/v1.0.0-beta.1.tar.gz"
+  # PLACEHOLDER until the tag is pushed - the tarball GitHub builds for a tag
+  # does not exist before the tag does, so there is nothing to hash yet.
+  # `brew install` from this formula CANNOT succeed while these 64 zeros
+  # stand: Homebrew verifies the download against them and aborts on the
+  # mismatch, which is the mechanical reason a placeholder cannot ship
+  # silently. PackagingSyncTests skips loudly while it is here.
+  # Replace it per packaging/README.md steps 4-5.
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "MIT"
   head "https://github.com/BanneBanning/logician-mcp.git", branch: "main"
@@ -14,7 +21,11 @@ class Logician < Formula
   # own local toolchain. That is a deliberate trade (a minute or two of
   # build time) against needing a paid Apple Developer account to notarize
   # a binary.
-  depends_on macos: :ventura
+  # Building needs a Swift 6 toolchain (Package.swift is swift-tools-version
+  # 6.0), which ships in Xcode 16, which Apple installs only on macOS 14.5
+  # or later. The BUILT binary would run on Ventura - but every install
+  # here compiles from source, so the build floor is the real floor.
+  depends_on macos: :sonoma
 
   def install
     # `swift build` needs the Swift toolchain, which ships inside Xcode's
@@ -32,6 +43,20 @@ class Logician < Formula
       It ships with Xcode's Command Line Tools - install it with:
         xcode-select --install
       then run `brew install` again.
+    EOS
+
+    # macOS 14.0-14.4 passes `depends_on macos: :sonoma` but cannot install
+    # Xcode 16, so its toolchain tops out at Swift 5.10 and the manifest is
+    # refused before a line is compiled ("using Swift tools version 6.0.0 but
+    # the installed version is ..."). Catch that here with the fix named,
+    # rather than as a manifest error in the middle of a build log.
+    swift_version = Utils.safe_popen_read("swift", "-version")[/Apple Swift version (\d+)/, 1].to_i
+    odie <<~EOS if swift_version < 6
+      logician needs a Swift 6 toolchain to build (found Swift #{swift_version}).
+      Swift 6 ships with Xcode 16, which requires macOS 14.5 or later.
+      Update macOS, then install Apple's Command Line Tools:
+        xcode-select --install
+      and run `brew install` again.
     EOS
 
     system "swift", "build",
