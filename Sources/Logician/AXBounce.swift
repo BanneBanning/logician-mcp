@@ -19,6 +19,7 @@ extension LogicAccessibility {
     func pressMenuItem(
         containing fragment: String,
         underMenu parent: String,
+        pressLikelyInert: Bool = false,
         settled: (() -> Bool)? = nil
     ) throws {
         guard let application = NSRunningApplication
@@ -80,9 +81,19 @@ extension LogicAccessibility {
             throw LogicianError.writeFailed("menu press returned AXError \(status.rawValue)")
         }
         guard let settled else { return }
-        for _ in 0..<12 {
+        // N1. `pressLikelyInert` is the caller saying "this item's AXPress is a
+        // MEASURED no-op, do not spend the full budget proving it again". Only
+        // `keyCommandsWindow` passes it, and it passes it because the comment
+        // four lines below records exactly that measurement: `Logic Pro > Key
+        // Commands > Edit Assignments…` answers `.success` to both AXPress and
+        // AXPick and opens nothing, every time. The poll was 12 × 0.15 s =
+        // 1.8 s of waiting for an outcome this code already knows never
+        // arrives, on 100 % of key-command window opens. The bounce path,
+        // where the press DOES work and the poll is load-bearing, keeps the
+        // full budget — this is scoped, not shortened globally.
+        for attempt in 0..<(pressLikelyInert ? 3 : 12) {
+            if lookFirstShouldSleep(attempt: attempt) { Thread.sleep(forTimeInterval: 0.15) }
             if settled() { return }
-            Thread.sleep(forTimeInterval: 0.15)
         }
         // The press said `.success` and nothing happened. Measured 2026-08-28:
         // `Logic Pro > Key Commands > Edit Assignments…` answers `.success` to
@@ -111,8 +122,12 @@ extension LogicAccessibility {
         down.post(tap: .cghidEventTap)
         Thread.sleep(forTimeInterval: 0.05)
         up.post(tap: .cghidEventTap)
-        for _ in 0..<40 {
-            Thread.sleep(forTimeInterval: 0.25)
+        // N7, pattern #11: this slept BEFORE it looked, so a window that opens
+        // in 30 ms still cost 250 ms and one that opens in 260 cost 500 — on
+        // every call that reaches the shortcut. The sibling poll fifteen lines
+        // up always had the right shape. Same 10 s budget, one free first look.
+        for attempt in 0..<40 {
+            if lookFirstShouldSleep(attempt: attempt) { Thread.sleep(forTimeInterval: 0.25) }
             if settled() { return }
         }
         throw LogicianError.openVerificationFailed(

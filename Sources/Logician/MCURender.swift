@@ -16,7 +16,13 @@ extension MCUController {
     ) throws -> (note: Int, channel: Int) {
         lastResolveLearned = false
         if let found = KeyCommandRegistry.note(named: name) { return found }
-        if let logic, let standard = KeyCommandRegistry.standardCommands.first(where: {
+        // `allNamedCommands`, not `standardCommands`: Undo, Redo and Flashback
+        // Capture were taken OUT of the install round on 2026-09-03 (nothing
+        // fires them, and every installed row is an irreversible write into
+        // the user's own key command set) but they keep their reserved notes
+        // and their spelling, so the first caller that really asks for one
+        // still gets it learned here instead of a `not in the registry`.
+        if let logic, let standard = KeyCommandRegistry.allNamedCommands.first(where: {
             $0.name.caseInsensitiveCompare(name) == .orderedSame
         }) {
             _ = try? logic.setupKeyCommands([standard])
