@@ -591,12 +591,23 @@ extension MCPServer {
                     label: "midi-verify",
                     sliceStartSeconds: verifyRange.start, sliceEndSeconds: verifyRange.end,
                     logic: logic, trackName: trackName,
-                    // This tool parks and restores the playhead around the
-                    // whole take (the `defer` above), so the render must not
-                    // step the same sliders a second time — and only the
-                    // slice's METRICS are read out of it below, so no audio
-                    // block is encoded for a result that never carries one.
-                    restorePlayhead: false, includeAudio: false
+                    // NOT false. `recordMIDI`'s own `defer` already restored
+                    // the playhead by the time this call runs — but a freeze
+                    // render moves it AGAIN on its own account (stop-when-
+                    // already-stopped jumps to the project start, then the
+                    // render rolls from there), so skipping this render's own
+                    // restore does not avoid a redundant step, it just leaves
+                    // the SECOND move unreported and unrestored. Measured
+                    // live 2026-09-03: with this left `false` a take that
+                    // started with the playhead at bar 56 came back at bar 5
+                    // beat 4 — the pre-roll bar this same take had synced off
+                    // — with `verified: true` and no warning at all. With it
+                    // `true` the render reads its OWN baseline AFTER
+                    // `recordMIDI` has already put the playhead back, so on
+                    // the common path this costs one `already_at_baseline`
+                    // check (a few ms), and on the path where `recordMIDI`'s
+                    // own restore failed, THIS is what corrects it.
+                    restorePlayhead: true, includeAudio: false
                 )
             }) {
                 let slice = render["slice"] as? [String: Any]
@@ -611,10 +622,31 @@ extension MCPServer {
                         ? "freeze render of bars \(startBar)-\(endBar) after recording; non-silent metrics prove the notes landed and sound. To HEAR it, pass rendered_slice to logic_get_audio_clip - this render skips the audio encode that its caller would only have discarded"
                         : "freeze render of bars \(startBar)-\(endBar) came back silent. The recording itself completed - this can mean the instrument made no sound (muted, no patch, notes out of range), not that the notes are missing."
                 ]
+                // The render's own verdict is the LAST thing that touched the
+                // control bar, so it supersedes `recordMIDI`'s — whichever of
+                // the two actually moved the playhead most recently is what
+                // `result["playhead"]` must describe. Both publish the same
+                // three-state shape (`PlayheadRestoreReport.payload` /
+                // `restorePlayheadReport`), so overwriting is a like-for-like
+                // swap, not a shape change.
+                if let renderPlayhead = render["playhead"] as? [String: Any] {
+                    result["playhead"] = renderPlayhead
+                }
             } else {
                 result["verification_render"] = "failed"
                 result["verification"] = ["note": "the verification render could not run; the recording itself completed. Bounce the range yourself to check the result."]
+                // The render never got far enough to move (or re-restore) the
+                // playhead, so `recordMIDI`'s own verdict — already in
+                // `result["playhead"]` — still describes reality.
             }
+        }
+        // ONE append, here, after both restore attempts (the take's own and
+        // the verification render's, if it ran) have had their say — so a
+        // stale "not restored" from the first is never left standing after
+        // the second corrected it, and a fresh failure from the second is
+        // never left unsaid because the first had succeeded.
+        if let playhead = result["playhead"] as? [String: Any], playhead["restored"] as? Bool != true {
+            appendWarning(playhead["note"] as? String, to: &result)
         }
         return result
     }

@@ -379,6 +379,64 @@ enum MIDITakePlan {
     }
 }
 
+/// The three-state contract a playhead-restore attempt owes its caller —
+/// `already_at_baseline` (free, nothing needed moving), `restored` (the write
+/// landed and a fresh read confirms it), `not_restored` (the write threw or
+/// its readback disagreed, carrying `left_at` so the position is not just a
+/// shrug). The same shape `logic_render_track` reports via
+/// `MCUController.restorePlayheadReport` (MCURender.swift) — but until
+/// 2026-09-03 `logic_record_midi`'s own cleanup `defer` was a bare
+/// `try? logic.setPlayhead(...)` that reported nothing either way: a take from
+/// bar 1 with the playhead found at bar 56 left it wherever the take's own
+/// stop happened to land (measured live: bar 56 beat 3, and separately bar 5
+/// beat 4 once the verification render's own playhead jump piled on top —
+/// see the `restorePlayhead: true` note on that call site), and nothing in
+/// the result said so.
+///
+/// Pure: given what was ASKED for, what Logic reports NOW, and whether the
+/// write itself threw, this only SHAPES the verdict — the live read/write
+/// lives in `recordMIDI`'s `restorePlayheadOnce`, which is what makes the
+/// three states here testable without a Logic session at all.
+enum PlayheadRestoreReport {
+    /// `attempted` is what tells "was already there, nothing written" apart
+    /// from "moved, written, and the write landed" — both read `current ==
+    /// saved` afterwards, and only one of them is `already_at_baseline`
+    /// rather than `restored`. `wroteSuccessfully` is meaningless when
+    /// `attempted` is false and is ignored in that case.
+    static func payload(
+        saved: (bar: Int, beat: Int),
+        current: (bar: Int, beat: Int)?,
+        attempted: Bool,
+        wroteSuccessfully: Bool
+    ) -> [String: Any] {
+        if !attempted, let current, current == saved {
+            return [
+                "restored": true, "verified": true, "state": "already_at_baseline",
+                "bar": saved.bar, "beat": saved.beat
+            ]
+        }
+        guard attempted, wroteSuccessfully, let current, current == saved else {
+            return [
+                "restored": false, "verified": false, "state": "not_restored",
+                "bar": saved.bar, "beat": saved.beat,
+                "left_at": current.map { ["bar": $0.bar, "beat": $0.beat] as [String: Any] }
+                    ?? ["bar": NSNull(), "beat": NSNull()] as [String: Any],
+                "note": "the playhead could NOT be put back to bar \(saved.bar) beat \(saved.beat)"
+                    + " after the take — it is now at "
+                    + (current.map { "bar \($0.bar) beat \($0.beat)" } ?? "an unreadable position")
+                    + ". Move it yourself with logic_set_playhead."
+            ]
+        }
+        return [
+            "restored": true, "verified": true, "state": "restored",
+            "bar": saved.bar, "beat": saved.beat,
+            "note": "The take moved the playhead (parking it for the pre-roll sync, then"
+                + " wherever its own stop left it); it was put back where you had it"
+                + " (verified against Logic's control bar)."
+        ]
+    }
+}
+
 extension MCUController {
     // MARK: The timecode display: mode plausibility
 
@@ -611,12 +669,18 @@ extension MCUController {
         try requireBeatsDisplay(operation: "MIDI recording at bar \(startBar)")
         _ = try? setPlaying(false)
         let transport = try logic.getTransport()
-        let savedBar = transport["playhead_bar"] as? Int
+        // BOTH fields, not just the bar: the cleanup below used to restore
+        // `barNumber: bar, beat: nil`, which converges the bar slider and
+        // leaves the beat wherever the take's own stop left it. Measured
+        // 2026-09-03: a take parked from bar 56 came back to bar 56 but beat 3
+        // (it had been beat 1), because nothing ever asked what the beat was.
+        let savedPlayhead: (bar: Int, beat: Int)? = (transport["playhead_bar"] as? Int)
+            .map { (bar: $0, beat: transport["playhead_beat"] as? Int ?? 1) }
         // The count-in flag rides along on the snapshot that was already being
-        // read for `savedBar`, so knowing what Logic's count-in will cost is
-        // free. Nothing reads it beyond the park decision, and nothing writes
-        // it: switching a user's count-in off would be a settings write with a
-        // restore to get wrong.
+        // read for `savedPlayhead`, so knowing what Logic's count-in will cost
+        // is free. Nothing reads it beyond the park decision, and nothing
+        // writes it: switching a user's count-in off would be a settings
+        // write with a restore to get wrong.
         let park = MIDITakePlan.park(
             startBar: startBar, countIn: transport["count_in"] as? Bool
         )
@@ -660,7 +724,9 @@ extension MCUController {
             }
         }
         if let parkError {
-            if let bar = savedBar { _ = try? logic.setPlayhead(barNumber: bar, beat: nil) }
+            if let saved = savedPlayhead {
+                _ = try? logic.setPlayhead(barNumber: saved.bar, beat: saved.beat)
+            }
             throw parkError
         }
         try press("record")
@@ -688,11 +754,47 @@ extension MCUController {
             shutdownReport = report
             return report
         }
+        // The playhead restore's own verdict — until 2026-09-03 this was a
+        // bare `try? logic.setPlayhead(barNumber: bar, beat: nil)` here, which
+        // (a) never restored the BEAT at all (see `savedPlayhead` above) and
+        // (b) threw the outcome away either way: a take from bar 1 with the
+        // playhead found at bar 56 left it wherever the take's own stop
+        // happened to leave it, with nothing in the result saying so — the
+        // same class of defect `logic_render_track`'s `restorePlayheadReport`
+        // exists to close. Captured once, alongside the shutdown state,
+        // exactly like `stopRecording` above: the happy path calls it
+        // explicitly so the result can report it, the `defer` is the net for
+        // the throwing and cancelled paths.
+        var playheadRestoreCache: [String: Any]?
+        func restorePlayheadOnce() -> [String: Any]? {
+            guard let saved = savedPlayhead else { return nil }
+            if let cached = playheadRestoreCache { return cached }
+            func currentPosition() -> (bar: Int, beat: Int)? {
+                guard let now = try? logic.getTransport(),
+                      let bar = now["playhead_bar"] as? Int else { return nil }
+                return (bar, now["playhead_beat"] as? Int ?? 1)
+            }
+            let before = currentPosition()
+            if let before, before == saved {
+                // Already there — a project whose take started where the
+                // playhead already was. A verified no-op, not a move; no
+                // write attempted.
+                let report = PlayheadRestoreReport.payload(
+                    saved: saved, current: before, attempted: false, wroteSuccessfully: false
+                )
+                playheadRestoreCache = report
+                return report
+            }
+            let wrote = (try? logic.setPlayhead(barNumber: saved.bar, beat: saved.beat)) != nil
+            let report = PlayheadRestoreReport.payload(
+                saved: saved, current: currentPosition(), attempted: true, wroteSuccessfully: wrote
+            )
+            playheadRestoreCache = report
+            return report
+        }
         defer {
             _ = stopRecording()
-            if let bar = savedBar {
-                _ = try? logic.setPlayhead(barNumber: bar, beat: nil)
-            }
+            _ = restorePlayheadOnce()
         }
         reportProgress("record pressed; waiting for the transport", percent: 10)
         // Record LED confirms Logic is actually rolling/armed.
@@ -833,6 +935,15 @@ extension MCUController {
         // the result can say what the shutdown did. The `defer` still runs and
         // still restores the playhead; `stopRecording` is idempotent.
         let shutdown = stopRecording()
+        // Same reasoning as `shutdown` above, and `restorePlayheadOnce` is
+        // idempotent the same way: called here so the result can name the
+        // verdict, with the `defer` as the net for the throwing paths. The
+        // caller (`handleRecordMidi`) is where the top-level `warning` is
+        // appended, not here — a verification render can run AFTER this
+        // function returns and move the playhead AGAIN (`restorePlayhead:
+        // true` on that call site), so whichever restore attempt is LAST is
+        // the one the warning must describe, and only the caller sees both.
+        let playheadRestore = restorePlayheadOnce()
         // `verified` belongs to the RECORDING: reaching here means the
         // transport was rolling, the stream went out with host-time stamps,
         // and the stop/restore path completed - anything less throws above.
@@ -868,6 +979,8 @@ extension MCUController {
         ]
         result["transport_stop"] = transportStop?.payload
             ?? ["unavailable": "the cleanup stop was never reached"]
+        result["playhead"] = playheadRestore
+            ?? ["unavailable": "the playhead position before the take could not be read, so there was nothing to restore against"]
         if let warning = shutdown.warning { appendWarning(warning, to: &result) }
         appendWarning(transportStop?.warning, to: &result)
         return result
