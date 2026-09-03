@@ -930,7 +930,7 @@ Parameters:
 
 #### `logic_set_playing`
 
-Start or stop playback via the control bar Play button and verify the new state. Starting plays from the current playhead position (or the cycle range when cycle is on).
+Start or stop playback and verify the new state against three independent witnesses - the control surface's play/stop lamps, the control bar's own Play button, and whether the position display is advancing - so a lamp that has gone stale can no longer report playback that is not happening. Starting plays from the current playhead position (or the cycle range when cycle is on). A stop is NEVER pressed at a transport the witnesses say is already stopped: that press is Logic's rewind-to-bar-1 and would move the playhead. When the lamps are the ones that were wrong the result carries led_desync plus a warning naming what each witness read, and the lamps resync by themselves on the next real play.
 
 Parameters:
 

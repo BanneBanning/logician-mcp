@@ -1587,6 +1587,29 @@ with every render coming back as audio the agent can listen to.
   8 rows here (one flagged) reconcile against route `mcu`'s 7 inserts, which never
   counted the instrument at all and is unchanged.
 
+- **Stopping playback no longer moves the playhead.** `logic_set_playing` decided both
+  "is Logic playing?" and "did my press land?" from a single lamp on the control surface —
+  the play LED — and that lamp can get stuck and stay stuck. Live on 2026-09-03, racing a
+  few play and stop presses left BOTH transport lamps lit at once while Logic itself read
+  stopped, and from then on the tool was wrong in both directions: `playing: true` came back
+  `already_playing` in 3.8 ms with nothing pressed and Logic standing still, and
+  `playing: false` pressed stop at an already-stopped Logic — which is Logic's rewind, not a
+  stop, so **the playhead jumped from bar 40 to bar 1** — and then spent 2 581 ms waiting for
+  a lamp change that a no-op press can never produce before throwing `verification_failed` at
+  a caller whose transport was exactly where it had asked for. Three tools stop through this
+  same call (`logic_record_midi`, `logic_record_automation`, `logic_render_track`), all of
+  them discarding the error, so the cost landed silently. Now the state is settled by three
+  independent witnesses — the play/stop lamps read as a PAIR, Logic's own Play button, and
+  whether the position display is advancing (measured: 125 repaints in 2 s while playing,
+  none at all in 1 s while stopped) — and a stop is pressed only when they agree the
+  transport is really rolling. The same desynced surface now answers `already_stopped` in
+  268-314 ms with `led_desync: true`, a warning naming what each witness read, no press and
+  the playhead where it was; asking to play presses for real, which is also what resyncs the
+  lamps. The healthy path is unchanged (start 41-92 ms, stop 21-35 ms, verified no-op 4.5 ms),
+  and a press whose lamp echo never arrives is now verified by the other two witnesses instead
+  of failing — with the poll budget it does keep honoured to the millisecond (a stated 2.25 s
+  used to run to 2.48-2.56 s because the deadline was only checked between rounds).
+
 ### Known limitations (honest by design)
 
 - English Logic UI assumed (v1); tested against Logic Pro 12.3.1 on macOS 15.

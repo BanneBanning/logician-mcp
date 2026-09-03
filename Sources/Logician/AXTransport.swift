@@ -516,6 +516,24 @@ extension LogicAccessibility {
         }
     }
 
+    /// ONE control bar reading: the Play checkbox, nothing else.
+    ///
+    /// The second witness `MCUController.setPlaying` cross-checks its play LED
+    /// against (profiles/logic_set_playing.md, DEFECT). `getTransport()` would
+    /// answer the same question, but it also resolves the tempo, the
+    /// signature, the key, five more checkboxes and the playhead LCD — 4.9-6.1
+    /// ms warm (measured 2026-09-02) for one boolean. This walk stops at the
+    /// control bar's own children.
+    ///
+    /// nil, never false, when the control bar cannot be read at all
+    /// (Accessibility not trusted, no project window, a modal in front): the
+    /// verdict then rests on the witnesses that did answer.
+    func playingCheckbox() -> Bool? {
+        guard let bar = try? controlBarGroup(),
+              let play = controlBarChild(bar, LogicUIStrings.Element.playButton) else { return nil }
+        return stringAttribute(play, kAXValueAttribute as String) == "1"
+    }
+
     func setPlaying(playing: Bool) throws -> [String: Any] {
         if playing {
             // Pressing the Play checkbox starts playback, but pressing it again
