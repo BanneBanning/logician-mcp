@@ -297,4 +297,100 @@ final class RecordMIDITakeTests: XCTestCase {
             "the constant-meter division is what the walk exists to replace"
         )
     }
+
+    // MARK: The playhead restore's own verdict (2026-09-03)
+
+    /// Live 2026-09-02/03: a take from bar 1 with the playhead found at bar 56
+    /// left it at bar 56 beat 3 (the bar came back, the beat never did — the
+    /// old `defer` restored `barNumber: bar, beat: nil`) and, once the
+    /// verification render's own playhead jump piled on top, at bar 5 beat 4
+    /// — nowhere near 56 — with `verified: true` and no warning either time.
+    /// These pin the three-state shape `PlayheadRestoreReport.payload` owes
+    /// the result, exactly the contract `logic_render_track` already reports
+    /// via `restorePlayheadReport` — pure, no Logic session needed.
+    func testPlayheadAlreadyAtBaselineNeedsNoWrite() {
+        // No write ATTEMPTED — the caller's own "before" read already matched
+        // `saved`, exactly the free path `restorePlayheadOnce` takes when the
+        // take started where the playhead already was.
+        let report = PlayheadRestoreReport.payload(
+            saved: (bar: 56, beat: 1), current: (bar: 56, beat: 1),
+            attempted: false, wroteSuccessfully: false
+        )
+        XCTAssertEqual(report["restored"] as? Bool, true)
+        XCTAssertEqual(report["verified"] as? Bool, true)
+        XCTAssertEqual(report["state"] as? String, "already_at_baseline")
+        XCTAssertEqual(report["bar"] as? Int, 56)
+        XCTAssertEqual(report["beat"] as? Int, 1)
+        XCTAssertNil(report["note"], "nothing moved, so there is nothing to explain")
+        XCTAssertNil(report["left_at"])
+    }
+
+    func testPlayheadRestoredAfterAWriteThatMovedIt() {
+        // `attempted: true` is what distinguishes THIS from the baseline case
+        // above — both read `current == saved` after the fact, but only one
+        // of them cost a write. `state: "restored"` names the move.
+        let report = PlayheadRestoreReport.payload(
+            saved: (bar: 56, beat: 1), current: (bar: 56, beat: 1),
+            attempted: true, wroteSuccessfully: true
+        )
+        XCTAssertEqual(report["restored"] as? Bool, true)
+        XCTAssertEqual(report["verified"] as? Bool, true)
+        XCTAssertEqual(report["state"] as? String, "restored")
+        XCTAssertEqual(report["bar"] as? Int, 56)
+        XCTAssertEqual(report["beat"] as? Int, 1)
+        XCTAssertNotNil(report["note"], "a real move is explained, unlike the free no-op")
+    }
+
+    func testPlayheadNotRestoredWhenTheWriteThrows() throws {
+        // The write itself threw (`try? logic.setPlayhead` returned nil) and
+        // the take's own stop left the playhead at bar 5 beat 4 — the exact
+        // live reading the verification render's un-restored jump produced.
+        let report = PlayheadRestoreReport.payload(
+            saved: (bar: 56, beat: 1), current: (bar: 5, beat: 4),
+            attempted: true, wroteSuccessfully: false
+        )
+        XCTAssertEqual(report["restored"] as? Bool, false)
+        XCTAssertEqual(report["verified"] as? Bool, false)
+        XCTAssertEqual(report["state"] as? String, "not_restored")
+        XCTAssertEqual(report["bar"] as? Int, 56, "what was ASKED for, not where it ended up")
+        XCTAssertEqual(report["beat"] as? Int, 1)
+        let leftAt = report["left_at"] as? [String: Any]
+        XCTAssertEqual(leftAt?["bar"] as? Int, 5)
+        XCTAssertEqual(leftAt?["beat"] as? Int, 4)
+        let note = try XCTUnwrap(report["note"] as? String)
+        XCTAssertTrue(note.contains("bar 56 beat 1"))
+        XCTAssertTrue(note.contains("bar 5 beat 4"))
+        XCTAssertTrue(note.contains("logic_set_playhead"), "names the fix, not just the failure")
+    }
+
+    func testPlayheadNotRestoredWhenEvenTheReadbackFails() {
+        // The write threw AND the follow-up read could not say where the
+        // playhead ended up either — `left_at` must publish nulls, never
+        // silently drop the key (house style: no `{}` where `{unavailable:
+        // reason}` belongs).
+        let report = PlayheadRestoreReport.payload(
+            saved: (bar: 56, beat: 1), current: nil, attempted: true, wroteSuccessfully: false
+        )
+        XCTAssertEqual(report["state"] as? String, "not_restored")
+        let leftAt = report["left_at"] as? [String: Any]
+        XCTAssertTrue(leftAt?["bar"] is NSNull)
+        XCTAssertTrue(leftAt?["beat"] is NSNull)
+        let note = report["note"] as? String ?? ""
+        XCTAssertTrue(note.contains("unreadable position"), note)
+    }
+
+    func testPlayheadNotRestoredWhenTheWriteSucceedsButTheReadbackDisagrees() {
+        // `setPlayhead` did not throw, but the fresh read afterwards is NOT
+        // where it was asked to go — the write is not trusted on its own say-
+        // so, exactly like `restorePlayheadReport`'s render_track contract.
+        let report = PlayheadRestoreReport.payload(
+            saved: (bar: 56, beat: 1), current: (bar: 55, beat: 4),
+            attempted: true, wroteSuccessfully: true
+        )
+        XCTAssertEqual(report["restored"] as? Bool, false)
+        XCTAssertEqual(report["state"] as? String, "not_restored")
+        let leftAt = report["left_at"] as? [String: Any]
+        XCTAssertEqual(leftAt?["bar"] as? Int, 55)
+        XCTAssertEqual(leftAt?["beat"] as? Int, 4)
+    }
 }

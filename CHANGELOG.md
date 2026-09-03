@@ -1440,6 +1440,18 @@ with every render coming back as audio the agent can listen to.
   accepted the first position at or past `start_bar` once the timecode had visibly moved,
   which proves motion and not position; the pre-roll bar must be observed first now, and a
   transport already past it refuses instead of streaming the whole take somewhere else.
+- **The playhead comes back where you left it, or the result says so.** The cleanup
+  `defer` restored `barNumber: bar, beat: nil` — the beat was never even captured, let
+  alone put back — and threw the outcome away either way with a bare `try?`. Measured
+  live: a take from bar 1 with the playhead found at bar 56 came back at bar 56 beat 3
+  (only the bar converged), and once the verification render's own playhead jump (freeze
+  moves it to the project start and rolls from there) landed on top of that with nothing
+  restoring it afterward, at bar 5 beat 4 — nowhere near 56 — both times `verified: true`
+  with no warning. Both bar and beat are captured and restored now, the verification
+  render restores its own move too since it is the last thing to touch the control bar, and
+  either attempt's outcome is reported in `playhead {restored | already_at_baseline |
+  not_restored, bar, beat, left_at}` with a top-level `warning` naming the position it was
+  actually left at when the restore fails — the same contract `logic_render_track` reports.
 - **The metronome toggle is fast now: 172-181 ms down to 4-20 ms warm, 8.9 ms down to
   1.4 ms already-set.** Its verification used to sleep 150 ms BEFORE every look — up to
   twelve times — although the press's own event wait had already confirmed the LED landed
