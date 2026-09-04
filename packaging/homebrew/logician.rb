@@ -5,14 +5,11 @@ class Logician < Formula
   desc "MCP server giving AI agents verified hands and ears in Logic Pro"
   homepage "https://github.com/BanneBanning/logician-mcp"
   url "https://github.com/BanneBanning/logician-mcp/archive/refs/tags/v1.0.0-beta.1.tar.gz"
-  # PLACEHOLDER until the tag is pushed - the tarball GitHub builds for a tag
-  # does not exist before the tag does, so there is nothing to hash yet.
-  # `brew install` from this formula CANNOT succeed while these 64 zeros
-  # stand: Homebrew verifies the download against them and aborts on the
-  # mismatch, which is the mechanical reason a placeholder cannot ship
-  # silently. PackagingSyncTests skips loudly while it is here.
-  # Replace it per packaging/README.md steps 4-5.
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  # The v1.0.0-beta.1 source tarball, hashed from GitHub's own archive on
+  # 2026-09-04. Re-hash it on every version bump: Homebrew verifies the
+  # download against this and aborts on a mismatch.
+  #   curl -fsSL <url> | shasum -a 256
+  sha256 "4c13c3c78434862ef74df84ca0b811b66d76240f694e69bee918354c397a7d26"
   license "MIT"
   head "https://github.com/BanneBanning/logician-mcp.git", branch: "main"
 
