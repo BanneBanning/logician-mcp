@@ -6,214 +6,141 @@
 
 **Give your AI agent hands and ears in Logic Pro.**
 
-[![macOS](https://img.shields.io/badge/macOS-14.5%2B-black?logo=apple)](#requirements)
+[![macOS](https://img.shields.io/badge/macOS-14.5%2B-black?logo=apple)](#quick-start)
 [![Release](https://img.shields.io/badge/release-v1.0.0--beta.1-f5a623)](CHANGELOG.md)
-[![CI](https://github.com/BanneBanning/logician-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/BanneBanning/logician-mcp/actions/workflows/ci.yml)
-[![Swift](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](Package.swift)
-[![MCP](https://img.shields.io/badge/MCP-81_tools-4be37a)](docs/AGENT-GUIDE.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
-[What you can say](#what-you-can-say) · [Install](#install) · [How fast](#how-fast-is-it) · [Agent guide](docs/AGENT-GUIDE.md)
+[See what it can do](#what-you-can-ask) · [Install](#quick-start) · [Agent guide](docs/AGENT-GUIDE.md)
 
 </div>
 
-Logic Pro has no API, so every AI assistant could talk about your mix without being able to touch it. That always bugged me, so I built Logician. It gives Claude, Gemini, Cursor — any MCP client — hands and ears inside a real Logic project: it mixes, edits, composes and bounces, and it **hears the result**, because every render comes back as audio the agent actually listens to. Ask a multimodal agent to listen through your session and it returns with concrete moves it can execute itself the moment you say yes. Today's models already make a sharp assistant, and the ones coming will make a producer — this is the instrument I want waiting for them.
+Logician connects **multimodal AI agents** to Apple Logic Pro. Ask an audio-capable agent to listen to a chorus, inspect the tracks and plugins behind it, suggest improvements, make the changes you approve, and bounce a new version to compare.
 
-## What you can say
+**Listen → understand → propose → approve → change → listen again.**
 
-| You say | The agent does |
+Most AI assistants can talk about music. Logician lets them work with the actual session — hearing the audio, understanding the project around it and acting on what they find.
+
+## What you can ask
+
+| You say | What happens |
 |---|---|
-| *"Bounce bars 1–4 and tell me what you hear."* | Renders the master offline (no dialogs, session untouched), listens, and tells you what is actually in the audio. |
-| *"More bass around 500 Hz, about 2 dB."* | Finds the bass track → finds the EQ (or adds one) → nudges the band → confirms the change against Logic's own readout. About a second. |
-| *"The hats are too stiff — quantize them, but keep some feel."* | Sets the region's quantize with swing. The notes you played stay yours. |
-| *"A/B that compressor setting on the master."* | Prints the mix twice — before and after — and hands you both versions, so the call is made with ears. |
-| *"Fix the flubbed note in bar 3."* | Reads the region's MIDI, corrects the one note, leaves the take alone. |
-| *"Lay down drums, bass and keys from bar 9."* | Writes the MIDI and imports the whole arrangement in one pass — onto your existing tracks if you name them — then verifies it note for note. |
-| *"Ride the vocal up in the chorus."* | Records a volume automation pass over those bars and verifies the curve landed. |
-| *"Give me stems of the chorus."* | Solo-bounces every track over the same bars — aligned, same length, ready to send. |
-| *"Listen to the whole song. What would you change?"* | Bounces the mix and reads the whole project — levels, plugins, arrangement — then comes back with moves it can actually make. Say yes, and it makes them. |
+| *"Listen to the chorus. Why is the vocal getting lost?"* | The agent hears the audio, inspects the vocal chain and mix, and suggests concrete changes. |
+| *"Try that compressor setting and let me hear before and after."* | Logician applies the approved change, confirms it in Logic and returns both versions as audio. |
+| *"Fix the late note in bar 17."* | The agent finds and edits the note without replacing the performance. |
+| *"Export chorus stems for the band."* | Logician creates aligned stems over the requested bars. |
 
-Every change is checked against Logic's own readouts and rolled back on a mismatch. Nothing is ever saved without you asking.
+## Built for multimodal AI
 
-## Install
+A text-only agent can read and control your Logic project. An audio-capable agent can also receive real renders, listen to them and compare versions — so its decisions can be based on what the music sounds like, not only names and numbers.
 
-> [!NOTE]
-> **You need:** macOS 14.5+ · Logic Pro · Apple's command-line tools — if `swift --version` fails, run `xcode-select --install` first.
+That creates a complete feedback loop:
 
-### 1 · Get it
+- **Hear it:** Render any section of the song and return it as audio.
+- **Understand it:** Read tracks, plugins, routing, regions, MIDI and automation.
+- **Change it:** Mix, edit, compose, automate and export.
+- **Check it:** Read important changes back from Logic and compare before and after.
 
-**With Homebrew** &nbsp;*(recommended)*
+The best experience comes from a multimodal model and an MCP client that passes audio to it. Other MCP clients can still use Logician to inspect and control Logic, but audio support depends on the client.
+
+## Quick start
+
+**You need:** macOS 14.5 or later, Logic Pro and Apple's command-line tools. If `swift --version` fails, run `xcode-select --install` first.
+
+### 1. Install Logician
 
 ```bash
 brew install bannebanning/logician/logician
 ```
 
-<sub>**Never used Homebrew?** It is the standard way Macs install developer tools — one command to install something, one command to update it later, and it keeps everything in one tidy place instead of scattering folders around your disk. Install it once from [brew.sh](https://brew.sh) (a single paste into Terminal), then run the line above.</sub>
+The first installation compiles Logician locally and takes about two minutes. No Homebrew? See the [step-by-step installation guide](docs/INSTALL.md).
 
-**No Homebrew, no problem** — one line, and no prebuilt binary to trust, because it compiles from source on your own machine:
+### 2. Connect your AI
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/BanneBanning/logician-mcp/main/packaging/install.sh | bash
-```
-
-Either way the compile takes **about two minutes**, once. Both finish by printing the steps you have left.
-
-<details>
-<summary>Building from source by hand instead</summary>
-<br>
-
-```bash
-git clone https://github.com/BanneBanning/logician-mcp.git
-cd logician-mcp && swift build -c release
-```
-
-**You should see** `Build complete!` on the last line. Your binary is then at `$(pwd)/.build/release/logician` — use that path wherever the next step says `$(command -v logician)`.
-
-</details>
-
-### 2 · Connect your AI
-
-One line for your client, then **restart the client**. `$(command -v logician)` fills in the path for you:
-
-**Antigravity + Gemini** &nbsp;*(recommended — the agent can actually hear your mix)*
+For **Antigravity + Gemini**:
 
 ```bash
 agy mcp add logician "$(command -v logician)"
 ```
 
-**Claude Code**
+For **Claude Code**:
 
 ```bash
 claude mcp add logician -- "$(command -v logician)"
 ```
 
-<details>
-<summary><b>Other clients — Cursor · VS Code · LM Studio · Gemini CLI · anything MCP</b></summary>
-<br>
+Restart the client after connecting it. Cursor, VS Code, LM Studio, Gemini CLI and other MCP clients are covered in the [installation guide](docs/INSTALL.md).
 
-One-click registration for these clients — **after** step 1 above:
+### 3. Let Logic see it
 
-[<img src="https://cursor.com/deeplink/mcp-install-dark.svg" alt="Add Logician to Cursor" height="32">](https://cursor.com/install-mcp?name=logician&config=eyJjb21tYW5kIjoiL2Jpbi9zaCIsImFyZ3MiOlsiLWMiLCJleGVjIFwiJChjb21tYW5kIC12IGxvZ2ljaWFuIHx8IGVjaG8gJEhPTUUvbG9naWNpYW4tbWNwLy5idWlsZC9yZWxlYXNlL2xvZ2ljaWFuKVwiIl19) &nbsp; [<img src="https://img.shields.io/badge/VS_Code-Install_Logician-0098FF" alt="Install Logician in VS Code" height="32">](https://vscode.dev/redirect/mcp/install?name=logician&config=%7B%22command%22%3A%22%2Fbin%2Fsh%22%2C%22args%22%3A%5B%22-c%22%2C%22exec%20%5C%22%24%28command%20-v%20logician%20%7C%7C%20echo%20%24HOME%2Flogician-mcp%2F.build%2Frelease%2Flogician%29%5C%22%22%5D%7D) &nbsp; [<img src="https://files.lmstudio.ai/deeplink/mcp-install-dark.svg" alt="Add Logician to LM Studio" height="32">](https://lmstudio.ai/install-mcp?name=logician&config=eyJjb21tYW5kIjoiL2Jpbi9zaCIsImFyZ3MiOlsiLWMiLCJleGVjIFwiJChjb21tYW5kIC12IGxvZ2ljaWFuIHx8IGVjaG8gJEhPTUUvbG9naWNpYW4tbWNwLy5idWlsZC9yZWxlYXNlL2xvZ2ljaWFuKVwiIl19)
+Ask your agent to run `logic_health` once. Then open:
 
-Straight talk about what these buttons do: they **only** register the server in the client — the one step they replace is the command in step 2. No button can compile Swift or click through Logic's Control Surfaces window, so steps 1, 3 and 4 are still yours. They find the binary whether you installed it with Homebrew or cloned into `~/logician-mcp`; anywhere else, use the JSON below.
+> **Logic Pro → Control Surfaces → Setup… → New ▾ → Install…**
 
-**Gemini CLI** — installs as an extension (this repo ships a `gemini-extension.json`), then build inside it:
+Choose **Mackie Control**, click **Add**, and set both **Input Port** and **Output Port** to **`Logic MCP MCU`**. Finally, grant Accessibility permission to your AI client when macOS asks.
 
-```bash
-gemini extensions install https://github.com/BanneBanning/logician-mcp
-cd ~/.gemini/extensions/logician && swift build -c release
-```
+### 4. Try it
 
-**Any other MCP client** — point it at the binary. Print the exact path with `command -v logician`, then:
+Ask your agent:
 
-```json
-{ "mcpServers": { "logician": { "command": "/ABSOLUTE/PATH/TO/logician" } } }
-```
+> **"Run `logic_health`, then bounce bars 1–4 and tell me what you hear."**
 
-</details>
+If something is wrong, `logician doctor` checks the complete connection and prints a report with project names and file paths redacted.
 
-### 3 · Let Logic see it *(one-time, ~5 clicks)*
+## Fast enough for conversation
 
-First, ask your agent to **"Run logic_health"** once — that wakes Logician's helper and creates the MIDI port Logic is about to look for. Then, in Logic:
+On the reference project and test Mac, common operations take roughly:
 
-> [!IMPORTANT]
-> **Logic Pro → Control Surfaces → Setup… → New ▾ → Install…**, then pick **Mackie Control** and click **Add**. Finally set **Input Port** *and* **Output Port** to **`Logic MCP MCU`**.
+| Operation | Typical time |
+|---|---:|
+| Change and confirm a plugin parameter | **~1 second** |
+| Create a track | **under 1 second** |
+| Bounce a section and return the audio | **~2 seconds** |
+| Render a before/after comparison | **~5 seconds** |
 
-Two things that trip people up in that list of 146 devices: use the search field at the top, and pick the row named exactly **Mackie Control** (manufacturer *Loud Technologies / Mackie*) — several neighbouring rows also say Mackie and are not it.
+The timings include reading the result back from Logic. Larger projects, plugins and machines will vary.
 
-And grant **Accessibility** to your client when macOS asks (or: System Settings → Privacy & Security → Accessibility → switch on your client).
+## What it can do
 
-### 4 · Check it
+- **Listen:** Bounce sections, render individual tracks and return before/after audio.
+- **Mix:** Control levels, pan, mute, solo, routing, sends and plugin parameters — including buses and the master output.
+- **Edit:** Work with regions, notes, timing, fades, markers and track structure.
+- **Compose:** Record MIDI performances or build multi-track arrangements.
+- **Automate:** Read, write and remove automation curves.
+- **Deliver:** Export bounces, printed regions and aligned stems.
 
-Ask your agent one more time:
+Underneath those workflows are 81 typed tools. Their complete reference and behavioral contracts live in the [Agent guide](docs/AGENT-GUIDE.md).
 
-> **"Run logic_health"**
+## You stay in control
 
-**You should see** `mcu_connected: true` and `accessibility_trusted: true` — it verifies every step above and names the exact fix for anything still missing. Then try the fun one:
+Logician reads editing and mixing changes back from Logic and tells the agent what was confirmed. When a safe rollback is possible, it attempts one; complex operations may require Logic's Undo. Logician never invokes Save unless the requested operation explicitly allows it.
 
-> *"Bounce bars 1–4 and tell me what you hear."* 🎧
+For destructive experiments, work on a duplicate project. Avoid making simultaneous changes in Logic while an agent operation is running.
 
-**If something is off**, run `logician doctor` in Terminal. It checks every piece of the chain and prints a report you can paste straight into an issue — your project name and file paths are redacted before it prints.
+## Local by design
 
-📖 **First time setting up an MCP server?** The [**step-by-step Installation Guide**](docs/INSTALL.md) walks every single click, with a troubleshooting table.
+Logician has no network connection, telemetry or account. It communicates locally with Logic and passes results to your chosen AI client. That client may send audio and project information to its model provider, according to the client's own settings and privacy terms.
 
----
+## Beta and compatibility
 
-## How fast is it?
+This is **v1.0.0-beta.1**. Logician has more than 2,300 automated tests and every tool has been profiled against a live Logic session, but the first public release is still a compatibility test in the open.
 
-Fast enough that you stop noticing. I stopwatch everything against a live reference project (25 mixer strips, 54 regions); these are the numbers on a warm session.
+- Verified on Logic Pro 12.3.1 with the English interface.
+- Other Logic versions and languages are currently best-effort.
+- Tempo curves are read as steps because Logic does not expose their shape.
+- Automation can be recorded on tracks, but not yet on Stereo Out, auxes or buses. Their mix and plugin parameters remain controllable.
 
-| You ask for | It takes |
-|---|---|
-| Any plugin parameter, set and confirmed — third-party plugins included | **~1 s** |
-| A new plugin on a track | **~2.5 s** |
-| A new track (or a track gone) | **under 1 s** |
-| A bounce of any bar range, audio attached, zero dialogs | **~2 s** |
-| A before/after A/B of a change, both versions as audio | **~5 s** |
-| A whole MIDI arrangement composed by import, verified note for note | **~3–4 s** |
-| The entire project read — tracks, regions, markers, transport | **~1 s** (~2 s the first time in a session) |
-| A marker set, moved to, or removed | **under 1 s** |
-| A send created with its level, or removed | **~4–6 s** |
-| Stems of any range | **~4 s per track** |
+Logician is designed to refuse an operation when the evidence it expects is missing, but a Logic update may still change behavior. Please report regressions with the redacted output from `logician doctor`.
 
-Every one of those numbers includes the verification: Logician reads Logic's own readout back before it tells you anything happened.
+## How it works
 
-## Requirements
+Logician runs locally and connects to the same control-surface layer Logic uses for studio hardware, with macOS Accessibility filling the gaps. It reads Logic's own displays and controls back as evidence instead of assuming that an action worked.
 
-- macOS 14.5+ and Logic Pro (tested on 12.x, English UI)
-- Swift toolchain, to build from source
-- One-time: Accessibility permission for your client, and a Mackie Control device in Logic on the `Logic MCP MCU` ports — `logic_health` walks you through both
-
-**Nothing leaves your Mac.** Logician talks to Logic over local MIDI ports and to your MCP client over stdio. It has no network code, no telemetry, no account. The only thing that ever travels is whatever your own AI client sends to its own model.
-
-**This is `v1.0.0-beta.1`.** The code is held to 2 300+ tests and every tool has been profiled against a live session — but all of that happened on one Logic version, one language and one Mac. The first public release is a compatibility test in the open, and `logician doctor` exists so that a report takes you ten seconds.
-
-## What's inside (81 tools)
-
-**See** the project: tracks, regions, markers, the whole mixer, any region's MIDI, any plugin's parameters, or all of it as one snapshot. **Mix**: volume, pan, mute, solo, sends, routing, insert bypass — the master chain and buses by name. **Plugins**: add, remove, read and write any parameter, browse presets, load instruments. **Edit**: select, move, copy, split, nudge, rename, quantize, transpose, fades, single notes. **Compose**: whole arrangements by MIDI import in seconds, or performed live through the track's instrument. **Automate**: read, record and remove curves. **Hear**: bounce, bounce in place, stems, freeze renders, A/B — audio comes back inline and as a link, and a listen-first mode holds the metrics back until the agent has actually listened.
-
-The full reference, with every tool's contract, is the [Agent guide](docs/AGENT-GUIDE.md).
-
-## Under the hood
-
-Logic Pro has no automation API, so most tools that try to drive it fake a user: keypresses, dialog clicks, mouse moves. Logician speaks **Mackie Control** instead — Logic's own bidirectional control-surface protocol — over virtual MIDI ports, and reads Logic's LCD, LED and fader echoes back as proof. Where the surface protocol ends, it uses macOS Accessibility and a dedicated MIDI port bound to Logic's key commands.
-
-That buys three things:
-
-1. **Any plugin, any parameter.** Third-party plugins with custom UIs expose nothing to Accessibility — but everything to the control-surface layer.
-2. **Ground truth.** Every write is read back from Logic before it is reported. The agent cannot make a value up; the echo *is* the value.
-3. **Your mouse stays yours.** Nothing needs to be open or visible. You can keep working while the agent mixes.
-
-<details>
-<summary><b>Architecture</b></summary>
-
-```
-MCP client (Claude, Gemini, Cursor, …)
-        │ stdio / JSON-RPC (results carry audio content blocks)
-logician  ──spawns──▶  logician --bridge (daemon)
-   │        │                    │  virtual CoreMIDI ports (fixed IDs):
-   │        │ unix socket        │   "Logic MCP MCU"      (Mackie Control ⇄ Logic)
-   │        └────────────────────┤   "Logic MCP Commands" (key commands → Logic)
-   │                             │   "Logic MCP MIDI In"  (performance MIDI → Logic)
-   └─ macOS Accessibility (element-addressed reads, track selection,
-      region editing, dialogs)
-```
-
-Safety model: read before write, abort on ambiguity, verify by readback, roll back on mismatch, never save without being asked, duplicate before destructive experiments.
-
-</details>
-
-## Known limitations
-
-- The biggest one is the models themselves: today's multimodal agents are a sharp assistant, not yet a producer. Half the reason I built this was to find out exactly how good they are. The tool is ready for the day that changes.
-- English Logic UI is the fully supported one for now. Logician detects the language and says plainly what degrades on others; more locales land as they are captured.
-- Tempo *curves* are read as steps (Logic's Tempo List does not expose them), with the uncertainty stated.
-- Automation can be recorded on tracks, not on `Stereo Out`, auxes or buses — their volume, pan, sends and plugins are still fully writable.
+For the implementation details, see the [Agent guide](docs/AGENT-GUIDE.md). For setup and troubleshooting, see the [Installation guide](docs/INSTALL.md).
 
 ---
 
 <div align="center">
-<sub>Built by <a href="https://www.linkedin.com/in/alexander-banning-663788205/"><b>Alexander Banning</b></a> — say hi on LinkedIn · Released under the <a href="LICENSE">MIT license</a> · <a href="CONTRIBUTING.md">Contributing</a> · <a href="SECURITY.md">Security</a></sub>
+<sub>Built by <a href="https://www.linkedin.com/in/alexander-banning-663788205/"><b>Alexander Banning</b></a> · Released under the <a href="LICENSE">MIT license</a> · <a href="CONTRIBUTING.md">Contributing</a> · <a href="SECURITY.md">Security</a></sub>
 
 <sub>Not affiliated with, endorsed by or sponsored by Apple Inc. or LOUD Audio, LLC. Logic Pro and Mackie Control are trademarks of their respective owners — see <a href="NOTICE.md">NOTICE.md</a>.</sub>
 </div>
