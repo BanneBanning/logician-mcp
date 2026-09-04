@@ -711,11 +711,18 @@ enum LogicianError: LocalizedError {
         case .insertNotFound(let track, let plugin, let available):
             return "No insert matching '\(plugin)' on track '\(track)'. Available inserts: \(available.joined(separator: ", "))."
         case .insertAmbiguous(let track, let plugin, let slots, let parameter, let detail):
-            return "Insert '\(plugin)' on track '\(track)' is ambiguous; it occupies slots "
-                + slots.map(String.init).joined(separator: ", ")
-                + " (\(parameter) numbering). Pass \(parameter) to disambiguate — "
-                + "see INSERT NUMBERING in the server instructions."
-                + (detail.map { " " + $0 } ?? "")
+            // Built up in statements rather than one `+` chain: as a single
+            // expression the type-checker times out on a release build
+            // (caught by CI on the v1.0.0-beta.1 tag, where a slower runner
+            // hit the limit this machine never reached).
+            let slotList: String = slots.map(String.init).joined(separator: ", ")
+            let trailing: String = detail.map { " " + $0 } ?? ""
+            var message: String = "Insert '\(plugin)' on track '\(track)' is ambiguous; it occupies slots "
+            message += slotList
+            message += " (\(parameter) numbering). Pass \(parameter) to disambiguate — "
+            message += "see INSERT NUMBERING in the server instructions."
+            message += trailing
+            return message
         case .insertMismatch(let slot, let expected, let actual):
             return "Insert slot \(slot) holds '\(actual)', not '\(expected)'. No action was taken."
         case .openVerificationFailed(let detail):
