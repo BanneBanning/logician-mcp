@@ -55,7 +55,7 @@ with every render coming back as audio the agent can listen to.
   descriptions and argument text) and answers with the full typed definitions — schemas and
   safety annotations included — naming the toolset that holds any match this session does
   not offer. In every toolset, never touches Logic.
-- **`--toolsets`** launch flag for clients with hard tool caps (`core` = 42 tools);
+- **`--toolsets`** launch flag for clients with hard tool caps (`core` = 39 tools);
   the full surface is designed for client-side tool search.
 - **Plugin writes at human speed.** "More bass around 500 Hz" is now ONE call —
   `logic_set_plugin_parameter {track_name, plugin_name, parameter, target_value}` finds
