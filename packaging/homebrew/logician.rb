@@ -9,7 +9,7 @@ class Logician < Formula
   # 2026-09-04. Re-hash it on every version bump: Homebrew verifies the
   # download against this and aborts on a mismatch.
   #   curl -fsSL <url> | shasum -a 256
-  sha256 "4c13c3c78434862ef74df84ca0b811b66d76240f694e69bee918354c397a7d26"
+  sha256 "d0582336c9298fbec1eea181ba37b2c5dd7f033a86c5d5e13c2b3010800f45ea"
   license "MIT"
   head "https://github.com/BanneBanning/logician-mcp.git", branch: "main"
 
