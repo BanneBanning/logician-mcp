@@ -15,7 +15,7 @@ You will do four things:
 
 You need:
 
-- **macOS 13 or newer** (Apple menu → About This Mac).
+- **macOS 14.5 or newer** (Apple menu → About This Mac). The build needs Xcode 16 / Swift 5.10, and 14.5 is the oldest macOS that can install it.
 - **Logic Pro**, with a project open.
 - **An MCP client** — the app your AI runs in. This guide covers [Antigravity CLI](#option-a--antigravity-cli--gemini-recommended) (recommended, because the agent can *hear* your mix), [Claude Code](#option-b--claude-code), [Gemini CLI](#option-c--gemini-cli), and [Cursor / VS Code / LM Studio](#option-d--cursor-vs-code-lm-studio-one-click). Anything that speaks MCP over stdio works — see [Any other client](#option-e--any-other-mcp-client).
 
@@ -127,17 +127,17 @@ Logician is a plain stdio MCP server that needs no arguments. Wherever your clie
 
 ### Optional: offer fewer tools
 
-All 83 tools are offered by default, and their descriptions cost your agent about 40,000 tokens before its first call. If you know what a session is for, hand the server a comma-separated list of toolsets as `--toolsets=…` in `args` (or set `LOGICIAN_TOOLSETS` in `env`) and it advertises only those:
+All 81 tools are offered by default, and their descriptions cost your agent about 40,000 tokens before its first call. If you know what a session is for, hand the server a comma-separated list of toolsets as `--toolsets=…` in `args` (or set `LOGICIAN_TOOLSETS` in `env`) and it advertises only those:
 
 | toolset | tools | what it covers |
 | --- | --- | --- |
-| `core` | 41 | readiness, orientation reads, transport, the strips, the plugins, and the bounces and renders that let you hear a decision |
-| `regions` | 18 | the arrangement: regions, markers, and creating/renaming/deleting tracks |
-| `composition` | 15 | MIDI recording, automation, tempo and meter, the Event List, instruments |
+| `core` | 39 | readiness, orientation reads, transport, the strips, the plugins, and the bounces and renders that let you hear a decision |
+| `regions` | 17 | the arrangement: regions, markers, and creating/renaming/deleting tracks |
+| `composition` | 16 | MIDI recording, automation, tempo and meter, the Event List, instruments |
 | `delivery` | 7 | stems, bounce-in-place, removing silence |
 | `project` | 8 | open/new/save/duplicate/close, reset, snapshot |
 | `keycommands` | 6 | Logic's key commands and the raw control-surface command |
-| `all` | 83 | everything — the default |
+| `all` | 81 | everything — the default |
 
 `--toolsets=core` is a mixing session at roughly half the token cost. Nothing is lost permanently: a tool that is not offered tells the agent which toolset holds it, and you change the flag and restart.
 

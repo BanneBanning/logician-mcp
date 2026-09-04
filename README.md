@@ -6,7 +6,8 @@
 
 **Give your AI agent hands and ears in Logic Pro.**
 
-[![macOS](https://img.shields.io/badge/macOS-13%2B-black?logo=apple)](#requirements)
+[![macOS](https://img.shields.io/badge/macOS-14.5%2B-black?logo=apple)](#requirements)
+[![Release](https://img.shields.io/badge/release-v1.0.0--beta.1-f5a623)](CHANGELOG.md)
 [![CI](https://github.com/BanneBanning/logician-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/BanneBanning/logician-mcp/actions/workflows/ci.yml)
 [![Swift](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](Package.swift)
 [![MCP](https://img.shields.io/badge/MCP-81_tools-4be37a)](docs/AGENT-GUIDE.md)
@@ -37,7 +38,7 @@ Every change is checked against Logic's own readouts and rolled back on a mismat
 ## Install
 
 > [!NOTE]
-> **You need:** macOS 13+ · Logic Pro · Apple's command-line tools — if `swift --version` fails, run `xcode-select --install` first.
+> **You need:** macOS 14.5+ · Logic Pro · Apple's command-line tools — if `swift --version` fails, run `xcode-select --install` first.
 
 ### 1 · Get it
 
@@ -49,7 +50,7 @@ brew install bannebanning/logician/logician
 
 <sub>**Never used Homebrew?** It is the standard way Macs install developer tools — one command to install something, one command to update it later, and it keeps everything in one tidy place instead of scattering folders around your disk. Install it once from [brew.sh](https://brew.sh) (a single paste into Terminal), then run the line above.</sub>
 
-**No Homebrew, no problem** — one line, nothing to sign or trust, because it compiles on your own machine:
+**No Homebrew, no problem** — one line, and no prebuilt binary to trust, because it compiles from source on your own machine:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/BanneBanning/logician-mcp/main/packaging/install.sh | bash
@@ -132,6 +133,8 @@ Ask your agent one more time:
 
 > *"Bounce bars 1–4 and tell me what you hear."* 🎧
 
+**If something is off**, run `logician doctor` in Terminal. It checks every piece of the chain and prints a report you can paste straight into an issue — your project name and file paths are redacted before it prints.
+
 📖 **First time setting up an MCP server?** The [**step-by-step Installation Guide**](docs/INSTALL.md) walks every single click, with a troubleshooting table.
 
 ---
@@ -157,9 +160,13 @@ Every one of those numbers includes the verification: Logician reads Logic's own
 
 ## Requirements
 
-- macOS 13+ and Logic Pro (tested on 12.x, English UI)
+- macOS 14.5+ and Logic Pro (tested on 12.x, English UI)
 - Swift toolchain, to build from source
 - One-time: Accessibility permission for your client, and a Mackie Control device in Logic on the `Logic MCP MCU` ports — `logic_health` walks you through both
+
+**Nothing leaves your Mac.** Logician talks to Logic over local MIDI ports and to your MCP client over stdio. It has no network code, no telemetry, no account. The only thing that ever travels is whatever your own AI client sends to its own model.
+
+**This is `v1.0.0-beta.1`.** The code is held to 2 300+ tests and every tool has been profiled against a live session — but all of that happened on one Logic version, one language and one Mac. The first public release is a compatibility test in the open, and `logician doctor` exists so that a report takes you ten seconds.
 
 ## What's inside (81 tools)
 
@@ -202,10 +209,11 @@ Safety model: read before write, abort on ambiguity, verify by readback, roll ba
 - English Logic UI is the fully supported one for now. Logician detects the language and says plainly what degrades on others; more locales land as they are captured.
 - Tempo *curves* are read as steps (Logic's Tempo List does not expose them), with the uncertainty stated.
 - Automation can be recorded on tracks, not on `Stereo Out`, auxes or buses — their volume, pan, sends and plugins are still fully writable.
-- Roadmap: Homebrew and a one-click installer for musicians who have never met a terminal, as soon as the repo is public.
 
 ---
 
 <div align="center">
-<sub>Built by <a href="https://www.linkedin.com/in/alexander-banning-663788205/"><b>Alexander Banning</b></a> — say hi on LinkedIn · Released under the <a href="LICENSE">MIT license</a></sub>
+<sub>Built by <a href="https://www.linkedin.com/in/alexander-banning-663788205/"><b>Alexander Banning</b></a> — say hi on LinkedIn · Released under the <a href="LICENSE">MIT license</a> · <a href="CONTRIBUTING.md">Contributing</a> · <a href="SECURITY.md">Security</a></sub>
+
+<sub>Not affiliated with, endorsed by or sponsored by Apple Inc. or LOUD Audio, LLC. Logic Pro and Mackie Control are trademarks of their respective owners — see <a href="NOTICE.md">NOTICE.md</a>.</sub>
 </div>
