@@ -483,8 +483,8 @@ let keycmdHoldEnvVar = "LOGICIAN_KEYCMD_HOLD_MS"
 /// on purpose: it takes the raw value rather than reading `ProcessInfo`
 /// itself, so it is testable without touching a real process environment.
 ///
-/// 0 ms IS THE MEASURED DEFAULT, swept live 2026-09-03 (sandbox "CS
-/// Testlåt Copy", daemon at `1e393a7`) with `keycmd_hold_sweep.py`, the
+/// 0 ms IS THE MEASURED DEFAULT, swept live 2026-09-03 (sandbox
+/// "Testlåt Copy", daemon at `1e393a7`) with `keycmd_hold_sweep.py`, the
 /// same method the MCU button hold used the day before (`bf511e5`):
 /// `Create Marker` fired via `logic_mcu_command {cmd:"keycmd", note:104,
 /// channel:16, hold_ms:…}` on the dedicated "Logic MCP Commands" port,

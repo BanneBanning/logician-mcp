@@ -107,7 +107,7 @@ final class EpisodeHarnessTests: XCTestCase {
     }
 
     func testTargetPathPrecomposesUnicode() {
-        // "Testlåt" decomposed (a + combining diaeresis) is what the
+        // "Testlåt" decomposed (a + combining ring above) is what the
         // filesystem and AppleScript hand back; clients send it precomposed.
         let decomposed = "/Users/x/Testla\u{30A}t.logicx"
         XCTAssertEqual(
