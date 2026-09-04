@@ -3,10 +3,10 @@
 ## 1.0.0-beta.1 — 2026-09-04
 
 The first public release, and it is a **beta** on purpose. The code is not the
-tentative part: 2 293 hermetic tests run on every build, and every one of the 81
+tentative part: 2 361 hermetic tests run on every build, and every one of the 81
 tools has been profiled and fixed against a live Logic Pro. The ENVIRONMENT is.
 All of that verification happened on one Logic version, one UI language and one
-Mac — Logic Pro 12.3.1, English, macOS 15 — and nothing here has yet met a
+Mac — Logic Pro 12.3.1, English, macOS 26 — and nothing here has yet met a
 different Logic release, a localised UI, another key-command set or another
 audio setup. Those are precisely the conditions that produce the failure this
 server exists to prevent: a confident answer about a state it misread. So the
