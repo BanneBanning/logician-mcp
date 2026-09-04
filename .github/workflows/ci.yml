@@ -36,6 +36,14 @@ jobs:
             exit 1
           fi
 
+      # Printed because the runner's toolchain is usually OLDER than the
+      # developer's: the v1.0.0-beta.1 tag failed here on two things that
+      # compile locally (a type-check timeout, and an array literal whose
+      # element type the older inference could not reach). When CI and a
+      # local build disagree, this line is the first thing to check.
+      - name: Toolchain
+        run: swift --version && xcodebuild -version
+
       - name: Build (release, warnings are errors)
         run: swift build -c release -Xswiftc -warnings-as-errors
 

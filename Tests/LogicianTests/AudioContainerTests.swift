@@ -123,7 +123,11 @@ final class AudioContainerTests: XCTestCase {
         // FORM says covered, but the head read reached no COMM chunk: judging
         // nothing is the honest answer, and the caller keeps its old evidence.
         XCTAssertNil(LogicAccessibility.audioRenderComplete(
-            head: Data(Array("FORM".utf8) + [0, 0, 0, 8 + 4] + Array("AIFF".utf8)),
+            // `as [UInt8]` is load-bearing: with arithmetic inside the
+            // literal, Swift 6.0 cannot infer the element type through the
+            // `+` chain and fails the test target ("cannot convert value of
+            // type Array<Any>"). Newer compilers accept it; CI does not.
+            head: Data(Array("FORM".utf8) + ([0, 0, 0, 8 + 4] as [UInt8]) + Array("AIFF".utf8)),
             fileSize: 4096
         ))
     }
