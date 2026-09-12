@@ -96,17 +96,7 @@ extension MCPServer {
               let endBar = arguments["end_bar"] as? Int else {
             throw LogicianError.invalidArguments("missing integers: start_bar, end_bar")
         }
-        var options: [String: String] = [:]
-        for key in ["file_type", "bit_depth", "sample_rate", "dithering", "normalize"] {
-            if let value = arguments[key] as? String { options[key] = value }
-            // A sample rate passed as a NUMBER (48000) is the obvious mistake
-            // and is cheaper to accept than to refuse.
-            if let number = arguments[key] as? Int { options[key] = String(number) }
-            if let number = arguments[key] as? Double {
-                options[key] = number == number.rounded()
-                    ? String(Int(number)) : String(number)
-            }
-        }
+        let options = try BounceFormat.options(from: arguments)
         do {
             payload = try logic.bounceRange(
                 startBar: startBar,
@@ -173,11 +163,10 @@ extension MCPServer {
         let prefix = sanitizedFilenameComponent(
             (arguments["label"] as? String) ?? "stem", fallback: "stem"
         )
-        var stems: [[String: Any]] = []
         var frames: [Int?] = []
         var warnings: [String] = []
 
-        for (index, track) in tracks.enumerated() {
+        let stems = try StemExport.collect(tracks: tracks) { index, track in
             // One stem is one whole bounce, so this is the only boundary that
             // matters: a cancellation between stems abandons the run with the
             // solo already down and the stems so far already on disk.
@@ -193,9 +182,11 @@ extension MCPServer {
                         trackName: track, trackNumber: nil, control: "solo", enabled: enabled
                     )
             }
-            try setSolo(true)
             var bounce: [String: Any]
             do {
+                // Enabling solo can change Logic before its readback fails.
+                // That failure needs the same cleanup as a failed bounce.
+                try setSolo(true)
                 // The bounce reports 0…100 of ITS work; this stem owns one
                 // slice of the export's, so its scale is folded into that
                 // slice and the export's line keeps climbing across stems.
@@ -219,7 +210,13 @@ extension MCPServer {
                 // Never leave a solo up: the next tool call - or the user's
                 // own next bounce - would be silently wrong.
                 logic.cancelBounceDialog()
-                try? setSolo(false)
+                do { try setSolo(false) } catch let restoreError {
+                    throw LogicianError.writeFailed(
+                        "Stem export failed: \(error.localizedDescription). The solo on '\(track)'"
+                            + " could not be confirmed off: \(restoreError.localizedDescription)."
+                            + " Check Logic's solo state before any further bounce."
+                    )
+                }
                 throw error
             }
             // Unsolo BEFORE reading the file: the render is already on disk,
@@ -241,7 +238,7 @@ extension MCPServer {
             ]
             let silent = StemExport.silentRms(metrics)
             if !soloRestored {
-                warnings.append("'\(track)' is still soloed - every later bounce contains only it until that is fixed.")
+                warnings.append("The solo on '\(track)' could not be confirmed off. Export stopped; check Logic's solo state before any further bounce.")
             }
             if silent != nil {
                 warnings.append("'\(track)' bounced silent - it is muted, empty across bars \(startBar)-\(endBar), or not the track you meant.")
@@ -253,7 +250,7 @@ extension MCPServer {
             ) {
                 stem["warning"] = warning
             }
-            stems.append(stem)
+            return stem
         }
         reportProgress("bounced \(stems.count) stem\(stems.count == 1 ? "" : "s")", percent: 100)
 
@@ -264,6 +261,11 @@ extension MCPServer {
             surfaceSaysSoloed: MCUController.anySoloedStripOnSurface()
         )
         warnings.append(contentsOf: StemExport.soloWarnings(after: postCensus))
+        if !preCensus.provenClear {
+            warnings.append("The initial project-wide solo state was unverified; a clear final state cannot prove that each stem contained only its requested track.")
+        }
+        let completed = stems.count == tracks.count
+            && stems.allSatisfy { $0["solo_restored"] as? Bool == true }
         // Only the SURFACE clears this. A rendered-header walk that came back
         // empty is evidence, never proof - it cannot see a hidden row at all -
         // and `verified: true` on this tool is a promise that each file holds
@@ -271,15 +273,19 @@ extension MCPServer {
         // partiality named rather than claiming a solo-clean project nobody
         // could look at.
         var result: [String: Any] = [
-            "success": true,
-            "verified": alignment.aligned && postCensus.provenClear,
-            "state": "exported",
+            "success": completed,
+            "verified": StemExport.verified(
+                completed: completed, aligned: alignment.aligned,
+                before: preCensus, after: postCensus
+            ),
+            "state": completed ? "exported" : "partial",
             "range": ["start_bar": startBar, "end_bar": endBar],
             "count": stems.count,
             "stems": stems,
             "aligned": alignment.aligned,
             "alignment_note": alignment.note,
             "solo_census": postCensus.evidence,
+            "initial_solo_census": preCensus.evidence,
             "note": StemExport.contentsNote
                 + " Verification: " + alignment.note
                 + " No audio is attached - a stem set is far too much base64 for one result; open the paths with your client's file viewer, or logic_get_audio_clip one at a time."

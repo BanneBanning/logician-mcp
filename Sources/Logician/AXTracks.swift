@@ -1023,7 +1023,9 @@ extension LogicAccessibility {
         let button = try selectedStripChild(
             trackName: trackName, trackNumber: trackNumber, description: control
         )
-        let current = stringAttribute(button, kAXValueAttribute as String) == LogicUIStrings.Value.on
+        let current = try AXMixingReadback.toggle(
+            stringAttribute(button, kAXValueAttribute as String), control: control
+        )
         // Compare-and-set, from the same read that decides whether to press.
         if let expectedCurrent, current != expectedCurrent {
             throw LogicianError.currentValueMismatch(
@@ -1045,8 +1047,9 @@ extension LogicAccessibility {
             Thread.sleep(forTimeInterval: 0.1)
             if let refreshed = try? selectedStripChild(
                 trackName: trackName, trackNumber: trackNumber, description: control
-            ), (stringAttribute(refreshed, kAXValueAttribute as String)
-                == LogicUIStrings.Value.on) == enabled {
+            ), let actual = try? AXMixingReadback.toggle(
+                stringAttribute(refreshed, kAXValueAttribute as String), control: control
+            ), actual == enabled {
                 return [
                     "success": true, "verified": true,
                     "state": enabled ? "on" : "off",
@@ -1150,7 +1153,9 @@ extension LogicAccessibility {
             throw LogicianError.invalidArguments("pan position must be within the knob's range")
         }
         func readKnob() -> Int? { Int(stringAttribute(knob, kAXValueAttribute as String)) }
-        let before = readKnob() ?? 0
+        let before = try AXMixingReadback.panPosition(
+            stringAttribute(knob, kAXValueAttribute as String)
+        )
         // Compare-and-set: the knob's position was read anyway to report
         // `before`, so refusing on a stale idea of it costs nothing.
         if let expectedCurrentPosition, before != expectedCurrentPosition {

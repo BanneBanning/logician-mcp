@@ -19,6 +19,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     runs-on: macos-15
@@ -43,6 +46,11 @@ jobs:
       # local build disagree, this line is the first thing to check.
       - name: Toolchain
         run: swift --version && xcodebuild -version
+
+      - name: Packaging syntax
+        run: |
+          bash -n packaging/install.sh
+          ruby -c packaging/homebrew/logician.rb
 
       - name: Build (release, warnings are errors)
         run: swift build -c release -Xswiftc -warnings-as-errors

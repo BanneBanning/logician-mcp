@@ -50,9 +50,11 @@ in the same commit the tag is cut from (step 3).
 ```bash
 swift build -c release -Xswiftc -warnings-as-errors
 swift test
+bash -n packaging/install.sh
+ruby -c packaging/homebrew/logician.rb
 ```
 
-Both must be clean before tagging - a tag is a public, citable artifact;
+All checks must be clean before tagging - a tag is a public, citable artifact;
 fixing a red tag means a second tag, not a force-push.
 
 ### 3. Commit, tag, push
@@ -79,10 +81,9 @@ shasum -a 256 /tmp/logician-X.Y.Z.tar.gz
 
 ### 5. Update the formula
 
-Until this step runs, the formula carries a 64-zero placeholder `sha256`.
-That placeholder cannot ship by accident - Homebrew verifies the download
-against it and aborts on the mismatch - and `PackagingSyncTests` skips with a
-message pointing back here for as long as it stands.
+Until this step runs, the formula may still name the previous release and
+checksum. Update both together. The existing 64-zero placeholder check is
+only a development allowance; a release must carry the actual archive hash.
 
 In `packaging/homebrew/logician.rb`, set:
 
@@ -119,19 +120,18 @@ Anyone can now run `brew install bannebanning/logician/logician` (or
 ### 7. (Optional) Full local audit before pushing the tap
 
 `brew audit --strict --formula <name>` needs the formula to resolve through
-a tap directory, not a bare path. To dry-run that locally without touching
-the real tap:
+an installed tap, not a bare path. If your local tap contains the candidate
+formula, run:
 
 ```bash
-mkdir -p /opt/homebrew/Library/Taps/bannebanning/homebrew-logician/Formula
-cp packaging/homebrew/logician.rb /opt/homebrew/Library/Taps/bannebanning/homebrew-logician/Formula/
 brew audit --strict --formula bannebanning/logician/logician
-rm -rf /opt/homebrew/Library/Taps/bannebanning
 ```
 
 ## Creating the tap repository (one-time, before the first release)
 
-The tap repo does not exist yet. Create it once:
+The public tap already exists. The following bootstrap commands are only for
+setting up a new distribution under a different owner; do not rerun them for
+the existing tap:
 
 ```bash
 gh repo create BanneBanning/homebrew-logician --public \
@@ -148,6 +148,6 @@ After that, step 6 above is all that is needed on every later release.
 
 - `BanneBanning/logician-mcp` must be **public** - GitHub does not serve
   archive tarballs for private repos to an unauthenticated `curl`/Homebrew.
-- At least one tag must exist (`vX.Y.Z`, per step 3) - there are none yet.
+- The exact tag named by both installers must exist (`vX.Y.Z`, per step 3).
 - The tap repo `BanneBanning/homebrew-logician` must exist (see above) - it
-  does not yet.
+  must contain the candidate formula, including its resource bundle install.

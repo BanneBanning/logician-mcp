@@ -17,19 +17,16 @@
 #
 set -u
 
-# `set -u` makes an unset $HOME a hard crash instead of a clean message; a
-# `curl | bash` can run in a shell thin enough to have dropped it. Tilde
-# expansion falls back to the password database regardless of $HOME, so
-# this recovers the same directory `set -u` would otherwise choke on.
-HOME="${HOME:-$(cd ~ 2>/dev/null && pwd)}"
-if [ -z "$HOME" ]; then
+# Resolve a missing home directory without changing the caller's environment.
+logician_home="${HOME:-$(cd ~ 2>/dev/null && pwd)}"
+if [ -z "$logician_home" ]; then
     printf 'error: could not determine your home directory ($HOME is unset).\n' >&2
     printf 'fix:   run this script from a normal interactive shell.\n' >&2
     exit 1
 fi
 
 REPO_URL="${LOGICIAN_REPO_URL:-https://github.com/BanneBanning/logician-mcp.git}"
-INSTALL_DIR="${LOGICIAN_INSTALL_DIR:-$HOME/.logician}"
+INSTALL_DIR="${LOGICIAN_INSTALL_DIR:-$logician_home/.logician}"
 BIN_NAME="logician"
 
 # The release this script installs. Bumped with `serverVersion` at every
@@ -183,19 +180,30 @@ say "build complete"
 # ---------------------------------------------------------------------------
 link_into() {
     local dir="$1"
-    mkdir -p "$dir" 2>/dev/null
+    mkdir -p "$dir" 2>/dev/null || return 1
+    # Never replace an unrelated executable or create a link inside a same-
+    # named directory. Only our link (or another symlink) may be updated.
+    if [ -d "$dir/$BIN_NAME" ] || { [ -e "$dir/$BIN_NAME" ] && [ ! -L "$dir/$BIN_NAME" ]; }; then
+        printf 'error: %s already exists and is not a replaceable symlink.\n' "$dir/$BIN_NAME" >&2
+        return 1
+    fi
     ln -sf "$built_binary" "$dir/$BIN_NAME"
 }
 
 target_dir=""
-if [ -w /usr/local/bin ] || { [ ! -e /usr/local/bin ] && [ -w /usr/local ]; }; then
+if [ -n "${LOGICIAN_BIN_DIR:-}" ]; then
+    target_dir="$LOGICIAN_BIN_DIR"
+elif [ -w /usr/local/bin ] || { [ ! -e /usr/local/bin ] && [ -w /usr/local ]; }; then
     target_dir="/usr/local/bin"
-elif mkdir -p "$HOME/.local/bin" 2>/dev/null && [ -w "$HOME/.local/bin" ]; then
-    target_dir="$HOME/.local/bin"
+elif mkdir -p "$logician_home/.local/bin" 2>/dev/null && [ -w "$logician_home/.local/bin" ]; then
+    target_dir="$logician_home/.local/bin"
 fi
 
 if [ -n "$target_dir" ]; then
-    link_into "$target_dir"
+    if ! link_into "$target_dir"; then
+        fail "could not link $BIN_NAME into $target_dir; installation is incomplete." \
+             "Choose a writable directory with LOGICIAN_BIN_DIR, or use $built_binary directly."
+    fi
     say "linked $BIN_NAME into $target_dir (writable, no sudo needed)"
 else
     say "no writable install directory found without sudo"
@@ -204,6 +212,11 @@ else
     read -r reply
     case "$reply" in
         y|Y|yes|YES)
+            if [ -d /usr/local/bin/"$BIN_NAME" ] ||
+               { [ -e /usr/local/bin/"$BIN_NAME" ] && [ ! -L /usr/local/bin/"$BIN_NAME" ]; }; then
+                fail "/usr/local/bin/$BIN_NAME already exists and is not a replaceable symlink." \
+                     "Move the existing executable aside yourself, or choose LOGICIAN_BIN_DIR."
+            fi
             if sudo mkdir -p /usr/local/bin && sudo ln -sf "$built_binary" /usr/local/bin/"$BIN_NAME"; then
                 target_dir="/usr/local/bin"
                 say "linked $BIN_NAME into /usr/local/bin (with sudo)"
@@ -232,18 +245,18 @@ cat <<EOS
 
 Logician is installed. Three one-time steps remain before it can drive Logic Pro:
 
-  1. Register this binary with your MCP client (Claude, Gemini, Cursor, …).
-     Run:
-       logician setup
+  1. Connect it to your AI client using the installation guide:
+     https://github.com/BanneBanning/logician-mcp/blob/main/docs/INSTALL.md
+     The installed command is: $target_dir/$BIN_NAME
 
-  2. Install the Mackie Control surface Logician talks to Logic through.
-     \`logician setup\` prints the exact Control Surfaces > Setup steps and
-     the port names to select (or drive it by hand - see the README).
+  2. Ask the agent to run "logic_health" to create the MIDI ports. In
+     Logic Pro > Control Surfaces > Setup, add a Mackie Control and
+     set both Input Port and Output Port to "Logic MCP MCU".
 
   3. Grant Accessibility to your MCP client, for the tools that fall back
      to Logic's UI (macOS will prompt, or: System Settings > Privacy &
      Security > Accessibility).
 
-Once all three are done, ask your agent to run "logic_health" - it verifies
-every step above and names the exact fix for anything still missing.
+Run "logic_health" again to check the Logic connection. Audio reaching
+the model depends separately on your client and model's audio support.
 EOS

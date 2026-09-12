@@ -23,8 +23,9 @@ local to your Mac:
   daemon.
 - **macOS Accessibility**, to read and write Logic's UI as a fallback path.
 
-None of that leaves the machine. `Package.swift` has zero third-party
-dependencies, so there is no dependency supply chain to worry about either.
+None of those connections leaves the machine. `Package.swift` declares no
+third-party package dependencies. Builds and installation still rely on
+Apple's toolchain, the source distribution and, when used, Homebrew.
 
 ## Where the actual exposure is
 

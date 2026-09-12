@@ -15,7 +15,7 @@ You will do four things:
 
 You need:
 
-- **macOS 14.5 or newer** (Apple menu → About This Mac). The build needs Xcode 16 / Swift 5.10, and 14.5 is the oldest macOS that can install it.
+- **macOS 14.5 or newer** (Apple menu → About This Mac), with **Swift 6 or newer** from Apple's command-line tools or Xcode 16 or newer.
 - **Logic Pro**, with a project open.
 - **An MCP client** — the app your AI runs in. This guide covers [Antigravity CLI](#option-a--antigravity-cli--gemini-recommended) (recommended, because the agent can *hear* your mix), [Claude Code](#option-b--claude-code), [Gemini CLI](#option-c--gemini-cli), and [Cursor / VS Code / LM Studio](#option-d--cursor-vs-code-lm-studio-one-click). Anything that speaks MCP over stdio works — see [Any other client](#option-e--any-other-mcp-client).
 
@@ -25,7 +25,7 @@ One prerequisite most Macs already have — the Swift build tools. Check by past
 swift --version
 ```
 
-If it prints a version, you are set. If it says "command not found", install the tools (a few minutes, click through Apple's prompt), then run the check again:
+If it prints Swift 6 or newer, you are set. If the tools are missing, install them with the command below; if Swift is older than 6, update the command-line tools or Xcode. Then run the version check again:
 
 ```bash
 xcode-select --install
@@ -35,10 +35,18 @@ xcode-select --install
 
 ## 1. Build the app
 
-Paste these three lines into Terminal, one block, and press Enter. It downloads Logician and compiles it. The compile takes a minute or two — a wall of text scrolling is normal.
+For the installer, paste this into Terminal. It downloads the installer and builds its pinned release locally:
 
 ```bash
-git clone https://github.com/BanneBanning/logician-mcp.git
+curl -fsSL https://raw.githubusercontent.com/BanneBanning/logician-mcp/main/packaging/install.sh | bash
+```
+
+After installation, run `command -v logician` and copy the resulting path for step 2. If the installer says its destination is outside your PATH, follow the printed instructions first.
+
+For a manual build, use the release tag below. Build time varies:
+
+```bash
+git clone --branch v1.0.0-beta.1 --depth 1 https://github.com/BanneBanning/logician-mcp.git
 cd logician-mcp
 swift build -c release
 ```
@@ -57,14 +65,14 @@ It looks like `/Users/you/logician-mcp/.build/release/logician`. Keep it on your
 
 ## 2. Connect it to your AI
 
-Do the one block that matches your client. Replace `PASTE_PATH_HERE` with the path you just copied.
+Do the one block that matches your client. Replace `PASTE_PATH_HERE` with the path you just copied, keeping the surrounding quotes in Terminal commands so paths with spaces work. These instructions configure the connection; audio forwarding depends on the client, its mode and your model.
 
 ### Option A — Antigravity CLI + Gemini (recommended)
 
-Recommended because Gemini can actually listen to your mix. In Terminal:
+The repository records successful listening through the file viewer in interactive Antigravity sessions, and missing audio in non-interactive `agy --print` sessions. Verify audio reception in your own session. In Terminal:
 
 ```bash
-agy mcp add logician PASTE_PATH_HERE
+agy mcp add logician "PASTE_PATH_HERE"
 ```
 
 Then **fully quit and reopen** Antigravity (it only loads MCP servers when it starts). Confirm it registered:
@@ -78,7 +86,7 @@ agy mcp list
 ### Option B — Claude Code
 
 ```bash
-claude mcp add logician -- PASTE_PATH_HERE
+claude mcp add logician -- "PASTE_PATH_HERE"
 ```
 
 Then **fully quit and reopen** Claude Code (it only loads MCP servers when it starts). Confirm it registered:
@@ -225,7 +233,7 @@ If the agent describes the audio, you're done. 🎧
 | the agent says it can't see the `logic_*` tools | Restart the client (MCP servers load only at startup), and ask it to list its tools to confirm. |
 | `swift build` fails | Run `xcode-select --install`, let it finish, then `swift build -c release` again. |
 
-Still stuck? Open an issue with the full `logic_health` output pasted in — it contains everything needed to diagnose.
+Still stuck? Run `logician doctor`, review its redacted output, and attach that to an issue. Do not post raw `logic_health` output: it can contain project names and full file paths.
 
 ---
 

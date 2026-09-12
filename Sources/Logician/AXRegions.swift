@@ -2435,32 +2435,40 @@ extension LogicAccessibility {
         return result
     }
 
-    /// Copies (or, with `move`, Cuts and Pastes) ONE region — and the "one" is
-    /// established, not hoped for.
-    ///
-    /// Logic's `Cut` removes every SELECTED region project-wide and `Copy` puts
-    /// every one of them on the clipboard for `Paste` to put back down. This
-    /// guarded on a count over `regionRows()`, which sees only the rows Logic
-    /// has RENDERED, and then claimed `restored: true` on a refusal taken AFTER
-    /// `selectRegion` had already cleared every other region's selection — both
-    /// the same fictions `logic_delete_region` gave up on 2026-09-01. `move:
-    /// true` made it the more dangerous of the two, because a Cut that reached
-    /// a hidden row removed a region the Paste never put back. Exclusivity now
-    /// comes from Logic's own project-wide `Deselect All`, proven to have
-    /// landed; see `RegionEditGuard`.
-    ///
-    /// - Parameters:
-    ///   - fromTrackNumber: addresses the SOURCE row by number instead of by
-    ///     name (duplicate track names; see `selectRegion`).
-    ///   - toTrackNumber: the same for the DESTINATION row.
+    /// Copies one exclusively selected region. Moves use a separate copy,
+    /// verify, delete transaction so a failed Paste never strands a Cut source.
     func copyRegion(
         trackName: String, regionName: String?, startBar: Int?,
         toBar: Int, toTrack: String?, move: Bool,
         fromTrackNumber: Int? = nil, toTrackNumber: Int? = nil
     ) throws -> [String: Any] {
-        let command: RegionEditGuard.Command = move ? .cut : .copy
-        // The count baseline is taken BEFORE the Cut, and before any write at
-        // all, so the refusal below can honestly say the project is untouched.
+        if move {
+            return try transferRegion(trackName: trackName, regionName: regionName,
+                startBar: startBar, toBar: toBar, toTrack: toTrack,
+                fromTrackNumber: fromTrackNumber, toTrackNumber: toTrackNumber)
+        }
+        guard let project = documentPath(of: try projectWindow()) else {
+            throw LogicianError.windowNotFound("identified project before Copy")
+        }
+        func checkProject() throws {
+            guard documentPath(of: try projectWindow()) == project else {
+                throw LogicianError.verificationFailed(requested: "the same project throughout Copy/Paste",
+                    actual: "the active project changed; no further command was sent", restored: false)
+            }
+            if Task.isCancelled { throw CancellationError() }
+        }
+        let command: RegionEditGuard.Command = .copy
+        guard toBar >= 1 else {
+            throw LogicianError.invalidArguments("to_bar must be at least 1; nothing was copied or cut")
+        }
+        // Resolve both destination identifiers before changing selection.
+        let destination = try resolveTrack(
+            parsedTrackHeaders(), name: toTrack ?? trackName,
+            number: toTrack == nil ? fromTrackNumber : toTrackNumber
+        )
+        let destinationTrack = destination.name
+        let destinationNumber = destination.number
+        // Baseline precedes selection changes as well as Copy/Paste.
         let before = try arrangementCensus(
             trackName: trackName, trackNumber: fromTrackNumber
         )
@@ -2471,7 +2479,8 @@ extension LogicAccessibility {
             trackNumber: fromTrackNumber
         )
         let selection = exclusive.region
-        try fireKeyCommand(move ? KeyCommandRegistry.Name.cut : KeyCommandRegistry.Name.copy)
+        try checkProject()
+        try fireKeyCommand(KeyCommandRegistry.Name.copy)
         // No sleep here. The clipboard is not readable, so a wait for it can
         // never be verified — but it does not need one either: measured
         // 2026-09-01, between this command and the Paste below there is ALWAYS
@@ -2480,8 +2489,6 @@ extension LogicAccessibility {
         // snapshot 103-683 ms). The 0.4 s blind sleep that used to sit here
         // was 16% of every call and bought nothing the park does not already
         // buy.
-        let destinationTrack = toTrack ?? trackName
-        let destinationNumber = toTrack == nil ? fromTrackNumber : toTrackNumber
         // ALWAYS select the destination — including the same-track case.
         // Paste lands on the SELECTED TRACK, and selecting a REGION does not
         // select its track: measured 2026-08-28, a copy of 'Crash' (track
@@ -2518,22 +2525,16 @@ extension LogicAccessibility {
                 restored: false
             )
         }
-        // REFUSE rather than paste off the grid. Nothing has been written to
-        // the arrangement yet, so this costs the caller a retry; a paste half
-        // a beat late costs them a displaced region they have to find first.
-        if parked["on_grid"] as? Bool == false {
+        // Missing sub-beat evidence is a refusal too, never an exact landing.
+        if parked["on_grid"] as? Bool != true {
             throw LogicianError.verificationFailed(
                 requested: "the playhead exactly on bar \(toBar) beat 1 before Paste",
                 actual: "the position display still reads division "
                     + "\(parked["timecode_division"] ?? "?"), tick \(parked["timecode_ticks"] ?? "?"), "
-                    + "so Paste would land inside the beat and the region map — which reports whole "
-                    + "bars only — would call it bar \(toBar) anyway. Nothing was pasted",
+                    + "so an exact bar-line landing is not established. Nothing was pasted",
                 restored: false
             )
         }
-        // The destination as it stands the instant BEFORE Paste — taken after
-        // the Cut, so a same-track move already shows the source gone.
-        //
         // "A region starts at toBar" is NOT evidence that this call put it
         // there: pasting onto a bar that was already occupied matched the very
         // first look and reported verified: true even if Paste never fired.
@@ -2550,10 +2551,11 @@ extension LogicAccessibility {
         let pasteFocus = ensureTracksAreaKeyFocus(
             trackName: destinationTrack, trackNumber: destinationNumber
         )
-        let destinationBefore = (try? arrangementCensus(
+        let destinationBefore = try arrangementCensus(
             trackName: destinationTrack, trackNumber: destinationNumber
-        ))?.targetRegions ?? []
+        ).targetRegions
         let atBarBefore = destinationBefore.filter { $0["start_bar"] as? Int == toBar }
+        try checkProject()
         try fireKeyCommand(KeyCommandRegistry.Name.paste)
         // Look BEFORE sleeping. Measured 2026-09-01 with a probe taken
         // immediately after the key command: the pasted region was already in
@@ -2566,6 +2568,7 @@ extension LogicAccessibility {
         var afterCensus = before
         let deadline = Date().addingTimeInterval(2.0)
         repeat {
+            try checkProject()
             afterCensus = try arrangementCensus(
                 trackName: destinationTrack, trackNumber: destinationNumber
             )
@@ -2594,23 +2597,15 @@ extension LogicAccessibility {
                 restored: false
             )
         }
-        // A Copy+Paste adds exactly one region to the project; a Cut+Paste adds
-        // none, because the one it removed is the one it put back. Any other
-        // movement of the RENDERED total means either that Cut/Copy reached a
-        // region this call never named, or that the Paste landed on top of one
-        // and Logic swallowed it whole - the second of which this tool's own
-        // description warns about, and neither of which may come back as a
-        // clean success. The check is one subtraction on a walk the poll above
-        // already paid for.
-        let expectedDelta = move ? 0 : 1
+        // Counts catch missing or extra regions, but cannot detect a trimmed
+        // neighbour that remains present. The move path compares boundaries too.
+        let expectedDelta = 1
         if RegionEditGuard.delta(
             expected: expectedDelta,
             before: before.totalRegions, after: afterCensus.totalRegions
         ) != .asExpected {
             throw LogicianError.verificationFailed(
-                requested: move
-                    ? "one region cut from '\(trackName)' and pasted onto '\(destinationTrack)'"
-                    : "exactly one new region on '\(destinationTrack)'",
+                requested: "exactly one new region on '\(destinationTrack)'",
                 actual: RegionEditGuard.unexpectedTotalSentence(
                     command: command, expectedDelta: expectedDelta,
                     before: before.totalRegions, after: afterCensus.totalRegions
@@ -2620,7 +2615,7 @@ extension LogicAccessibility {
         }
         var result: [String: Any] = [
             "success": true, "verified": true,
-            "state": move ? "moved_via_clipboard" : "copied",
+            "state": "copied",
             "region": selection["name"] ?? "?",
             "from": ["track": trackName, "track_name": trackName, "start_bar": selection["start_bar"] ?? NSNull()],
             "to": ["track": destinationTrack, "start_bar": landed["start_bar"] ?? toBar],
@@ -2628,12 +2623,7 @@ extension LogicAccessibility {
             "key_focus": pasteFocus.dictionary,
             "project_regions_before": before.totalRegions,
             "project_regions_after": afterCensus.totalRegions,
-            "note": "Paste lands at the playhead on the selected track, and the playhead was parked on bar \(toBar) beat 1 with its sub-beat fields zeroed as well - `playhead.on_grid` is the control surface's own confirmation of that, and a false one refuses before Paste rather than pasting inside the beat. "
-                + "The region total across every rendered row moved by exactly the amount this "
-                + "call can produce ("
-                + (move ? "+0: the one Cut took is the one Paste put back" : "+1")
-                + "), so nothing else was " + (move ? "cut" : "copied")
-                + " and nothing was overlaid out of existence. "
+            "note": "The playhead was verified exactly on the requested bar line, and the region count across rendered rows increased by one. This count does not prove that neighbouring regions were left untrimmed or that MIDI contents and region parameters are unchanged. "
                 + Self.exclusivityNote(scope: exclusive.scope, command: command)
         ]
         // BOTH focus verdicts, because they answer different questions: the
@@ -2641,16 +2631,6 @@ extension LogicAccessibility {
         // previous tool left the Tracks area focused), the second what Paste
         // actually fired into after the park had driven the control bar.
         if let focusAtCopy = exclusive.anchor["key_focus"] { result["key_focus_at_copy"] = focusAtCopy }
-        if parked["on_grid"] as? Bool == nil {
-            appendWarning(
-                "Whether the paste landed exactly on the bar line is UNVERIFIED: "
-                    + "the MCU position display could not be read, and the control bar publishes bars "
-                    + "and beats only - it cannot see a sub-beat offset, and neither can the region "
-                    + "map this result was verified against. "
-                    + ((parked["on_grid_note"] as? String) ?? ""),
-                to: &result
-            )
-        }
         exclusive.decorate(&result)
         annotateCoverage(coverage, in: &result)
         return result

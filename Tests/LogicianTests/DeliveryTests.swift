@@ -65,6 +65,64 @@ final class DeliveryTests: XCTestCase {
 
     // MARK: - Stems
 
+    func testBounceNumericOptionsPreserveOrdinaryRatesAndRejectExtremeValues() throws {
+        XCTAssertEqual(try BounceFormat.options(from: ["sample_rate": 48000])["sample_rate"], "48 kHz")
+        XCTAssertEqual(try BounceFormat.options(from: ["bit_depth": 24.0])["bit_depth"], "24-bit")
+        for value in [1e300, -1e300, Double.infinity, Double.nan] {
+            XCTAssertThrowsError(try BounceFormat.options(from: ["sample_rate": value]))
+        }
+        XCTAssertNil(BounceFormat.canonical(String(repeating: "9", count: 400), in: BounceFormat.sampleRates))
+        XCTAssertNil(BounceFormat.canonical(String(repeating: "9", count: 300), in: BounceFormat.sampleRates))
+    }
+
+    func testInvalidBounceFormatIsRefusedBeforeAccessingLogic() {
+        XCTAssertThrowsError(try MCPServer().handleBounceRange([
+            "start_bar": 1, "end_bar": 4, "sample_rate": 1e300
+        ])) { error in
+            guard case LogicianError.invalidArguments = error else {
+                return XCTFail("expected argument refusal before Logic access, got \(error)")
+            }
+        }
+    }
+
+    func testStemExportStopsBeforeAnotherBounceWhenSoloRestoreFails() {
+        for restored in [false, nil] as [Bool?] {
+            var bounced: [String] = []
+            let stems = StemExport.collect(tracks: ["Vocal", "Bass", "Drums"]) { _, track in
+                bounced.append(track)
+                var result: [String: Any] = ["path": "/tmp/\(track).aif"]
+                result["solo_restored"] = restored
+                return result
+            }
+            XCTAssertEqual(bounced, ["Vocal"])
+            XCTAssertEqual(stems.count, 1)
+            XCTAssertEqual(stems.first?["path"] as? String, "/tmp/Vocal.aif")
+        }
+    }
+
+    func testStemExportContinuesOnlyAfterEachSoloRestore() {
+        var bounced: [String] = []
+        let stems = StemExport.collect(tracks: ["Vocal", "Bass"]) { index, track in
+            XCTAssertEqual(index, bounced.count)
+            bounced.append(track)
+            return ["solo_restored": true]
+        }
+        XCTAssertEqual(bounced, ["Vocal", "Bass"])
+        XCTAssertEqual(stems.count, 2)
+    }
+
+    func testStemVerificationRequiresCompleteRunAndInitialSoloEvidence() {
+        let clear = census(headers: [], surface: false)
+        XCTAssertTrue(StemExport.verified(completed: true, aligned: true, before: clear, after: clear))
+        XCTAssertFalse(StemExport.verified(completed: false, aligned: true, before: clear, after: clear))
+        XCTAssertFalse(StemExport.verified(
+            completed: true, aligned: true, before: census(headers: [], surface: nil), after: clear
+        ))
+        XCTAssertFalse(StemExport.verified(
+            completed: true, aligned: true, before: clear, after: census(headers: ["Bass"], surface: false)
+        ))
+    }
+
     func testStemsRefuseADuplicateTrackName() {
         XCTAssertThrowsError(try StemExport.normalizedTracks(["Bas", "Drums", "bas"])) { error in
             XCTAssertTrue("\(error)".contains("twice"), "\(error)")

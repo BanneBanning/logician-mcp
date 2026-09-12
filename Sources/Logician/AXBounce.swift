@@ -1284,15 +1284,10 @@ extension LogicAccessibility {
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent("logician-ear-\(UUID().uuidString).m4a")
         defer { try? FileManager.default.removeItem(at: scratch) }
-        let convert = Process()
-        convert.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
-        // No "-c 1": forcing mono fails on AIFFs with an explicit stereo
-        // channel layout ('cclo' -66564); stereo 64 kbps stays small enough.
-        convert.arguments = [path, scratch.path, "-f", "m4af", "-d", "aac", "-b", "64000"]
-        convert.standardError = FileHandle.nullDevice
-        try? convert.run()
-        convert.waitUntilExit()
-        guard convert.terminationStatus == 0,
+        // Preserve stereo: forcing mono fails on explicit channel layouts.
+        guard let converted = try? BoundedProcess.run(executable: "/usr/bin/afconvert",
+            arguments: [path, scratch.path, "-f", "m4af", "-d", "aac", "-b", "64000"],
+            timeout: 60), converted.outcome == .exited(0),
               let data = try? Data(contentsOf: scratch),
               !data.isEmpty, data.count <= maxBytes else { return nil }
         return data
@@ -1483,16 +1478,9 @@ extension LogicAccessibility {
         let source = URL(fileURLWithPath: sourcePath)
         let destination = source.deletingPathExtension()
             .appendingPathExtension("m4a")
-        let convert = Process()
-        convert.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
-        convert.arguments = [
-            source.path, destination.path,
-            "-f", "m4af", "-d", "aac", "-b", "128000"
-        ]
-        convert.standardError = FileHandle.nullDevice
-        guard (try? convert.run()) != nil else { return nil }
-        convert.waitUntilExit()
-        guard convert.terminationStatus == 0,
+        guard let converted = try? BoundedProcess.run(executable: "/usr/bin/afconvert",
+            arguments: [source.path, destination.path, "-f", "m4af", "-d", "aac", "-b", "128000"],
+            timeout: 60), converted.outcome == .exited(0),
               FileManager.default.fileExists(atPath: destination.path) else { return nil }
         return destination.path
     }

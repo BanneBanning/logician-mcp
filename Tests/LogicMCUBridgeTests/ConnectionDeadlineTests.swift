@@ -107,6 +107,42 @@ final class ConnectionDeadlineTests: XCTestCase {
         XCTAssertEqual(readToEOF(reader, deadline: deadline(5)), .complete(Data()))
     }
 
+    func testAnExactLimitFrameRequiresEOF() throws {
+        let (writer, reader) = try makeSocketPair()
+        defer { close(writer); close(reader) }
+        setNonBlocking(reader)
+        let payload = Data(#"{"cmd":"ping"}"#.utf8)
+        XCTAssertTrue(writeAll(writer, payload))
+        XCTAssertEqual(readToEOF(reader, limit: payload.count, deadline: deadline(0.1)), .timedOut)
+    }
+
+    func testAnExactLimitFrameWithEOFIsComplete() throws {
+        let (writer, reader) = try makeSocketPair()
+        defer { close(writer); close(reader) }
+        let payload = Data(#"{"cmd":"ping"}"#.utf8)
+        XCTAssertTrue(writeAll(writer, payload))
+        shutdown(writer, SHUT_WR)
+        XCTAssertEqual(readToEOF(reader, limit: payload.count, deadline: deadline(1)), .complete(payload))
+    }
+
+    func testOversizedFrameCannotExecuteAValidJSONPrefix() throws {
+        let (writer, reader) = try makeSocketPair()
+        defer { close(writer); close(reader) }
+        let prefix = Data(#"{"cmd":"ping"}"#.utf8)
+        XCTAssertTrue(writeAll(writer, prefix + Data(" trailing bytes".utf8)))
+        shutdown(writer, SHUT_WR)
+        XCTAssertEqual(readToEOF(reader, limit: prefix.count, deadline: deadline(1)), .tooLarge)
+    }
+
+    func testMaximumIntegerLimitDoesNotOverflowTheReadSize() throws {
+        let (writer, reader) = try makeSocketPair()
+        defer { close(writer); close(reader) }
+        let payload = Data("small frame".utf8)
+        XCTAssertTrue(writeAll(writer, payload))
+        shutdown(writer, SHUT_WR)
+        XCTAssertEqual(readToEOF(reader, limit: Int.max, deadline: deadline(1)), .complete(payload))
+    }
+
     // MARK: writeAll(deadline:)
 
     func testDeadlineWriteDeliversALargeReplyToAReadingPeer() throws {

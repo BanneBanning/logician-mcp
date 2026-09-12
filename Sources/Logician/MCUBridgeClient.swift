@@ -183,64 +183,31 @@ enum MCUBridge {
         return Array(all.suffix(lines))
     }
 
-    /// Stops the daemon that currently owns the socket, and CONFIRMS it is
-    /// gone. Returns false when something is still answering, in which case
-    /// the caller must not start a replacement.
-    ///
-    /// Two ways to find the target, in order of precision:
-    ///  1. the pid the daemon wrote into its own lockfile — exact, and immune
-    ///     to how its command line was spelled;
-    ///  2. a `ps` scan filtered by `BridgeProcess.daemonPids`, for a daemon
-    ///     old enough to predate the pid file (which is precisely the daemon
-    ///     an upgrade is most likely to meet).
-    ///
-    /// The previous implementation did neither: it `pkill -f`'d the server's
-    /// own ABSOLUTE path plus " --bridge", which never matched a daemon
-    /// started as `./.build/release/logician --bridge`. It then started a
-    /// second bridge regardless, which is how one upgrade attempt briefly ran
-    /// two of them (FINDINGS 2026-08-28).
+    /// Replaces only the socket's kernel-identified peer. Stale PID files and
+    /// ambiguous command-line strings must never authorize a process signal.
     static func replaceRunningDaemon() -> Bool {
-        var targets: [Int32] = []
-        let lockURL = directory.appendingPathComponent(BridgeProcess.lockFileName)
-        if let contents = try? String(contentsOf: lockURL, encoding: .utf8),
-           let pid = BridgeProcess.parsePidFile(contents) {
-            targets.append(pid)
+        let path = directory.appendingPathComponent("command.sock").path
+        guard let pid = BridgeProcess.daemonPID(socketPath: path, excluding: getpid()) else {
+            return false
         }
-        if targets.isEmpty {
-            targets = BridgeProcess.daemonPids(
-                among: BridgeProcess.parsePS(runPS()), excluding: getpid()
-            )
-        }
-        guard !targets.isEmpty else { return false }
-        for pid in targets { kill(pid, SIGTERM) }
-        // Confirm, rather than sleeping and hoping. The daemon closes its
-        // socket on exit, so a ping that no longer answers IS the proof.
+        guard kill(pid, SIGTERM) == 0 else { return false }
         for _ in 0..<40 {
             usleep(100_000)
-            let alive = targets.contains { kill($0, 0) == 0 }
-            if !alive, (try? send(.ping)) == nil { return true }
+            if kill(pid, 0) != 0, errno == ESRCH {
+                return BridgeProcess.daemonPID(socketPath: path, excluding: getpid()) == nil
+            }
         }
-        // Still there after 4 s: escalate once, then re-check.
-        for pid in targets where kill(pid, 0) == 0 { kill(pid, SIGKILL) }
+        // Re-identify the socket owner before escalation: the original PID
+        // may already have exited and been reassigned to an unrelated process.
+        guard BridgeProcess.daemonPID(socketPath: path, excluding: getpid()) == pid,
+              kill(pid, SIGKILL) == 0 else { return false }
         for _ in 0..<20 {
             usleep(100_000)
-            if !targets.contains(where: { kill($0, 0) == 0 }) { return true }
+            if kill(pid, 0) != 0, errno == ESRCH {
+                return BridgeProcess.daemonPID(socketPath: path, excluding: getpid()) == nil
+            }
         }
         return false
-    }
-
-    private static func runPS() -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        // -ww: do not truncate the argument vector to the terminal width.
-        process.arguments = ["-axww", "-o", "pid=,args="]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        guard (try? process.run()) != nil else { return "" }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return String(data: data, encoding: .utf8) ?? ""
     }
 
     /// The typed path: every command is built from `BridgeCommand`'s
@@ -333,20 +300,17 @@ enum MCUBridge {
         var noSigpipe: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigpipe,
                    socklen_t(MemoryLayout<Int32>.size))
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        path.withCString { source in
-            withUnsafeMutableBytes(of: &address.sun_path) { raw in
-                raw.copyBytes(from: UnsafeRawBufferPointer(
-                    start: source, count: min(strlen(source) + 1, raw.count)
-                ))
-            }
+        let flags = fcntl(fd, F_GETFL)
+        guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else {
+            throw LogicianError.writeFailed("could not configure the MCU bridge socket")
         }
-        let size = socklen_t(MemoryLayout<sockaddr_un>.size)
-        let connected = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, size) }
-        }
-        guard connected == 0 else {
+        // The longest synchronous bridge command is capped at 15 seconds.
+        // One deadline includes connection, request and reply, even if a peer
+        // trickles bytes. After sending, failure is an UNKNOWN outcome and must
+        // never enter transact's connection-only automatic retry.
+        let deadline = Date().addingTimeInterval(20)
+        let connected = connectUnixSocket(fd, path: path, deadline: deadline)
+        guard connected else {
             throw LogicianError.writeFailed(
                 "could not reach the MCU bridge socket (it is started automatically; "
                     + "run logic_health if this persists)"
@@ -354,11 +318,18 @@ enum MCUBridge {
         }
         // Write ALL of it (retrying short writes) and half-close so the
         // bridge sees a clean EOF; then read the whole reply until it closes.
-        guard writeAll(fd, payload) else {
-            throw LogicianError.writeFailed("the MCU bridge closed the connection mid-command")
+        guard writeAll(fd, payload, deadline: deadline) else {
+            throw LogicianError.writeFailed("the MCU bridge request failed or exceeded its deadline; command outcome is unknown. Inspect Logic before retrying")
         }
         Darwin.shutdown(fd, SHUT_WR)
-        let data = readToEOF(fd)
+        let data: Data
+        switch readToEOF(fd, deadline: deadline) {
+        case .complete(let response): data = response
+        case .timedOut, .failed, .tooLarge:
+            throw LogicianError.writeFailed(
+                "the MCU bridge reply was incomplete, oversized or exceeded its deadline; command outcome is unknown. Inspect Logic before retrying"
+            )
+        }
         guard !data.isEmpty else {
             throw LogicianError.openVerificationFailed("no response from the MCU bridge")
         }

@@ -60,34 +60,37 @@ class Logician < Formula
            "--disable-sandbox",
            "-c", "release",
            "--product", "logician"
-    bin.install ".build/release/logician"
+    # SwiftPM resolves Bundle.module beside the launched executable. Keep the
+    # project template there after Homebrew removes its temporary build tree.
+    # A wrapper is intentional: a symlink makes Bundle.main resolve to bin.
+    libexec.install ".build/release/logician", ".build/release/Logician_Logician.bundle"
+    bin.write_exec_script libexec/"logician"
   end
 
   def caveats
     <<~EOS
-      Homebrew has only built and installed the `logician` binary. Logic Pro
-      cannot be driven yet - three one-time steps remain, and Logician itself
-      walks you through all of them:
+      Logician is installed. Three one-time steps remain:
 
-        1. Register this binary with your MCP client (Claude, Gemini, Cursor, …).
-           Run:
-             logician setup
+        1. Connect it to your AI client using the installation guide:
+           https://github.com/BanneBanning/logician-mcp/blob/main/docs/INSTALL.md
 
-        2. Install the Mackie Control surface Logician talks to Logic through.
-           `logician setup` prints the exact Control Surfaces > Setup steps and
-           the port names to select (or drive it by hand - see the README).
+        2. Ask the agent to run `logic_health` to create the MIDI ports. In
+           Logic Pro > Control Surfaces > Setup, add a Mackie Control and
+           set both Input Port and Output Port to `Logic MCP MCU`.
 
         3. Grant Accessibility to your MCP client, for the tools that fall back
            to Logic's UI (macOS will prompt, or: System Settings > Privacy &
            Security > Accessibility).
 
-      Once all three are done, ask your agent to run `logic_health` - it
-      verifies every step above and names the exact fix for anything still
-      missing.
+      Run `logic_health` again to check the Logic connection. Audio reaching
+      the model depends separately on your client and model's audio support.
     EOS
   end
 
   test do
+    # initialize/tools/list never opens the template, so the protocol smoke
+    # test alone cannot detect a release that omitted its resource bundle.
+    assert_path_exists libexec/"Logician_Logician.bundle/EmptyProject.logicx"
     # Logician speaks MCP over stdio; it never touches Logic Pro, the
     # Accessibility tree or the MIDI bridge until a tool that needs them is
     # actually called. `initialize` + `tools/list` is therefore a real,

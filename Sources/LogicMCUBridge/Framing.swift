@@ -54,7 +54,31 @@ public func readToEOF(_ fd: Int32, limit: Int = 8 * 1024 * 1024) -> Data {
     return data
 }
 
-// MARK: - Deadline-bounded framing (the daemon's side)
+// MARK: - Deadline-bounded framing
+
+/// Connects a nonblocking Unix socket without silently truncating its address.
+/// A successful poll alone is not a connection: SO_ERROR is the completion
+/// verdict, including a peer that disappeared while connect was pending.
+public func connectUnixSocket(_ fd: Int32, path: String, deadline: Date) -> Bool {
+    var address = sockaddr_un()
+    address.sun_family = sa_family_t(AF_UNIX)
+    let bytes = Array(path.utf8) + [UInt8(0)]
+    guard !path.utf8.contains(0), bytes.count <= MemoryLayout.size(ofValue: address.sun_path) else {
+        return false
+    }
+    withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: bytes) }
+    let connected = withUnsafePointer(to: &address) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+        }
+    }
+    if connected == 0 { return true }
+    guard errno == EINPROGRESS || errno == EALREADY || errno == EINTR,
+          waitFor(fd, events: Int16(POLLOUT), deadline: deadline) else { return false }
+    var error: Int32 = 0
+    var size = socklen_t(MemoryLayout<Int32>.size)
+    return getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &size) == 0 && error == 0
+}
 
 /// What a deadline-bounded read of one frame ended as.
 public enum DeadlineReadResult: Equatable {
@@ -66,6 +90,8 @@ public enum DeadlineReadResult: Equatable {
     case timedOut
     /// The socket errored.
     case failed
+    /// More than `limit` bytes arrived. A prefix is never a complete command.
+    case tooLarge
 }
 
 /// Like `readToEOF`, but gives up at `deadline` instead of trusting the peer
@@ -81,14 +107,18 @@ public func readToEOF(
 ) -> DeadlineReadResult {
     var data = Data()
     var chunk = [UInt8](repeating: 0, count: 65536)
-    while data.count < limit {
+    guard limit >= 0 else { return .tooLarge }
+    while true {
         guard waitFor(fd, events: Int16(POLLIN), deadline: deadline) else {
             return .timedOut
         }
         let count = chunk.withUnsafeMutableBytes { raw -> Int in
-            Darwin.read(fd, raw.baseAddress, raw.count)
+            // Probe one byte beyond the remaining capacity to distinguish an
+            // exact-limit frame followed by EOF from an oversized frame.
+            Darwin.read(fd, raw.baseAddress, min(raw.count - 1, limit - data.count) + 1)
         }
         if count > 0 {
+            guard count <= limit - data.count else { return .tooLarge }
             data.append(contentsOf: chunk[0..<count])
             continue
         }
@@ -96,10 +126,6 @@ public func readToEOF(
         if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }
         return .failed
     }
-    // At the safety limit without EOF: same shape the un-deadlined reader
-    // hands out, so an oversized frame still gets the "invalid JSON" reply
-    // instead of a silent hang or a new failure mode.
-    return .complete(data)
 }
 
 /// Like `writeAll`, but gives up at `deadline` instead of blocking on a peer

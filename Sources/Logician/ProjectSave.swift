@@ -6,6 +6,22 @@ import Foundation
 /// established for the rest of the project family.
 enum ProjectSave {
 
+    /// Only the saved target's dirty flag is evidence. Logic may switch or
+    /// reorder documents while the command runs; another clean document must
+    /// never certify this save, even when it has the same name.
+    static func documentIsSaved(
+        in documents: [ProjectDocuments.Document]?,
+        targetPath: String,
+        normalize: (String) -> String
+    ) -> Bool {
+        guard let documents else { return false }
+        let expected = normalize(targetPath)
+        let matches = documents.filter { document in
+            document.path.map { normalize($0) == expected } ?? false
+        }
+        return matches.count == 1 && !matches[0].modified
+    }
+
     /// How long the save has to prove itself before the call gives up.
     ///
     /// Unchanged in wall-clock terms from the `40 × 250 ms` loop it replaces —

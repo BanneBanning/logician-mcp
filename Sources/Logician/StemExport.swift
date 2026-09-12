@@ -6,6 +6,26 @@ import Foundation
 /// arithmetic and argument hygiene, and neither should need Logic running to
 /// be trusted.
 enum StemExport {
+    /// A failed solo restore contaminates every subsequent bounce. Keep the
+    /// completed file's evidence, but never start another stem in that state.
+    static func collect(
+        tracks: [String], bounce: (Int, String) throws -> [String: Any]
+    ) rethrows -> [[String: Any]] {
+        var stems: [[String: Any]] = []
+        for (index, track) in tracks.enumerated() {
+            let stem = try bounce(index, track)
+            stems.append(stem)
+            guard stem["solo_restored"] as? Bool == true else { break }
+        }
+        return stems
+    }
+
+    static func verified(
+        completed: Bool, aligned: Bool, before: SoloCensus, after: SoloCensus
+    ) -> Bool {
+        completed && aligned && before.provenClear && after.provenClear
+    }
+
     /// The most tracks one call will bounce. Each stem is a full offline
     /// master render of the range, so a 30-track request is half an hour of
     /// dialog driving during which nothing else may touch Logic — better
@@ -100,7 +120,7 @@ enum StemExport {
         /// The only thing that counts as PROOF the project is solo-clean. A
         /// header walk cannot supply it at any length: absence of evidence
         /// there is not evidence of absence (see `TrackListCompleteness`).
-        var provenClear: Bool { surfaceSaysSoloed == false }
+        var provenClear: Bool { surfaceSaysSoloed == false && !soloed }
 
         /// A solo the surface can see and the Tracks area cannot — the exact
         /// hole this census was added to close.

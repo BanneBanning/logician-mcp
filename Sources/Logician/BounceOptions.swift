@@ -30,6 +30,36 @@ enum BounceFormat {
     /// server (the metrics parser included).
     static let interleaving = ["Split", "Interleaved"]
 
+    /// Accept numeric sample rates without trapping on out-of-range JSON
+    /// numbers. Resolve all supplied options before opening Logic's dialog.
+    static func options(from arguments: [String: Any]) throws -> [String: String] {
+        let vocabularies = [
+            "file_type": fileTypes, "bit_depth": bitDepths,
+            "sample_rate": sampleRates, "dithering": ditherings,
+            "normalize": normalizeModes
+        ]
+        var result: [String: String] = [:]
+        for key in vocabularies.keys.sorted() {
+            guard let value = arguments[key] else { continue }
+            let raw: String
+            if let text = value as? String {
+                raw = text
+            } else if let integer = value as? Int {
+                raw = String(integer)
+            } else if let number = value as? Double, number.isFinite {
+                raw = Int(exactly: number).map(String.init) ?? String(number)
+            } else {
+                throw LogicianError.invalidArguments("\(key) must be a string or finite number")
+            }
+            let choices = vocabularies[key]!
+            guard let resolved = canonical(raw, in: choices) else {
+                throw LogicianError.invalidArguments(rejection(raw, label: key, options: choices))
+            }
+            result[key] = resolved
+        }
+        return result
+    }
+
     /// Maps what a caller wrote onto the exact menu title to press.
     ///
     /// Three steps, each one only accepted when it is UNAMBIGUOUS: an exact
@@ -49,11 +79,9 @@ enum BounceFormat {
         if prefixed.count == 1 { return prefixed[0] }
         // "48000", "48000 Hz", "96000hz" — a rate written in Hz.
         let digits = raw.filter { $0.isNumber || $0 == "." }
-        if let hertz = Double(digits), hertz >= 1000 {
+        if let hertz = Double(digits), hertz.isFinite, hertz >= 1000 {
             let kilohertz = hertz / 1000
-            let text = kilohertz == kilohertz.rounded()
-                ? String(Int(kilohertz))
-                : String(kilohertz)
+            let text = Int(exactly: kilohertz).map(String.init) ?? String(kilohertz)
             let matches = options.filter {
                 key($0).contains("khz") && key($0).hasPrefix(key(text))
             }

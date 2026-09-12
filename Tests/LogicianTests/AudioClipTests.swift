@@ -120,6 +120,24 @@ final class AudioClipTests: XCTestCase {
 
     // MARK: - The clip's name
 
+    func testExtremeWindowErrorsCanBeReportedWithoutTrapping() {
+        for fault in [
+            AudioClip.Fault.startPastEnd(startSeconds: 1e300, fileSeconds: 8),
+            .startBeforeFile(startSeconds: -1e300),
+            .emptyWindow(durationSeconds: -1e300)
+        ] {
+            XCTAssertFalse(fault.message.isEmpty)
+        }
+    }
+
+    func testWindowClampsWithoutRoundingInt64MaxOutOfRange() {
+        guard case .success(let window) = AudioClip.window(
+            startSeconds: 0, durationSeconds: 1e300,
+            sampleRate: 44100, totalFrames: Int64.max
+        ) else { return XCTFail("the window should clamp to the original integer length") }
+        XCTAssertEqual(window.frameCount, Int64.max)
+    }
+
     func testClipFileNamesDoNotCollideInsideOneSecond() {
         // Measured before the fix: four clips of 1/4/8/20 s written inside one
         // wall-clock second all reported the SAME clip_path, and each

@@ -1,28 +1,58 @@
 # Changelog
 
+## 1.0.0 — unreleased
+
+- Homebrew installs the project-template resource bundle alongside the executable.
+  Installer guidance uses the supported setup steps, checks link failures, and
+  refuses to replace an unrelated executable.
+- Bridge replacement identifies the process owning its Unix socket instead of
+  trusting a stale PID file or command-line substring. Startup requires an
+  exclusive lock; oversized command frames and unsafe numeric inputs are refused.
+- Save verification checks the target project's path. Malformed document lists
+  and unreadable mute, solo or pan values no longer certify successful changes.
+- Clipboard moves copy and verify rendered region names, types and exact bounds
+  before deleting the source. Overlap and unsupported MIDI boundaries, audio or
+  meter maps refuse before Paste. Failures report the last attempted phase;
+  there is no automatic Undo or replay. The operation uses two undo steps and
+  is not atomic. Note events, including absolute ends, attack/release velocities
+  and articulation, plus published region parameters are compared independently.
+  Other MIDI event types currently refuse. Editor focus and temporary MIDI-view
+  settings are restored; unread or filtered evidence cannot authorize Delete.
+- AppleScript, project-launch and audio-conversion child processes have deadlines,
+  bounded output and cleanup. Bridge clients bound connect, write and reply waits;
+  an incomplete reply reports an uncertain command outcome without replaying it.
+- Stem export stops after a failed solo restoration and preserves completed file
+  details. Verification requires evidence of a clear initial and final solo state.
+- Audio input conversion handles extreme numeric values without crashing.
+- Onboarding distinguishes rendered audio, client forwarding, model understanding,
+  client-controlled approval and limited readback verification. Public diagnostics
+  guidance uses the redacted doctor report.
+
 ## 1.0.0-beta.1 — 2026-09-04
 
-The first public release, and it is a **beta** on purpose. The code is not the
-tentative part: 2 361 hermetic tests run on every build, and every one of the 81
-tools has been profiled and fixed against a live Logic Pro. The ENVIRONMENT is.
-All of that verification happened on one Logic version, one UI language and one
+The first public release, and it is a **beta** on purpose. Automated tests and
+live checks cover specific behavior, not every possible project or failure.
+The recorded live verification happened on one Logic version, one UI language and one
 Mac — Logic Pro 12.3.1, English, macOS 26 — and nothing here has yet met a
 different Logic release, a localised UI, another key-command set or another
 audio setup. Those are precisely the conditions that produce the failure this
 server exists to prevent: a confident answer about a state it misread. So the
 first public release is a compatibility test run in the open. Please report
-what breaks, with `logic_health`'s output attached; the version number becomes
+what breaks, with the reviewed, redacted `logician doctor` report attached; the version number becomes
 1.0.0 when other people's machines have had their say.
 
-Logician gives any MCP client verified control of Logic Pro: 81 typed tools across
+Logician exposes Logic Pro controls to MCP clients: tools across
 mixing, plugins (third-party parameters included), regions, MIDI composition and
 editing, tempo and meter maps, automation, markers, and dialog-free audio export —
-with every render coming back as audio the agent can listen to.
+with rendered audio available to clients. Listening requires a client that
+forwards audio and a model that understands it; long renders may return only a
+listening window inline.
 
 ### Highlights
 
-- **Verified writes everywhere.** Compare-and-set with readback against Logic's own
-  control-surface echoes; refusals name the fix or the working alternative; results
+- **Scoped readback verification.** Checks use Logic's control-surface echoes and
+  Accessibility data where available; partial and uncertain results remain possible.
+  Refusals name the fix or the working alternative; results
   carry `success` / `verified` / `state` / `warning` under one documented contract.
 - **The master chain is addressable.** `Stereo Out`, auxes and buses work by name for
   volume, mute/solo, sends, insert bypass, plugin parameters and preset browsing.

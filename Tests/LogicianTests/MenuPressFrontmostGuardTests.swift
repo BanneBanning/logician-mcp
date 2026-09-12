@@ -121,8 +121,7 @@ final class MenuPressFrontmostGuardTests: XCTestCase {
     /// code (see its doc comment: Logic's tracking-menu runloop never answers
     /// it), which means it can never fall back the way `pressMenuItem(settled:)`
     /// does. Every one of its callers has to guard frontmost itself, before
-    /// the press — this enumerates them so a future caller cannot add a fifth
-    /// one that skips it.
+    /// the press — this enumerates them so a new caller cannot skip it.
     func testEveryPressOpeningTrackingMenuCallIsPrecededByAFrontmostGuard() throws {
         let enumerator = try XCTUnwrap(
             FileManager.default.enumerator(at: sourcesRoot, includingPropertiesForKeys: nil)
@@ -143,6 +142,6 @@ final class MenuPressFrontmostGuardTests: XCTestCase {
                 )
             }
         }
-        XCTAssertEqual(callSites, 4, "the known pressOpeningTrackingMenu call sites moved — update this test's expectations")
+        XCTAssertEqual(callSites, 5, "the known pressOpeningTrackingMenu call sites moved — update this test's expectations")
     }
 }

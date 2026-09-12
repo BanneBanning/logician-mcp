@@ -710,7 +710,9 @@ extension LogicAccessibility {
         DispatchQueue.global(qos: .userInitiated).async {
             // Static on purpose: this class is not Sendable, so the detached
             // close must not capture one.
-            let answer = LogicAccessibility.runAppleScript(script, arguments: [documentName])
+            let answer = LogicAccessibility.runAppleScript(
+                script, arguments: [documentName], timeout: max(0.1, timeoutSeconds)
+            )
             finished.finish(scriptFailed: answer == nil)
         }
 

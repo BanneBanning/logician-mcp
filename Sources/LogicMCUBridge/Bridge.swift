@@ -391,8 +391,8 @@ func waitForMIDIStream(until hostTime: UInt64, generation: Int) -> Bool {
         if cancelled { return false }
         let now = mach_absolute_time()
         guard hostTime > now else { return true }
-        let waitNs = (hostTime - now) * UInt64(timebase.numer) / UInt64(timebase.denom)
-        usleep(UInt32(max(1, min(waitNs / 1000, sliceUs))))
+        let waitUs = Double(hostTime - now) * Double(timebase.numer) / Double(timebase.denom) / 1000
+        usleep(UInt32(max(1, min(waitUs, Double(sliceUs)))))
     }
 }
 
@@ -573,11 +573,37 @@ func awaitFaderEcho(channel: Int, timeoutMs: Int = 400) -> Int? {
     return last
 }
 
-func turnVPot(index: Int, delta: Int) {
-    let steps = min(abs(delta), 63)
-    let value = UInt8(delta < 0 ? 0x40 + steps : steps)
-    send([0xB0, UInt8(0x10 + index), value])
+/// Magnitude is unsigned so even Int.min can be clamped without abs trapping.
+func vpotValue(delta: Int) -> UInt8 {
+    let steps = Int(min(delta.magnitude, 63))
+    return UInt8(delta < 0 ? 0x40 + steps : steps)
 }
+
+func turnVPot(index: Int, delta: Int) {
+    send([0xB0, UInt8(0x10 + index), vpotValue(delta: delta)])
+}
+
+func keyCommandChannel(_ channel: Int) -> UInt8 {
+    (UInt8(truncatingIfNeeded: channel) &- 1) & 0x0F
+}
+
+/// Clamp before converting to Int: finite JSON numbers may be much larger
+/// than Int.max, and even finite operands can overflow their product.
+func convergenceTicks(target: Double, current: Double, ratio: Double) -> Int? {
+    let requested = ((target - current) * ratio).rounded()
+    guard requested.isFinite else { return nil }
+    let clamped = Int(max(-60, min(60, requested)))
+    return clamped == 0 ? ((target - current) * ratio > 0 ? 1 : -1) : clamped
+}
+
+func validMIDIStreamOffset(_ offset: Double) -> Bool {
+    guard offset.isFinite, offset >= 0,
+          Int(exactly: offset.rounded(.towardZero)) != nil else { return false }
+    let ticks = offset * 1_000_000 * Double(timebase.denom) / Double(timebase.numer)
+    guard let ticks = UInt64(exactly: ticks.rounded(.towardZero)) else { return false }
+    return ticks <= UInt64.max - mach_absolute_time()
+}
+
 
 /// Public so the server's `logic_mcu_command` schema can advertise exactly
 /// the button names this daemon accepts, instead of a hand-kept copy that
@@ -726,9 +752,9 @@ func handleCommand(_ object: BridgeCommand) -> BridgeResponse {
         while Date() < deadline {
             let step = max(tolerance, abs(0.5 / max(abs(ratio), 0.01)))
             if abs(current - target) <= step { break }
-            var ticks = Int(((target - current) * ratio).rounded())
-            if ticks == 0 { ticks = (target - current) * ratio > 0 ? 1 : -1 }
-            ticks = max(-60, min(60, ticks))
+            guard let ticks = convergenceTicks(target: target, current: current, ratio: ratio) else {
+                return .failure("target and ratio exceed the supported numeric range")
+            }
             let before = state.eventCount
             turnVPot(index: index, delta: ticks)
             iterations += 1
@@ -782,6 +808,9 @@ func handleCommand(_ object: BridgeCommand) -> BridgeResponse {
             guard raw.elements.count >= 2, let offset = raw.offsetMs, offset >= 0 else {
                 return .failure("each event needs [offset_ms >= 0, byte, ...]")
             }
+            guard validMIDIStreamOffset(offset) else {
+                return .failure("each event needs a finite, representable offset_ms >= 0 and MIDI bytes")
+            }
             guard let bytes = raw.bytes else {
                 return .failure("event bytes must be 0-255")
             }
@@ -811,10 +840,8 @@ func handleCommand(_ object: BridgeCommand) -> BridgeResponse {
         guard let note = object.note, (0...127).contains(note) else {
             return .failure("note 0-127 required")
         }
-        // truncatingIfNeeded, not UInt8(_:): channel 0 made the old
-        // conversion evaluate UInt8(-1), which TRAPS and takes the whole
-        // daemon down. Every valid channel (1...16) is unaffected.
-        let channel = UInt8(truncatingIfNeeded: (object.channel ?? 16) - 1) & 0x0F
+        // Preserve the historical channel wrapping without overflowing at Int.min.
+        let channel = keyCommandChannel(object.channel ?? 16)
         let holdMs = object.keycmdHoldMs(
             default: resolveKeycmdDefaultHoldMs(
                 envOverride: ProcessInfo.processInfo.environment[keycmdHoldEnvVar]
@@ -851,7 +878,7 @@ private var instanceLockDescriptor: Int32 = -1
 func acquireInstanceLock() -> Bool {
     let lockPath = directory.appendingPathComponent(BridgeProcess.lockFileName).path
     let fd = open(lockPath, O_CREAT | O_RDWR, 0o600)
-    guard fd >= 0 else { return true } // cannot lock: do not block startup
+    guard fd >= 0 else { return false } // no lock means no exclusive ownership
     guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
         close(fd)
         return false
@@ -973,7 +1000,7 @@ public func bridgeMain() -> Never {
     try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     guard acquireInstanceLock() else {
         FileHandle.standardError.write(Data(
-            "another logic-mcu-bridge instance is already running; exiting\n".utf8
+            "could not acquire the bridge lock (another instance or an inaccessible lockfile); exiting\n".utf8
         ))
         exit(0) // not an error: the live daemon owns the ports
     }

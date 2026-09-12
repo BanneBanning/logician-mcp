@@ -94,9 +94,8 @@ enum AudioClip {
 
         private func trim(_ value: Double) -> String {
             guard value.isFinite else { return "\(value)" }
-            return value == value.rounded()
-                ? String(Int(value.rounded()))
-                : String(format: "%.3f", value)
+            if let integer = Int(exactly: value) { return String(integer) }
+            return String(format: "%.3f", value)
         }
     }
 
@@ -150,7 +149,9 @@ enum AudioClip {
         let startFrame = Int64(startProduct)
         let available = totalFrames - startFrame
         let wanted = (durationSeconds * sampleRate).rounded()
-        let frameCount = Int64(min(wanted, Double(available)))
+        // Double(Int64.max) rounds UP to 2^63. Use the original integer
+        // when clamping, so the boundary itself is never converted back.
+        let frameCount = wanted >= Double(available) ? available : Int64(wanted)
         guard frameCount > 0 else {
             return .failure(.emptyWindow(durationSeconds: durationSeconds))
         }

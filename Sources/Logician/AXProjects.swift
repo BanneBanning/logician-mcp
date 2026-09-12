@@ -25,18 +25,14 @@ extension LogicAccessibility {
     /// from a background queue (Logic's AppleScript blocks while a modal is
     /// up, and answering the modal is the point), and this class is not
     /// Sendable — so the detached work must not capture one.
-    static func runAppleScript(_ source: String, arguments: [String] = []) -> String? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", source] + arguments
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        guard (try? process.run()) != nil else { return nil }
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8)?
+    static func runAppleScript(
+        _ source: String, arguments: [String] = [], timeout: TimeInterval = 10
+    ) -> String? {
+        guard let result = try? BoundedProcess.run(
+            executable: "/usr/bin/osascript", arguments: ["-e", source] + arguments,
+            timeout: timeout
+        ), result.outcome == .exited(0) else { return nil }
+        return String(data: result.stdout, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -61,20 +57,16 @@ extension LogicAccessibility {
                 on error
                     set p to ""
                 end try
-                set out to out & (name of d) & "\u{1F}" & p & "\u{1F}" & (modified of d) & "\u{1E}"
+                set n to name of d
+                if n contains "\u{1F}" or n contains "\u{1E}" or p contains "\u{1F}" or p contains "\u{1E}" then
+                    error "The project name or path contains a document-list separator"
+                end if
+                set out to out & n & "\u{1F}" & p & "\u{1F}" & (modified of d) & "\u{1E}"
             end repeat
         end tell
         return out
         """) else { return nil }
-        return raw.split(separator: "\u{1E}").compactMap { entry in
-            let parts = entry.components(separatedBy: "\u{1F}")
-            guard parts.count == 3 else { return nil }
-            // NFC-normalize: the filesystem/AppleScript return decomposed
-            // Unicode (Sma¨llare) while JSON clients send precomposed (Smä).
-            return (parts[0].precomposedStringWithCanonicalMapping,
-                    parts[1].isEmpty ? nil : parts[1].precomposedStringWithCanonicalMapping,
-                    parts[2] == "true")
-        }
+        return ProjectDocuments.parse(raw)
     }
 
     /// Answers the "Create New Track" dialog's Create button.
@@ -234,7 +226,9 @@ extension LogicAccessibility {
         while true {
             // A read that fails here is not a save that failed — the poll
             // simply has nothing to judge yet and looks again.
-            if let fresh = readOpenDocuments()?.first, !fresh.modified {
+            if ProjectSave.documentIsSaved(
+                in: readOpenDocuments(), targetPath: path, normalize: normalizedPath
+            ) {
                 return [
                     "success": true, "verified": true, "state": "saved",
                     "project": document.name, "path": path,
@@ -379,11 +373,13 @@ extension LogicAccessibility {
             )
             try FileManager.default.copyItem(at: template, to: target)
         }
-        let openProcess = Process()
-        openProcess.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        openProcess.arguments = ["-a", "Logic Pro", target.path]
-        try openProcess.run()
-        openProcess.waitUntilExit()
+        let openResult = try BoundedProcess.run(executable: "/usr/bin/open",
+            arguments: ["-a", "Logic Pro", target.path], timeout: 10)
+        guard openResult.outcome == .exited(0) else {
+            throw LogicianError.openVerificationFailed(
+                "the project launcher failed or timed out; Logic may still be opening the project. Inspect its windows before retrying"
+            )
+        }
         // Answer the save-changes prompt per the caller's explicit choice.
         let expectedName = target.deletingPathExtension().lastPathComponent
         let expectedPath = normalizedPath(target.path)
